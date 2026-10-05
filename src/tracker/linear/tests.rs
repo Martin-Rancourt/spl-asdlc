@@ -493,3 +493,10 @@ fn a_user_is_found_by_id_as_well_as_by_name() {
     assert_eq!(l.user(&id).unwrap().name, "Dev");
     assert_ne!(new_uuid(), new_uuid());
 }
+
+#[test]
+fn the_body_url_fallback_reads_only_linear_urls() {
+    let (l, _) = linear();
+    let body = "Closes https://linear.app/acme-ws/issue/ABC-12/some-title and mentions ABC-13 and BR-AF-001.";
+    assert_eq!(l.keys_in_text(body), vec!["ABC-12"]);
+}

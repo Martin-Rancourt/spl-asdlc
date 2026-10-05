@@ -420,6 +420,22 @@ impl Tracker for FakeTracker {
         Ok(())
     }
 
+    fn keys_in_text(&self, text: &str) -> Vec<String> {
+        let mut keys: Vec<String> = text
+            .match_indices("https://tracker.test/")
+            .map(|(i, m)| {
+                text[i + m.len()..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                    .collect::<String>()
+            })
+            .filter(|k| !k.is_empty())
+            .collect();
+        keys.sort();
+        keys.dedup();
+        keys
+    }
+
     fn link_pr(&self, key: &str, pr_url: &str, _title: &str) -> TResult<()> {
         if self.read(key)?.links.iter().any(|l| l == pr_url) {
             return Ok(());

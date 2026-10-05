@@ -371,7 +371,7 @@ const PULL_FRAGMENT: &str = "fragment Pull on PullRequest {
   mergeable mergeStateStatus additions deletions createdAt updatedAt mergedAt
   mergedBy { __typename login }
   mergeCommit { oid }
-  reviews(first: 100) { pageInfo { hasNextPage } nodes { author { login } state commit { oid } submittedAt } }
+  reviews(first: 100) { pageInfo { hasNextPage } nodes { author { login } state body commit { oid } submittedAt } }
   reviewThreads(first: 100) { pageInfo { hasNextPage } nodes { isResolved isOutdated path comments(first: 1) { nodes { author { login } body } } } }
   commits(last: 1) { nodes { commit { oid statusCheckRollup { contexts(first: 100) {
     pageInfo { hasNextPage }
@@ -542,6 +542,7 @@ fn pull_from_gql(v: &Value) -> Result<PullRequest, String> {
         .iter()
         .map(|r| Review {
             author: r["author"]["login"].as_str().map(str::to_string),
+            body: str_of(r, "body"),
             state: str_of(r, "state"),
             commit_sha: r["commit"]["oid"].as_str().map(str::to_string),
             submitted_at: time_of(r, "submittedAt"),

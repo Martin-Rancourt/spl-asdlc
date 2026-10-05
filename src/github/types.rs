@@ -258,6 +258,8 @@ pub enum CheckKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Review {
     pub author: Option<String>,
+    /// The review's own text (an angle names its sub-item there).
+    pub body: String,
     /// `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, `DISMISSED`, `PENDING`.
     pub state: String,
     pub commit_sha: Option<String>,

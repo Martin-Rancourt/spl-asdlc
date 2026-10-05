@@ -296,6 +296,7 @@ fn reviewed_paths_are_named_five_then_counted() {
 
 fn review(login: &str, state: &str, sha: &str) -> Review {
     Review {
+        body: String::new(),
         author: Some(login.into()),
         state: state.into(),
         commit_sha: Some(sha.into()),
@@ -384,6 +385,7 @@ fn a_dismissed_or_pending_review_changes_nothing() {
 #[test]
 fn a_review_without_a_login_is_ignored() {
     let reviews = [Review {
+        body: String::new(),
         author: None,
         state: "CHANGES_REQUESTED".into(),
         commit_sha: None,
