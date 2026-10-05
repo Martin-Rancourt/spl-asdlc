@@ -58,7 +58,7 @@ fn an_orphan_pr_is_described_by_the_changelog_then_its_description() {
             body: "## Summary\nExplains the gate.\n\n🤖 Generated".into(),
         },
         Untracked::Commit(CommitSummary {
-            sha: "0123456789abcdef".into(),
+            sha: "abcdef01abcdef01".into(),
             subject: "fix: direct".into(),
         }),
     ];
@@ -68,7 +68,7 @@ fn an_orphan_pr_is_described_by_the_changelog_then_its_description() {
         "{b}"
     );
     assert!(b.contains("- **PR #22** — docs: x: Explains the gate."));
-    assert!(b.contains("- **commit 0123456789ab** — fix: direct"));
+    assert!(b.contains("- **commit abcdef01abcd** — fix: direct"));
     assert!(b.contains("### No linked ticket"));
 }
 

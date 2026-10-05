@@ -10,4 +10,5 @@ pub mod glob;
 pub mod markdown;
 pub mod release;
 pub mod review;
+pub mod texts;
 pub mod vocabulary;
