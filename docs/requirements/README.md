@@ -6,6 +6,6 @@ Derived from the Python implementation this product replaces and from the two re
 |---|---|---|
 | `merge.md` | The merge pass, the ticket contract and the business-rule guards | 83 requirements, 360 tests carried, 124 dropped with reasons, 33 open questions |
 | `release.md` | The release chain: cut, gate reading, brief, QA coordination, GO, publish merge, closure, release note; the `Tracker` trait surface (REQ-REL-098) and the GitHub operations (REQ-REL-099) | 102 requirements, 626 tests carried, 224 dropped, 20 open questions with the editor's decisions |
-| `ci.md` | The reusable workflows, the evidence pack and the angle report schema | see the file |
+| `ci.md` | The reusable workflows (`pr-title`, `pr-guards`, `release-cut`, `release-gate`, `release-verify`, `release-record-deployed`, `release-close`, release-please handling), the evidence pack contract and the angle report schema | 102 requirements, 420 tests mapped, 18 dropped behaviours, 22 open questions with the editor's decisions |
 
 Reading order for an implementer: `docs/spec/` first, then `release.md` §Status/tracker writes for the trait, then the rest. Ticket identifiers in examples are placeholders (`ABC-123`); the previous implementation's incidents are referred to as "a past incident".
