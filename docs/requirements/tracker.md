@@ -12,8 +12,22 @@ The tracker operations the bridge needs are the union of REQ-REL-098 (`release.m
 | `comments` | Markers of once-only effects, merge records | The whole thread, oldest first, with `by_bridge` |
 | `children`, `list_by_label` | Release members, sub-items, findings | A list the tracker cuts is unreadable |
 | `items_linked_to_pr` | The PR ↔ ticket link (`docs/spec/01-ticket-contract.md` §7) | An answer that does not say it is whole is unreadable |
-| `ensure_label`, `create_item`, `update_description`, `add_label`, `remove_label`, `set_status` (with the assignee in the same write), `assign`, `comment`, `update_comment`, `relate`, `unrelate`, `link_pr` | The writes of the method | A write the tracker does not confirm is refused |
+| `ensure_label`, `create_item`, `update_description`, `add_label`, `remove_label`, `set_status` (with the assignee in the same write), `assign`, `comment`, `update_comment`, `relate`, `unrelate`, `link_pr` | The writes of the method | A write the tracker does not confirm is refused. A write of a value already there records nothing (no useless facts, `docs/livela-contract.md`). A creation whose answer is lost is looked up, never repeated blindly. |
+
+Only Done and Canceled are resolved. In Review, To Deploy and Post Deploy are open: they still block their dependents, whatever category the tracker files them under (the `validation` group, `docs/livela-contract.md`).
 
 ## Conformance
 
-`spl_asdlc::tracker::conformance::run` is the acceptance of an adapter (and of `docs/livela-contract.md`): it creates a release item with two angle children, links a PR URL and finds the item back by it, moves a child through In Review → To Deploy → Done, lays a `blocks` relation and reads it from both ends, comments as the service identity and edits the comment, lists by label, removes the relation, and cancels what it created. The in-memory tracker passes it in the unit tests; `tests/live_linear_conformance.rs` runs it on a real Linear team (it writes: use a test team).
+`spl_asdlc::tracker::conformance::run` (or `run_with`, given a counter of the changes the tracker recorded) is the acceptance of an adapter, and of `docs/livela-contract.md`. Each write is read back. The suite:
+
+- finds the service identity by name and by id; `get` of an unknown key is NotFound;
+- creates a release item with two angle children;
+- links a PR URL and finds the item back by it (and an unlinked URL finds nothing);
+- moves a child through In Review → To Deploy → Post Deploy → Done;
+- sets a status and an assignee in one call;
+- lays a `blocks` relation and reads it from both ends and only in its direction; a relation to an unknown item is refused;
+- comments twice as the service identity and reads the thread oldest first, editing a comment where the tracker can;
+- describes, labels, unlabels, assigns and unassigns;
+- repeats every write unchanged and checks that nothing is recorded or doubled;
+- lists by label, removes the relation;
+- cancels what it created, on failure too. The in-memory tracker passes it in the unit tests; `tests/live_linear_conformance.rs` runs it on a real Linear team (it writes: use a test team).

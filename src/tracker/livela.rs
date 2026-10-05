@@ -3,12 +3,18 @@
 //!
 //! The adapter is written against [`LivelaStore`], the slice of the store
 //! the contract promises. The Livela runner implements it for its `Store`
-//! (a few lines of glue, step 4b), so this crate needs no dependency on the
-//! Livela core and the core needs none on this crate's internals.
+//! (a few lines of glue), so this crate needs no dependency on the Livela
+//! core and the core needs none on this crate's internals.
 //!
 //! Mapping: an item's key is its short id; labels are tags; the bridge
 //! writes as the `spl-asdlc` agent participant; a relation has no id of its
 //! own, so its id is `<kind>:<item>:<target>`.
+//!
+//! No useless facts (contract, "No heartbeat"): every write first reads the
+//! value it would change and writes nothing when the value is already there.
+//! Every write is signed by the `spl-asdlc` participant: the adapter sets the
+//! store's author for the write and restores the previous author after it,
+//! so the runner's other writers keep their own signature.
 //!
 //! Missing from the contract (said, never guessed around): editing a
 //! comment. `update_comment` is refused; the caller posts its fact anew.
@@ -53,9 +59,13 @@ pub enum LivelaRelation {
 
 /// The slice of the Livela `Store` the adapter uses: exactly the contract.
 pub trait LivelaStore {
-    /// The `spl-asdlc` agent participant, created if absent; every later
-    /// write of the store is signed by it.
+    /// The `spl-asdlc` agent participant, created if absent.
     fn bridge_participant(&mut self) -> Result<String, String>;
+    /// The `spl-asdlc` agent participant if it exists (reads create nothing).
+    fn existing_bridge_participant(&self) -> Option<String>;
+    /// Sign the next writes with this participant; returns the previous
+    /// author, which the adapter restores after its write.
+    fn swap_author(&mut self, participant: &str) -> String;
     /// Participants answering to a name: `(id, name)`.
     fn participants_named(&self, name: &str) -> Vec<(String, String)>;
     fn participant_name(&self, id: &str) -> Option<String>;
@@ -69,10 +79,12 @@ pub trait LivelaStore {
     fn duplicates_of(&self, id: &str) -> Vec<String>;
     /// The human prefix of the short ids.
     fn prefix(&self) -> String;
-    /// Status labels of the `ticket` type.
+    /// Status labels of the `ticket` type, in order.
     fn ticket_statuses(&self) -> Vec<String>;
     fn find_by_web_link(&self, url: &str) -> Vec<String>;
-    /// A new `ticket`; returns its id.
+    /// A new `ticket` in `status` (a label of [`Self::ticket_statuses`]);
+    /// `priority` 1 urgent … 4 low. Returns its id.
+    #[allow(clippy::too_many_arguments)]
     fn create_ticket(
         &mut self,
         title: &str,
@@ -80,7 +92,8 @@ pub trait LivelaStore {
         tags: &[String],
         assignee: Option<&str>,
         parent: Option<&str>,
-        urgent: bool,
+        priority: Option<u8>,
+        status: &str,
     ) -> Result<String, String>;
     /// Status by canonical name; an error when the type has no such status.
     fn set_status(&mut self, id: &str, status: &str) -> Result<(), String>;
@@ -102,15 +115,22 @@ pub trait LivelaStore {
 pub struct Livela<S: LivelaStore> {
     store: RefCell<S>,
     statuses: StatusTable,
-    bridge: RefCell<Option<String>>,
 }
+
+/// The code of a short id (`TD-7K3F` → `7K3F`): the core resolves by the
+/// code alone, the human prefix may change (Livela contract v4, decision 14).
+fn code_of(key: &str) -> &str {
+    key.rsplit_once('-').map(|(_, c)| c).unwrap_or(key)
+}
+
+/// The core's shortest code.
+const MIN_CODE: usize = 4;
 
 impl<S: LivelaStore> Livela<S> {
     pub fn new(store: S, statuses: StatusTable) -> Livela<S> {
         Livela {
             store: RefCell::new(store),
             statuses,
-            bridge: RefCell::new(None),
         }
     }
 
@@ -118,20 +138,33 @@ impl<S: LivelaStore> Livela<S> {
         self.store.into_inner()
     }
 
-    fn me(&self) -> TResult<String> {
-        if let Some(id) = self.bridge.borrow().clone() {
-            return Ok(id);
-        }
-        let id = self
-            .store
-            .borrow_mut()
+    /// A write signed by the `spl-asdlc` participant, the store's previous
+    /// author restored after it whatever its outcome.
+    fn as_bridge<T>(
+        &self,
+        what: impl Into<String>,
+        f: impl FnOnce(&mut S, &str) -> Result<T, String>,
+    ) -> TResult<T> {
+        let what = what.into();
+        let mut store = self.store.borrow_mut();
+        let me = store
             .bridge_participant()
             .map_err(|e| TrackerError::refused("the spl-asdlc participant", e))?;
-        *self.bridge.borrow_mut() = Some(id.clone());
-        Ok(id)
+        let previous = store.swap_author(&me);
+        let r = f(&mut store, &me);
+        store.swap_author(&previous);
+        r.map_err(|e| TrackerError::refused(what, e))
     }
 
+    /// The internal id of a key, resolved by its code as the core does; a
+    /// code shorter than the core's shortest is no key (it would match by
+    /// prefix). A code several items share is unreadable, never a guess.
     fn id_of(&self, key: &str) -> TResult<String> {
+        if code_of(key).chars().count() < MIN_CODE {
+            return Err(TrackerError::NotFound {
+                what: key.to_string(),
+            });
+        }
         match self.store.borrow().resolve(key) {
             Ok(Some(id)) => Ok(id),
             Ok(None) => Err(TrackerError::NotFound {
@@ -143,18 +176,22 @@ impl<S: LivelaStore> Livela<S> {
 
     fn raw(&self, key: &str) -> TResult<LivelaItem> {
         let id = self.id_of(key)?;
-        self.store
-            .borrow()
-            .item(&id)
-            .map_err(|e| TrackerError::unreadable(key, e))
+        self.raw_id(key, &id)
     }
 
-    fn short_of(&self, id: &str) -> String {
+    fn raw_id(&self, what: &str, id: &str) -> TResult<LivelaItem> {
+        self.store
+            .borrow()
+            .item(id)
+            .map_err(|e| TrackerError::unreadable(what, e))
+    }
+
+    fn short_of(&self, id: &str) -> TResult<String> {
         self.store
             .borrow()
             .item(id)
             .map(|i| i.short_id)
-            .unwrap_or_else(|_| id.to_string())
+            .map_err(|e| TrackerError::unreadable(id, e))
     }
 
     fn user_of(&self, participant: &str) -> User {
@@ -168,9 +205,9 @@ impl<S: LivelaStore> Livela<S> {
         }
     }
 
-    fn item_of(&self, i: &LivelaItem) -> Item {
+    fn item_of(&self, i: &LivelaItem) -> TResult<Item> {
         let status = self.statuses.canonical(&i.status);
-        Item {
+        Ok(Item {
             id: i.id.clone(),
             key: i.short_id.clone(),
             title: i.title.clone(),
@@ -183,20 +220,39 @@ impl<S: LivelaStore> Livela<S> {
             },
             labels: i.tags.clone(),
             assignee: i.assignee.as_deref().map(|a| self.user_of(a)),
-            parent: i.parent.as_deref().map(|p| self.short_of(p)),
+            parent: i.parent.as_deref().map(|p| self.short_of(p)).transpose()?,
             archived: i.deleted,
-        }
+        })
     }
 
-    fn refused(what: impl Into<String>) -> impl FnOnce(String) -> TrackerError {
-        let what = what.into();
-        move |e| TrackerError::refused(what, e)
+    fn tracker_status(&self, status: Status) -> TResult<String> {
+        let name = self.statuses.tracker_name(status);
+        self.store
+            .borrow()
+            .ticket_statuses()
+            .into_iter()
+            .find(|s| s.eq_ignore_ascii_case(name))
+            .ok_or_else(|| {
+                TrackerError::refused(
+                    format!("status {status}"),
+                    format!("the ticket type has no status \"{name}\""),
+                )
+            })
     }
 }
 
 impl<S: LivelaStore> Tracker for Livela<S> {
+    /// The participant is created on first need, once.
     fn identity(&self) -> TResult<User> {
-        let id = self.me()?;
+        let existing = self.store.borrow().existing_bridge_participant();
+        let id = match existing {
+            Some(id) => id,
+            None => self
+                .store
+                .borrow_mut()
+                .bridge_participant()
+                .map_err(|e| TrackerError::refused("the spl-asdlc participant", e))?,
+        };
         Ok(self.user_of(&id))
     }
 
@@ -233,37 +289,40 @@ impl<S: LivelaStore> Tracker for Livela<S> {
 
     fn get(&self, key: &str) -> TResult<Item> {
         let raw = self.raw(key)?;
-        Ok(self.item_of(&raw))
+        self.item_of(&raw)
     }
 
     fn relations(&self, key: &str) -> TResult<Relations> {
         let raw = self.raw(key)?;
-        let rel = |kind: &str, holder: &str, target: &str, other: &str| Relation {
-            id: format!("{kind}:{holder}:{target}"),
-            other: self.short_of(other),
+        let rel = |kind: &str, holder: &str, target: &str, other: &str| -> TResult<Relation> {
+            Ok(Relation {
+                id: format!("{kind}:{holder}:{target}"),
+                other: self.short_of(other)?,
+            })
         };
         let mut out = Relations::default();
         for b in &raw.blocked_by {
-            out.blocked_by.push(rel("blocked_by", &raw.id, b, b));
+            out.blocked_by.push(rel("blocked_by", &raw.id, b, b)?);
         }
         for b in &raw.blocks {
             // Held by the blocked item as its `blocked_by`.
-            out.blocks.push(rel("blocked_by", b, &raw.id, b));
+            out.blocks.push(rel("blocked_by", b, &raw.id, b)?);
         }
         for r in &raw.related_to {
-            out.related.push(rel("related_to", &raw.id, r, r));
+            out.related.push(rel("related_to", &raw.id, r, r)?);
         }
         if let Some(d) = &raw.duplicate_of {
-            out.duplicates.push(rel("duplicate_of", &raw.id, d, d));
+            out.duplicates.push(rel("duplicate_of", &raw.id, d, d)?);
         }
-        for d in self.store.borrow().duplicates_of(&raw.id) {
-            out.duplicates.push(rel("duplicate_of", &d, &raw.id, &d));
+        let dups = self.store.borrow().duplicates_of(&raw.id);
+        for d in dups {
+            out.duplicates.push(rel("duplicate_of", &d, &raw.id, &d)?);
         }
         Ok(out)
     }
 
     fn comments(&self, key: &str) -> TResult<Vec<Comment>> {
-        let me = self.me()?;
+        let me = self.store.borrow().existing_bridge_participant();
         let raw = self.raw(key)?;
         Ok(raw
             .comments
@@ -271,7 +330,7 @@ impl<S: LivelaStore> Tracker for Livela<S> {
             .map(|(id, author, text)| Comment {
                 id: id.clone(),
                 author: Some(self.user_of(author)),
-                by_bridge: *author == me,
+                by_bridge: me.as_deref() == Some(author.as_str()),
                 body: text.clone(),
             })
             .collect())
@@ -280,17 +339,17 @@ impl<S: LivelaStore> Tracker for Livela<S> {
     fn children(&self, key: &str) -> TResult<Vec<Item>> {
         let id = self.id_of(key)?;
         let items = self.store.borrow().items(None, Some(&id));
-        Ok(items.iter().map(|i| self.item_of(i)).collect())
+        items.iter().map(|i| self.item_of(i)).collect()
     }
 
     fn list_by_label(&self, label: &str) -> TResult<Vec<Item>> {
         let items = self.store.borrow().items(Some(label), None);
-        Ok(items.iter().map(|i| self.item_of(i)).collect())
+        items.iter().map(|i| self.item_of(i)).collect()
     }
 
     fn items_linked_to_pr(&self, pr_url: &str) -> TResult<Vec<String>> {
         let ids = self.store.borrow().find_by_web_link(pr_url);
-        Ok(ids.iter().map(|id| self.short_of(id)).collect())
+        ids.iter().map(|id| self.short_of(id)).collect()
     }
 
     fn ensure_label(&self, _name: &str) -> TResult<()> {
@@ -299,60 +358,55 @@ impl<S: LivelaStore> Tracker for Livela<S> {
     }
 
     fn create_item(&self, new: &NewItem) -> TResult<Item> {
-        self.me()?;
+        // Every check before the first write: a refused creation leaves nothing.
+        let status = self.tracker_status(new.status)?;
         let parent = match &new.parent {
             Some(p) => Some(self.id_of(p)?),
             None => None,
         };
-        let id = self
-            .store
-            .borrow_mut()
-            .create_ticket(
+        let id = self.as_bridge(format!("creation of \"{}\"", new.title), |s, _| {
+            s.create_ticket(
                 &new.title,
                 &new.description,
                 &new.labels,
                 new.assignee.as_ref().map(|u| u.id.as_str()),
                 parent.as_deref(),
-                new.priority == Some(1),
+                new.priority,
+                &status,
             )
-            .map_err(Self::refused(format!("creation of \"{}\"", new.title)))?;
-        self.store
-            .borrow_mut()
-            .set_status(&id, self.statuses.tracker_name(new.status))
-            .map_err(Self::refused(format!("status of \"{}\"", new.title)))?;
-        let raw = self
-            .store
-            .borrow()
-            .item(&id)
-            .map_err(|e| TrackerError::unreadable(&new.title, e))?;
-        Ok(self.item_of(&raw))
+        })?;
+        let raw = self.raw_id(&new.title, &id)?;
+        self.item_of(&raw)
     }
 
     fn update_description(&self, key: &str, description: &str) -> TResult<()> {
-        self.me()?;
-        let id = self.id_of(key)?;
-        self.store
-            .borrow_mut()
-            .set_description(&id, description)
-            .map_err(Self::refused(format!("description of {key}")))
+        let raw = self.raw(key)?;
+        if raw.description == description {
+            return Ok(());
+        }
+        self.as_bridge(format!("description of {key}"), |s, _| {
+            s.set_description(&raw.id, description)
+        })
     }
 
     fn add_label(&self, key: &str, label: &str) -> TResult<()> {
-        self.me()?;
-        let id = self.id_of(key)?;
-        self.store
-            .borrow_mut()
-            .add_tag(&id, label)
-            .map_err(Self::refused(format!("tag {label} on {key}")))
+        let raw = self.raw(key)?;
+        if raw.tags.iter().any(|t| t.eq_ignore_ascii_case(label)) {
+            return Ok(());
+        }
+        self.as_bridge(format!("tag {label} on {key}"), |s, _| {
+            s.add_tag(&raw.id, label)
+        })
     }
 
     fn remove_label(&self, key: &str, label: &str) -> TResult<()> {
-        self.me()?;
-        let id = self.id_of(key)?;
-        self.store
-            .borrow_mut()
-            .remove_tag(&id, label)
-            .map_err(Self::refused(format!("tag {label} off {key}")))
+        let raw = self.raw(key)?;
+        if !raw.tags.iter().any(|t| t.eq_ignore_ascii_case(label)) {
+            return Ok(());
+        }
+        self.as_bridge(format!("tag {label} off {key}"), |s, _| {
+            s.remove_tag(&raw.id, label)
+        })
     }
 
     fn set_status(
@@ -361,38 +415,40 @@ impl<S: LivelaStore> Tracker for Livela<S> {
         status: Status,
         assignee: Option<Option<&User>>,
     ) -> TResult<()> {
-        self.me()?;
-        let id = self.id_of(key)?;
-        self.store
-            .borrow_mut()
-            .set_status(&id, self.statuses.tracker_name(status))
-            .map_err(Self::refused(format!("status {status} of {key}")))?;
-        if let Some(a) = assignee {
-            self.store
-                .borrow_mut()
-                .assign(&id, a.map(|u| u.id.as_str()))
-                .map_err(Self::refused(format!("assignee of {key}")))?;
+        let raw = self.raw(key)?;
+        let name = self.tracker_status(status)?;
+        let move_it = !raw.status.eq_ignore_ascii_case(&name);
+        let assign = assignee
+            .map(|a| a.map(|u| u.id.as_str()))
+            .filter(|a| *a != raw.assignee.as_deref());
+        if !move_it && assign.is_none() {
+            return Ok(());
         }
-        Ok(())
+        self.as_bridge(format!("status {status} of {key}"), |s, _| {
+            if move_it {
+                s.set_status(&raw.id, &name)?;
+            }
+            if let Some(a) = assign {
+                s.assign(&raw.id, a)?;
+            }
+            Ok(())
+        })
     }
 
     fn assign(&self, key: &str, user: Option<&User>) -> TResult<()> {
-        self.me()?;
-        let id = self.id_of(key)?;
-        self.store
-            .borrow_mut()
-            .assign(&id, user.map(|u| u.id.as_str()))
-            .map_err(Self::refused(format!("assignee of {key}")))
+        let raw = self.raw(key)?;
+        let to = user.map(|u| u.id.as_str());
+        if raw.assignee.as_deref() == to {
+            return Ok(());
+        }
+        self.as_bridge(format!("assignee of {key}"), |s, _| s.assign(&raw.id, to))
     }
 
     fn comment(&self, key: &str, body: &str) -> TResult<Comment> {
-        let me = self.me()?;
         let id = self.id_of(key)?;
-        let cid = self
-            .store
-            .borrow_mut()
-            .comment(&id, &me, body)
-            .map_err(Self::refused(format!("comment on {key}")))?;
+        let (cid, me) = self.as_bridge(format!("comment on {key}"), |s, me| {
+            s.comment(&id, me, body).map(|c| (c, me.to_string()))
+        })?;
         Ok(Comment {
             id: cid,
             author: Some(self.user_of(&me)),
@@ -413,21 +469,38 @@ impl<S: LivelaStore> Tracker for Livela<S> {
     }
 
     fn relate(&self, a: &str, b: &str, kind: RelationKind) -> TResult<()> {
-        self.me()?;
-        let (ia, ib) = (self.id_of(a)?, self.id_of(b)?);
-        let what = format!("relation {a} {kind:?} {b}");
-        let mut store = self.store.borrow_mut();
-        match kind {
+        let (ra, rb) = (self.raw(a)?, self.raw(b)?);
+        let (holder, rel, target) = match kind {
             // `a blocks b` is held by `b`: b is blocked by a.
-            RelationKind::Blocks => store.add_relation(&ib, LivelaRelation::BlockedBy, &ia),
-            RelationKind::Related => store.add_relation(&ia, LivelaRelation::RelatedTo, &ib),
-            RelationKind::Duplicate => store.add_relation(&ia, LivelaRelation::DuplicateOf, &ib),
-        }
-        .map_err(|e| TrackerError::refused(what, e))
+            RelationKind::Blocks => {
+                if rb.blocked_by.contains(&ra.id) {
+                    return Ok(());
+                }
+                (&rb.id, LivelaRelation::BlockedBy, &ra.id)
+            }
+            RelationKind::Related => {
+                if ra.related_to.contains(&rb.id) || rb.related_to.contains(&ra.id) {
+                    return Ok(());
+                }
+                (&ra.id, LivelaRelation::RelatedTo, &rb.id)
+            }
+            RelationKind::Duplicate => match &ra.duplicate_of {
+                Some(d) if *d == rb.id => return Ok(()),
+                Some(d) => {
+                    return Err(TrackerError::refused(
+                        format!("relation {a} Duplicate {b}"),
+                        format!("{a} is already a duplicate of {}", self.short_of(d)?),
+                    ));
+                }
+                None => (&ra.id, LivelaRelation::DuplicateOf, &rb.id),
+            },
+        };
+        self.as_bridge(format!("relation {a} {kind:?} {b}"), |s, _| {
+            s.add_relation(holder, rel, target)
+        })
     }
 
     fn unrelate(&self, relation_id: &str) -> TResult<()> {
-        self.me()?;
         let mut parts = relation_id.splitn(3, ':');
         let (Some(kind), Some(holder), Some(target)) = (parts.next(), parts.next(), parts.next())
         else {
@@ -436,10 +509,23 @@ impl<S: LivelaStore> Tracker for Livela<S> {
                 format!("\"{relation_id}\" is not a relation id"),
             ));
         };
-        let kind = match kind {
-            "blocked_by" => LivelaRelation::BlockedBy,
-            "related_to" => LivelaRelation::RelatedTo,
-            "duplicate_of" => LivelaRelation::DuplicateOf,
+        let not_found = || TrackerError::NotFound {
+            what: format!("relation {relation_id}"),
+        };
+        let item = self.store.borrow().item(holder).map_err(|_| not_found())?;
+        let (kind, present) = match kind {
+            "blocked_by" => (
+                LivelaRelation::BlockedBy,
+                item.blocked_by.iter().any(|x| x == target),
+            ),
+            "related_to" => (
+                LivelaRelation::RelatedTo,
+                item.related_to.iter().any(|x| x == target),
+            ),
+            "duplicate_of" => (
+                LivelaRelation::DuplicateOf,
+                item.duplicate_of.as_deref() == Some(target),
+            ),
             other => {
                 return Err(TrackerError::refused(
                     "unrelate",
@@ -447,22 +533,22 @@ impl<S: LivelaStore> Tracker for Livela<S> {
                 ));
             }
         };
-        self.store
-            .borrow_mut()
-            .remove_relation(holder, kind, target)
-            .map_err(Self::refused(format!("removal of {relation_id}")))
+        if !present {
+            return Err(not_found());
+        }
+        self.as_bridge(format!("removal of {relation_id}"), |s, _| {
+            s.remove_relation(holder, kind, target)
+        })
     }
 
     fn link_pr(&self, key: &str, pr_url: &str, title: &str) -> TResult<()> {
-        self.me()?;
         let id = self.id_of(key)?;
         if self.store.borrow().find_by_web_link(pr_url).contains(&id) {
             return Ok(());
         }
-        self.store
-            .borrow_mut()
-            .add_web_link(&id, pr_url, title)
-            .map_err(Self::refused(format!("link of {pr_url} on {key}")))
+        self.as_bridge(format!("link of {pr_url} on {key}"), |s, _| {
+            s.add_web_link(&id, pr_url, title)
+        })
     }
 }
 

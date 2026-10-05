@@ -1,5 +1,6 @@
 //! An in-memory tracker for tests: items, relations, comments and links held
-//! in memory, every write recorded, failures injected by write prefix.
+//! in memory, every write recorded, failures injected by write prefix. Like
+//! the real adapters, a write of an unchanged value records nothing.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -276,11 +277,17 @@ impl Tracker for FakeTracker {
     }
 
     fn update_description(&self, key: &str, description: &str) -> TResult<()> {
+        if self.read(key)?.item.description == description {
+            return Ok(());
+        }
         self.record(format!("describe {key}"))?;
         self.with(key, |st| st.item.description = description.to_string())
     }
 
     fn add_label(&self, key: &str, label: &str) -> TResult<()> {
+        if self.read(key)?.item.labels.iter().any(|l| l == label) {
+            return Ok(());
+        }
         self.record(format!("label {key} +{label}"))?;
         self.with(key, |st| {
             if !st.item.labels.iter().any(|l| l == label) {
@@ -290,6 +297,9 @@ impl Tracker for FakeTracker {
     }
 
     fn remove_label(&self, key: &str, label: &str) -> TResult<()> {
+        if !self.read(key)?.item.labels.iter().any(|l| l == label) {
+            return Ok(());
+        }
         self.record(format!("label {key} -{label}"))?;
         self.with(key, |st| st.item.labels.retain(|l| l != label))
     }
@@ -300,6 +310,12 @@ impl Tracker for FakeTracker {
         status: Status,
         assignee: Option<Option<&User>>,
     ) -> TResult<()> {
+        let current = self.read(key)?.item;
+        let assignee =
+            assignee.filter(|a| a.map(|u| &u.id) != current.assignee.as_ref().map(|u| &u.id));
+        if current.state.status == Some(status) && assignee.is_none() {
+            return Ok(());
+        }
         let who = match assignee {
             None => String::new(),
             Some(None) => " (unassigned)".into(),
@@ -319,6 +335,9 @@ impl Tracker for FakeTracker {
     }
 
     fn assign(&self, key: &str, user: Option<&User>) -> TResult<()> {
+        if self.read(key)?.item.assignee.as_ref().map(|u| &u.id) == user.map(|u| &u.id) {
+            return Ok(());
+        }
         self.record(format!(
             "assign {key} {}",
             user.map(|u| u.name.as_str()).unwrap_or("(nobody)")
@@ -364,6 +383,12 @@ impl Tracker for FakeTracker {
     fn relate(&self, a: &str, b: &str, kind: RelationKind) -> TResult<()> {
         self.read(a)?;
         self.read(b)?;
+        let exists = self.state.borrow().relations.iter().any(|(_, x, y, k)| {
+            *k == kind && ((x == a && y == b) || (kind != RelationKind::Blocks && x == b && y == a))
+        });
+        if exists {
+            return Ok(());
+        }
         self.record(format!("relate {a} {kind:?} {b}"))?;
         let mut s = self.state.borrow_mut();
         s.next += 1;
@@ -376,6 +401,17 @@ impl Tracker for FakeTracker {
         if relation_id.is_empty() {
             return Err(TrackerError::refused("unrelate", "no relation id"));
         }
+        if !self
+            .state
+            .borrow()
+            .relations
+            .iter()
+            .any(|(id, ..)| id == relation_id)
+        {
+            return Err(TrackerError::NotFound {
+                what: format!("relation {relation_id}"),
+            });
+        }
         self.record(format!("unrelate {relation_id}"))?;
         self.state
             .borrow_mut()
@@ -385,6 +421,9 @@ impl Tracker for FakeTracker {
     }
 
     fn link_pr(&self, key: &str, pr_url: &str, _title: &str) -> TResult<()> {
+        if self.read(key)?.links.iter().any(|l| l == pr_url) {
+            return Ok(());
+        }
         self.record(format!("link {key} {pr_url}"))?;
         self.with(key, |st| {
             if !st.links.iter().any(|l| l == pr_url) {

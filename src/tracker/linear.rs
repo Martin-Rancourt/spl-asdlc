@@ -25,6 +25,15 @@ const ISSUE_FIELDS: &str = "id identifier title description url archivedAt
   labels(first: 100) { nodes { name } pageInfo { hasNextPage } }
   assignee { id name displayName }
   parent { identifier }";
+/// The fields of an item in a list. Linear scores a query by the product of
+/// the page sizes and refuses one over its complexity budget, so a list of
+/// 50 asks for at most 20 labels per item; an item with more is unreadable
+/// (fail closed), never cut.
+const LIST_ISSUE_FIELDS: &str = "id identifier title description url archivedAt
+  state { name type }
+  labels(first: 20) { nodes { name } pageInfo { hasNextPage } }
+  assignee { id name displayName }
+  parent { identifier }";
 
 pub struct Linear {
     transport: Box<dyn Transport>,
@@ -52,6 +61,41 @@ fn kind_of(t: &str) -> StateKind {
         "canceled" => StateKind::Canceled,
         _ => StateKind::Unknown,
     }
+}
+
+/// A random UUID (v4) for the ids Linear lets the client choose: a write
+/// that times out can then be looked up instead of being repeated.
+fn new_uuid() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let mut bytes = [0u8; 16];
+    for (i, chunk) in bytes.chunks_mut(8).enumerate() {
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u128(nanos);
+        h.write_usize(i);
+        chunk.copy_from_slice(&h.finish().to_be_bytes());
+    }
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    )
+}
+
+fn looks_like_uuid(r: &str) -> bool {
+    r.len() == 36
+        && r.chars().enumerate().all(|(i, c)| {
+            matches!(i, 8 | 13 | 18 | 23) == (c == '-') && (c == '-' || c.is_ascii_hexdigit())
+        })
 }
 
 fn s(v: &Value, k: &str) -> String {
@@ -292,17 +336,28 @@ impl Linear {
         }
     }
 
+    /// The team's label of this name, or the workspace's; Linear compares
+    /// label names without case, so does the lookup.
     fn label_id(&self, name: &str) -> TResult<Option<String>> {
-        if let Some(id) = self.cache.borrow().labels.get(name) {
+        let cache_key = name.to_lowercase();
+        if let Some(id) = self.cache.borrow().labels.get(&cache_key) {
             return Ok(Some(id.clone()));
         }
         let (team_id, _) = self.team()?;
+        let what = format!("label {name}");
         let data = self.read(
-            &format!("label {name}"),
-            "query($name: String!) { issueLabels(filter: {name: {eq: $name}}, first: 50) { nodes { id name team { id } } } }",
-            json!({"name": name}),
+            &what,
+            "query($name: String!, $team: ID!) { issueLabels(filter: {name: {eqIgnoreCase: $name}, or: [{team: {id: {eq: $team}}}, {team: {null: true}}]}, first: 50) { nodes { id name team { id } } pageInfo { hasNextPage } } }",
+            json!({"name": name, "team": team_id}),
         )?;
-        let id = data["issueLabels"]["nodes"].as_array().and_then(|nodes| {
+        let conn = &data["issueLabels"];
+        if conn["pageInfo"]["hasNextPage"].as_bool() != Some(false) {
+            return Err(TrackerError::unreadable(
+                &what,
+                "the label list is cut or missing",
+            ));
+        }
+        let id = conn["nodes"].as_array().and_then(|nodes| {
             nodes
                 .iter()
                 .find(|l| l["team"]["id"].as_str() == Some(team_id.as_str()))
@@ -310,10 +365,7 @@ impl Linear {
                 .map(|l| s(l, "id"))
         });
         if let Some(id) = &id {
-            self.cache
-                .borrow_mut()
-                .labels
-                .insert(name.to_string(), id.clone());
+            self.cache.borrow_mut().labels.insert(cache_key, id.clone());
         }
         Ok(id)
     }
@@ -349,6 +401,16 @@ impl Tracker for Linear {
     }
 
     fn user(&self, reference: &str) -> TResult<User> {
+        if looks_like_uuid(reference) {
+            let data = self.read(
+                &format!("user {reference}"),
+                "query($id: String!) { user(id: $id) { id name displayName } }",
+                json!({"id": reference}),
+            )?;
+            return user_of(&data["user"]).ok_or_else(|| TrackerError::NotFound {
+                what: format!("user {reference}"),
+            });
+        }
         let data = self.read(
             &format!("user {reference}"),
             "query($r: String!) { users(filter: {or: [{name: {eqIgnoreCase: $r}}, {displayName: {eqIgnoreCase: $r}}, {email: {eq: $r}}]}, first: 2) { nodes { id name displayName } } }",
@@ -420,6 +482,12 @@ impl Tracker for Linear {
                     id: s(r, "id"),
                     other: s(&r[other_field], "identifier"),
                 };
+                if rel.id.is_empty() || rel.other.is_empty() {
+                    return Err(TrackerError::unreadable(
+                        key,
+                        format!("a relation in `{field}` names no item"),
+                    ));
+                }
                 match (s(r, "type").as_str(), outward) {
                     ("blocks", true) => out.blocks.push(rel),
                     ("blocks", false) => out.blocked_by.push(rel),
@@ -450,8 +518,12 @@ impl Tracker for Linear {
                 .ok_or_else(|| TrackerError::unreadable(&what, "no comment list"))?
             {
                 let author = user_of(&c["user"]);
+                let at = s(c, "createdAt");
+                if at.is_empty() {
+                    return Err(TrackerError::unreadable(&what, "a comment without a date"));
+                }
                 out.push((
-                    s(c, "createdAt"),
+                    at,
                     Comment {
                         id: s(c, "id"),
                         by_bridge: author.as_ref().is_some_and(|a| a.id == me.id),
@@ -482,7 +554,7 @@ impl Tracker for Linear {
         self.issues(
             &format!("children of {key}"),
             &format!(
-                "query($id: String!, $after: String) {{ issue(id: $id) {{ children(first: 100, after: $after) {{ nodes {{ {ISSUE_FIELDS} }} pageInfo {{ hasNextPage endCursor }} }} }} }}"
+                "query($id: String!, $after: String) {{ issue(id: $id) {{ children(first: 50, after: $after, includeArchived: true) {{ nodes {{ {LIST_ISSUE_FIELDS} }} pageInfo {{ hasNextPage endCursor }} }} }} }}"
             ),
             json!({"id": key}),
             &["issue", "children"],
@@ -494,7 +566,7 @@ impl Tracker for Linear {
         self.issues(
             &format!("items labelled {label}"),
             &format!(
-                "query($label: String!, $team: ID!, $after: String) {{ issues(filter: {{labels: {{name: {{eq: $label}}}}, team: {{id: {{eq: $team}}}}}}, first: 100, after: $after) {{ nodes {{ {ISSUE_FIELDS} }} pageInfo {{ hasNextPage endCursor }} }} }}"
+                "query($label: String!, $team: ID!, $after: String) {{ issues(filter: {{labels: {{name: {{eqIgnoreCase: $label}}}}, team: {{id: {{eq: $team}}}}}}, first: 50, after: $after, includeArchived: true) {{ nodes {{ {LIST_ISSUE_FIELDS} }} pageInfo {{ hasNextPage endCursor }} }} }}"
             ),
             json!({"label": label, "team": team_id}),
             &["issues"],
@@ -536,12 +608,21 @@ impl Tracker for Linear {
             "mutation($name: String!, $team: String!) { issueLabelCreate(input: {name: $name, teamId: $team}) { success issueLabel { id } } }",
             json!({"name": name, "team": team_id}),
             "issueLabelCreate",
-        )?;
-        self.cache
-            .borrow_mut()
-            .labels
-            .insert(name.to_string(), s(&r["issueLabel"], "id"));
-        Ok(())
+        );
+        match r {
+            Ok(r) => {
+                self.cache
+                    .borrow_mut()
+                    .labels
+                    .insert(name.to_lowercase(), s(&r["issueLabel"], "id"));
+                Ok(())
+            }
+            // Created meanwhile by another writer: the label is there.
+            Err(e) => match self.label_id(name) {
+                Ok(Some(_)) => Ok(()),
+                _ => Err(e),
+            },
+        }
     }
 
     fn create_item(&self, item: &NewItem) -> TResult<Item> {
@@ -554,8 +635,9 @@ impl Tracker for Linear {
                 TrackerError::refused(format!("label {l}"), "created but not found")
             })?);
         }
+        let uuid = new_uuid();
         let mut input = json!({
-            "teamId": team_id, "title": item.title, "description": item.description,
+            "id": uuid, "teamId": team_id, "title": item.title, "description": item.description,
             "labelIds": label_ids, "stateId": state,
         });
         if let Some(p) = item.priority {
@@ -572,8 +654,14 @@ impl Tracker for Linear {
             &format!("mutation($input: IssueCreateInput!) {{ issueCreate(input: $input) {{ success issue {{ {ISSUE_FIELDS} }} }} }}"),
             json!({"input": input}),
             "issueCreate",
-        )?;
-        self.item_of(&r["issue"])
+        );
+        match r {
+            Ok(r) => self.item_of(&r["issue"]),
+            // The answer was lost, not necessarily the write: the id we
+            // chose says whether the item exists.
+            Err(e @ TrackerError::Refused { .. }) => self.get(&uuid).map_err(|_| e),
+            Err(e) => Err(e),
+        }
     }
 
     fn update_description(&self, key: &str, description: &str) -> TResult<()> {
@@ -645,14 +733,32 @@ impl Tracker for Linear {
     }
 
     fn comment(&self, key: &str, body: &str) -> TResult<Comment> {
+        let me = self.identity()?;
         let id = self.issue_id(key)?;
+        let uuid = new_uuid();
         let r = self.write(
             &format!("comment on {key}"),
-            "mutation($id: String!, $b: String!) { commentCreate(input: {issueId: $id, body: $b}) { success comment { id body user { id name displayName } } } }",
-            json!({"id": id, "b": body}),
+            "mutation($id: String!, $b: String!, $c: String!) { commentCreate(input: {id: $c, issueId: $id, body: $b}) { success comment { id body user { id name displayName } } } }",
+            json!({"id": id, "b": body, "c": uuid}),
             "commentCreate",
-        )?;
-        let me = self.identity()?;
+        );
+        let comment = match r {
+            Ok(r) => r["comment"].clone(),
+            // The answer was lost, not necessarily the comment.
+            Err(e @ TrackerError::Refused { .. }) => {
+                let found = self.read(
+                    &format!("comment {uuid}"),
+                    "query($id: String!) { comment(id: $id) { id body user { id name displayName } } }",
+                    json!({"id": uuid}),
+                );
+                match found {
+                    Ok(d) if !d["comment"].is_null() => d["comment"].clone(),
+                    _ => return Err(e),
+                }
+            }
+            Err(e) => return Err(e),
+        };
+        let r = json!({ "comment": comment });
         let author = user_of(&r["comment"]["user"]);
         Ok(Comment {
             id: s(&r["comment"], "id"),
@@ -679,6 +785,21 @@ impl Tracker for Linear {
             RelationKind::Duplicate => "duplicate",
         };
         let (ida, idb) = (self.issue_id(a)?, self.issue_id(b)?);
+        let existing = self.relations(a)?;
+        let list = match kind {
+            "blocks" => &existing.blocks,
+            "related" => &existing.related,
+            _ => &existing.duplicates,
+        };
+        if list.iter().any(|x| x.other.eq_ignore_ascii_case(b)) {
+            return Ok(());
+        }
+        if existing.cut {
+            return Err(TrackerError::refused(
+                format!("relation {a} {kind} {b}"),
+                "the relation list is cut: cannot tell whether it exists",
+            ));
+        }
         self.write(
             &format!("relation {a} {kind} {b}"),
             "mutation($a: String!, $b: String!, $t: IssueRelationType!) { issueRelationCreate(input: {issueId: $a, relatedIssueId: $b, type: $t}) { success } }",
