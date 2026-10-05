@@ -61,6 +61,10 @@ GitHub → item sync (PR status and review comments mirrored on the item) as a L
 
 A lock is a fresh token per lock, discreetly visible in the item's activity (a 4-character short code) with the session's name; 30 minutes for an agent, end of day for a human. An MCP session is named after its client at connection, or with the `name_session` tool. A session releases its own locks; another client may release with the token.
 
+## Missing (found by the conformance run of 2026-10-05)
+
+9. **Editing a comment.** The bridge keeps one status row per PR on a ticket and rewrites it in place (REQ-MERGE-069), so that informational facts never pile up as comments. The core has no comment edit; until it does, the adapter declares it (`can_edit_comments` is false) and the bridge writes no rewritten row on Livela: informational facts stay in its action log, messages that ask someone to act are comments as everywhere.
+
 ## Conformance
 
 The adapter's conformance suite creates a release item with two angle children, links a PR URL, finds the item back by that URL, moves a child through `in_review → to_deploy → done`, verifies that an item in `validation` still blocks its dependants and is not served by "what's next", adds a `blocks` relation and reads it back, comments as `spl-asdlc`, lists by tag, verifies that an unchanged value is not rewritten, and that every write is attributed to the `spl-asdlc` participant and visible in the activity log. It is the same suite Livela runs on its core.

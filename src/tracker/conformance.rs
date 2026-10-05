@@ -14,6 +14,8 @@ use super::*;
 pub struct Report {
     pub passed: Vec<String>,
     pub created: Vec<String>,
+    /// Optional capabilities the tracker says it does not offer.
+    pub not_offered: Vec<String>,
 }
 
 fn check(cond: bool, what: &str) -> Result<(), String> {
@@ -170,11 +172,16 @@ pub fn run(tracker: &dyn Tracker, statuses: &StatusTable, run_id: &str) -> Resul
         "comment",
         tracker.comment(&release.key, "Conformance comment."),
     )?;
-    step(
-        &mut r,
-        "edit comment",
-        tracker.update_comment(&c.id, "Conformance comment, edited."),
-    )?;
+    let edits = tracker.can_edit_comments();
+    if edits {
+        step(
+            &mut r,
+            "edit comment",
+            tracker.update_comment(&c.id, "Conformance comment, edited."),
+        )?;
+    } else {
+        r.not_offered.push("comment edit".to_string());
+    }
     let thread = step(&mut r, "read comments", tracker.comments(&release.key))?;
     let mine = thread.iter().find(|x| x.id == c.id);
     check(
@@ -182,7 +189,7 @@ pub fn run(tracker: &dyn Tracker, statuses: &StatusTable, run_id: &str) -> Resul
         "the comment is not attributed to the service identity",
     )?;
     check(
-        mine.is_some_and(|x| x.body.contains("edited")),
+        !edits || mine.is_some_and(|x| x.body.contains("edited")),
         "the comment edit did not land",
     )?;
     check(
