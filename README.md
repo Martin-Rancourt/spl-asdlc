@@ -28,4 +28,4 @@ First draft. The specification and the requirements are being written (`docs/req
 
 ## Rule zero
 
-This repository carries no name of any product, agent, person or installation that uses the method. `scripts/check-no-instance-names.sh` enforces it (business rule BR-ASDLC-001).
+This repository carries no name of any product, agent, person or installation that uses the method. Integrations the method supports (Linear, Livela, Jira, AgentForge, Claude Code, Codex, GitHub) are named; installations are not. `scripts/check-no-instance-names.sh` enforces it (business rule BR-ASDLC-001).
