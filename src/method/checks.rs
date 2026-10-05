@@ -25,6 +25,9 @@ const PENDING: [&str; 6] = [
     "EXPECTED",
 ];
 const SKIPPED: [&str; 2] = ["SKIPPED", "NEUTRAL"];
+/// The only outcomes that are not pending or red: an allowlist, so that a
+/// state nobody listed never reads as green.
+const PASSING: [&str; 3] = ["SUCCESS", "SKIPPED", "NEUTRAL"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CheckState {
@@ -33,6 +36,9 @@ pub enum CheckState {
     Pending,
     /// No check reported at all: nothing verified anything.
     None,
+    /// GitHub cut the list, or the rollup is of another commit: it says
+    /// nothing about the head.
+    Unreadable,
 }
 
 /// The latest run of each check, identified by (workflow, name); a run not
@@ -99,6 +105,13 @@ pub fn state(checks: &[CheckEntry], required: &BTreeSet<String>) -> CheckState {
     if latest.iter().any(is_pending) {
         return CheckState::Pending;
     }
+    // Completed without a conclusion, or with one nobody listed: not green.
+    if latest
+        .iter()
+        .any(|c| !PASSING.contains(&upper(&c.conclusion).as_str()))
+    {
+        return CheckState::Pending;
+    }
     if required
         .iter()
         .any(|r| !latest.iter().any(|c| &c.name == r))
@@ -106,6 +119,14 @@ pub fn state(checks: &[CheckEntry], required: &BTreeSet<String>) -> CheckState {
         return CheckState::Pending;
     }
     CheckState::Green
+}
+
+/// The colour of a PR's head: unreadable when GitHub cut its check list.
+pub fn pr_state(pr: &crate::github::PullRequest, required: &BTreeSet<String>) -> CheckState {
+    if pr.truncated.iter().any(|t| t == "checks") {
+        return CheckState::Unreadable;
+    }
+    state(&pr.checks, required)
 }
 
 /// Required checks that have not reported on the head.
@@ -284,6 +305,34 @@ mod tests {
         let required: BTreeSet<String> = ["required-check".to_string()].into();
         assert_eq!(skipped_required(&checks, &required), None);
         assert_eq!(skipped_required(&checks, &none()), None);
+    }
+
+    #[test]
+    fn a_state_nobody_listed_is_never_green() {
+        let none = BTreeSet::new();
+        assert_eq!(state(&[status("legacy", "")], &none), CheckState::Pending);
+        assert_eq!(
+            state(&[status("legacy", "BRAND_NEW")], &none),
+            CheckState::Pending
+        );
+        assert_eq!(
+            state(&[run("CI", "a", "COMPLETED", "", T1)], &none),
+            CheckState::Pending
+        );
+        assert_eq!(
+            state(&[run("CI", "a", "COMPLETED", "NEW_OUTCOME", T1)], &none),
+            CheckState::Pending
+        );
+    }
+
+    #[test]
+    fn a_cut_check_list_is_unreadable_never_green() {
+        let mut pr = crate::github::fake::pull_request(1);
+        pr.checks = vec![run("CI", "a", "COMPLETED", "SUCCESS", T1)];
+        pr.truncated = vec!["checks".into()];
+        assert_eq!(pr_state(&pr, &BTreeSet::new()), CheckState::Unreadable);
+        pr.truncated.clear();
+        assert_eq!(pr_state(&pr, &BTreeSet::new()), CheckState::Green);
     }
 
     #[test]

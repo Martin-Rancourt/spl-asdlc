@@ -407,7 +407,13 @@ fn unresolved_threads_are_counted_outdated_or_not() {
         thread(false, true),
         thread(false, false),
     ];
-    assert_eq!(unresolved_threads(&pr), 2);
+    assert_eq!(unresolved_threads(&pr), Some(2));
+    pr.truncated = vec!["reviewThreads".into()];
+    assert_eq!(
+        unresolved_threads(&pr),
+        None,
+        "a cut thread list is not read as resolved"
+    );
 }
 
 #[test]
@@ -425,4 +431,17 @@ fn human_approval_follows_the_policy() {
     config.human_approval = config::HumanApproval::SensitivePaths;
     assert!(needs_human_approval(&config, &plan_hit));
     assert!(!needs_human_approval(&config, &plan_clean));
+}
+
+#[test]
+fn a_cut_review_list_never_qualifies() {
+    let mut pr = pull_request(1);
+    let head = pr.head_sha.clone();
+    pr.reviews = vec![review("coord", "APPROVED", &head)];
+    assert!(matches!(
+        pr_approval(&pr, &s(&["coord"])),
+        Approval::Qualified { .. }
+    ));
+    pr.truncated = vec!["reviews".into()];
+    assert_eq!(pr_approval(&pr, &s(&["coord"])), Approval::Unreadable);
 }

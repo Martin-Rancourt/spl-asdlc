@@ -2,7 +2,7 @@
 //! REQ-REL-084..091): what happens to each member of the release, judged by
 //! code, and the comment that says so.
 
-use crate::method::business_rules::{Registry, cited_ids};
+use crate::method::business_rules::{Registry, cited_ids, rule_prefix};
 use crate::method::done_gate::{self, ClosureVerdict, DoneGate};
 use crate::method::vocabulary::{ItemState, StateKind, Status};
 
@@ -79,18 +79,25 @@ pub fn judge(
 ) -> Judgement {
     let cited = cited_ids(description);
     if !cited.is_empty() {
-        match registry {
+        let empty = std::collections::BTreeSet::new();
+        let ids = match registry {
             None => return Judgement::RulesUnverified("the registry was not read".into()),
             Some(Registry::Unreadable(why)) => {
                 return Judgement::RulesUnverified(why.chars().take(200).collect());
             }
-            Some(Registry::Absent) => {}
-            Some(Registry::Ids(ids)) => {
-                let missing: Vec<String> = cited.into_iter().filter(|c| !ids.contains(c)).collect();
-                if !missing.is_empty() {
-                    return Judgement::UnknownRules(missing);
-                }
-            }
+            // Absent at the tag: a cited id must exist, so none does (spec 02 §5).
+            Some(Registry::Absent) => &empty,
+            Some(Registry::Ids(ids)) => ids,
+        };
+        // An id of another product's prefix is that product's to judge.
+        let owned: std::collections::BTreeSet<&str> = ids.iter().map(|i| rule_prefix(i)).collect();
+        let missing: Vec<String> = cited
+            .into_iter()
+            .filter(|c| !ids.contains(c))
+            .filter(|c| owned.is_empty() || owned.contains(rule_prefix(c)))
+            .collect();
+        if !missing.is_empty() {
+            return Judgement::UnknownRules(missing);
         }
     }
     match done_gate::closure_verdict(id, status, gate) {
@@ -300,7 +307,7 @@ mod tests {
     }
 
     #[test]
-    fn a_product_with_no_registry_at_its_tag_closes_and_the_guard_is_off() {
+    fn a_ticket_citing_a_rule_of_a_product_with_no_registry_at_its_tag_is_reopened() {
         assert_eq!(
             judge(
                 "ABC-1",
@@ -308,6 +315,22 @@ mod tests {
                 CITES,
                 &gate(CITES),
                 Some(&Registry::Absent)
+            ),
+            Judgement::UnknownRules(vec!["BR-ACME-001".into()])
+        );
+    }
+
+    #[test]
+    fn an_id_of_another_product_is_left_to_that_products_registry_at_closure() {
+        let reg = Registry::Ids(["BR-ACME-002".to_string()].into());
+        let foreign = "## Acceptance criteria\n- [x] a\n## Business rules\n- BR-OTHER-001\n";
+        assert_eq!(
+            judge(
+                "ABC-1",
+                Some(Status::ToDeploy),
+                foreign,
+                &gate(foreign),
+                Some(&reg)
             ),
             Judgement::Done
         );

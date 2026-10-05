@@ -148,7 +148,9 @@ pub fn duplicate_registry_ids(text: &str) -> Vec<String> {
 /// The registry as read at the judged ref.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Registry {
-    /// The file is absent at a ref that exists: the guard is off.
+    /// The file is absent at a ref that exists. The guard still holds
+    /// (`docs/spec/02-business-rules.md` §4-5): a cited id must exist, so
+    /// none does; a stated rule must reach the registry, so its PR creates it.
     Absent,
     Ids(BTreeSet<String>),
     /// The read failed; nothing is judged (fail closed).
@@ -191,8 +193,9 @@ pub fn evaluate(
     changed_paths: Option<&[String]>,
     registry_path: &str,
 ) -> RuleGate {
+    let empty = BTreeSet::new();
     let ids = match registry {
-        Registry::Absent => return RuleGate::default(),
+        Registry::Absent => &empty,
         Registry::Unreadable(why) => {
             return RuleGate {
                 unreadable: Some(why.clone()),
@@ -210,7 +213,7 @@ pub fn evaluate(
         .collect();
     let mut gate = RuleGate {
         unknown_ids,
-        registry_present: true,
+        registry_present: !matches!(registry, Registry::Absent),
         ..RuleGate::default()
     };
     if let Some(paths) = changed_paths {

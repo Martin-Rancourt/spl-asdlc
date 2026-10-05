@@ -58,19 +58,23 @@ pub fn release_please_pr<'a>(
         shape_seen: false,
         refused: Vec::new(),
     };
+    let mut trusted = Vec::new();
     for pr in open
         .iter()
         .filter(|p| p.base_ref == base && is_release_please_shaped(p, label))
     {
         out.shape_seen = true;
         if trusted_author(pr, authors) {
-            if out.pr.is_none() {
-                out.pr = Some(pr);
-            }
+            trusted.push(pr);
         } else {
             out.refused.push(pr.number);
         }
     }
+    if trusted.len() > 1 {
+        // Which one would be merged is not a fact: refuse.
+        return Err("two release-please PRs are open against the release branch");
+    }
+    out.pr = trusted.first().copied();
     Ok(out)
 }
 

@@ -72,16 +72,37 @@ fn citing_only_existing_rules_passes() {
 }
 
 #[test]
-fn a_product_without_a_registry_is_not_refused() {
+fn a_product_without_a_registry_still_owes_its_rules_to_one() {
+    // Spec 02 §4-5 (stricter than the Python, where an absent registry
+    // switched the guard off): a stated rule makes its PR create the registry,
+    // a cited id must exist in it.
     let changed = paths(&["src/a.rs"]);
-    let gate = evaluate(
+    let stated = evaluate(
         &ticket("- Every export is signed."),
         &Registry::Absent,
         Some(&changed),
         REG,
     );
-    assert!(gate.ok());
-    assert!(!gate.registry_present);
+    assert!(stated.unpromoted);
+    assert!(!stated.registry_present);
+    let cited = evaluate(
+        &ticket("- BR-AF-001"),
+        &Registry::Absent,
+        Some(&changed),
+        REG,
+    );
+    assert_eq!(cited.unknown_ids, vec!["BR-AF-001"]);
+    let created = paths(&["docs/business-rules.md"]);
+    assert!(
+        evaluate(
+            &ticket("- Every export is signed."),
+            &Registry::Absent,
+            Some(&created),
+            REG
+        )
+        .ok()
+    );
+    assert!(evaluate(&ticket("None."), &Registry::Absent, Some(&changed), REG).ok());
 }
 
 #[test]

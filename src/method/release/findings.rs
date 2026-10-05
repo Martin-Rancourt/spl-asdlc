@@ -15,7 +15,10 @@ static BLOCKER_MARKER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"release_blocker::\s*\**\s*`?([A-Z][A-Z0-9]{1,9}-\d+)`?").unwrap()
 });
 static FINDING_MARKER: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"<!-- spl-asdlc:finding release=(\S+) angle=(\S+) id=(\S+) -->").unwrap()
+    Regex::new(
+        r"spl-asdlc:finding release=([^\s`>]+) candidate=([^\s`>]+) angle=([^\s`>]+) id=([^\s`>]+)",
+    )
+    .unwrap()
 });
 static NIT_LINE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\s*[-*+]\s+\[[ xX]\]\s+(.*)$").unwrap());
@@ -66,15 +69,30 @@ pub fn remove_blocker_marker(description: &str) -> String {
     out
 }
 
-/// The hidden identity of a finding ticket: survives a retitle.
-pub fn finding_marker(release: &str, angle: &str, finding_id: &str) -> String {
-    format!("<!-- spl-asdlc:finding release={release} angle={angle} id={finding_id} -->")
+/// The identity of a finding ticket (spec 06 rule 5: candidate, angle,
+/// finding id; report ids restart with every candidate): survives a retitle.
+pub fn finding_marker(release: &str, candidate: &str, angle: &str, finding_id: &str) -> String {
+    crate::method::texts::marker(
+        "finding",
+        &[
+            ("release", release),
+            ("candidate", candidate),
+            ("angle", angle),
+            ("id", finding_id),
+        ],
+    )
 }
 
-pub fn parse_finding_marker(description: &str) -> Option<(String, String, String)> {
-    FINDING_MARKER
-        .captures(description)
-        .map(|c| (c[1].to_string(), c[2].to_string(), c[3].to_string()))
+/// `(release, candidate, angle, finding id)` of a finding ticket.
+pub fn parse_finding_marker(description: &str) -> Option<(String, String, String, String)> {
+    FINDING_MARKER.captures(description).map(|c| {
+        (
+            c[1].to_string(),
+            c[2].to_string(),
+            c[3].to_string(),
+            c[4].to_string(),
+        )
+    })
 }
 
 /// Titles compare whitespace-collapsed and case-folded (REQ-REL-053).
@@ -96,27 +114,35 @@ pub fn finding_ticket(
     angle_pr_url: &str,
     report_path: &str,
 ) -> (String, String) {
+    use crate::method::texts::inert;
+    // The report is an agent's text: one line each, no marker, no backtick
+    // that could close a code span.
+    let code = |s: &str| inert(s).replace('`', "'");
     let title = format!(
         "{} ({} — {angle})",
-        finding
-            .summary
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" "),
+        inert(&finding.summary),
         finding.severity
     );
     let mut criteria = vec![format!(
         "- [ ] The finding no longer reproduces at `{}`.",
-        finding.anchor
+        code(&finding.anchor)
     )];
     if let Some(test) = &finding.proposed_test {
-        criteria.push(format!("- [ ] The test `{test}` exists and passes in CI."));
+        criteria.push(format!(
+            "- [ ] The test `{}` exists and passes in CI.",
+            code(test)
+        ));
     }
     let mut body = String::new();
     if finding.severity == Severity::Blocker {
         body.push_str(&blocker_marker(release));
         body.push_str("\n\n");
     }
+    let evidence = if finding.evidence.trim().is_empty() {
+        "(none given)".to_string()
+    } else {
+        inert(&finding.evidence)
+    };
     body.push_str(&format!(
         "## Goal\nFix the {severity} finding `{id}` of the {angle} review of `{candidate}`: {summary}\n\n\
          ## Non-goals\n- Anything the finding does not name.\n\n\
@@ -124,12 +150,11 @@ pub fn finding_ticket(
          ## Business rules\n{ABSENCE_DECLARATION}\n\n\
          ## Context\n- Anchor: `{anchor}`\n- Evidence: {evidence}\n- Angle PR: {angle_pr_url}\n- Report: `{report_path}`, finding `{id}`\n\n{marker}",
         severity = finding.severity,
-        id = finding.id,
-        summary = finding.summary,
+        id = code(&finding.id),
+        summary = inert(&finding.summary),
         criteria = criteria.join("\n"),
-        anchor = finding.anchor,
-        evidence = if finding.evidence.is_empty() { "(none given)" } else { &finding.evidence },
-        marker = finding_marker(release, angle, &finding.id),
+        anchor = code(&finding.anchor),
+        marker = finding_marker(release, candidate, angle, &finding.id),
     ));
     (title, body)
 }
@@ -266,11 +291,20 @@ pub fn requalify_plan(from: Severity, to: Severity) -> Vec<RequalifyStep> {
 }
 
 /// The comment a requalification leaves on the finding: who, from, to, why.
-pub fn requalify_comment(who: &str, from: Severity, to: Severity, reason: &str) -> String {
-    format!(
+/// The reason is mandatory (spec 09): an empty one is refused.
+pub fn requalify_comment(
+    who: &str,
+    from: Severity,
+    to: Severity,
+    reason: &str,
+) -> Result<String, String> {
+    if reason.trim().is_empty() {
+        return Err("a requalification needs a reason".into());
+    }
+    Ok(format!(
         "Requalified by {who}: `{from}` → `{to}`.\n\nReason: {}\n\nThe GO is recomputed at the next tick.",
-        reason.trim()
-    )
+        crate::method::texts::inert(reason)
+    ))
 }
 
 #[cfg(test)]

@@ -265,6 +265,16 @@ pub enum Approval {
         sha: String,
     },
     Missing,
+    /// GitHub cut the review list: a later request for changes may hide.
+    Unreadable,
+}
+
+/// The approval of a PR at its head; unreadable when its reviews were cut.
+pub fn pr_approval(pr: &PullRequest, approvers: &[String]) -> Approval {
+    if pr.truncated.iter().any(|t| t == "reviews") {
+        return Approval::Unreadable;
+    }
+    approval(&pr.reviews, approvers, &pr.head_sha)
 }
 
 /// The approval state among `approvers` (REQ-MERGE-055, as the owner
@@ -313,9 +323,13 @@ pub fn approval(reviews: &[Review], approvers: &[String], head_sha: &str) -> App
     }
 }
 
-/// Review threads still open on the PR.
-pub fn unresolved_threads(pr: &PullRequest) -> usize {
-    pr.threads.iter().filter(|t| !t.resolved).count()
+/// Review threads still open on the PR; `None` when GitHub cut the list
+/// (an unresolved thread may hide in what was not read).
+pub fn unresolved_threads(pr: &PullRequest) -> Option<usize> {
+    if pr.truncated.iter().any(|t| t == "reviewThreads") {
+        return None;
+    }
+    Some(pr.threads.iter().filter(|t| !t.resolved).count())
 }
 
 #[cfg(test)]

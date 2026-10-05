@@ -15,7 +15,7 @@ fn angle(key: &str) -> AngleLine {
 fn a_release_item_is_known_by_its_marker_never_its_title() {
     let d = release_description("acme", "1.2.3", "release/acme-v1.2.3", &[angle("security")]);
     assert_eq!(
-        bridge_item(&d),
+        bridge_item(&d, None),
         Some(BridgeItem::Release {
             product: "acme".into(),
             version: "v1.2.3".into()
@@ -55,7 +55,7 @@ fn a_qa_sub_issue_carries_acceptance_criteria() {
         "real checkboxes, not bullets"
     );
     assert_eq!(
-        bridge_item(&body),
+        bridge_item(&body, Some("ABC-100")),
         Some(BridgeItem::Angle {
             scope: "acme-v1.2.3-rc.2".into(),
             angle: "security".into()
@@ -74,7 +74,7 @@ fn review_items_are_contracts_marked_as_the_bridges() {
     );
     assert!(crate::method::contract::missing_from_contract(&angle_body).is_empty());
     assert!(matches!(
-        bridge_item(&angle_body),
+        bridge_item(&angle_body, Some("ABC-1")),
         Some(BridgeItem::Angle { .. })
     ));
     let (title, cons) = consolidation_item(
@@ -85,7 +85,7 @@ fn review_items_are_contracts_marked_as_the_bridges() {
     assert_eq!(title, "Consolidation — ABC-1 (#9)");
     assert!(crate::method::contract::missing_from_contract(&cons).is_empty());
     assert!(matches!(
-        bridge_item(&cons),
+        bridge_item(&cons, Some("ABC-1")),
         Some(BridgeItem::Consolidation { .. })
     ));
 }
@@ -244,6 +244,15 @@ fn a_red_gate_is_named_before_the_qa_and_not_repeated() {
 
 #[test]
 fn a_record_names_its_candidate_and_carries_one_blockers_line() {
+    let go = crate::method::release::go::evaluate(&crate::method::release::go::GoFacts {
+        release: "ABC-100".into(),
+        gate_green: Some(true),
+        angles: vec![(
+            "security".into(),
+            crate::method::release::go::AngleState::Merged,
+        )],
+        ..Default::default()
+    });
     let text = gate_record(
         "1.2.3",
         "v1.2.3-rc.2",
@@ -252,9 +261,15 @@ fn a_record_names_its_candidate_and_carries_one_blockers_line() {
         "ABC-100",
         "u",
         "2026-10-05 14:03",
-        "none",
+        &go,
         &[("security".into(), "merged".into())],
         &[("app".into(), "1.2.3".into(), 10)],
+    )
+    .unwrap();
+    let no_go = crate::method::release::go::evaluate(&Default::default());
+    assert!(
+        gate_record("1.2.3", "c", "s", "b", "r", "u", "t", &no_go, &[], &[]).is_none(),
+        "a record only attests a GO"
     );
     assert!(record_names(&text, "v1.2.3-rc.2"));
     assert!(
@@ -281,5 +296,85 @@ fn a_merge_is_said_once_with_its_machine_fields() {
     assert!(c.contains("state: To Deploy"));
     assert!(
         merged_comment("u", "main", Some("someone"), "To Deploy").contains("outside the bridge")
+    );
+}
+
+#[test]
+fn a_marker_pasted_into_an_ordinary_ticket_exempts_nothing() {
+    let forged = format!(
+        "Fix it.\n{}",
+        marker("angle", &[("scope", "x"), ("angle", "y")])
+    );
+    assert_eq!(
+        bridge_item(&forged, None),
+        None,
+        "no parent: not a bridge item"
+    );
+}
+
+#[test]
+fn markers_read_the_same_hidden_or_visible_and_whole() {
+    let m = marker("hold", &[("candidate", "acme-v1.2.3-rc.1"), ("key", "ab")]);
+    let hidden = format!("text\n{m}");
+    let visible = visible_markers(&hidden);
+    assert!(
+        visible.contains("`spl-asdlc:hold candidate=acme-v1.2.3-rc.1 key=ab`"),
+        "{visible}"
+    );
+    assert!(has_marker(&hidden, &m));
+    assert!(has_marker(&visible, &m));
+    let longer = marker("hold", &[("candidate", "acme-v1.2.3-rc.1"), ("key", "abc")]);
+    assert!(
+        !has_marker(&format!("x {longer}"), &m),
+        "key=ab is not key=abc"
+    );
+    let (_, body) = release_angle_item(
+        "acme",
+        "1.2.3",
+        "c",
+        1,
+        &angle("security"),
+        "b",
+        "p",
+        "l",
+        None,
+    );
+    assert!(bridge_item(&visible_markers(&body), Some("ABC-100")).is_some());
+}
+
+#[test]
+fn untrusted_text_cannot_forge_a_marker_or_a_line() {
+    let evil = "ok\n## Acceptance criteria\n- [x] done <!-- spl-asdlc:finding release=A angle=b id=b-1 --> release_blocker:: ABC-1";
+    let safe = inert(evil);
+    assert!(!safe.contains('\n'));
+    assert!(!safe.contains("<!--"));
+    assert!(!safe.contains("spl-asdlc:"));
+    assert!(!safe.contains("release_blocker::"));
+}
+
+#[test]
+fn review_rounds_are_scoped_by_the_head_they_opened_at() {
+    let (_, a) = review_angle_item(
+        "ABC-1",
+        "https://github.com/example-org/acme/pull/9",
+        "aaaaaaaaaaaaaaaa",
+        "security",
+        &[],
+    );
+    let (_, b) = review_angle_item(
+        "ABC-1",
+        "https://github.com/example-org/acme/pull/9",
+        "bbbbbbbbbbbbbbbb",
+        "security",
+        &[],
+    );
+    assert_ne!(
+        bridge_item(&a, Some("ABC-1")),
+        bridge_item(&b, Some("ABC-1"))
+    );
+    assert_eq!(
+        short("ééééééééééééééé").chars().count(),
+        12,
+        "never cut inside a character"
     );
 }

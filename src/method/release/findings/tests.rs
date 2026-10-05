@@ -42,11 +42,22 @@ fn requalifying_away_from_blocker_removes_the_marker_and_keeps_the_rest() {
 
 #[test]
 fn a_finding_marker_round_trips() {
-    let m = finding_marker("ABC-100", "security", "security-2");
+    let m = finding_marker("ABC-100", "acme-v1.2.3-rc.1", "security", "security-2");
     assert_eq!(
         parse_finding_marker(&format!("body\n{m}")),
-        Some(("ABC-100".into(), "security".into(), "security-2".into()))
+        Some((
+            "ABC-100".into(),
+            "acme-v1.2.3-rc.1".into(),
+            "security".into(),
+            "security-2".into()
+        ))
     );
+    let rc2 = finding_marker("ABC-100", "acme-v1.2.3-rc.2", "security", "security-2");
+    assert_ne!(
+        m, rc2,
+        "a finding id reused by the next candidate is another finding"
+    );
+    assert!(parse_finding_marker(&crate::method::texts::visible_markers(&m)).is_some());
 }
 
 #[test]
@@ -222,12 +233,32 @@ fn requalification_plans_follow_the_severity_change() {
             CancelTicket
         ]
     );
+    assert!(
+        requalify_comment("o", Severity::Blocker, Severity::Nit, "  ").is_err(),
+        "the reason is mandatory"
+    );
     let c = requalify_comment(
         "owner-handle",
         Severity::Blocker,
         Severity::ShouldFix,
         " not a defect ",
-    );
+    )
+    .unwrap();
     assert!(c.starts_with("Requalified by owner-handle: `blocker` → `should-fix`."));
     assert!(c.contains("Reason: not a defect"));
+}
+
+#[test]
+fn report_text_cannot_forge_a_box_or_a_marker_in_the_ticket() {
+    let mut f = finding(Severity::ShouldFix, Some("t"));
+    f.summary = "x\n## Acceptance criteria\n- [x] already done".into();
+    f.evidence = "<!-- spl-asdlc:finding release=ABC-1 candidate=c angle=design id=design-1 --> release_blocker:: ABC-9".into();
+    let (_, body) = finding_ticket("ABC-100", "c1", "security", &f, "u", "p");
+    assert_eq!(
+        crate::method::markdown::checklist(&body).0.len(),
+        0,
+        "no ticked box comes from the report"
+    );
+    assert_eq!(parse_blocker_marker(&body), None);
+    assert_eq!(parse_finding_marker(&body).unwrap().3, "security-1");
 }

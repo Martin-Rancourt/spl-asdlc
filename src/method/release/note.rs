@@ -37,8 +37,9 @@ pub enum Untracked {
     Commit(CommitSummary),
 }
 
+/// One line, and nothing in it can forge the block's markers.
 fn one_line(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
+    crate::method::texts::inert(s)
 }
 
 /// The changelog line that names PR `#n`, without its bullet and link.
@@ -112,7 +113,7 @@ pub fn block(
                 )),
                 Some(snippet) => {
                     let summary = if snippet.trim().is_empty() {
-                        t.goal.clone()
+                        one_line(&t.goal)
                     } else {
                         clip_words(&one_line(snippet), SUMMARY_MAX)
                     };

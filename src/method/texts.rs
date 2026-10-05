@@ -1,7 +1,12 @@
 //! Every text the bridge writes to a tracker or to GitHub, in English, with
-//! the hidden markers that make its once-only effects idempotent across
-//! machines (Martin's decision 1: markers only for effects nobody can observe
+//! the markers that make its once-only effects idempotent across machines
+//! (the owner's decision: markers only for effects nobody can observe
 //! otherwise). Pure functions over plain inputs.
+//!
+//! A marker is the token `spl-asdlc:<kind> k=v …`, written hidden as an HTML
+//! comment; a tracker that does not keep comments gets the token visible,
+//! as inline code ([`visible_markers`]). Readers look for the token, so both
+//! forms read the same.
 
 use std::sync::LazyLock;
 
@@ -12,15 +17,66 @@ use crate::method::markdown;
 
 // ---- markers ----
 
-/// A hidden marker: `<!-- spl-asdlc:<kind> k=v … -->`.
+/// A hidden marker: `<!-- spl-asdlc:<kind> k=v … -->`. Values carry no
+/// space, backtick or `>`.
 pub fn marker(kind: &str, fields: &[(&str, &str)]) -> String {
-    let fields: String = fields.iter().map(|(k, v)| format!(" {k}={v}")).collect();
+    let fields: String = fields
+        .iter()
+        .map(|(k, v)| {
+            let v: String = v
+                .chars()
+                .map(|c| {
+                    if c.is_whitespace() || c == '`' || c == '>' {
+                        '_'
+                    } else {
+                        c
+                    }
+                })
+                .collect();
+            format!(" {k}={v}")
+        })
+        .collect();
     format!("<!-- spl-asdlc:{kind}{fields} -->")
 }
 
-/// Whether a text carries the marker exactly.
+/// The token of a marker, without its comment delimiters.
+pub fn token(marker: &str) -> &str {
+    marker
+        .trim()
+        .trim_start_matches("<!--")
+        .trim_end_matches("-->")
+        .trim()
+}
+
+/// Whether a text carries the marker, hidden or visible, whole (`key=ab`
+/// is not `key=abc`).
 pub fn has_marker(text: &str, marker: &str) -> bool {
-    text.contains(marker)
+    let t = token(marker);
+    text.match_indices(t).any(|(i, _)| {
+        let rest = &text[i + t.len()..];
+        rest.is_empty() || rest.starts_with(char::is_whitespace) || rest.starts_with('`')
+    })
+}
+
+static HIDDEN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<!-- (spl-asdlc:[^`>]*?) -->").unwrap());
+
+/// Markers made visible as inline code, for a tracker that drops HTML
+/// comments.
+pub fn visible_markers(text: &str) -> String {
+    HIDDEN.replace_all(text, "`$1`").to_string()
+}
+
+/// Untrusted text (an agent's report, a ticket's title) made inert before
+/// it enters a text the bridge writes: one line, and no marker of the
+/// bridge's can be forged through it.
+pub fn inert(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace("<!--", "&lt;!--")
+        .replace("spl-asdlc:", "spl-asdlc :")
+        .replace("release_blocker::", "release_blocker :")
 }
 
 /// The kind of item the bridge created, read off its description marker.
@@ -32,12 +88,21 @@ pub enum BridgeItem {
 }
 
 static ITEM_MARKER: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"<!-- spl-asdlc:(release|angle|consolidation)((?: [a-z]+=\S+)*) -->").unwrap()
+    Regex::new(r"spl-asdlc:(release|angle|consolidation)((?: [a-z]+=[^\s`>]+)*)").unwrap()
 });
 
 /// Read the marker of an item the bridge created (REQ-MERGE-068): never by
-/// title.
-pub fn bridge_item(description: &str) -> Option<BridgeItem> {
+/// title. An angle or consolidation item counts only with a parent: a
+/// marker pasted into an ordinary ticket does not exempt it from anything.
+pub fn bridge_item(description: &str, parent: Option<&str>) -> Option<BridgeItem> {
+    match marked_item(description)? {
+        BridgeItem::Release { product, version } => Some(BridgeItem::Release { product, version }),
+        other if parent.is_some() => Some(other),
+        _ => None,
+    }
+}
+
+fn marked_item(description: &str) -> Option<BridgeItem> {
     let c = ITEM_MARKER.captures(description)?;
     let field = |name: &str| {
         c[2].split_whitespace()
@@ -186,6 +251,13 @@ pub fn release_angle_item(
     (title, body)
 }
 
+/// The scope of a PR review round: the PR and the head it opened at. A
+/// round opens when the ticket enters In Review; the coordinator's fixes
+/// move the head within the round, a new round needs a new entry.
+pub fn round_scope(pr_url: &str, head: &str) -> String {
+    format!("{pr_url}@{}", short(head))
+}
+
 /// An angle sub-item of a PR review (spec 04 §3).
 pub fn review_angle_item(
     ticket: &str,
@@ -212,7 +284,10 @@ pub fn review_angle_item(
          - [ ] The review is submitted on GitHub.\n\n\
          ## Business rules\n{absence}\n\n\
          ## Context\n- Ticket: {ticket}{why}",
-        marker = marker("angle", &[("scope", pr_url), ("angle", angle)]),
+        marker = marker(
+            "angle",
+            &[("scope", &round_scope(pr_url, head)), ("angle", angle)]
+        ),
         head12 = short(head),
         absence = crate::method::business_rules::ABSENCE_DECLARATION,
     );
@@ -244,7 +319,10 @@ fn capitalised(s: &str) -> String {
 }
 
 pub fn short(sha: &str) -> &str {
-    &sha[..sha.len().min(12)]
+    match sha.char_indices().nth(12) {
+        Some((i, _)) => &sha[..i],
+        None => sha,
+    }
 }
 
 // ---- release comments ----
@@ -547,10 +625,15 @@ pub fn gate_record(
     release: &str,
     release_url: &str,
     computed_at: &str,
-    blockers_carried: &str,
+    go: &crate::method::release::go::GoDecision,
     angles: &[(String, String)],
     prs: &[(String, String, u64)],
-) -> String {
+) -> Option<String> {
+    // A record only ever attests a computed GO.
+    if !go.go {
+        return None;
+    }
+    let blockers_carried = go.blockers_carried();
     let rows: String = angles
         .iter()
         .map(|(a, s)| format!("| {a} | {s} |\n"))
@@ -559,14 +642,14 @@ pub fn gate_record(
         .iter()
         .map(|(c, v, n)| format!("- `{c}` {v}: #{n}\n"))
         .collect();
-    format!(
+    Some(format!(
         "# Release v{version}\n\n{marker}\n\n- Candidate: {candidate} ({sha12}) on {branch}\n- Release item: [{release}]({release_url})\n\
          - GO computed at {computed_at} UTC by the release pass\n\nBlockers-Carried: {blockers_carried}\n\n## Computed GO\n\n\
          The gate is green on the candidate, every angle PR is merged, no blocker is open.\n\n| angle | state |\n|---|---|\n{rows}\n\
          ## Release PRs of the cycle\n\n{prs}",
         marker = record_marker(candidate),
         sha12 = short(sha),
-    )
+    ))
 }
 
 pub fn record_marker(candidate: &str) -> String {
@@ -596,8 +679,13 @@ pub fn merged_comment(pr_url: &str, base: &str, merged_by: Option<&str>, state: 
             "{pr_url} was merged by `{who}` outside the bridge; the bridge applies the same state rule to it."
         ),
     };
+    let next = if state == "To Deploy" {
+        "the release closure moves it to `Done` once every box of its contract is checked."
+    } else {
+        "none — its state is left alone."
+    };
     format!(
-        "{how}\n\nmerged_by: {}\nmerged_pr: {pr_url}\nstate: {state}\nnext: the release closure moves it to `Done` once every box of its contract is checked.",
+        "{how}\n\nmerged_by: {}\nmerged_pr: {pr_url}\nstate: {state}\nnext: {next}",
         merged_by.unwrap_or("bridge")
     )
 }

@@ -280,3 +280,9 @@ fn a_component_not_embarked_does_not_count() {
         "nothing embarked is 'I do not know', never an empty ledger"
     );
 }
+
+#[test]
+fn two_trusted_release_prs_refuse_the_merge() {
+    let prs = [release_pr(1), release_pr(2)];
+    assert!(release_please_pr(&prs, BASE, &authors(), LABEL).is_err());
+}

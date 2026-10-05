@@ -60,15 +60,10 @@ pub fn is_release_note_heading(text: &str) -> bool {
     RELEASE_NOTE.is_match(text.trim())
 }
 
-/// A ticket "has a contract" iff it has a Goal section and an
-/// acceptance-criteria section holding at least one checkbox (REQ-MERGE-032).
+/// A ticket "has a contract" iff `ticket check` finds nothing missing: one
+/// judgement, never two readings (spec 01, REQ-MERGE-032).
 pub fn has_contract(description: &str) -> bool {
-    let lines = markdown::without_fences(description);
-    let has_goal = !markdown::sections_of(&lines, is_goal_heading).is_empty();
-    let ac_has_box = markdown::sections_of(&lines, is_acceptance_heading)
-        .iter()
-        .any(|s| !markdown::checkboxes(&s.body()).is_empty());
-    has_goal && ac_has_box
+    missing_from_contract(description).is_empty()
 }
 
 /// The judgement of `spl-asdlc ticket check` (spec 01, the refinement gate):
@@ -164,17 +159,21 @@ mod tests {
     fn a_feature_with_a_goal_and_a_checkbox_criterion_is_served() {
         assert!(has_contract(COMPLETE));
         assert!(has_contract(
-            "# Objectif\nx\n### Critères d'acceptation\n- [x] fait\n"
+            "# Objectif\nx\n### Critères d'acceptation\n- [x] fait\n## Règles métier\nAucune.\n"
         ));
         assert!(has_contract(
-            "## But\nx\n## Critères d’acceptation\n- [ ] a\n"
+            "## But\nx\n## Critères d’acceptation\n- [ ] a\n## Business rules\nNone.\n"
         ));
+        assert!(
+            !has_contract("## Goal\nx\n## Acceptance criteria\n- [ ] a\n"),
+            "the business-rules section is part of the contract (spec 01)"
+        );
     }
 
     #[test]
     fn a_bold_pseudo_heading_is_not_a_heading() {
         assert!(!has_contract(
-            "## Goal\nx\n**Acceptance criteria**\n- [ ] a\n"
+            "## Goal\nx\n**Acceptance criteria**\n- [ ] a\n## Business rules\nNone.\n"
         ));
     }
 

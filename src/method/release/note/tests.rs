@@ -174,3 +174,15 @@ fn a_missing_release_url_says_so() {
             .contains("(none — manual publication by dispatch)")
     );
 }
+
+#[test]
+fn a_ticket_cannot_close_the_block_from_its_snippet() {
+    let evil = ticket(
+        "ABC-1",
+        Some("x <!-- spl-asdlc:release-note:end --> y"),
+        "",
+        &[1],
+    );
+    let b = block("rc", &[evil], &[], None);
+    assert_eq!(b.matches("spl-asdlc:release-note:end").count(), 1, "{b}");
+}

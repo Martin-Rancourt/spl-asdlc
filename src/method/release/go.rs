@@ -44,9 +44,21 @@ pub struct GoFacts {
     pub note_gaps: Vec<String>,
     pub fix_gaps: Vec<String>,
     pub tip_gaps: Vec<String>,
-    /// `None` under the computed policy; under `human`, whether the owner
-    /// approved on the release issue.
-    pub owner_approved: Option<bool>,
+    /// The staged version is not the version the QA judged (spec 05 §8); an
+    /// unreadable staged version is a gap.
+    pub version_gaps: Vec<String>,
+    pub policy: Policy,
+}
+
+/// Who gives the GO besides the facts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Policy {
+    /// The facts alone.
+    #[default]
+    Computed,
+    /// The facts and the owner's approval on the release issue; `None` when
+    /// it could not be read, which never passes.
+    Human { approved: Option<bool> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,7 +73,8 @@ pub struct GoDecision {
     pub note_gaps: Vec<String>,
     pub fix_gaps: Vec<String>,
     pub tip_gaps: Vec<String>,
-    pub owner_approved: Option<bool>,
+    pub version_gaps: Vec<String>,
+    pub policy: Policy,
     /// One English sentence per failing condition; never empty when `go` is false.
     pub reasons: Vec<String>,
 }
@@ -155,8 +168,24 @@ pub fn evaluate(facts: &GoFacts) -> GoDecision {
             tip_gaps.join("; ")
         ));
     }
-    if facts.owner_approved == Some(false) {
-        reasons.push("the owner has not approved the release (GO policy `human`)".to_string());
+    let version_gaps = dedup(&facts.version_gaps);
+    if !version_gaps.is_empty() {
+        reasons.push(format!(
+            "the release PR does not stage the QA'd version: {}",
+            version_gaps.join("; ")
+        ));
+    }
+    match facts.policy {
+        Policy::Computed
+        | Policy::Human {
+            approved: Some(true),
+        } => {}
+        Policy::Human {
+            approved: Some(false),
+        } => reasons.push("the owner has not approved the release (GO policy `human`)".to_string()),
+        Policy::Human { approved: None } => {
+            reasons.push("the owner's approval could not be read (GO policy `human`)".to_string())
+        }
     }
     GoDecision {
         go: reasons.is_empty(),
@@ -169,7 +198,8 @@ pub fn evaluate(facts: &GoFacts) -> GoDecision {
         note_gaps,
         fix_gaps,
         tip_gaps,
-        owner_approved: facts.owner_approved,
+        version_gaps,
+        policy: facts.policy,
         reasons,
     }
 }
@@ -201,7 +231,11 @@ impl GoDecision {
             "note_gaps": self.note_gaps,
             "fix_gaps": self.fix_gaps,
             "tip_gaps": self.tip_gaps,
-            "owner_approved": self.owner_approved,
+            "version_gaps": self.version_gaps,
+            "owner_approved": match self.policy {
+                Policy::Computed => Value::Null,
+                Policy::Human { approved } => json!(approved),
+            },
             "blockers_carried": self.blockers_carried(),
             "reasons": self.reasons,
         })
@@ -364,28 +398,53 @@ mod tests {
 
     #[test]
     fn a_human_policy_adds_the_owners_approval_and_never_replaces_the_rest() {
+        let human = |approved| Policy::Human { approved };
         assert!(
             !evaluate(&GoFacts {
-                owner_approved: Some(false),
+                policy: human(Some(false)),
                 ..all_good()
             })
             .go
         );
         assert!(
             evaluate(&GoFacts {
-                owner_approved: Some(true),
+                policy: human(Some(true)),
                 ..all_good()
             })
             .go
         );
         assert!(
             !evaluate(&GoFacts {
-                owner_approved: Some(true),
+                policy: human(Some(true)),
                 gate_green: None,
                 ..all_good()
             })
             .go
         );
+        let unread = evaluate(&GoFacts {
+            policy: human(None),
+            ..all_good()
+        });
+        assert!(
+            !unread.go,
+            "an approval that could not be read never passes"
+        );
+        assert_eq!(
+            unread.reasons,
+            vec!["the owner's approval could not be read (GO policy `human`)"]
+        );
+    }
+
+    #[test]
+    fn a_release_pr_staging_another_version_is_not_a_go() {
+        let d = evaluate(&GoFacts {
+            version_gaps: vec![
+                "release-please stages `v0.4.92` while the QA'd candidate is `v0.4.91`".into(),
+            ],
+            ..all_good()
+        });
+        assert!(!d.go);
+        assert!(d.reasons[0].starts_with("the release PR does not stage the QA'd version"));
     }
 
     #[test]
