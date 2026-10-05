@@ -8,5 +8,6 @@ pub mod contract;
 pub mod done_gate;
 pub mod glob;
 pub mod markdown;
+pub mod release;
 pub mod review;
 pub mod vocabulary;
