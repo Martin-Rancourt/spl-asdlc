@@ -366,7 +366,7 @@ impl RestGitHub {
 const PULL_FRAGMENT: &str = "fragment Pull on PullRequest {
   number url title body state isDraft
   author { __typename login }
-  baseRefName headRefName headRefOid
+  baseRefName headRefName headRefOid isCrossRepository
   labels(first: 50) { pageInfo { hasNextPage } nodes { name } }
   mergeable mergeStateStatus additions deletions createdAt updatedAt mergedAt
   mergedBy { __typename login }
@@ -629,6 +629,7 @@ fn pull_from_gql(v: &Value) -> Result<PullRequest, String> {
         author: actor_gql(&v["author"]),
         base_ref: str_of(v, "baseRefName"),
         head_ref: str_of(v, "headRefName"),
+        cross_repository: v["isCrossRepository"].as_bool().unwrap_or(true),
         head_sha,
         labels,
         mergeable,

@@ -59,6 +59,10 @@ pub fn close(
     let registry = read_registry(t, &published.tag);
     let mut result = CloseResult::default();
     for m in &members {
+        if !t.in_time() {
+            report.out_of_time = true;
+            return;
+        }
         judge_member(t, log, report, m, item, registry.as_ref(), &mut result);
     }
     let marker = texts::marker("closure", &[("tag", &published.tag)]);
@@ -138,9 +142,15 @@ fn ready_to_close(
         &texts::marker("waiver", &[("tag", &published.tag)]),
     )?;
     if shape.multi_component() && !waived {
+        // The component release PRs are merged on GO, after the candidate
+        // was tagged: the window starts a day before the tag.
+        let since = c
+            .tagged_at
+            .or(published.published_at)
+            .map(|at| crate::github::Timestamp(at.0 - time::Duration::days(1)));
         let merged = t
             .github
-            .merged_pulls(&t.repo, Some(&default), None, 500)
+            .merged_pulls(&t.repo, Some(&default), since, 500)
             .map_err(|e| e.to_string())?;
         let ledger =
             prs::ledger(&merged, shape).ok_or("the deployment ledger could not be read")?;
@@ -223,6 +233,12 @@ fn judge_member(
             }
         }
         Action::Judge => {
+            // Only what still waits for the closure is judged: a ticket the
+            // closure already sent back (In Progress, then maybe In Review
+            // again) belongs to its implementer, not to this cycle's replays.
+            if !matches!(m.state.status, Some(Status::ToDeploy | Status::PostDeploy)) {
+                return;
+            }
             let gate = match contract_gate(t, m) {
                 Ok(g) => g,
                 Err(e) => {
@@ -253,7 +269,7 @@ fn judge_member(
                 }
                 Judgement::Reopen => {
                     // The implementer to hand it back to is the owner's to
-                    // settle (SID-868); the current assignee keeps it.
+                    // settle (`docs/open-points.md` #9); the current assignee keeps it.
                     let who = m.assignee.as_ref().map(|u| u.name.clone());
                     let body = for_tracker(
                         t,
@@ -373,7 +389,7 @@ fn release_note(
         });
     }
     let block = note::block(&c.tag, &tickets, &[], Some(&published.body));
-    let description = note::splice(&item.description, &block);
+    let description = for_tracker(t, &note::splice(&item.description, &block));
     if description != item.description {
         t.act(
             log,

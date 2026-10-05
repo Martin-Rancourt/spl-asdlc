@@ -215,8 +215,10 @@ fn tick(
         let c = match connect(file) {
             Ok(c) => c,
             Err(e) => {
+                // One repository that cannot start costs no other.
                 let _ = writeln!(err, "{e}");
-                return ExitCode::from(2);
+                code = ExitCode::from(2);
+                continue;
             }
         };
         let tracker_name = crate::tracker::Tracker::identity(&c.tracker)

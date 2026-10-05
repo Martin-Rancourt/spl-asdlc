@@ -530,6 +530,7 @@ pub fn pull_request(number: u64) -> PullRequest {
         }),
         base_ref: "main".into(),
         head_ref: format!("feat/change-{number}"),
+        cross_repository: false,
         head_sha: format!("head-{number}"),
         labels: Vec::new(),
         mergeable: Mergeable::Mergeable,

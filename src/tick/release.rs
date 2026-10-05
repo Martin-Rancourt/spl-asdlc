@@ -13,7 +13,7 @@
 //! 6. once the release is published: the closure (`closure.rs`).
 //!
 //! Points the specification leaves open are not settled here; each waits,
-//! as SID-868 lists them (the human GO, a raised `max_rc_passes`).
+//! as `docs/open-points.md` lists them (the human GO, a raised `max_rc_passes`).
 
 use serde_json::json;
 
@@ -92,8 +92,24 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
     };
     let label = vocabulary::release_label(&cfg.product.name, &version.to_string());
     let previous = previous_candidate(&shape, &tags, &candidate);
-    record_candidate(t, log, report, &item, &candidate, previous.as_deref());
-    label_embarked(t, log, report, &shape, &candidate, &label);
+    // The range is walked (commit → PR → ticket) once per candidate: until
+    // its comment is recorded, which happens only after every embarked
+    // ticket carries the label.
+    let candidate_marker = texts::marker("candidate", &[("tag", &candidate.tag)]);
+    let recorded = match tracker_said(t, &item.key, &candidate_marker) {
+        Ok(r) => r,
+        Err(e) => {
+            t.unreadable(report, &item.key, format!("comments: {e}"));
+            return false;
+        }
+    };
+    if recorded || label_embarked(t, log, report, &shape, &candidate, &label) {
+        record_candidate(t, log, report, &item, &candidate, previous.as_deref());
+    }
+    if !t.in_time() {
+        report.out_of_time = true;
+        return false;
+    }
     let offered = offered(t, &candidate);
     let children = open_round(t, log, report, &item, &candidate, &branch, &label, &offered);
     brief(
@@ -376,6 +392,8 @@ pub fn find_release_item(
         .map_err(|e| format!("the items labelled {label}: {e}"))?
         .into_iter()
         .filter(|i| texts::bridge_item(&i.description, i.parent.as_deref()).as_ref() == Some(&want))
+        // An abandoned cycle's item: the next cycle of the version gets its own.
+        .filter(|i| i.state.status != Some(Status::Canceled))
         .collect();
     match mine.len() {
         0 => Ok(None),
@@ -403,10 +421,20 @@ fn record_candidate(
     match tracker_said(t, &item.key, &marker) {
         Ok(true) => {}
         Ok(false) => {
-            let paths = previous
-                .and_then(|p| t.github.compare(&t.repo, p, &c.sha).ok())
-                .map(|cmp| cmp.files)
-                .unwrap_or_default();
+            let paths = match previous.map(|p| t.github.compare(&t.repo, p, &c.sha)) {
+                None => Vec::new(),
+                Some(Ok(cmp)) => cmp.files,
+                Some(Err(e)) => {
+                    // Never a comment with a range that was not read: it would
+                    // be said once, and wrong.
+                    t.unreadable(
+                        report,
+                        &item.key,
+                        format!("the range since {}: {e}", previous.unwrap_or_default()),
+                    );
+                    return;
+                }
+            };
             let lighter =
                 c.rc > 1 && t.config.release.later_passes == LaterPasses::GateAndCoordinator;
             let offered = offered(t, c);
@@ -518,6 +546,8 @@ pub fn embarked(t: &Tick, shape: &Shape, c: &Candidate) -> Result<Vec<(String, V
     Ok(out)
 }
 
+/// Label every ticket the candidate embarks; whether all of them carry the
+/// label now (anything unread or refused is retried at the next tick).
 fn label_embarked(
     t: &Tick,
     log: &mut ActionLog,
@@ -525,37 +555,45 @@ fn label_embarked(
     shape: &Shape,
     c: &Candidate,
     label: &str,
-) {
+) -> bool {
     let tickets = match embarked(t, shape, c) {
         Ok(k) => k,
         Err(e) => {
             t.unreadable(report, &c.tag, format!("the embarked tickets: {e}"));
-            return;
+            return false;
         }
     };
+    let mut all = true;
     for (key, _) in tickets {
+        if !t.in_time() {
+            report.out_of_time = true;
+            return false;
+        }
         let item = match t.tracker.get(&key) {
             Ok(i) => i,
             Err(e) => {
                 t.unreadable(report, &key, e);
+                all = false;
                 continue;
             }
         };
-        let past_merge = matches!(
-            item.state.status,
-            Some(Status::ToDeploy | Status::PostDeploy | Status::Done)
-        );
-        if past_merge && !item.labels.iter().any(|l| l == label) {
-            t.act(
+        // Its PR is merged into the candidate: it ships, whatever its status
+        // says yet (a merge outside the bridge is swept later in the tick).
+        if item.state.status == Some(Status::Canceled) || item.labels.iter().any(|l| l == label) {
+            continue;
+        }
+        all &= t
+            .act(
                 log,
                 report,
                 &key,
                 &format!("label {label}"),
                 json!({"candidate": c.tag}),
                 || t.tracker.add_label(&key, label).map_err(|e| e.to_string()),
-            );
-        }
+            )
+            .is_some();
     }
+    all
 }
 
 /// The angle sub-items and the consolidation item of the candidate,
@@ -949,6 +987,10 @@ fn file_merged_findings(
         }
     };
     for pr in merged {
+        if !t.in_time() {
+            report.out_of_time = true;
+            return;
+        }
         let Some((cand, angle)) = prs::parse_angle_branch(&pr.head_ref) else {
             continue;
         };
@@ -1018,15 +1060,26 @@ fn file_findings(
             return;
         }
     };
+    let blocked_by: Vec<String> = match t.tracker.relations(&item.key) {
+        Ok(r) => r.blocked_by.into_iter().map(|b| b.other).collect(),
+        Err(e) => {
+            t.unreadable(report, &item.key, e);
+            return;
+        }
+    };
     let product = &t.config.product.name;
     let v = c.version.to_string();
+    // The shared nits ticket, once found or created in this call.
+    let mut nits: Option<Item> = None;
     for f in r.findings.iter().filter(|f| !f.fixed_in_branch) {
         match f.severity {
             Severity::Nit => {
                 let title = findings::nits_title(product, &v);
                 let line = findings::nit_line(&f.anchor, &f.summary);
-                let existing = labelled.iter().find(|i| i.title == title);
-                match existing {
+                if nits.is_none() {
+                    nits = labelled.iter().find(|i| i.title == title).cloned();
+                }
+                match &nits {
                     Some(n) => {
                         let current = t.tracker.get(&n.key).map(|i| i.description);
                         if let Ok(Some(next)) = current.map(|d| findings::append_nit(&d, &line)) {
@@ -1067,20 +1120,31 @@ fn file_findings(
                         );
                         if let Some(n) = created {
                             relate(t, log, report, &n.key, &item.key, RelationKind::Related);
+                            nits = Some(n);
                         }
                     }
                 }
             }
             Severity::Blocker | Severity::ShouldFix => {
                 let release_id = item.key.as_str();
-                let filed = labelled.iter().any(|i| {
+                // Filed once, whatever became of it: a blocker canceled as a
+                // false alarm or requalified stays so (the merged report does
+                // not change). A new candidate's report is another key.
+                let filed = labelled.iter().find(|i| {
                     findings::parse_finding_marker(&i.description).is_some_and(
                         |(rel, cand, a, id)| {
                             rel == release_id && cand == c.tag && a == angle && id == f.id
                         },
-                    ) && (f.severity != Severity::Blocker || !i.state.is_resolved())
+                    )
                 });
-                if filed {
+                if let Some(ticket) = filed {
+                    // A blocker whose relation failed after its creation: the
+                    // relation is laid again (REQ-REL-058).
+                    let marked = findings::parse_blocker_marker(&ticket.description).as_deref()
+                        == Some(release_id);
+                    if marked && !ticket.state.is_resolved() && !blocked_by.contains(&ticket.key) {
+                        relate(t, log, report, &ticket.key, &item.key, RelationKind::Blocks);
+                    }
                     continue;
                 }
                 let (title, body) =
@@ -1181,7 +1245,10 @@ pub fn decide(
     let cfg = t.config;
     let gate_green = match gate_run(t, c) {
         Ok(run) => Some(gate::is_green(run.as_ref())),
-        Err(_) => None,
+        Err(e) => {
+            t.unreadable(report, &item.key, format!("the gate of {}: {e}", c.tag));
+            None
+        }
     };
     let relations = match t.tracker.relations(&item.key) {
         Ok(r) => r,
@@ -1256,20 +1323,29 @@ pub fn decide(
                             .github
                             .file(&t.repo, "release-please-config.json", &pr.head_sha)
                             .ok();
-                        let range = shape
-                            .previous_release(
-                                t.github
-                                    .tags(&t.repo, shape.release_tag_prefix())
-                                    .unwrap_or_default()
-                                    .iter()
-                                    .map(|r| r.name.as_str()),
-                                Some(c.version),
-                            )
-                            .map(|(tag, _)| t.github.compare(&t.repo, &tag, &c.sha));
+                        // A range that cannot be read is a gap, never an
+                        // empty range that the note would cover by default.
+                        let range: Result<Vec<crate::github::CommitSummary>, String> = t
+                            .github
+                            .tags(&t.repo, shape.release_tag_prefix())
+                            .map_err(|e| e.to_string())
+                            .and_then(|tags| {
+                                match shape.previous_release(
+                                    tags.iter().map(|r| r.name.as_str()),
+                                    Some(c.version),
+                                ) {
+                                    Some((tag, _)) => t
+                                        .github
+                                        .compare(&t.repo, &tag, &c.sha)
+                                        .map(|cmp| cmp.commits)
+                                        .map_err(|e| e.to_string()),
+                                    // The first release: no previous tag bounds it.
+                                    None => Ok(Vec::new()),
+                                }
+                            });
                         let commits = match &range {
-                            Some(Ok(cmp)) => Ok(cmp.commits.as_slice()),
-                            Some(Err(_)) => Err("the range could not be read"),
-                            None => Ok(&[][..]),
+                            Ok(list) => Ok(list.as_slice()),
+                            Err(_) => Err("the range could not be read"),
                         };
                         let coverage = notes::coverage(
                             c.version,
@@ -1303,7 +1379,7 @@ pub fn decide(
     };
     let policy = match cfg.release.go_policy {
         crate::config::GoPolicy::Computed => Policy::Computed,
-        // Whose approval counts is the owner's to settle (SID-868): never given.
+        // Whose approval counts is the owner's to settle (`docs/open-points.md` #3): never given.
         crate::config::GoPolicy::Human => Policy::Human { approved: None },
     };
     let facts = GoFacts {
@@ -1420,26 +1496,39 @@ fn escalate(
         Ok(false) => {}
         _ => return,
     }
-    let owner = t.tracker.user(&t.config.owner.tracker_user).ok();
-    if let Some(owner) = &owner {
-        if item.assignee.as_ref().map(|a| &a.id) != Some(&owner.id) {
-            t.act(
-                log,
+    // Every effect first; the comment that carries the marker last, and only
+    // when they all went through, so that a failed one is retried.
+    let owner = match t.tracker.user(&t.config.owner.tracker_user) {
+        Ok(o) => o,
+        Err(e) => {
+            t.unreadable(
                 report,
                 &item.key,
-                "assign the owner",
-                json!({}),
-                || {
-                    t.tracker
-                        .assign(&item.key, Some(owner))
-                        .map_err(|e| e.to_string())
-                },
+                format!("the owner {}: {e}", t.config.owner.tracker_user),
             );
+            return;
         }
+    };
+    if item.assignee.as_ref().map(|a| &a.id) != Some(&owner.id)
+        && t.act(
+            log,
+            report,
+            &item.key,
+            "assign the owner",
+            json!({}),
+            || {
+                t.tracker
+                    .assign(&item.key, Some(&owner))
+                    .map_err(|e| e.to_string())
+            },
+        )
+        .is_none()
+    {
+        return;
     }
     let hold_label = &t.config.release.escalation_label;
-    if !item.labels.iter().any(|l| l == hold_label) {
-        t.act(
+    if !item.labels.iter().any(|l| l == hold_label)
+        && t.act(
             log,
             report,
             &item.key,
@@ -1450,7 +1539,10 @@ fn escalate(
                     .add_label(&item.key, hold_label)
                     .map_err(|e| e.to_string())
             },
-        );
+        )
+        .is_none()
+    {
+        return;
     }
     let text = texts::escalation_comment(&c.tag, c.rc, max, &d.blockers, moved);
     let sent = t.act(

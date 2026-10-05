@@ -288,6 +288,9 @@ pub struct PullRequest {
     pub base_ref: String,
     /// Empty when GitHub did not say (treated as a merge-back by the method).
     pub head_ref: String,
+    /// The head branch lives in another repository (a fork). Unknown reads
+    /// as true: the bridge never deletes a branch it cannot place.
+    pub cross_repository: bool,
     pub head_sha: String,
     pub labels: Vec<String>,
     pub mergeable: Mergeable,

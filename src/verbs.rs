@@ -238,6 +238,9 @@ pub fn requalify(
     let from =
         severity_of(&item).ok_or_else(|| format!("{key} is not a finding ticket of a release"))?;
     let comment = findings::requalify_comment(who, from, to, reason)?;
+    if from == to {
+        return Ok(format!("{key} is already {}: nothing to do", to.name()));
+    }
     let (release_key, ..) =
         findings::parse_finding_marker(&item.description).ok_or("no finding marker")?;
     let mut report = Report::default();
@@ -417,6 +420,20 @@ pub fn abandon(t: &Tick, log: &mut ActionLog, who: &str) -> Result<String, Strin
                 )
             })?;
         }
+        // The next cut opens a new cycle only once no release branch is left.
+        t.act(
+            log,
+            &mut report,
+            &cy.item.key,
+            &format!("delete branch {branch}"),
+            json!({}),
+            || {
+                t.github
+                    .delete_branch(&t.repo, branch)
+                    .map_err(|e| e.to_string())
+            },
+        )
+        .ok_or_else(|| report.failures.join("; "))?;
     }
     let relations = t
         .tracker

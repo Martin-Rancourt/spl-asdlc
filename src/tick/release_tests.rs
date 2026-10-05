@@ -680,3 +680,152 @@ fn abandoning_merges_the_branch_back_and_cancels_the_release() {
 fn bot(slug: &str) -> String {
     format!("{slug}[bot]")
 }
+
+// ---- regressions from the lot 6-7 review ----
+
+fn publish(w: &World) {
+    let mut s = w.github.state.borrow_mut();
+    s.releases.insert(
+        (repo(), "acme-v1.2.0".into()),
+        Ok(Release {
+            tag: "acme-v1.2.0".into(),
+            url: String::new(),
+            body: String::new(),
+            draft: false,
+            prerelease: false,
+            published_at: None,
+        }),
+    );
+    s.branches.insert(repo(), Vec::new());
+    s.compares.insert(
+        (repo(), "acme-v1.2.0".into(), "main".into()),
+        cmp(CompareStatus::Ahead, &[], &[]),
+    );
+}
+
+#[test]
+fn a_reopened_ticket_is_said_once_while_the_closure_retries() {
+    let w = World::new();
+    w.tracker.seed(
+        "ABC-5",
+        "Shipped",
+        "## Goal\nShip it.\n\n## Acceptance criteria\n- [x] shipped\n- [ ] fast\n\n## Business rules\nNo new rule.\n",
+        Status::ToDeploy,
+        &[],
+    );
+    w.tracker
+        .link("ABC-5", "https://github.com/example-org/acme/pull/5");
+    w.tick();
+    publish(&w);
+    let failing = World {
+        signal: Recorder {
+            fail: true,
+            ..Recorder::default()
+        },
+        ..w
+    };
+    for _ in 0..3 {
+        failing.tick();
+    }
+    assert_eq!(
+        failing.tracker.item("ABC-5").state.status,
+        Some(Status::InProgress)
+    );
+    let reopened = failing
+        .tracker
+        .comments("ABC-5")
+        .unwrap()
+        .iter()
+        .filter(|c| c.by_bridge)
+        .count();
+    assert_eq!(reopened, 1);
+}
+
+#[test]
+fn a_blocker_canceled_as_a_false_alarm_is_not_filed_again() {
+    let w = World::new();
+    w.tick();
+    let pr = w.angle_pr(
+        30,
+        "security",
+        &report_json("security", &finding("security-1", "blocker")),
+    );
+    w.open_on_branch(vec![pr]);
+    w.tick();
+    w.tick();
+    let blockers = |w: &World| {
+        w.tracker
+            .list_by_label(LABEL)
+            .unwrap()
+            .into_iter()
+            .filter(|i| i.title.starts_with("Finding security-1"))
+            .collect::<Vec<_>>()
+    };
+    let first = blockers(&w);
+    assert_eq!(first.len(), 1);
+    w.tracker
+        .set_status(&first[0].key, Status::Canceled, None)
+        .unwrap();
+    w.tick();
+    assert_eq!(blockers(&w).len(), 1, "not re-filed");
+}
+
+#[test]
+fn two_nits_of_one_report_share_one_nits_ticket() {
+    let w = World::new();
+    w.tick();
+    let findings = [finding("security-1", "nit"), finding("security-2", "nit")].join(",");
+    let pr = w.angle_pr(30, "security", &report_json("security", &findings));
+    w.open_on_branch(vec![pr]);
+    w.tick();
+    w.tick();
+    let nits: Vec<_> = w
+        .tracker
+        .list_by_label(LABEL)
+        .unwrap()
+        .into_iter()
+        .filter(|i| i.title.starts_with("Nits"))
+        .collect();
+    assert_eq!(nits.len(), 1);
+    assert!(
+        nits[0].description.contains("Finding security-1")
+            && nits[0].description.contains("Finding security-2")
+    );
+}
+
+#[test]
+fn a_dry_run_of_the_release_pass_writes_nothing() {
+    let w = World::new();
+    let intents = crate::dry::Intents::default();
+    let gh = crate::dry::DryGitHub {
+        inner: &w.github,
+        intents: &intents,
+    };
+    let tr = crate::dry::DryTracker {
+        inner: &w.tracker,
+        intents: &intents,
+    };
+    let sig = crate::dry::DrySignal { intents: &intents };
+    let t = Tick {
+        config: &w.config,
+        repo: repo(),
+        github: &gh,
+        tracker: &tr,
+        signal: &sig,
+        github_login: bot("spl-asdlc"),
+        now: Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
+        deadline: None,
+        dry_run: true,
+    };
+    let mut log = ActionLog::in_memory();
+    run(&t, &mut log);
+    assert!(w.tracker.writes().is_empty() && w.github.writes().is_empty());
+    assert!(
+        intents
+            .lines()
+            .iter()
+            .any(|l| l.contains("create \"Release acme v1.2.0\"")),
+        "{:?}",
+        intents.lines()
+    );
+}

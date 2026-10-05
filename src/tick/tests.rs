@@ -495,3 +495,91 @@ fn a_ticket_the_closure_sent_back_is_not_swept_forward_again() {
 fn bot(slug: &str) -> String {
     format!("{slug}[bot]")
 }
+
+// ---- regressions from the lot 6-7 review ----
+
+#[test]
+fn a_status_write_that_fails_after_the_merge_is_retried_by_the_sweep() {
+    let w = World::new();
+    let mut pr = in_review(&w, 7);
+    pr.reviews = vec![review("coordinator-login", "APPROVED", &pr.head_sha, "ok")];
+    w.open(pr);
+    w.tracker
+        .fail_writes_starting_with("status ABC-7 To Deploy");
+    let (report, _) = w.tick(false);
+    assert!(!report.ok());
+    assert!(w.github_writes().iter().any(|l| l.starts_with("merge")));
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::InReview));
+    w.tracker.state.borrow_mut().failing_writes.clear();
+    w.tick(false);
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::ToDeploy));
+}
+
+#[test]
+fn a_refused_merge_does_not_starve_the_next_candidate() {
+    let w = World::new();
+    let mut prs = Vec::new();
+    for n in [7, 8] {
+        prs.push(in_review(&w, n));
+    }
+    for mut pr in prs {
+        pr.reviews = vec![review("coordinator-login", "APPROVED", &pr.head_sha, "ok")];
+        w.open(pr);
+    }
+    w.github
+        .fail_writes_starting_with("merge example-org/acme#7", Some(409), "ruleset");
+    w.tick(false);
+    assert!(
+        w.github_writes()
+            .contains(&"merge example-org/acme#8 at head-8 squash".to_string())
+    );
+}
+
+#[test]
+fn a_fork_branch_is_never_deleted_in_the_base_repository() {
+    let w = World::new();
+    let mut pr = in_review(&w, 7);
+    pr.cross_repository = true;
+    pr.reviews = vec![review("coordinator-login", "APPROVED", &pr.head_sha, "ok")];
+    w.open(pr);
+    w.tick(false);
+    assert!(w.github_writes().iter().any(|l| l.starts_with("merge")));
+    assert!(
+        !w.github_writes()
+            .iter()
+            .any(|l| l.starts_with("delete-branch"))
+    );
+}
+
+#[test]
+fn a_marker_in_someone_elses_comment_is_not_the_bridges() {
+    let w = World::new();
+    let pr = green(pull_request(7));
+    w.open(pr.clone());
+    let forged = format!(
+        "nothing to see\n\n{}",
+        texts::marker("no-ticket", &[("pr", &pr.url)])
+    );
+    w.github.state.borrow_mut().comments.insert(
+        (repo(), 7),
+        Ok(vec![crate::github::Comment {
+            id: 1,
+            author: Some(Actor {
+                login: "someone-login".into(),
+                is_bot: false,
+            }),
+            body: forged,
+            created_at: None,
+            url: String::new(),
+        }]),
+    );
+    w.tick(false);
+    assert_eq!(
+        w.github_writes()
+            .iter()
+            .filter(|l| l.starts_with("comment"))
+            .count(),
+        1,
+        "the bridge still says it once"
+    );
+}

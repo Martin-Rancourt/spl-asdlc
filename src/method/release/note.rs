@@ -188,14 +188,22 @@ fn is_placeholder(line: &str) -> bool {
 /// else place it first in the `## Release note` section, above any human
 /// text and without the fresh-issue placeholder; else append the section.
 pub fn splice(description: &str, block: &str) -> String {
-    if let (Some(s), Some(e)) = (description.find(START), description.find(END)) {
-        if e > s {
-            return format!(
-                "{}{}{}",
-                &description[..s],
-                block,
-                &description[e + END.len()..]
-            );
+    // The delimiters as written, or made visible by a tracker that drops HTML
+    // comments.
+    let visible = |m: &str| crate::method::texts::visible_markers(m);
+    for (start, end) in [
+        (START.to_string(), END.to_string()),
+        (visible(START), visible(END)),
+    ] {
+        if let (Some(s), Some(e)) = (description.find(&start), description.find(&end)) {
+            if e > s {
+                return format!(
+                    "{}{}{}",
+                    &description[..s],
+                    block,
+                    &description[e + end.len()..]
+                );
+            }
         }
     }
     let lines: Vec<&str> = description.lines().collect();

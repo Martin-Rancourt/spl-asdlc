@@ -139,9 +139,17 @@ pub fn run(t: &Tick, log: &mut ActionLog) -> Report {
         return report;
     }
     let candidates = merge::pass(t, log, &mut report);
-    if !merged && t.in_time() {
-        if let Some(c) = candidates.first() {
-            merge::merge(t, log, &mut report, c);
+    if !merged {
+        // The first candidate GitHub accepts; a refused merge does not starve
+        // the others.
+        for c in &candidates {
+            if !t.in_time() {
+                report.out_of_time = true;
+                break;
+            }
+            if merge::merge(t, log, &mut report, c) {
+                break;
+            }
         }
     }
     if t.in_time() {

@@ -253,7 +253,14 @@ fn one(
     }
 
     // ---- the diff and the business-rule guard ----
-    let files = t.github.pull_files(&t.repo, pr.number).ok();
+    let files = match t.github.pull_files(&t.repo, pr.number) {
+        Ok(f) => Some(f),
+        Err(e) => {
+            // The plan holds the merge on an unread diff; the host is told.
+            t.unreadable(report, &object, format!("the PR's files: {e}"));
+            None
+        }
+    };
     if business_rules::needs_registry(&ticket.description, files.as_deref()) {
         let registry = read_registry(t, &pr.head_sha);
         let gate = business_rules::evaluate(
@@ -359,21 +366,31 @@ fn one(
         }
         return None;
     }
-    let Approval::Qualified { by } = approval else {
-        return None;
+    let by = match approval {
+        Approval::Qualified { by } => by,
+        Approval::Unreadable => {
+            t.unreadable(report, &object, "GitHub cut the review list");
+            return None;
+        }
+        _ => return None,
     };
     if !plan.holds.is_empty() {
         return None;
     }
-    if review::unresolved_threads(&pr) != Some(0) {
-        return None;
+    match review::unresolved_threads(&pr) {
+        Some(0) => {}
+        Some(_) => return None,
+        None => {
+            t.unreadable(report, &object, "GitHub cut the review threads");
+            return None;
+        }
     }
     if branch != BranchState::Current {
         return None;
     }
     if review::needs_human_approval(&t.config.review, &plan) {
         // Whose approval counts as the human one is the owner's to say
-        // (SID-868); until then the PR waits and a human is asked once.
+        // (`docs/open-points.md` #4); until then the PR waits and a human is asked once.
         ask_human(t, log, report, &pr);
         return None;
     }
@@ -411,7 +428,8 @@ pub fn merge(t: &Tick, log: &mut ActionLog, report: &mut Report, c: &Candidate) 
     if merged.is_none() {
         return false;
     }
-    if !pr.head_ref.is_empty() {
+    // A fork's branch is not the base repository's to delete.
+    if !pr.head_ref.is_empty() && !pr.cross_repository {
         t.act(
             log,
             report,
@@ -444,7 +462,7 @@ pub fn to_deploy(
         ticket.state.status,
         Some(Status::InProgress | Status::InReview | Status::Ready)
     ) {
-        t.act(
+        let moved = t.act(
             log,
             report,
             &object,
@@ -456,6 +474,11 @@ pub fn to_deploy(
                     .map_err(|e| e.to_string())
             },
         );
+        // The comment records the transition: without it, the sweep retries
+        // the status at the next tick.
+        if moved.is_none() {
+            return;
+        }
     }
     match merge_recorded(t, &ticket.key, &pr.url) {
         Ok(true) => {}
@@ -543,6 +566,31 @@ fn enter_review(
             })
             .map(|c| c.key.clone())
     };
+    // An item found by its marker whose link to the PR failed when it was
+    // created is linked again.
+    let linked = match t.tracker.items_linked_to_pr(&pr.url) {
+        Ok(l) => l,
+        Err(e) => {
+            t.unreadable(report, &object, format!("the PR's linked items: {e}"));
+            return;
+        }
+    };
+    let relink = |key: &str, title: &str, log: &mut ActionLog, report: &mut Report| {
+        if !linked.iter().any(|k| k == key) {
+            t.act(
+                log,
+                report,
+                key,
+                &format!("link {}", pr.url),
+                json!({}),
+                || {
+                    t.tracker
+                        .link_pr(key, &pr.url, title)
+                        .map_err(|e| e.to_string())
+                },
+            );
+        }
+    };
     let mut items: Vec<(String, String)> = Vec::new();
     for angle in &plan.angles {
         let want = BridgeItem::Angle {
@@ -550,7 +598,10 @@ fn enter_review(
             angle: angle.clone(),
         };
         let key = match existing(&want) {
-            Some(k) => k,
+            Some(k) => {
+                relink(&k, &format!("{angle} review"), log, report);
+                k
+            }
             None => {
                 let (title, body) = texts::review_angle_item(
                     &ticket.key,
@@ -581,7 +632,9 @@ fn enter_review(
     let want = BridgeItem::Consolidation {
         scope: scope.clone(),
     };
-    if existing(&want).is_none() {
+    if let Some(k) = existing(&want) {
+        relink(&k, "consolidation", log, report);
+    } else {
         let (title, body) = texts::consolidation_item(
             &scope,
             &format!("{} ({})", ticket.key, texts::short(&pr.head_sha)),
@@ -791,17 +844,23 @@ fn ask_human(t: &Tick, log: &mut ActionLog, report: &mut Report, pr: &PullReques
         ),
         None => "This PR needs a human approval besides the coordinator's; no `human_reviewer` is configured, so a reviewer must be assigned by hand.".to_string(),
     };
-    let asked = say_once(
-        t,
-        log,
-        report,
-        pr,
-        "human-approval",
-        &[("head", texts::short(&pr.head_sha))],
-        &text,
-    );
-    if let (true, Some(login)) = (asked, who) {
-        t.act(
+    let fields = [("head", texts::short(&pr.head_sha))];
+    match pr_said(t, pr.number, &texts::marker("human-approval", &fields)) {
+        Ok(false) => {}
+        Ok(true) => return,
+        Err(e) => {
+            t.unreadable(
+                report,
+                &format!("pr#{}", pr.number),
+                format!("the PR's comments: {e}"),
+            );
+            return;
+        }
+    }
+    // The request first, the comment (and its marker) after: a failed
+    // request is retried at the next tick.
+    if let Some(login) = &who {
+        let asked = t.act(
             log,
             report,
             &format!("pr#{}", pr.number),
@@ -809,11 +868,15 @@ fn ask_human(t: &Tick, log: &mut ActionLog, report: &mut Report, pr: &PullReques
             json!({}),
             || {
                 t.github
-                    .request_reviewers(&t.repo, pr.number, std::slice::from_ref(&login))
+                    .request_reviewers(&t.repo, pr.number, std::slice::from_ref(login))
                     .map_err(|e| e.to_string())
             },
         );
+        if asked.is_none() {
+            return;
+        }
     }
+    say_once(t, log, report, pr, "human-approval", &fields, &text);
 }
 
 /// Post `text` on the PR once per marker; returns whether it was posted now.
@@ -867,6 +930,19 @@ fn notify_once(
 ) {
     let object = format!("pr#{}", pr.number);
     let marker = texts::marker("notice", &[("event", event), ("cause", cause)]);
+    if !t.signal.takes(event) {
+        // No channel takes it: the PR comment is the notice.
+        say_once(
+            t,
+            log,
+            report,
+            pr,
+            "notice",
+            &[("event", event), ("cause", cause)],
+            text,
+        );
+        return;
+    }
     match pr_said(t, pr.number, &marker) {
         Ok(true) => {}
         Ok(false) => {
