@@ -18,4 +18,4 @@
 - `release-please-config.json` and its manifest (release-please computes versions and changelogs; the method reads them).
 - Optional: `.spl-asdlc/angles/<angle>.md` notes, `.spl-asdlc/qa/` is written by angle branches.
 
-**Verify**: `spl-asdlc doctor --repo <owner>/<repo>` reports each item above as `ok`, `missing` or `invalid`.
+**Verify**: `spl-asdlc doctor --file <spl-asdlc.toml>` reports each item above as `ok`, `missing` or `invalid`.

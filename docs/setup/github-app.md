@@ -10,6 +10,6 @@ One App per organisation or account, named after the product's service identity 
 
 **Install** on each repository that adopts the method (Install App → select repositories). A repository that is not in the installation is invisible to the bridge and the workflows fail at token minting.
 
-**Verify**: `spl-asdlc doctor --repo <owner>/<repo>` reports `github-app: ok` with the App's slug and the permissions found.
+**Verify**: `spl-asdlc doctor --file <spl-asdlc.toml>` reports `github-app: ok` with the App's slug and the permissions found.
 
 **Fallback**: where an App cannot be created (a workplace policy), the bridge accepts a fine-grained personal token with the same repository permissions. The binary prints under which login it writes; the rulesets must then list that user.
