@@ -22,7 +22,7 @@ patterns=(
   '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'   # e-mail address
   '/home/[a-z][a-z0-9_-]*'                              # Linux home path
   '/Users/[A-Za-z][A-Za-z0-9_-]*'                       # macOS home path
-  '(^|[^0-9])[0-9]{9,}([^0-9]|$)'                        # 9+-digit account / chat id
+  '(^|[^0-9A-Za-z])[0-9]{9,}([^0-9A-Za-z]|$)'            # 9+-digit account / chat id (not a run inside a hash)
   '\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b'  # uuid
   '\b[a-z0-9-]+\[bot\]'                                 # GitHub App bot login
 )
