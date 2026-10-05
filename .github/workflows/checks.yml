@@ -1,0 +1,17 @@
+name: Checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  rule-zero:
+    name: BR-ASDLC-001 — no instance data
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan every tracked file
+        env:
+          SPL_ASDLC_FORBIDDEN_WORDS: ${{ secrets.SPL_ASDLC_FORBIDDEN_WORDS }}
+        run: bash scripts/check-no-instance-names.sh
