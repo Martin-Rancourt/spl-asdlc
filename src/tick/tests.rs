@@ -72,7 +72,7 @@ impl World {
             github: &self.github,
             tracker: &self.tracker,
             signal: &self.signal,
-            github_login: "spl-asdlc[bot]".into(),
+            github_login: bot("spl-asdlc"),
             now: crate::github::Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
             deadline: None,
             dry_run,
@@ -428,7 +428,7 @@ fn a_dry_run_reads_everything_and_writes_nothing() {
         github: &gh,
         tracker: &tr,
         signal: &sig,
-        github_login: "spl-asdlc[bot]".into(),
+        github_login: bot("spl-asdlc"),
         now: crate::github::Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
         deadline: None,
         dry_run: true,
@@ -489,4 +489,9 @@ fn a_ticket_the_closure_sent_back_is_not_swept_forward_again() {
     let before = w.tracker.writes().len();
     w.tick(false);
     assert_eq!(w.tracker.writes().len(), before);
+}
+
+/// The login GitHub shows for an App.
+fn bot(slug: &str) -> String {
+    format!("{slug}[bot]")
 }

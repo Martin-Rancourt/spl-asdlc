@@ -53,28 +53,16 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
         return false;
     }
     let shape = Shape::of(&cfg.product.name, &cfg.release);
-    let tags = match t.github.tags(&t.repo, shape.candidate_tag_prefix()) {
-        Ok(tags) => tags,
+    let (candidate, tags) = match newest(t, &shape) {
+        Ok(Some(found)) => found,
+        Ok(None) => return false,
         Err(e) => {
-            t.unreadable(report, "release tags", e);
+            t.unreadable(report, "the release candidate", e);
             return false;
         }
     };
-    let Some((tag, version, rc)) = shape.newest_candidate(tags.iter().map(|r| r.name.as_str()))
-    else {
-        return false;
-    };
+    let version = candidate.version;
     let object = format!("release {} {version}", cfg.product.name);
-    let Some(tag_ref) = tags.iter().find(|r| r.name == tag) else {
-        return false;
-    };
-    let candidate = match read_candidate(t, tag_ref, version, rc) {
-        Ok(c) => c,
-        Err(e) => {
-            t.unreadable(report, &object, e);
-            return false;
-        }
-    };
     let release_tag = shape.release_tag(version);
     let published = match t.github.release(&t.repo, &release_tag) {
         Ok(r) if !r.draft => Some(r),
@@ -106,7 +94,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
     let previous = previous_candidate(&shape, &tags, &candidate);
     record_candidate(t, log, report, &item, &candidate, previous.as_deref());
     label_embarked(t, log, report, &shape, &candidate, &label);
-    let offered = offered_angles(t, &candidate);
+    let offered = offered(t, &candidate);
     let children = open_round(t, log, report, &item, &candidate, &branch, &label, &offered);
     brief(
         t,
@@ -195,6 +183,24 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
     false
 }
 
+/// The newest candidate of the product and the tags it was read from.
+pub fn newest(t: &Tick, shape: &Shape) -> Result<Option<(Candidate, Vec<GitRef>)>, String> {
+    let tags = t
+        .github
+        .tags(&t.repo, shape.candidate_tag_prefix())
+        .map_err(|e| e.to_string())?;
+    let Some((tag, version, rc)) = shape.newest_candidate(tags.iter().map(|r| r.name.as_str()))
+    else {
+        return Ok(None);
+    };
+    let tag_ref = tags
+        .iter()
+        .find(|r| r.name == tag)
+        .ok_or("the candidate tag vanished")?;
+    let candidate = read_candidate(t, tag_ref, version, rc)?;
+    Ok(Some((candidate, tags)))
+}
+
 fn read_candidate(t: &Tick, tag: &GitRef, version: Version, rc: u64) -> Result<Candidate, String> {
     let (sha, message, tagged_at) = match tag.object_type {
         ObjectType::Tag => {
@@ -237,7 +243,7 @@ fn previous_candidate(shape: &Shape, tags: &[GitRef], c: &Candidate) -> Option<S
 }
 
 /// The release branch that holds the candidate: exactly one, or unreadable.
-fn release_branch(t: &Tick, shape: &Shape, c: &Candidate) -> Result<String, String> {
+pub fn release_branch(t: &Tick, shape: &Shape, c: &Candidate) -> Result<String, String> {
     let branches = t
         .github
         .branches(&t.repo, &t.config.release.branch_prefix)
@@ -351,6 +357,39 @@ fn release_item(
     )
 }
 
+/// The release item of a version: an item with the release label whose
+/// marker names this product and version. Several is an error.
+pub fn find_release_item(
+    t: &Tick,
+    shape: &Shape,
+    version: Version,
+) -> Result<Option<Item>, String> {
+    let v = version.to_string();
+    let label = vocabulary::release_label(&shape.product, &v);
+    let want = BridgeItem::Release {
+        product: shape.product.clone(),
+        version: vocabulary::normalise_version(&v),
+    };
+    let mut mine: Vec<Item> = t
+        .tracker
+        .list_by_label(&label)
+        .map_err(|e| format!("the items labelled {label}: {e}"))?
+        .into_iter()
+        .filter(|i| texts::bridge_item(&i.description, i.parent.as_deref()).as_ref() == Some(&want))
+        .collect();
+    match mine.len() {
+        0 => Ok(None),
+        1 => Ok(Some(mine.remove(0))),
+        _ => Err(format!(
+            "several release items: {}",
+            mine.iter()
+                .map(|i| i.key.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
 /// The candidate's comment, once, and its line in `## Candidates`.
 fn record_candidate(
     t: &Tick,
@@ -370,7 +409,7 @@ fn record_candidate(
                 .unwrap_or_default();
             let lighter =
                 c.rc > 1 && t.config.release.later_passes == LaterPasses::GateAndCoordinator;
-            let offered = offered_angles(t, c);
+            let offered = offered(t, c);
             let body = for_tracker(
                 t,
                 &texts::candidate_comment(
@@ -412,7 +451,7 @@ fn record_candidate(
 }
 
 /// The angles offered on this candidate (spec 05 §7, `later_passes`).
-fn offered_angles(t: &Tick, c: &Candidate) -> Vec<String> {
+pub fn offered(t: &Tick, c: &Candidate) -> Vec<String> {
     let release = &t.config.release;
     if c.rc > u64::from(release.max_rc_passes)
         || (c.rc > 1 && release.later_passes == LaterPasses::GateAndCoordinator)
@@ -630,7 +669,7 @@ fn create_child(
 }
 
 /// The angle of a release sub-item of this candidate.
-fn angle_of(item: &Item, candidate: &str) -> Option<String> {
+pub fn angle_of(item: &Item, candidate: &str) -> Option<String> {
     match texts::bridge_item(&item.description, item.parent.as_deref())? {
         BridgeItem::Angle { scope, angle } if scope == candidate => Some(angle),
         _ => None,
@@ -1129,7 +1168,7 @@ fn relate(
 /// `open` is the list of PRs open against the release branch, where
 /// release-please proposes the release.
 #[allow(clippy::too_many_arguments)]
-fn decide(
+pub fn decide(
     t: &Tick,
     report: &mut Report,
     shape: &Shape,

@@ -5,11 +5,14 @@
 pub mod action_log;
 pub mod cli;
 pub mod config;
+pub mod doctor;
 pub mod dry;
 pub mod github;
 pub mod host;
 pub mod http;
+pub mod job;
 pub mod method;
 pub mod notify;
 pub mod tick;
 pub mod tracker;
+pub mod verbs;

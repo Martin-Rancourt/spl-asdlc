@@ -34,7 +34,7 @@ pub fn close(
     published: &Release,
 ) {
     let object = item.key.clone();
-    match ready_to_close(t, shape, c, published) {
+    match ready_to_close(t, shape, c, item, published) {
         Ok(None) => {}
         Ok(Some(waiting)) => {
             // A fact the closure waits for: nothing written, nothing to say
@@ -98,6 +98,7 @@ fn ready_to_close(
     t: &Tick,
     shape: &Shape,
     c: &Candidate,
+    item: &Item,
     published: &Release,
 ) -> Result<Option<String>, String> {
     // No release branch still holds the candidate: the branch was merged back
@@ -129,7 +130,14 @@ fn ready_to_close(
             published.tag
         )));
     }
-    if shape.multi_component() {
+    // A component deliberately not deployed is waived by `release close`
+    // (spec 09), recorded on the release item.
+    let waived = tracker_said(
+        t,
+        &item.key,
+        &texts::marker("waiver", &[("tag", &published.tag)]),
+    )?;
+    if shape.multi_component() && !waived {
         let merged = t
             .github
             .merged_pulls(&t.repo, Some(&default), None, 500)

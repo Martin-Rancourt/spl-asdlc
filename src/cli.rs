@@ -31,6 +31,65 @@ enum Command {
         #[command(subcommand)]
         command: TicketCommand,
     },
+    /// One pass of the bridge over the repository of each configuration.
+    Tick {
+        /// A `spl-asdlc.toml`; repeat for several repositories.
+        #[arg(long = "file", default_value = config::FILE_NAME)]
+        files: Vec<PathBuf>,
+        /// Read for real, write nothing: print what the tick would do.
+        #[arg(long)]
+        dry_run: bool,
+        /// The action log (default: the user's state directory).
+        #[arg(long)]
+        log: Option<PathBuf>,
+    },
+    /// The release cycle's verbs (`docs/spec/09-human-gestures.md`).
+    Release {
+        #[command(subcommand)]
+        command: ReleaseCommand,
+        /// The configuration of the product.
+        #[arg(long, global = true, default_value = config::FILE_NAME)]
+        file: PathBuf,
+        /// The product, checked against the configuration.
+        #[arg(long, global = true)]
+        product: Option<String>,
+    },
+    /// Verify the setup of the repository a configuration names.
+    Doctor {
+        #[arg(long, default_value = config::FILE_NAME)]
+        file: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ReleaseCommand {
+    /// The GO decision and its inputs (exit 1 when there is no GO).
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Dispatch the cut workflow: the next candidate, or a new cycle.
+    Cut {
+        #[arg(long)]
+        open: bool,
+    },
+    /// Close a cycle by waiver: a component deliberately not deployed.
+    Close {
+        #[arg(long)]
+        version: String,
+        #[arg(long)]
+        reason: String,
+    },
+    /// Change a finding's severity.
+    Requalify {
+        ticket: String,
+        #[arg(long)]
+        severity: String,
+        #[arg(long)]
+        reason: String,
+    },
+    /// Abandon the cycle in flight.
+    Abandon,
 }
 
 #[derive(Debug, Subcommand)]
@@ -90,6 +149,277 @@ where
                     file,
                 },
         } => ticket_check(item, description, &file, &mut out, &mut err),
+        Command::Tick {
+            files,
+            dry_run,
+            log,
+        } => tick(&files, dry_run, log, &mut out, &mut err),
+        Command::Release {
+            command,
+            file,
+            product,
+        } => release(command, &file, product.as_deref(), &mut out, &mut err),
+        Command::Doctor { file } => doctor(&file, &mut out, &mut err),
+    }
+}
+
+/// What a verb needs: the configuration and the two clients.
+struct Connected {
+    config: Config,
+    github: crate::github::RestGitHub,
+    tracker: crate::tracker::linear::Linear,
+    repo: crate::github::RepoSlug,
+    login: String,
+}
+
+fn connect(file: &std::path::Path) -> Result<Connected, String> {
+    let config = Config::load(file).map_err(|errors| {
+        format!(
+            "{}: invalid configuration\n{}",
+            file.display(),
+            errors
+                .0
+                .iter()
+                .map(|e| format!("  {e}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    })?;
+    let env = crate::host::process_env;
+    let github = crate::host::github(&config, &env)?;
+    let tracker = crate::host::linear(&config, &env)?;
+    let repo = crate::github::RepoSlug::parse(&config.product.repository)
+        .ok_or("product.repository is not <owner>/<repo>")?;
+    let login = crate::github::GitHub::identity(&github)
+        .map_err(|e| format!("GitHub identity: {e}"))?
+        .login();
+    Ok(Connected {
+        config,
+        github,
+        tracker,
+        repo,
+        login,
+    })
+}
+
+fn tick(
+    files: &[PathBuf],
+    dry_run: bool,
+    log_path: Option<PathBuf>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> ExitCode {
+    use crate::action_log::{self, ActionLog};
+    let mut code = ExitCode::SUCCESS;
+    for file in files {
+        let c = match connect(file) {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = writeln!(err, "{e}");
+                return ExitCode::from(2);
+            }
+        };
+        let tracker_name = crate::tracker::Tracker::identity(&c.tracker)
+            .map(|u| u.name)
+            .unwrap_or_else(|e| format!("unknown ({e})"));
+        let _ = writeln!(
+            out,
+            "{}: GitHub as {}, {} as {}{}",
+            c.repo,
+            c.login,
+            c.config.tracker.kind,
+            tracker_name,
+            if dry_run {
+                " — dry run, nothing is written"
+            } else {
+                ""
+            }
+        );
+        let env = crate::host::process_env;
+        let signal = crate::job::channels(&c.config, &env);
+        let intents = crate::dry::Intents::default();
+        let dry_github = crate::dry::DryGitHub {
+            inner: &c.github,
+            intents: &intents,
+        };
+        let dry_tracker = crate::dry::DryTracker {
+            inner: &c.tracker,
+            intents: &intents,
+        };
+        let dry_signal = crate::dry::DrySignal { intents: &intents };
+        let t = crate::tick::Tick {
+            config: &c.config,
+            repo: c.repo.clone(),
+            github: if dry_run { &dry_github } else { &c.github },
+            tracker: if dry_run { &dry_tracker } else { &c.tracker },
+            signal: if dry_run {
+                &dry_signal
+            } else {
+                signal.as_ref()
+            },
+            github_login: c.login.clone(),
+            now: crate::github::Timestamp::now(),
+            deadline: None,
+            dry_run,
+        };
+        let mut log = if dry_run {
+            ActionLog::in_memory()
+        } else {
+            match log_path
+                .clone()
+                .or_else(|| ActionLog::default_path(&c.repo, &env))
+            {
+                Some(p) => ActionLog::at(p),
+                None => {
+                    let _ = writeln!(err, "no state directory is known: pass --log <file>");
+                    return ExitCode::from(2);
+                }
+            }
+        };
+        let report = crate::tick::run(&t, &mut log);
+        for e in log.entries() {
+            let _ = writeln!(out, "{}", action_log::describe(e));
+        }
+        if dry_run {
+            for line in intents.lines() {
+                let _ = writeln!(out, "  would write: {line}");
+            }
+        }
+        if let Err(e) = log.flush() {
+            let _ = writeln!(err, "the action log could not be written: {e}");
+            code = ExitCode::from(1);
+        }
+        for f in &report.failures {
+            let _ = writeln!(err, "{}: {f}", c.repo);
+        }
+        let _ = writeln!(out, "{}: {}", c.repo, report.summary());
+        if !report.ok() {
+            code = ExitCode::from(1);
+        }
+    }
+    code
+}
+
+fn who() -> String {
+    crate::host::process_env("USER")
+        .or_else(|| crate::host::process_env("USERNAME"))
+        .unwrap_or_else(|| "a human at the command line".to_string())
+}
+
+fn release(
+    command: ReleaseCommand,
+    file: &std::path::Path,
+    product: Option<&str>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> ExitCode {
+    let c = match connect(file) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = writeln!(err, "{e}");
+            return ExitCode::from(2);
+        }
+    };
+    if let Some(p) = product.filter(|p| *p != c.config.product.name) {
+        let _ = writeln!(
+            err,
+            "{} configures {}, not {p}",
+            file.display(),
+            c.config.product.name
+        );
+        return ExitCode::from(2);
+    }
+    let env = crate::host::process_env;
+    let signal = crate::job::channels(&c.config, &env);
+    let t = crate::tick::Tick {
+        config: &c.config,
+        repo: c.repo.clone(),
+        github: &c.github,
+        tracker: &c.tracker,
+        signal: signal.as_ref(),
+        github_login: c.login.clone(),
+        now: crate::github::Timestamp::now(),
+        deadline: None,
+        dry_run: false,
+    };
+    let mut log = match crate::action_log::ActionLog::default_path(&c.repo, &env) {
+        Some(p) => crate::action_log::ActionLog::at(p),
+        None => crate::action_log::ActionLog::in_memory(),
+    };
+    let result = match command {
+        ReleaseCommand::Status { json } => match crate::verbs::status(&t) {
+            Ok((cycle, d)) => {
+                if json {
+                    let _ = writeln!(out, "{}", d.as_json());
+                } else {
+                    let _ = writeln!(
+                        out,
+                        "{} {}: {}",
+                        cycle.item.key,
+                        cycle.candidate.tag,
+                        if d.go { "GO" } else { "no GO" }
+                    );
+                    for r in &d.reasons {
+                        let _ = writeln!(out, "  - {r}");
+                    }
+                    let _ = writeln!(out, "  Blockers-Carried: {}", d.blockers_carried());
+                }
+                return if d.go {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(1)
+                };
+            }
+            Err(e) => Err(e),
+        },
+        ReleaseCommand::Cut { open } => crate::verbs::cut(&t, &mut log, open),
+        ReleaseCommand::Close { version, reason } => {
+            crate::verbs::close(&t, &mut log, &version, &reason, &who())
+        }
+        ReleaseCommand::Requalify {
+            ticket,
+            severity,
+            reason,
+        } => match crate::method::vocabulary::Severity::from_name(&severity) {
+            Some(s) => crate::verbs::requalify(&t, &mut log, &ticket, s, &reason, &who()),
+            None => Err(format!(
+                "--severity must be blocker, should-fix or nit, not {severity}"
+            )),
+        },
+        ReleaseCommand::Abandon => crate::verbs::abandon(&t, &mut log, &who()),
+    };
+    let _ = log.flush();
+    match result {
+        Ok(line) => {
+            let _ = writeln!(out, "{line}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            let _ = writeln!(err, "{e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn doctor(file: &std::path::Path, out: &mut dyn Write, err: &mut dyn Write) -> ExitCode {
+    let c = match connect(file) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = writeln!(err, "{e}");
+            return ExitCode::from(2);
+        }
+    };
+    let checks = crate::doctor::run(&c.config, &c.github, &c.tracker, "spl-asdlc binary");
+    for check in &checks {
+        let _ = writeln!(out, "{check}");
+    }
+    if checks
+        .iter()
+        .all(|c| c.verdict == crate::doctor::Verdict::Ok)
+    {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
     }
 }
 

@@ -188,7 +188,7 @@ impl World {
             github: &self.github,
             tracker: &self.tracker,
             signal: &self.signal,
-            github_login: "spl-asdlc[bot]".into(),
+            github_login: bot("spl-asdlc"),
             now: Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
             deadline: None,
             dry_run: false,
@@ -383,7 +383,7 @@ fn release_pr(w: &World, staged: &str) -> PullRequest {
     pr.body = format!("<summary>acme: {staged}</summary>");
     pr.labels = vec!["autorelease: pending".into()];
     pr.author = Some(Actor {
-        login: "release-app[bot]".into(),
+        login: bot("release-app"),
         is_bot: true,
     });
     let changelog = format!("## [{staged}](x) (2026-10-05)\n\n### Features\n\n* m1 ([m1](x))\n");
@@ -528,4 +528,155 @@ fn a_failed_note_send_keeps_the_release_open_and_is_retried() {
         failing.tracker.item(&release.key).state.status,
         Some(Status::Done)
     );
+}
+
+// ---- the verbs (spec 09) ----
+
+impl World {
+    fn tick_ctx(&self) -> Tick<'_> {
+        Tick {
+            config: &self.config,
+            repo: repo(),
+            github: &self.github,
+            tracker: &self.tracker,
+            signal: &self.signal,
+            github_login: bot("spl-asdlc"),
+            now: Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
+            deadline: None,
+            dry_run: false,
+        }
+    }
+}
+
+#[test]
+fn release_cut_dispatches_the_next_candidate_or_refuses_a_second_cycle() {
+    let w = World::new();
+    let t = w.tick_ctx();
+    let mut log = ActionLog::in_memory();
+    let line = crate::verbs::cut(&t, &mut log, false).unwrap();
+    assert!(line.contains("action candidate"), "{line}");
+    assert!(
+        w.github
+            .writes()
+            .iter()
+            .any(|l| l.contains("release-cut.yml") && l.contains(BRANCH))
+    );
+    let refused = crate::verbs::cut(&t, &mut log, true).unwrap_err();
+    assert!(refused.contains("a cycle is in flight"), "{refused}");
+}
+
+#[test]
+fn release_status_says_why_there_is_no_go() {
+    let w = World::new();
+    w.tick();
+    let (cycle, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
+    assert_eq!(cycle.candidate.tag, CAND);
+    assert!(!d.go);
+    assert!(!d.reasons.is_empty());
+    assert!(w.github.writes().is_empty(), "read-only");
+}
+
+#[test]
+fn a_blocker_requalified_as_should_fix_stops_blocking() {
+    let w = World::new();
+    w.tick();
+    let pr = w.angle_pr(
+        30,
+        "security",
+        &report_json("security", &finding("security-1", "blocker")),
+    );
+    w.open_on_branch(vec![pr]);
+    w.tick();
+    w.tick();
+    let release = w.release_item();
+    let blocker = w.tracker.relations(&release.key).unwrap().blocked_by[0]
+        .other
+        .clone();
+    let t = w.tick_ctx();
+    let mut log = ActionLog::in_memory();
+    assert!(
+        crate::verbs::requalify(
+            &t,
+            &mut log,
+            &blocker,
+            crate::method::vocabulary::Severity::ShouldFix,
+            " ",
+            "me"
+        )
+        .is_err(),
+        "a reason is required"
+    );
+    crate::verbs::requalify(
+        &t,
+        &mut log,
+        &blocker,
+        crate::method::vocabulary::Severity::ShouldFix,
+        "Not reachable in production.",
+        "me",
+    )
+    .unwrap();
+    assert!(
+        w.tracker
+            .relations(&release.key)
+            .unwrap()
+            .blocked_by
+            .is_empty()
+    );
+    let item = w.tracker.item(&blocker);
+    assert!(crate::method::release::findings::parse_blocker_marker(&item.description).is_none());
+    assert!(item.labels.contains(&"qa-finding".to_string()));
+    assert_eq!(item.state.status, Some(Status::Triage));
+    assert!(
+        w.tracker
+            .comments(&release.key)
+            .unwrap()
+            .iter()
+            .any(|c| c.body.starts_with("Requalified by me"))
+    );
+}
+
+#[test]
+fn abandoning_merges_the_branch_back_and_cancels_the_release() {
+    let w = World::new();
+    w.tick();
+    {
+        let mut s = w.github.state.borrow_mut();
+        s.compares.insert(
+            (repo(), "main".into(), BRANCH.into()),
+            cmp(CompareStatus::Ahead, &["fix"], &["src/a.rs"]),
+        );
+        s.commits.insert(
+            (repo(), BRANCH.into()),
+            Ok(Commit {
+                sha: "tip".into(),
+                message: "fix".into(),
+                committer_date: None,
+                parents: vec![],
+            }),
+        );
+    }
+    let release = w.release_item();
+    let t = w.tick_ctx();
+    let mut log = ActionLog::in_memory();
+    crate::verbs::abandon(&t, &mut log, "me").unwrap();
+    let writes = w.github.writes();
+    assert!(
+        writes
+            .iter()
+            .any(|l| l.starts_with(&format!("create-pull example-org/acme {BRANCH} -> main"))),
+        "{writes:?}"
+    );
+    assert!(
+        writes.iter().any(|l| l.ends_with("at tip merge")),
+        "{writes:?}"
+    );
+    assert_eq!(
+        w.tracker.item(&release.key).state.status,
+        Some(Status::Canceled)
+    );
+}
+
+/// The login GitHub shows for an App.
+fn bot(slug: &str) -> String {
+    format!("{slug}[bot]")
 }

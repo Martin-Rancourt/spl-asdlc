@@ -129,7 +129,15 @@ impl Tick<'_> {
 /// repository per tick (invariant 6). The caller flushes the action log.
 pub fn run(t: &Tick, log: &mut ActionLog) -> Report {
     let mut report = Report::default();
+    if !t.in_time() {
+        report.out_of_time = true;
+        return report;
+    }
     let merged = release::pass(t, log, &mut report);
+    if !t.in_time() {
+        report.out_of_time = true;
+        return report;
+    }
     let candidates = merge::pass(t, log, &mut report);
     if !merged && t.in_time() {
         if let Some(c) = candidates.first() {
