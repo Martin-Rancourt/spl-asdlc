@@ -16,6 +16,8 @@ Canonical names. A tracker adapter maps them to the tracker's own names; configu
 | **Done** | Released and every box ticked. | The bridge, at closure |
 | **Canceled** | Will not be done. | The owner |
 
+In Review, To Deploy and Post Deploy are **validation** states: the item is still open and still blocks what depends on it, but no implementer is ever served it. Each of these states belongs to a process (PR review, release cycle, post-release verification) driven by the bridge and the coordinator. A tracker that has status groups puts them in a group of their own, outside what it serves to implementers.
+
 ## Items created by the bridge
 
 | Item | Parent | Purpose |

@@ -10,6 +10,7 @@ One deterministic process, `spl-asdlc tick`, that turns GitHub facts into tracke
 4. **Every write is idempotent.** The bridge keeps an action log (append-only, one line per decision: when, repository, object, action, inputs, outcome). A fact already acted upon is skipped; a fact whose action failed is retried at the next tick; a tracker read that fails writes nothing and retries.
 5. **It fails closed.** An unreadable configuration, registry, ticket or PR link stops the decision that depends on it and says so in the log; it never guesses and never degrades to "no constraint".
 6. **One merge per repository per tick**, so that the next tick re-reads a base that moved.
+7. **It leaves no heartbeat in the data.** A tick that finds nothing to do writes nothing, anywhere. A tick that works leaves only its effects (transitions, comments, links, merges), signed by its identity: that is its report. It never rewrites an unchanged value. A failed tick (error, time budget exceeded) is reported once to its host (the host's job log, the action log), never as a fact on an item.
 
 ## What a tick does, in order, per configured repository
 
