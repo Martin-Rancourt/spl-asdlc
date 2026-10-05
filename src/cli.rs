@@ -73,7 +73,7 @@ fn config_check(file: &std::path::Path, out: &mut dyn Write, err: &mut dyn Write
         Ok(c) => {
             let _ = writeln!(
                 out,
-                "{}: valid — product {} ({}), tracker {:?} team {}, {} release angle(s), {} review angle(s)",
+                "{}: valid — product {} ({}), tracker {} team {}, {} release angle(s), {} review angle(s)",
                 file.display(),
                 c.product.name,
                 c.product.repository,

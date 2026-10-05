@@ -22,13 +22,16 @@ patterns=(
   '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'   # e-mail address
   '/home/[a-z][a-z0-9_-]*'                              # Linux home path
   '/Users/[A-Za-z][A-Za-z0-9_-]*'                       # macOS home path
-  '(^|[^0-9A-Za-z])[0-9]{9,}([^0-9A-Za-z]|$)'            # 9+-digit account / chat id (not a run inside a hash)
+  '(^|[^0-9])[0-9]{9,}([^0-9]|$)'                        # 9+-digit account / chat id
   '\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b'  # uuid
   '\b[a-z0-9-]+\[bot\]'                                 # GitHub App bot login
 )
 for p in "${patterns[@]}"; do
   # Never decide on grep's exit status through xargs (123 when one batch has no match): read the output.
   hits=$(printf '%s\n' "$files" | xargs -r grep -nE -- "$p" 2>/dev/null || true)
+  # A digit run inside a long hexadecimal hash (a lockfile checksum, a commit id) is not an
+  # identifier: strip such hashes from the hit lines and keep only what still matches.
+  hits=$(printf '%s\n' "$hits" | sed -E 's/[0-9a-fA-F]{32,}//g' | grep -E -- "$p" || true)
   # The licence text and this script's own pattern list are the only allowed carriers.
   hits=$(printf '%s\n' "$hits" | grep -v -e '^LICENSE:' -e '^scripts/check-no-instance-names.sh:' -e '^$' || true)
   [ -n "$hits" ] && report "$hits"

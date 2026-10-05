@@ -300,8 +300,8 @@ Notes: the approval decision is re-derived every tick from the live review list 
 
 ### Merge action and branch deletion
 
-**REQ-MERGE-057 — The merge is a squash merge through the REST merge endpoint, pinned to the head SHA the pass vetted.**
-HTTP PUT `…/pulls/<n>/merge` with `merge_method=squash` and `sha=<vetted head SHA>` (omitted only if no SHA is known). A push after vetting fails the merge (HTTP 409) instead of riding it. It is NOT `gh pr merge` (which refuses client-side any PR whose merge state is BLOCKED, even for ruleset bypass actors); GitHub itself still enforces rulesets on this call, so an identity off the bypass list is refused there. The archived-ticket check is repeated immediately before the call (REQ-MERGE-027).
+**REQ-MERGE-057 — The merge goes through the REST merge endpoint with the configured method (`[review] merge_method`, squash by default), pinned to the head SHA the pass vetted.**
+HTTP PUT `…/pulls/<n>/merge` with `merge_method=<squash|merge>` and `sha=<vetted head SHA>` (omitted only if no SHA is known). A push after vetting fails the merge (HTTP 409) instead of riding it. It is NOT `gh pr merge` (which refuses client-side any PR whose merge state is BLOCKED, even for ruleset bypass actors); GitHub itself still enforces rulesets on this call, so an identity off the bypass list is refused there. The archived-ticket check is repeated immediately before the call (REQ-MERGE-027).
 Source: `pr_merge.py:4367-4420` (`_merge`).
 Notes: reason (a past incident, 2026-09-25): on a base under an "update" ruleset every PR reads BLOCKED, so this pass merged nothing on AgentForge since the ruleset existed (#722 approved and green, refused every tick). Tests: `test_a_green_up_to_date_pr_is_squash_merged`, `test_a_base_under_an_update_ruleset_is_merged_through_rest`, `test_only_one_pr_is_merged_per_tick`.
 

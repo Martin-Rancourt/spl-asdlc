@@ -375,5 +375,23 @@ fn team_keys_are_capital_letters() {
         "service_identity = \"spl-asdlc\"\n",
         "service_identity = \"spl-asdlc\"\nteam_keys = [\"abc\"]\n",
     );
-    assert_refused_with(&text, "must be two to five capital letters");
+    assert_refused_with(&text, "must be capital letters and digits");
+    let digits = MINIMAL.replace(
+        "service_identity = \"spl-asdlc\"\n",
+        "service_identity = \"spl-asdlc\"\nteam_keys = [\"AB1\"]\n",
+    );
+    assert!(Config::parse(&digits).is_ok());
+}
+
+#[test]
+fn a_bad_release_value_does_not_hide_the_owner_requirement() {
+    let text = MINIMAL.replace(
+        "[release]\n",
+        "[release]\ngo_policy = \"human\"\nlater_passes = \"some\"\n",
+    );
+    assert_refused_with(&text, "release.later_passes");
+    assert_refused_with(
+        &text,
+        "owner.github_login: is required when release.go_policy",
+    );
 }

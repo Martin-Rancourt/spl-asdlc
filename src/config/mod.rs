@@ -73,6 +73,15 @@ pub enum TrackerKind {
     Livela,
 }
 
+impl fmt::Display for TrackerKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            TrackerKind::Linear => "linear",
+            TrackerKind::Livela => "livela",
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkFallback {
     /// Only the tracker's own PR link (attachment / web link) names a ticket.
@@ -446,11 +455,14 @@ impl Validator {
             ),
             None => self.err("schema", format!("is required (schema = {SCHEMA_VERSION})")),
         }
+        // Read before the release table is consumed, so that a bad value
+        // elsewhere in [release] does not hide the owner's requirement.
+        let human_go = raw.release.as_ref().and_then(|r| r.go_policy.as_deref()) == Some("human");
         let product = self.product(raw.product);
         let tracker = self.tracker(raw.tracker);
         let release = self.release(raw.release, product.as_ref());
         let review = self.review(raw.review);
-        let owner = self.owner(raw.owner, release.as_ref());
+        let owner = self.owner(raw.owner, human_go);
         let bridge = self.bridge(raw.bridge);
         let notify = self.notify(raw.notify);
         Some(Config {
@@ -495,7 +507,7 @@ impl Validator {
         })
     }
 
-    fn owner(&mut self, raw: Option<raw::RawOwner>, release: Option<&Release>) -> Option<Owner> {
+    fn owner(&mut self, raw: Option<raw::RawOwner>, human_go: bool) -> Option<Owner> {
         let Some(raw) = raw else {
             self.err(
                 "owner",
@@ -505,7 +517,7 @@ impl Validator {
         };
         let tracker_user = self.required("owner.tracker_user", raw.tracker_user);
         let github_login = self.optional("owner.github_login", raw.github_login);
-        if github_login.is_none() && release.is_some_and(|r| r.go_policy == GoPolicy::Human) {
+        if github_login.is_none() && human_go {
             self.err(
                 "owner.github_login",
                 "is required when release.go_policy = \"human\": the owner's approval is read on GitHub",
@@ -535,10 +547,16 @@ impl Validator {
         let service_identity = self.required("tracker.service_identity", raw.service_identity);
         let team_keys = self.list("tracker.team_keys", raw.team_keys, Vec::new(), false);
         for (i, k) in team_keys.iter().enumerate() {
-            if !(2..=5).contains(&k.len()) || !k.chars().all(|c| c.is_ascii_uppercase()) {
+            let mut chars = k.chars();
+            let ok = chars.next().is_some_and(|c| c.is_ascii_uppercase())
+                && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+                && k.len() <= 10;
+            if !ok {
                 self.err(
                     &format!("tracker.team_keys[{i}]"),
-                    format!("\"{k}\" must be two to five capital letters"),
+                    format!(
+                        "\"{k}\" must be capital letters and digits, starting with a letter (an identifier prefix such as `ABC`)"
+                    ),
                 );
             }
         }

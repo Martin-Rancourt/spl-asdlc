@@ -5,7 +5,6 @@ edition = "2024"
 rust-version = "1.85"
 description = "The bridge of SPL-ASDLC: turns GitHub facts into tracker state and tracker state into GitHub actions."
 license = "Apache-2.0"
-repository = "https://github.com/Martin-Rancourt/spl-asdlc"
 readme = "README.md"
 publish = false
 

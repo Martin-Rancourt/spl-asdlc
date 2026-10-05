@@ -94,13 +94,14 @@ events = ["release-note", "escalation", "stagnation", "stuck-pr", "blind-pass"]
 
 ## Rules
 
-1. Secrets are never in the file: `target`, `token` and identities are references (`env:<VARIABLE>`) resolved from the environment of the host that runs the bridge. A literal value where a reference is expected is an error.
-2. Tag patterns must contain `{version}` exactly once and `{rc}` exactly once for the candidate; the release tag contains `{version}` exactly once and no `{rc}`; no other placeholder is accepted. A multi-component product must name its components, its version component and its gate record.
-3. Angle keys name branches (`qa/<candidate>/<angle>`) and files (`<angle>.json`): lower-case letters, digits and hyphens, unique per list. The protocol files are looked up by key under `docs/agents/angles/` of this product, then under the project's notes.
+1. Secrets are never in the file. A channel's `target` and `token` are references `env:<VARIABLE>` (`VARIABLE`: capital letters, digits and `_`, not starting with a digit) resolved from the environment of the host that runs the bridge; a literal value there is an error. Identities (`service_identity`, logins, `github_identity`) are names, never credentials: the credentials themselves come from the host (`docs/setup/bridge.md`).
+2. Tag patterns must contain `{version}` exactly once and `{rc}` exactly once for the candidate; the release tag contains `{version}` exactly once and no `{rc}`; `record` contains `{candidate}` exactly once and `gate_record` `{version}` exactly once; no other placeholder is accepted. A multi-component product must name its components, its version component and its gate record; a version component without components is an error.
+3. Angle keys name branches (`qa/<candidate>/<angle>`) and files (`<angle>.json`): lower-case letters, digits and hyphens, not starting with a hyphen, unique per list. Product and component names follow the same shape (they appear in tags and labels). The protocol files are looked up by key under `docs/agents/angles/` of this product, then under the project's notes.
 4. `go_policy = "human"` adds the owner's approval on the release issue to the computed conditions; it never replaces them.
 5. The sensitive-path file follows the format of `.github/review-paths.json`: a list of globs and a list of documented exceptions; it is read at the PR's base ref, so a PR cannot weaken the list that judges it. When `sensitive_paths` is declared, the file must exist and be valid at the base: absent or unreadable, the PR waits, one human notice says "configuration invalid for this repository", and `doctor` reports it — never "no sensitive path". Only when the key is not declared at all are there no sensitive paths.
-6. Unknown keys are errors (a misspelt key is never a silently ignored setting). `config check` lists every problem, not only the first.
+6. Unknown keys are errors (a misspelt key is never a silently ignored setting). `config check` lists every problem of a well-formed file; a file that is not valid TOML, carries an unknown key or a value of the wrong type (a string where a number is expected) is reported by its first such error, with its line.
 7. Every default below is what the bridge uses when the key is absent; a present key with an invalid value is an error, never replaced by its default.
+8. A list never names the same entry twice (paths, logins, components, events): a repeated entry is an error, not a harmless duplicate, because it usually hides a typo next to it.
 
 ## Keys
 
@@ -128,7 +129,7 @@ events = ["release-note", "escalation", "stagnation", "stuck-pr", "blind-pass"]
 | `tracker.kind` | required | `linear` or `livela`. | Other value: file invalid. |
 | `tracker.team` | required | Team key (Linear) or workspace id (Livela) where release items and finding tickets are created. | Unknown team: no release item is created, the candidate waits ("no team"). |
 | `tracker.service_identity` | required | Name of the service account the bridge writes as; printed by the binary. | A token for another identity: `doctor` reports the mismatch. |
-| `tracker.team_keys` | `[]` (ask the tracker) | Identifier prefixes (`ABC`) of the team's items; only those count as embarked tickets of a release. | Empty and the tracker cannot say: the embarked list is unreadable, the brief is not posted. |
+| `tracker.team_keys` | `[]` (ask the tracker) | Identifier prefixes (`ABC`; capital letters and digits, starting with a letter) of the team's items; only those count as embarked tickets of a release. | Empty and the tracker cannot say: the embarked list is unreadable, the brief is not posted. |
 | `tracker.link_fallback` | `"none"` | How a PR names its ticket when the tracker holds no link for the PR: `none` (only the tracker's own link), `body-url` (the tracker item URL in the PR body). Titles, branch names and bare identifiers are never read. | No link: the PR is not reviewed nor merged; a green PR raises one human notice. |
 | `tracker.statuses` | identity for every canonical status | Canonical status → tracker status, for the ones named differently. | A non-canonical key, or two canonical statuses mapped to one tracker status: file invalid. A mapped status the team lacks: the write fails and is retried; `doctor` reports it. |
 
