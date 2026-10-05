@@ -9,10 +9,14 @@
 //! already in place calls no write and leaves no entry: a tick with nothing
 //! to do writes nothing, anywhere (invariant 7).
 
+pub mod closure;
 pub mod link;
 pub mod merge;
+pub mod release;
 pub mod sweep;
 
+#[cfg(test)]
+mod release_tests;
 #[cfg(test)]
 mod tests;
 
@@ -125,7 +129,7 @@ impl Tick<'_> {
 /// repository per tick (invariant 6). The caller flushes the action log.
 pub fn run(t: &Tick, log: &mut ActionLog) -> Report {
     let mut report = Report::default();
-    let merged = false;
+    let merged = release::pass(t, log, &mut report);
     let candidates = merge::pass(t, log, &mut report);
     if !merged && t.in_time() {
         if let Some(c) = candidates.first() {

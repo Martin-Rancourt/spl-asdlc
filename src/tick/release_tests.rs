@@ -1,0 +1,531 @@
+//! The release pass and the closure against the in-memory GitHub and
+//! tracker (spec 05): the cycle opened at the first tick after the cut, the
+//! angle PRs merged with their findings filed once, the GO and the merge of
+//! the release PR, the closure and the release note.
+
+use super::*;
+use crate::config::Config;
+use crate::github::fake::{FakeGitHub, pull_request};
+use crate::github::{
+    Actor, CheckEntry, CheckKind, Commit, CommitPull, CommitSummary, CompareStatus, Comparison,
+    GitRef, Identity, ObjectType, PrState, PullRequest, Release, RepoSlug, RequiredChecks, Review,
+    Timestamp, WorkflowRun,
+};
+use crate::method::texts::{self, BridgeItem};
+use crate::method::vocabulary::Status;
+use crate::notify::Recorder;
+use crate::tracker::Tracker;
+use crate::tracker::fake::FakeTracker;
+
+const BRANCH: &str = "release/2026-10-05-14-03-utc";
+const CAND: &str = "acme-v1.2.0-rc.1";
+const LABEL: &str = "release/acme-v1.2.0";
+
+fn repo() -> RepoSlug {
+    RepoSlug::parse("example-org/acme").unwrap()
+}
+
+fn config() -> Config {
+    let spec = include_str!("../../docs/spec/08-configuration.md");
+    let start = spec.find("```toml\n").unwrap() + "```toml\n".len();
+    let end = start + spec[start..].find("```").unwrap();
+    Config::parse(&spec[start..end]).unwrap()
+}
+
+fn tag(name: &str, sha: &str) -> GitRef {
+    GitRef {
+        name: name.into(),
+        sha: sha.into(),
+        object_type: ObjectType::Commit,
+    }
+}
+
+fn cmp(status: CompareStatus, commits: &[&str], files: &[&str]) -> crate::github::Read<Comparison> {
+    Ok(Comparison {
+        status,
+        ahead_by: commits.len() as u64,
+        behind_by: 0,
+        commits: commits
+            .iter()
+            .map(|c| CommitSummary {
+                sha: c.to_string(),
+                subject: format!("feat: {c}"),
+            })
+            .collect(),
+        files: files.iter().map(|f| f.to_string()).collect(),
+    })
+}
+
+fn green(mut pr: PullRequest) -> PullRequest {
+    pr.checks = vec![CheckEntry {
+        kind: CheckKind::Run,
+        name: "required-check".into(),
+        workflow: Some("checks".into()),
+        status: Some("COMPLETED".into()),
+        conclusion: Some("SUCCESS".into()),
+        started_at: None,
+        details_url: None,
+    }];
+    pr
+}
+
+fn report_json(angle: &str, findings: &str) -> String {
+    let verdict = if findings.contains("blocker") {
+        "hold"
+    } else {
+        "go"
+    };
+    format!(
+        r#"{{"schema":"spl-asdlc/qa-report/1","candidate":"{CAND}","angle":"{angle}","reviewer":"reviewer-handle",
+           "verdict":"{verdict}","checked":["the whole project"],"findings":[{findings}]}}"#
+    )
+}
+
+fn finding(id: &str, severity: &str) -> String {
+    format!(
+        r#"{{"id":"{id}","severity":"{severity}","summary":"Finding {id}","anchor":"src/a.rs:1","evidence":"e","fixed_in_branch":false,"testable":true,"proposed_test":"test_{id}","ticket":null}}"#
+    )
+}
+
+struct World {
+    config: Config,
+    github: FakeGitHub,
+    tracker: FakeTracker,
+    signal: Recorder,
+}
+
+impl World {
+    /// A cut just happened: the release branch and the first candidate,
+    /// one shipped ticket in the range, the gate green.
+    fn new() -> World {
+        let github = FakeGitHub::new();
+        {
+            let mut s = github.state.borrow_mut();
+            s.identity = Some(Identity::App {
+                slug: "spl-asdlc".into(),
+                app_id: "1".into(),
+            });
+            s.default_branch.insert(repo(), "main".into());
+            s.tags
+                .insert(repo(), vec![tag("acme-v1.1.0", "r0"), tag(CAND, "c1")]);
+            s.branches.insert(repo(), vec![tag(BRANCH, "c1")]);
+            s.commits.insert(
+                (repo(), "c1".into()),
+                Ok(Commit {
+                    sha: "c1".into(),
+                    message: "chore: candidate".into(),
+                    committer_date: Timestamp::parse("2026-10-05T11:30:00Z"),
+                    parents: vec![],
+                }),
+            );
+            s.compares.insert(
+                (repo(), "c1".into(), BRANCH.into()),
+                cmp(CompareStatus::Identical, &[], &[]),
+            );
+            s.compares.insert(
+                (repo(), "acme-v1.1.0".into(), "c1".into()),
+                cmp(CompareStatus::Ahead, &["m1"], &["src/a.rs"]),
+            );
+            s.commit_pulls.insert(
+                (repo(), "m1".into()),
+                Ok(vec![CommitPull {
+                    number: 5,
+                    url: "https://github.com/example-org/acme/pull/5".into(),
+                    merged_at: None,
+                    merge_commit_sha: Some("m1".into()),
+                    base_ref: "main".into(),
+                    head_ref: "feat/five".into(),
+                }]),
+            );
+            s.runs.insert(
+                (repo(), "release-gate.yml".into()),
+                Ok(vec![WorkflowRun {
+                    id: 1,
+                    head_sha: "c1".into(),
+                    head_branch: CAND.into(),
+                    event: "push".into(),
+                    status: "completed".into(),
+                    conclusion: Some("success".into()),
+                    url: "https://github.com/example-org/acme/actions/runs/1".into(),
+                    created_at: None,
+                }]),
+            );
+            s.open_pulls.insert(repo(), Ok(Vec::new()));
+            s.merged_pulls.insert(repo(), Ok(Vec::new()));
+            s.required_checks.insert(
+                (repo(), BRANCH.into()),
+                Ok(RequiredChecks {
+                    contexts: ["required-check".to_string()].into(),
+                    strict: false,
+                }),
+            );
+            s.files.insert(
+                (repo(), "main".into(), ".github/review-paths.json".into()),
+                Ok(r#"{"paths": ["**/auth/**"]}"#.into()),
+            );
+        }
+        let tracker = FakeTracker::new("ABC");
+        tracker.seed(
+            "ABC-5",
+            "Shipped",
+            "## Goal\nShip it.\n\n## Acceptance criteria\n- [x] shipped\n\n## Business rules\nNo new rule.\n\n## Release note\nYou can now ship.\n",
+            Status::ToDeploy,
+            &[],
+        );
+        tracker.link("ABC-5", "https://github.com/example-org/acme/pull/5");
+        World {
+            config: config(),
+            github,
+            tracker,
+            signal: Recorder::default(),
+        }
+    }
+
+    fn tick(&self) -> Report {
+        let t = Tick {
+            config: &self.config,
+            repo: repo(),
+            github: &self.github,
+            tracker: &self.tracker,
+            signal: &self.signal,
+            github_login: "spl-asdlc[bot]".into(),
+            now: Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
+            deadline: None,
+            dry_run: false,
+        };
+        let mut log = ActionLog::in_memory();
+        run(&t, &mut log)
+    }
+
+    fn release_item(&self) -> crate::tracker::Item {
+        self.tracker
+            .list_by_label(LABEL)
+            .unwrap()
+            .into_iter()
+            .find(|i| {
+                matches!(
+                    texts::bridge_item(&i.description, None),
+                    Some(BridgeItem::Release { .. })
+                )
+            })
+            .expect("a release item")
+    }
+
+    fn sub_item(&self, angle: &str) -> crate::tracker::Item {
+        let release = self.release_item();
+        self.tracker
+            .children(&release.key)
+            .unwrap()
+            .into_iter()
+            .find(|c| {
+                texts::bridge_item(&c.description, c.parent.as_deref())
+                    == Some(BridgeItem::Angle {
+                        scope: CAND.into(),
+                        angle: angle.into(),
+                    })
+            })
+            .expect("a sub-item")
+    }
+
+    fn open_on_branch(&self, prs: Vec<PullRequest>) {
+        self.github
+            .state
+            .borrow_mut()
+            .open_pulls
+            .insert(repo(), Ok(prs));
+    }
+
+    fn angle_pr(&self, number: u64, angle: &str, report: &str) -> PullRequest {
+        let sub = self.sub_item(angle);
+        let mut pr = green(pull_request(number));
+        pr.base_ref = BRANCH.into();
+        pr.head_ref = format!("qa/{CAND}/{angle}");
+        pr.body = format!("Angle {angle}, sub-item {}", sub.key);
+        pr.reviews = vec![Review {
+            author: Some("coordinator-login".into()),
+            body: "ok".into(),
+            state: "APPROVED".into(),
+            commit_sha: Some(pr.head_sha.clone()),
+            submitted_at: None,
+        }];
+        let path = format!(".spl-asdlc/qa/{CAND}/{angle}.json");
+        let mut s = self.github.state.borrow_mut();
+        s.files.insert(
+            (repo(), pr.head_sha.clone(), path.clone()),
+            Ok(report.to_string()),
+        );
+        s.files.insert(
+            (repo(), format!("merge-of-{number}"), path),
+            Ok(report.to_string()),
+        );
+        pr
+    }
+}
+
+#[test]
+fn the_first_tick_after_the_cut_opens_the_cycle_and_the_second_writes_nothing() {
+    let w = World::new();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let item = w.release_item();
+    assert_eq!(item.title, "Release acme v1.2.0");
+    assert!(
+        item.description.contains(&format!("`{CAND}`")),
+        "candidate line"
+    );
+    for angle in ["security", "product"] {
+        assert_eq!(w.sub_item(angle).state.status, Some(Status::Ready));
+    }
+    let comments = w.tracker.comments(&item.key).unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.body.starts_with(&format!("### Candidate `{CAND}`")))
+    );
+    assert!(comments.iter().any(|c| c.body.contains("Release brief")));
+    assert!(
+        w.tracker.item("ABC-5").labels.contains(&LABEL.to_string()),
+        "embarked"
+    );
+    assert!(w.github.writes().is_empty(), "nothing to merge yet");
+
+    let before = w.tracker.writes().len();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.tracker.writes().len(),
+        before,
+        "{:?}",
+        &w.tracker.writes()[before..]
+    );
+}
+
+#[test]
+fn an_approved_angle_pr_with_a_valid_report_is_merged_and_its_findings_filed_once() {
+    let w = World::new();
+    w.tick();
+    let findings = [
+        finding("security-1", "blocker"),
+        finding("security-2", "should-fix"),
+        finding("security-3", "nit"),
+    ]
+    .join(",");
+    let pr = w.angle_pr(30, "security", &report_json("security", &findings));
+    w.open_on_branch(vec![pr.clone()]);
+    w.tick();
+    assert!(w.github.writes().contains(&format!(
+        "merge example-org/acme#30 at {} merge",
+        pr.head_sha
+    )));
+    assert_eq!(w.sub_item("security").state.status, Some(Status::Done));
+    // The fake moved the PR to the merged list; the next tick files the findings.
+    w.tick();
+    let release = w.release_item();
+    let labelled = w.tracker.list_by_label(LABEL).unwrap();
+    let blocker = labelled
+        .iter()
+        .find(|i| i.title.starts_with("Finding security-1"))
+        .expect("blocker");
+    assert!(
+        w.tracker
+            .relations(&release.key)
+            .unwrap()
+            .blocked_by
+            .iter()
+            .any(|b| b.other == blocker.key)
+    );
+    assert!(
+        labelled
+            .iter()
+            .any(|i| i.title.starts_with("Finding security-2")
+                && i.labels.contains(&"qa-finding".to_string()))
+    );
+    let nits = labelled
+        .iter()
+        .find(|i| i.title == "Nits — acme v1.2.0")
+        .expect("nits");
+    assert!(nits.description.contains("src/a.rs:1: Finding security-3"));
+    let before = w.tracker.writes().len();
+    w.tick();
+    assert_eq!(
+        w.tracker.writes().len(),
+        before,
+        "filed once: {:?}",
+        &w.tracker.writes()[before..]
+    );
+}
+
+#[test]
+fn a_report_that_does_not_validate_holds_the_angle_and_is_said_once() {
+    let w = World::new();
+    w.tick();
+    let pr = w.angle_pr(30, "security", "{not json");
+    w.open_on_branch(vec![pr]);
+    w.tick();
+    w.tick();
+    assert!(!w.github.writes().iter().any(|l| l.starts_with("merge")));
+    let sub = w.sub_item("security");
+    let said: Vec<_> = w
+        .tracker
+        .comments(&sub.key)
+        .unwrap()
+        .into_iter()
+        .filter(|c| c.body.contains("has no valid report"))
+        .collect();
+    assert_eq!(said.len(), 1);
+}
+
+fn release_pr(w: &World, staged: &str) -> PullRequest {
+    let mut pr = pull_request(40);
+    pr.base_ref = BRANCH.into();
+    pr.head_ref = "release-please--branches--release".into();
+    pr.title = format!("chore(release): release acme {staged}");
+    pr.body = format!("<summary>acme: {staged}</summary>");
+    pr.labels = vec!["autorelease: pending".into()];
+    pr.author = Some(Actor {
+        login: "release-app[bot]".into(),
+        is_bot: true,
+    });
+    let changelog = format!("## [{staged}](x) (2026-10-05)\n\n### Features\n\n* m1 ([m1](x))\n");
+    w.github.state.borrow_mut().files.insert(
+        (repo(), pr.head_sha.clone(), "CHANGELOG.md".into()),
+        Ok(changelog),
+    );
+    pr
+}
+
+fn all_angles_merged(w: &World) {
+    let mut merged = Vec::new();
+    for (n, angle) in [(30, "security"), (31, "product")] {
+        let mut pr = w.angle_pr(n, angle, &report_json(angle, ""));
+        pr.state = PrState::Merged;
+        pr.merge_commit_sha = Some(format!("merge-of-{n}"));
+        merged.push(pr);
+    }
+    w.github
+        .state
+        .borrow_mut()
+        .merged_pulls
+        .insert(repo(), Ok(merged));
+}
+
+#[test]
+fn the_go_computed_merges_the_release_pr_and_nothing_else() {
+    let w = World::new();
+    w.tick();
+    all_angles_merged(&w);
+    let rp = release_pr(&w, "1.2.0");
+    w.open_on_branch(vec![rp.clone()]);
+    let r = w.tick();
+    let merges: Vec<String> = w
+        .github
+        .writes()
+        .into_iter()
+        .filter(|l| l.starts_with("merge"))
+        .collect();
+    assert_eq!(
+        merges,
+        vec![format!(
+            "merge example-org/acme#40 at {} squash",
+            rp.head_sha
+        )],
+        "{r:?}"
+    );
+}
+
+#[test]
+fn a_release_pr_staging_another_version_is_no_go() {
+    let w = World::new();
+    w.tick();
+    all_angles_merged(&w);
+    w.open_on_branch(vec![release_pr(&w, "1.3.0")]);
+    w.tick();
+    assert!(!w.github.writes().iter().any(|l| l.starts_with("merge")));
+}
+
+#[test]
+fn the_closure_judges_the_shipped_tickets_sends_the_note_and_closes_the_item() {
+    let w = World::new();
+    w.tick();
+    let release = w.release_item();
+    {
+        let mut s = w.github.state.borrow_mut();
+        s.releases.insert(
+            (repo(), "acme-v1.2.0".into()),
+            Ok(Release {
+                tag: "acme-v1.2.0".into(),
+                url: "https://github.com/example-org/acme/releases/tag/acme-v1.2.0".into(),
+                body: "### Features\n\n* ship".into(),
+                draft: false,
+                prerelease: false,
+                published_at: None,
+            }),
+        );
+        s.branches.insert(repo(), Vec::new());
+        s.compares.insert(
+            (repo(), "acme-v1.2.0".into(), "main".into()),
+            cmp(CompareStatus::Ahead, &[], &[]),
+        );
+    }
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(w.tracker.item("ABC-5").state.status, Some(Status::Done));
+    for angle in ["security", "product"] {
+        assert_eq!(
+            w.sub_item(angle).state.status,
+            Some(Status::Done),
+            "children close"
+        );
+    }
+    let sent = w.signal.sent.borrow().clone();
+    assert_eq!(sent.len(), 1);
+    assert!(sent[0].starts_with("[release-note] acme 1.2.0 is published."));
+    assert!(sent[0].contains("You can now ship."));
+    assert_eq!(
+        w.tracker.item(&release.key).state.status,
+        Some(Status::Done)
+    );
+    let before = w.tracker.writes().len();
+    w.tick();
+    assert_eq!(w.tracker.writes().len(), before);
+    assert_eq!(w.signal.sent.borrow().len(), 1, "the note is sent once");
+}
+
+#[test]
+fn a_failed_note_send_keeps_the_release_open_and_is_retried() {
+    let w = World::new();
+    w.tick();
+    let release = w.release_item();
+    {
+        let mut s = w.github.state.borrow_mut();
+        s.releases.insert(
+            (repo(), "acme-v1.2.0".into()),
+            Ok(Release {
+                tag: "acme-v1.2.0".into(),
+                url: String::new(),
+                body: String::new(),
+                draft: false,
+                prerelease: false,
+                published_at: None,
+            }),
+        );
+        s.branches.insert(repo(), Vec::new());
+        s.compares.insert(
+            (repo(), "acme-v1.2.0".into(), "main".into()),
+            cmp(CompareStatus::Ahead, &[], &[]),
+        );
+    }
+    let failing = World {
+        signal: Recorder {
+            fail: true,
+            ..Recorder::default()
+        },
+        ..w
+    };
+    let r = failing.tick();
+    assert!(!r.ok());
+    assert_ne!(
+        failing.tracker.item(&release.key).state.status,
+        Some(Status::Done)
+    );
+}

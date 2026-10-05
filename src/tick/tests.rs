@@ -41,6 +41,9 @@ impl World {
                 app_id: "1".into(),
             });
             s.open_pulls.insert(repo(), Ok(Vec::new()));
+            s.tags.insert(repo(), Vec::new());
+            s.branches.insert(repo(), Vec::new());
+            s.default_branch.insert(repo(), "main".into());
             s.merged_pulls.insert(repo(), Ok(Vec::new()));
             s.required_checks.insert(
                 (repo(), "main".into()),
