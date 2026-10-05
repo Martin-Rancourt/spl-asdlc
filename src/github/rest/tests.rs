@@ -330,7 +330,7 @@ fn pull_node(number: u64) -> String {
         "createdAt":"2026-10-05T10:00:00Z","updatedAt":"2026-10-05T11:00:00Z","mergedAt":null,"mergedBy":null,"mergeCommit":null,
         "reviews":{{"pageInfo":{{"hasNextPage":false}},"nodes":[{{"author":{{"login":"coordinator-login"}},"state":"APPROVED","commit":{{"oid":"h{number}"}},"submittedAt":"2026-10-05T11:00:00Z"}}]}},
         "reviewThreads":{{"pageInfo":{{"hasNextPage":true}},"nodes":[{{"isResolved":false,"isOutdated":false,"path":"src/x.rs","comments":{{"nodes":[{{"author":{{"login":"reviewer"}},"body":"blocker: x"}}]}}}}]}},
-        "commits":{{"nodes":[{{"commit":{{"statusCheckRollup":{{"contexts":{{"pageInfo":{{"hasNextPage":false}},"nodes":[
+        "commits":{{"nodes":[{{"commit":{{"oid":"h{number}","statusCheckRollup":{{"contexts":{{"pageInfo":{{"hasNextPage":false}},"nodes":[
             {{"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-10-05T10:01:00Z","detailsUrl":"https://github.com/example-org/acme/actions/runs/1/job/2","checkSuite":{{"workflowRun":{{"workflow":{{"name":"Checks"}}}}}}}},
             {{"__typename":"CheckRun","name":"lint","status":"QUEUED","conclusion":null,"startedAt":"0001-01-01T00:00:00Z","detailsUrl":null,"checkSuite":{{"workflowRun":null}}}},
             {{"__typename":"StatusContext","context":"legacy/ci","state":"FAILURE","targetUrl":"https://ci.test/1","createdAt":"2026-10-05T10:02:00Z"}}
@@ -346,7 +346,7 @@ fn open_pulls_parse_checks_reviews_threads_and_say_what_was_cut() {
         &url("/graphql"),
         200,
         &format!(
-            r#"{{"data":{{"repository":{{"pullRequests":{{"pageInfo":{{"hasNextPage":false,"endCursor":null}},"nodes":[{}]}}}}}}}}"#,
+            r#"{{"data":{{"repository":{{"pullRequests":{{"totalCount":1,"pageInfo":{{"hasNextPage":false,"endCursor":null}},"nodes":[{}]}}}}}}}}"#,
             pull_node(12)
         ),
     );
@@ -356,9 +356,10 @@ fn open_pulls_parse_checks_reviews_threads_and_say_what_was_cut() {
     assert_eq!(
         p.author,
         Some(Actor {
-            login: "release-app".into(),
+            login: format!("{}[bot]", "release-app"),
             is_bot: true
-        })
+        }),
+        "a bot is named in the spelling REST and the UI use"
     );
     assert_eq!(p.labels, vec!["needs-review"]);
     assert_eq!(p.mergeable, Mergeable::Conflicting);
@@ -390,7 +391,7 @@ fn open_pulls_follow_the_cursor() {
         &url("/graphql"),
         200,
         &format!(
-            r#"{{"data":{{"repository":{{"pullRequests":{{"pageInfo":{{"hasNextPage":true,"endCursor":"C1"}},"nodes":[{}]}}}}}}}}"#,
+            r#"{{"data":{{"repository":{{"pullRequests":{{"totalCount":2,"pageInfo":{{"hasNextPage":true,"endCursor":"C1"}},"nodes":[{}]}}}}}}}}"#,
             pull_node(1)
         ),
     );
@@ -399,7 +400,7 @@ fn open_pulls_follow_the_cursor() {
         &url("/graphql"),
         200,
         &format!(
-            r#"{{"data":{{"repository":{{"pullRequests":{{"pageInfo":{{"hasNextPage":false,"endCursor":null}},"nodes":[{}]}}}}}}}}"#,
+            r#"{{"data":{{"repository":{{"pullRequests":{{"totalCount":2,"pageInfo":{{"hasNextPage":false,"endCursor":null}},"nodes":[{}]}}}}}}}}"#,
             pull_node(2)
         ),
     );
@@ -460,7 +461,7 @@ fn merged_pulls_stop_at_the_window_and_refuse_a_list_beyond_the_limit() {
             )
     };
     let page = format!(
-        r#"{{"data":{{"repository":{{"pullRequests":{{"pageInfo":{{"hasNextPage":true,"endCursor":"C"}},"nodes":[{},{},{}]}}}}}}}}"#,
+        r#"{{"data":{{"repository":{{"pullRequests":{{"totalCount":3,"pageInfo":{{"hasNextPage":true,"endCursor":"C"}},"nodes":[{},{},{}]}}}}}}}}"#,
         merged(3, "2026-10-05T09:00:00Z", "2026-10-05T09:00:00Z"),
         merged(2, "2026-10-03T09:00:00Z", "2026-10-05T08:00:00Z"),
         merged(1, "2026-10-01T09:00:00Z", "2026-10-01T09:00:00Z"),
@@ -537,7 +538,9 @@ fn an_update_branch_is_accepted_only_on_202() {
 }
 
 #[test]
-fn removing_a_label_that_is_not_there_is_a_success() {
+fn removing_a_label_on_a_404_is_a_refusal_not_a_success() {
+    // A 404 is also an unknown PR or a repository out of reach: callers
+    // remove only a label the PR is read to carry.
     let (gh, t) = client();
     t.on(
         "DELETE",
@@ -545,7 +548,12 @@ fn removing_a_label_that_is_not_there_is_a_success() {
         404,
         "{}",
     );
-    assert!(gh.remove_label(&repo(), 5, "needs review").is_ok());
+    assert_eq!(
+        gh.remove_label(&repo(), 5, "needs review")
+            .unwrap_err()
+            .status,
+        Some(404)
+    );
 }
 
 #[test]
@@ -658,4 +666,327 @@ fn next_link_reads_only_the_next_relation() {
         Some("https://a/1?page=2".to_string())
     );
     assert_eq!(next_link(r#"<https://a/1?page=1>; rel="prev""#), None);
+}
+
+// ---- the review of lot 2: fail-open residues closed ----
+
+fn one_page(nodes: &str, total: u64) -> String {
+    format!(
+        r#"{{"data":{{"repository":{{"pullRequests":{{"totalCount":{total},"pageInfo":{{"hasNextPage":false,"endCursor":null}},"nodes":[{nodes}]}}}}}}}}"#
+    )
+}
+
+#[test]
+fn a_rollup_of_another_commit_than_the_head_says_nothing_about_the_head() {
+    let (gh, t) = client();
+    let node = pull_node(12).replace(r#""oid":"h12""#, r#""oid":"an-older-commit""#);
+    t.on("POST", &url("/graphql"), 200, &one_page(&node, 1));
+    let p = &gh.open_pulls(&repo(), None).unwrap()[0];
+    assert!(p.checks.is_empty());
+    assert!(p.truncated.contains(&"checks".to_string()));
+}
+
+#[test]
+fn a_connection_that_does_not_say_whether_it_was_cut_is_unreadable() {
+    let (gh, t) = client();
+    let node = pull_node(12).replace(
+        r#""labels":{"pageInfo":{"hasNextPage":false},"nodes""#,
+        r#""labels":{"nodes""#,
+    );
+    assert_ne!(node, pull_node(12), "the fixture carries the field");
+    t.on("POST", &url("/graphql"), 200, &one_page(&node, 1));
+    assert!(gh.open_pulls(&repo(), None).is_err());
+
+    let (gh, t) = client();
+    t.on(
+        "POST",
+        &url("/graphql"),
+        200,
+        &format!(
+            r#"{{"data":{{"repository":{{"pullRequests":{{"totalCount":1,"nodes":[{}]}}}}}}}}"#,
+            pull_node(1)
+        ),
+    );
+    assert!(
+        gh.open_pulls(&repo(), None).is_err(),
+        "a page without pageInfo is not the last page"
+    );
+}
+
+#[test]
+fn a_pr_without_its_size_is_unreadable_not_empty() {
+    let (gh, t) = client();
+    let node = pull_node(12).replace(r#""additions":10,"#, "");
+    assert_ne!(node, pull_node(12));
+    t.on("POST", &url("/graphql"), 200, &one_page(&node, 1));
+    assert!(gh.open_pulls(&repo(), None).is_err());
+}
+
+#[test]
+fn a_list_that_moved_while_it_was_read_is_unreadable() {
+    let (gh, t) = client();
+    t.on("POST", &url("/graphql"), 200, &one_page(&pull_node(1), 2));
+    let err = gh.open_pulls(&repo(), None).unwrap_err();
+    assert!(err.to_string().contains("moved while it was read"), "{err}");
+}
+
+#[test]
+fn a_pr_read_twice_across_pages_counts_once() {
+    let (gh, t) = client();
+    t.on(
+        "POST",
+        &url("/graphql"),
+        200,
+        &format!(
+            r#"{{"data":{{"repository":{{"pullRequests":{{"totalCount":2,"pageInfo":{{"hasNextPage":true,"endCursor":"C"}},"nodes":[{},{}]}}}}}}}}"#,
+            pull_node(1),
+            pull_node(2)
+        ),
+    );
+    t.on("POST", &url("/graphql"), 200, &one_page(&pull_node(2), 2));
+    assert_eq!(gh.open_pulls(&repo(), None).unwrap().len(), 2);
+}
+
+#[test]
+fn a_merged_pr_without_a_merge_time_is_unreadable() {
+    let (gh, t) = client();
+    let node = pull_node(3).replace(r#""state":"OPEN""#, r#""state":"MERGED""#);
+    t.on("POST", &url("/graphql"), 200, &one_page(&node, 1));
+    assert!(gh.merged_pulls(&repo(), None, None, 30).is_err());
+}
+
+#[test]
+fn a_comparison_without_its_counts_or_files_is_unreadable() {
+    let path = "/repos/example-org/acme/compare/a...b?per_page=100";
+    let (gh, t) = client();
+    t.on(
+        "GET",
+        &url(path),
+        200,
+        r#"{"status":"ahead","commits":[],"files":[]}"#,
+    );
+    assert!(gh.compare(&repo(), "a", "b").is_err());
+    let (gh, t) = client();
+    t.on(
+        "GET",
+        &url(path),
+        200,
+        r#"{"status":"ahead","total_commits":0,"commits":[]}"#,
+    );
+    assert!(gh.compare(&repo(), "a", "b").is_err());
+}
+
+#[test]
+fn a_malformed_ref_is_never_dropped_from_the_list() {
+    let (gh, t) = client();
+    t.on(
+        "GET",
+        &url("/repos/example-org/acme/git/matching-refs/heads/release/?per_page=100"),
+        200,
+        r#"[{"ref":"refs/heads/release/2026-10-05-14-03-utc","object":{"sha":"a","type":"commit"}},{"ref":"refs/heads/release/x"}]"#,
+    );
+    assert!(gh.branches(&repo(), "release/").is_err());
+}
+
+#[test]
+fn branches_and_tags_are_read_by_prefix() {
+    let (gh, t) = client();
+    t.on(
+        "GET",
+        &url("/repos/example-org/acme/git/matching-refs/tags?per_page=100"),
+        200,
+        r#"[{"ref":"refs/tags/acme-v1.0.0","object":{"sha":"t1","type":"tag"}}]"#,
+    );
+    let tags = gh.tags(&repo(), "").unwrap();
+    assert_eq!(tags[0].name, "acme-v1.0.0");
+    assert_eq!(tags[0].object_type, ObjectType::Tag);
+}
+
+#[test]
+fn a_rename_names_both_paths() {
+    let (gh, t) = client();
+    t.on(
+        "GET",
+        &url("/repos/example-org/acme/pulls/7/files"),
+        200,
+        r#"[{"filename":"src/public/x.rs","previous_filename":"src/auth/x.rs","status":"renamed"}]"#,
+    );
+    assert_eq!(
+        gh.pull_files(&repo(), 7).unwrap(),
+        vec!["src/auth/x.rs", "src/public/x.rs"]
+    );
+}
+
+#[test]
+fn a_merge_github_does_not_confirm_is_a_refusal() {
+    let (gh, t) = client();
+    t.on(
+        "PUT",
+        &url("/repos/example-org/acme/pulls/12/merge"),
+        200,
+        r#"{"merged":false,"message":"?"}"#,
+    );
+    assert!(
+        gh.merge_pull(&repo(), 12, "h12", MergeMethod::Squash)
+            .is_err()
+    );
+}
+
+#[test]
+fn the_token_never_leaves_the_api_host() {
+    let (gh, t) = client();
+    t.on_with_headers(
+        "GET",
+        &url("/repos/example-org/acme/pulls/7/files"),
+        200,
+        r#"[{"filename":"a"}]"#,
+        &[(
+            "Link",
+            "<https://elsewhere.test/steal?page=2>; rel=\"next\"",
+        )],
+    );
+    assert!(gh.pull_files(&repo(), 7).is_err());
+    assert_eq!(t.calls().len(), 1);
+}
+
+// ---- the App path ----
+
+static TEST_KEY: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    use rsa::pkcs1::EncodeRsaPrivateKey;
+    let key = rsa::RsaPrivateKey::new(&mut rand::thread_rng(), 2048).unwrap();
+    key.to_pkcs1_pem(rsa::pkcs8::LineEnding::LF)
+        .unwrap()
+        .to_string()
+});
+
+fn app_client() -> (RestGitHub, Arc<ScriptedTransport>) {
+    let t = Arc::new(ScriptedTransport::new());
+    let gh = RestGitHub::with_transport(
+        Credentials::App {
+            app_id: "42".into(),
+            private_key_pem: TEST_KEY.as_bytes().to_vec(),
+        },
+        Box::new(Shared(t.clone())),
+        BASE,
+    );
+    (gh, t)
+}
+
+fn script_installation(t: &ScriptedTransport, token: &str) {
+    t.on(
+        "GET",
+        &url("/repos/example-org/acme/installation"),
+        200,
+        r#"{"id":7}"#,
+    );
+    t.on(
+        "POST",
+        &url("/app/installations/7/access_tokens"),
+        201,
+        &format!(r#"{{"token":"{token}","expires_at":"2999-01-01T00:00:00Z"}}"#),
+    );
+}
+
+fn bearer_of(req: &HttpRequest) -> String {
+    req.headers
+        .iter()
+        .find(|(k, _)| k == "Authorization")
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default()
+}
+
+#[test]
+fn an_app_mints_an_installation_token_once_and_reuses_it() {
+    let (gh, t) = app_client();
+    script_installation(&t, "inst-1");
+    t.on(
+        "GET",
+        &url("/repos/example-org/acme"),
+        200,
+        r#"{"default_branch":"main"}"#,
+    );
+    assert_eq!(gh.default_branch(&repo()).unwrap(), "main");
+    assert_eq!(gh.default_branch(&repo()).unwrap(), "main");
+    let calls = t.calls();
+    assert_eq!(
+        calls.iter().filter(|c| c.contains("access_tokens")).count(),
+        1,
+        "{calls:?}"
+    );
+    let log = t.log.lock().unwrap();
+    assert!(
+        bearer_of(&log[0]).starts_with("Bearer ey"),
+        "the installation lookup uses the App JWT"
+    );
+    assert_eq!(bearer_of(log.last().unwrap()), "Bearer inst-1");
+}
+
+#[test]
+fn the_app_jwt_is_backdated_and_short_lived() {
+    let now = time::OffsetDateTime::now_utc();
+    let jwt = crate::github::auth::app_jwt("42", TEST_KEY.as_bytes(), now).unwrap();
+    let payload = jwt.split('.').nth(1).unwrap();
+    let claims: Value = serde_json::from_slice(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(claims["iss"], "42");
+    assert_eq!(now.unix_timestamp() - claims["iat"].as_i64().unwrap(), 60);
+    assert_eq!(claims["exp"].as_i64().unwrap() - now.unix_timestamp(), 540);
+}
+
+#[test]
+fn an_app_not_installed_on_the_repository_is_unreadable_not_absent() {
+    let (gh, t) = app_client();
+    t.on(
+        "GET",
+        &url("/repos/example-org/acme/installation"),
+        404,
+        r#"{"message":"Not Found"}"#,
+    );
+    let err = gh.default_branch(&repo()).unwrap_err();
+    assert!(matches!(err, ReadError::Unreadable { .. }), "{err:?}");
+    assert!(err.to_string().contains("not installed"), "{err}");
+}
+
+#[test]
+fn a_revoked_installation_token_is_minted_again_once() {
+    let (gh, t) = app_client();
+    script_installation(&t, "inst-1");
+    t.on(
+        "POST",
+        &url("/app/installations/7/access_tokens"),
+        201,
+        r#"{"token":"inst-2","expires_at":"2999-01-01T00:00:00Z"}"#,
+    );
+    t.on(
+        "GET",
+        &url("/repos/example-org/acme"),
+        401,
+        r#"{"message":"Bad credentials"}"#,
+    );
+    t.on(
+        "GET",
+        &url("/repos/example-org/acme"),
+        200,
+        r#"{"default_branch":"main"}"#,
+    );
+    assert_eq!(gh.default_branch(&repo()).unwrap(), "main");
+    let log = t.log.lock().unwrap();
+    assert_eq!(bearer_of(log.last().unwrap()), "Bearer inst-2");
+}
+
+#[test]
+fn the_app_identity_is_read_with_the_jwt() {
+    let (gh, t) = app_client();
+    t.on("GET", &url("/app"), 200, r#"{"slug":"spl-asdlc","id":42}"#);
+    assert_eq!(
+        gh.identity().unwrap(),
+        Identity::App {
+            slug: "spl-asdlc".into(),
+            app_id: "42".into()
+        }
+    );
 }

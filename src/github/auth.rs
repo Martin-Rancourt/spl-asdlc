@@ -111,6 +111,12 @@ impl TokenCache {
         (*expires - Duration::minutes(5) > now).then(|| token.clone())
     }
 
+    pub fn evict(&self, repo: &RepoSlug) {
+        if let Ok(mut tokens) = self.tokens.lock() {
+            tokens.remove(repo);
+        }
+    }
+
     pub fn put(&self, repo: &RepoSlug, token: String, expires: OffsetDateTime) {
         if let Ok(mut tokens) = self.tokens.lock() {
             tokens.insert(repo.clone(), (token, expires));

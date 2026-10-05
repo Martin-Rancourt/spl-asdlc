@@ -3,7 +3,10 @@
 //!
 //! A read nobody scripted answers `Unreadable` ("not scripted"), never an
 //! empty list: a test that forgot a fact fails loudly instead of passing on
-//! "nothing there".
+//! "nothing there". Only lookups by name answer `NotFound` when unscripted:
+//! a file, a release, a tag object (GitHub's 404 for "it does not exist").
+//! Writes are recorded and applied where a later read must see them (a
+//! merged PR moves to the merged list; labels and branches change).
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
@@ -80,6 +83,14 @@ impl FakeGitHub {
         Ok(())
     }
 
+    fn with_open_pull(&self, repo: &RepoSlug, number: u64, f: impl FnOnce(&mut PullRequest)) {
+        if let Some(Ok(list)) = self.state.borrow_mut().open_pulls.get_mut(repo) {
+            if let Some(p) = list.iter_mut().find(|p| p.number == number) {
+                f(p);
+            }
+        }
+    }
+
     fn id(&self) -> u64 {
         let mut s = self.state.borrow_mut();
         s.next_id += 1;
@@ -146,9 +157,7 @@ impl GitHub for FakeGitHub {
             .get(&(repo.clone(), rev.to_string()))
         {
             Some(c) => c.clone(),
-            None => Err(ReadError::NotFound {
-                what: format!("commit {rev}"),
-            }),
+            None => not_scripted(format!("commit {rev}")),
         }
     }
 
@@ -192,10 +201,18 @@ impl GitHub for FakeGitHub {
 
     fn pull(&self, repo: &RepoSlug, number: u64) -> Read<PullRequest> {
         let s = self.state.borrow();
-        let all = [s.open_pulls.get(repo), s.merged_pulls.get(repo)];
-        for list in all.into_iter().flatten().flatten() {
-            if let Some(p) = list.iter().find(|p| p.number == number) {
-                return Ok(p.clone());
+        let lists = [s.open_pulls.get(repo), s.merged_pulls.get(repo)];
+        if lists.iter().all(Option::is_none) {
+            return not_scripted(format!("PR #{number}"));
+        }
+        for list in lists.into_iter().flatten() {
+            match list {
+                Ok(list) => {
+                    if let Some(p) = list.iter().find(|p| p.number == number) {
+                        return Ok(p.clone());
+                    }
+                }
+                Err(e) => return Err(e.clone()),
             }
         }
         Err(ReadError::NotFound {
@@ -250,7 +267,7 @@ impl GitHub for FakeGitHub {
             .get(&(repo.clone(), sha.to_string()))
         {
             Some(p) => p.clone(),
-            None => Ok(Vec::new()),
+            None => not_scripted(format!("PRs of commit {sha}")),
         }
     }
 
@@ -269,7 +286,7 @@ impl GitHub for FakeGitHub {
     fn issue_comments(&self, repo: &RepoSlug, number: u64) -> Read<Vec<Comment>> {
         match self.state.borrow().comments.get(&(repo.clone(), number)) {
             Some(c) => c.clone(),
-            None => Ok(Vec::new()),
+            None => not_scripted(format!("comments of #{number}")),
         }
     }
 
@@ -338,7 +355,32 @@ impl GitHub for FakeGitHub {
             "merge {repo}#{number} at {head_sha} {}",
             method.as_str()
         ))?;
-        Ok(format!("merge-of-{number}"))
+        let merge_sha = format!("merge-of-{number}");
+        let mut s = self.state.borrow_mut();
+        let moved = match s.open_pulls.get_mut(repo) {
+            Some(Ok(list)) => list
+                .iter()
+                .position(|p| p.number == number)
+                .map(|i| list.remove(i)),
+            _ => None,
+        };
+        if let Some(mut pull) = moved {
+            pull.state = PrState::Merged;
+            pull.merged_at = Some(Timestamp::now());
+            pull.merge_commit_sha = Some(merge_sha.clone());
+            pull.merged_by = s.identity.as_ref().map(|i| Actor {
+                login: i.login(),
+                is_bot: matches!(i, Identity::App { .. }),
+            });
+            if let Ok(list) = s
+                .merged_pulls
+                .entry(repo.clone())
+                .or_insert_with(|| Ok(Vec::new()))
+            {
+                list.insert(0, pull);
+            }
+        }
+        Ok(merge_sha)
     }
 
     fn update_branch(&self, repo: &RepoSlug, number: u64, head_sha: &str) -> Write<()> {
@@ -346,19 +388,44 @@ impl GitHub for FakeGitHub {
     }
 
     fn delete_branch(&self, repo: &RepoSlug, branch: &str) -> Write<()> {
-        self.record(format!("delete-branch {repo} {branch}"))
+        self.record(format!("delete-branch {repo} {branch}"))?;
+        if let Some(list) = self.state.borrow_mut().branches.get_mut(repo) {
+            list.retain(|b| b.name != branch);
+        }
+        Ok(())
     }
 
     fn create_branch(&self, repo: &RepoSlug, branch: &str, sha: &str) -> Write<()> {
-        self.record(format!("create-branch {repo} {branch} at {sha}"))
+        self.record(format!("create-branch {repo} {branch} at {sha}"))?;
+        self.state
+            .borrow_mut()
+            .branches
+            .entry(repo.clone())
+            .or_default()
+            .push(GitRef {
+                name: branch.to_string(),
+                sha: sha.to_string(),
+                object_type: ObjectType::Commit,
+            });
+        Ok(())
     }
 
     fn add_labels(&self, repo: &RepoSlug, number: u64, labels: &[String]) -> Write<()> {
-        self.record(format!("add-labels {repo}#{number} {}", labels.join(", ")))
+        self.record(format!("add-labels {repo}#{number} {}", labels.join(", ")))?;
+        self.with_open_pull(repo, number, |p| {
+            for l in labels {
+                if !p.labels.contains(l) {
+                    p.labels.push(l.clone());
+                }
+            }
+        });
+        Ok(())
     }
 
     fn remove_label(&self, repo: &RepoSlug, number: u64, label: &str) -> Write<()> {
-        self.record(format!("remove-label {repo}#{number} {label}"))
+        self.record(format!("remove-label {repo}#{number} {label}"))?;
+        self.with_open_pull(repo, number, |p| p.labels.retain(|l| l != label));
+        Ok(())
     }
 
     fn comment(&self, repo: &RepoSlug, number: u64, body: &str) -> Write<Comment> {

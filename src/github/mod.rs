@@ -67,7 +67,9 @@ pub trait GitHub {
     // ---- releases and workflow runs ----
 
     fn release(&self, repo: &RepoSlug, tag: &str) -> Read<Release>;
-    /// The newest runs (at most 100) of a workflow file, filtered as given.
+    /// The newest runs (at most 100) of a workflow file, filtered as given,
+    /// newest first. It is the head of the history, not the history: callers
+    /// take the newest matching run and never read absence into it.
     fn workflow_runs(
         &self,
         repo: &RepoSlug,

@@ -19,6 +19,8 @@ const MAX_OPEN_PULLS: usize = 1000;
 const MAX_PULL_FILES: usize = 3000;
 /// GitHub's compare lists at most 300 files.
 const MAX_COMPARE_FILES: usize = 300;
+/// A paged list longer than this many pages is refused.
+const MAX_PAGES: usize = 1000;
 
 pub struct RestGitHub {
     transport: Box<dyn Transport>,
@@ -116,6 +118,10 @@ impl RestGitHub {
         accept: Option<&str>,
     ) -> Result<HttpResponse, String> {
         let url = if path.starts_with("http") {
+            // A `Link` URL: the token goes to the API host and nowhere else.
+            if !path.starts_with(&format!("{}/", self.base_url)) {
+                return Err(format!("refusing to send the token to {path}"));
+            }
             path.to_string()
         } else {
             format!("{}{}", self.base_url, path)
@@ -154,8 +160,18 @@ impl RestGitHub {
     ) -> Result<HttpResponse, (Option<u16>, String)> {
         let token = self.token(repo).map_err(|e| (None, e))?;
         let body = body.map(|b| b.to_string().into_bytes());
-        self.raw(method, path, &token, body, accept)
-            .map_err(|e| (None, e))
+        let response = self
+            .raw(method, path, &token, body.clone(), accept)
+            .map_err(|e| (None, e))?;
+        if response.status == 401 && matches!(self.credentials, Credentials::App { .. }) {
+            // A revoked or re-scoped installation token: mint a new one, once.
+            self.tokens.evict(repo);
+            let token = self.token(repo).map_err(|e| (None, e))?;
+            return self
+                .raw(method, path, &token, body, accept)
+                .map_err(|e| (None, e));
+        }
+        Ok(response)
     }
 
     /// GET a JSON value; 404 is `NotFound`, any other non-2xx `Unreadable`.
@@ -182,7 +198,15 @@ impl RestGitHub {
     ) -> Read<Vec<Value>> {
         let mut out = Vec::new();
         let mut next = Some(path.to_string());
+        let mut pages = 0;
         while let Some(p) = next.take() {
+            pages += 1;
+            if pages > MAX_PAGES {
+                return Err(ReadError::unreadable(
+                    what,
+                    format!("more than {MAX_PAGES} pages: the list would be cut"),
+                ));
+            }
             let (value, response) = self.get_json(repo, what, &p)?;
             let items = match key {
                 Some(k) => value.get(k).cloned().unwrap_or(Value::Null),
@@ -286,6 +310,7 @@ impl RestGitHub {
             "query($owner: String!, $name: String!, $cursor: String{base_var}) {{
   repository(owner: $owner, name: $name) {{
     pullRequests(states: [{states}], first: 50, after: $cursor{base_arg}, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{
+      totalCount
       pageInfo {{ hasNextPage endCursor }}
       nodes {{ ...Pull }}
     }}
@@ -293,6 +318,48 @@ impl RestGitHub {
 }}
 {PULL_FRAGMENT}"
         )
+    }
+
+    /// Walk the pages of a PR connection, newest update first, handing each
+    /// PR to `visit` until it answers `false`. Returns GitHub's total count.
+    fn pull_pages(
+        &self,
+        repo: &RepoSlug,
+        what: &str,
+        states: &str,
+        base: Option<&str>,
+        visit: &mut dyn FnMut(PullRequest) -> Result<bool, String>,
+    ) -> Read<Option<u64>> {
+        let query = Self::pull_query(states, base);
+        let mut cursor = Value::Null;
+        for _ in 0..MAX_PAGES {
+            let mut vars = json!({"owner": repo.owner, "name": repo.name, "cursor": cursor});
+            if let Some(b) = base {
+                vars["base"] = json!(b);
+            }
+            let data = self.graphql(repo, what, &query, vars)?;
+            let conn = &data["repository"]["pullRequests"];
+            let (nodes, more) = connection(&data["repository"], "pullRequests")
+                .map_err(|e| ReadError::unreadable(what, e))?;
+            let total = conn["totalCount"].as_u64();
+            for n in nodes {
+                let pull = pull_from_gql(n).map_err(|e| ReadError::unreadable(what, e))?;
+                if !visit(pull).map_err(|e| ReadError::unreadable(what, e))? {
+                    return Ok(total);
+                }
+            }
+            if !more {
+                return Ok(total);
+            }
+            cursor = conn["pageInfo"]["endCursor"].clone();
+            if !cursor.is_string() {
+                return Err(ReadError::unreadable(what, "a next page without a cursor"));
+            }
+        }
+        Err(ReadError::unreadable(
+            what,
+            format!("more than {MAX_PAGES} pages: the list would be cut"),
+        ))
     }
 }
 
@@ -306,7 +373,7 @@ const PULL_FRAGMENT: &str = "fragment Pull on PullRequest {
   mergeCommit { oid }
   reviews(first: 100) { pageInfo { hasNextPage } nodes { author { login } state commit { oid } submittedAt } }
   reviewThreads(first: 100) { pageInfo { hasNextPage } nodes { isResolved isOutdated path comments(first: 1) { nodes { author { login } body } } } }
-  commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) {
+  commits(last: 1) { nodes { commit { oid statusCheckRollup { contexts(first: 100) {
     pageInfo { hasNextPage }
     nodes {
       __typename
@@ -419,9 +486,16 @@ fn object_type(s: &str) -> ObjectType {
     }
 }
 
+/// GraphQL names an App by its slug; REST and the UI by `<slug>[bot]`. The
+/// bridge compares logins in the REST spelling.
 fn actor_gql(v: &Value) -> Option<Actor> {
     let login = v.get("login")?.as_str()?.to_string();
     let is_bot = v.get("__typename").and_then(Value::as_str) == Some("Bot");
+    let login = if is_bot && !login.ends_with("[bot]") {
+        format!("{login}[bot]")
+    } else {
+        login
+    };
     Some(Actor { login, is_bot })
 }
 
@@ -431,92 +505,114 @@ fn actor_rest(v: &Value) -> Option<Actor> {
     Some(Actor { login, is_bot })
 }
 
+/// The nodes of a GraphQL connection and whether GitHub cut it. A
+/// connection without `nodes` or without a definite `hasNextPage` is
+/// malformed, never empty.
+fn connection<'a>(v: &'a Value, field: &str) -> Result<(&'a Vec<Value>, bool), String> {
+    let conn = &v[field];
+    let nodes = conn["nodes"]
+        .as_array()
+        .ok_or_else(|| format!("`{field}` carries no node list"))?;
+    let more = conn["pageInfo"]["hasNextPage"]
+        .as_bool()
+        .ok_or_else(|| format!("`{field}` does not say whether it was cut"))?;
+    Ok((nodes, more))
+}
+
+fn required_u64(v: &Value, key: &str, number: u64) -> Result<u64, String> {
+    v[key]
+        .as_u64()
+        .ok_or_else(|| format!("PR #{number} carries no `{key}`"))
+}
+
 /// A PR node of the GraphQL query.
 fn pull_from_gql(v: &Value) -> Result<PullRequest, String> {
     let number = v["number"].as_u64().ok_or("a PR without a number")?;
     let mut truncated = Vec::new();
-    let page_cut = |field: &str| v[field]["pageInfo"]["hasNextPage"].as_bool() == Some(true);
-    for field in ["labels", "reviews", "reviewThreads"] {
-        if page_cut(field) {
-            truncated.push(field.to_string());
+    let (label_nodes, cut) = connection(v, "labels")?;
+    if cut {
+        truncated.push("labels".to_string());
+    }
+    let labels = label_nodes.iter().map(|l| str_of(l, "name")).collect();
+    let (review_nodes, cut) = connection(v, "reviews")?;
+    if cut {
+        truncated.push("reviews".to_string());
+    }
+    let reviews = review_nodes
+        .iter()
+        .map(|r| Review {
+            author: r["author"]["login"].as_str().map(str::to_string),
+            state: str_of(r, "state"),
+            commit_sha: r["commit"]["oid"].as_str().map(str::to_string),
+            submitted_at: time_of(r, "submittedAt"),
+        })
+        .collect();
+    let (thread_nodes, cut) = connection(v, "reviewThreads")?;
+    if cut {
+        truncated.push("reviewThreads".to_string());
+    }
+    let threads = thread_nodes
+        .iter()
+        .map(|t| {
+            let first = &t["comments"]["nodes"][0];
+            ReviewThread {
+                resolved: t["isResolved"].as_bool().unwrap_or(false),
+                outdated: t["isOutdated"].as_bool().unwrap_or(false),
+                path: opt_str(t, "path"),
+                first_author: first["author"]["login"].as_str().map(str::to_string),
+                first_body: str_of(first, "body"),
+            }
+        })
+        .collect();
+    let head_sha = opt_str(v, "headRefOid").unwrap_or_default();
+    let last_commit = &v["commits"]["nodes"][0]["commit"];
+    let rollup = &last_commit["statusCheckRollup"];
+    let mut checks = Vec::new();
+    if last_commit["oid"].as_str() != Some(head_sha.as_str()) {
+        // The rollup belongs to another commit than the head (a push GitHub
+        // has not caught up with): it says nothing about the head.
+        truncated.push("checks".to_string());
+    } else if !rollup.is_null() {
+        let (nodes, cut) = connection(rollup, "contexts")?;
+        if cut {
+            truncated.push("checks".to_string());
+        }
+        for c in nodes {
+            checks.push(if c["__typename"].as_str() == Some("StatusContext") {
+                CheckEntry {
+                    kind: CheckKind::Status,
+                    name: str_of(c, "context"),
+                    workflow: None,
+                    status: None,
+                    conclusion: opt_str(c, "state"),
+                    started_at: time_of(c, "createdAt"),
+                    details_url: opt_str(c, "targetUrl"),
+                }
+            } else {
+                CheckEntry {
+                    kind: CheckKind::Run,
+                    name: str_of(c, "name"),
+                    workflow: c["checkSuite"]["workflowRun"]["workflow"]["name"]
+                        .as_str()
+                        .map(str::to_string),
+                    status: opt_str(c, "status"),
+                    conclusion: opt_str(c, "conclusion"),
+                    started_at: c["startedAt"].as_str().and_then(Timestamp::parse_started),
+                    details_url: opt_str(c, "detailsUrl"),
+                }
+            });
         }
     }
-    let labels = v["labels"]["nodes"]
-        .as_array()
-        .map(|a| a.iter().map(|l| str_of(l, "name")).collect())
-        .unwrap_or_default();
-    let reviews = v["reviews"]["nodes"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .map(|r| Review {
-                    author: r["author"]["login"].as_str().map(str::to_string),
-                    state: str_of(r, "state"),
-                    commit_sha: r["commit"]["oid"].as_str().map(str::to_string),
-                    submitted_at: time_of(r, "submittedAt"),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let threads = v["reviewThreads"]["nodes"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .map(|t| {
-                    let first = &t["comments"]["nodes"][0];
-                    ReviewThread {
-                        resolved: t["isResolved"].as_bool().unwrap_or(false),
-                        outdated: t["isOutdated"].as_bool().unwrap_or(false),
-                        path: opt_str(t, "path"),
-                        first_author: first["author"]["login"].as_str().map(str::to_string),
-                        first_body: str_of(first, "body"),
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let rollup = &v["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"];
-    if rollup["pageInfo"]["hasNextPage"].as_bool() == Some(true) {
-        truncated.push("checks".to_string());
-    }
-    let checks = rollup["nodes"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .map(|c| {
-                    if c["__typename"].as_str() == Some("StatusContext") {
-                        CheckEntry {
-                            kind: CheckKind::Status,
-                            name: str_of(c, "context"),
-                            workflow: None,
-                            status: None,
-                            conclusion: opt_str(c, "state"),
-                            started_at: time_of(c, "createdAt"),
-                            details_url: opt_str(c, "targetUrl"),
-                        }
-                    } else {
-                        CheckEntry {
-                            kind: CheckKind::Run,
-                            name: str_of(c, "name"),
-                            workflow: c["checkSuite"]["workflowRun"]["workflow"]["name"]
-                                .as_str()
-                                .map(str::to_string),
-                            status: opt_str(c, "status"),
-                            conclusion: opt_str(c, "conclusion"),
-                            started_at: c["startedAt"].as_str().and_then(Timestamp::parse_started),
-                            details_url: opt_str(c, "detailsUrl"),
-                        }
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default();
     let state = match v["state"].as_str() {
         Some("OPEN") => PrState::Open,
         Some("MERGED") => PrState::Merged,
         Some("CLOSED") => PrState::Closed,
         other => return Err(format!("PR #{number} has an unknown state {other:?}")),
     };
+    let merged_at = time_of(v, "mergedAt");
+    if state == PrState::Merged && merged_at.is_none() {
+        return Err(format!("PR #{number} is merged but carries no merge time"));
+    }
     let mergeable = match v["mergeable"].as_str() {
         Some("MERGEABLE") => Mergeable::Mergeable,
         Some("CONFLICTING") => Mergeable::Conflicting,
@@ -532,15 +628,15 @@ fn pull_from_gql(v: &Value) -> Result<PullRequest, String> {
         author: actor_gql(&v["author"]),
         base_ref: str_of(v, "baseRefName"),
         head_ref: str_of(v, "headRefName"),
-        head_sha: str_of(v, "headRefOid"),
+        head_sha,
         labels,
         mergeable,
         merge_state: str_of(v, "mergeStateStatus"),
-        additions: v["additions"].as_u64().unwrap_or(0),
-        deletions: v["deletions"].as_u64().unwrap_or(0),
+        additions: required_u64(v, "additions", number)?,
+        deletions: required_u64(v, "deletions", number)?,
         created_at: time_of(v, "createdAt"),
         updated_at: time_of(v, "updatedAt"),
-        merged_at: time_of(v, "mergedAt"),
+        merged_at,
         merged_by: actor_gql(&v["mergedBy"]),
         merge_commit_sha: v["mergeCommit"]["oid"].as_str().map(str::to_string),
         checks,
@@ -548,6 +644,25 @@ fn pull_from_gql(v: &Value) -> Result<PullRequest, String> {
         threads,
         truncated,
     })
+}
+
+/// Every element mapped, or the read refused at the first malformed one.
+fn all<T>(what: &str, items: &[Value], f: impl Fn(&Value) -> Option<T>) -> Read<Vec<T>> {
+    items
+        .iter()
+        .map(|v| f(v).ok_or_else(|| ReadError::unreadable(what, "a malformed entry in the list")))
+        .collect()
+}
+
+fn matching_refs(repo: &RepoSlug, kind: &str, prefix: &str) -> String {
+    if prefix.is_empty() {
+        format!("/repos/{repo}/git/matching-refs/{kind}?per_page=100")
+    } else {
+        format!(
+            "/repos/{repo}/git/matching-refs/{kind}/{}?per_page=100",
+            encode(prefix, true)
+        )
+    }
 }
 
 fn git_ref(v: &Value, prefix: &str) -> Option<GitRef> {
@@ -602,17 +717,11 @@ impl GitHub for RestGitHub {
         let items = self.get_pages(
             repo,
             &what,
-            &format!(
-                "/repos/{repo}/git/matching-refs/heads/{}",
-                encode(prefix, true)
-            ),
+            &matching_refs(repo, "heads", prefix),
             None,
             10_000,
         )?;
-        Ok(items
-            .iter()
-            .filter_map(|v| git_ref(v, "refs/heads/"))
-            .collect())
+        all(&what, &items, |v| git_ref(v, "refs/heads/"))
     }
 
     fn tags(&self, repo: &RepoSlug, prefix: &str) -> Read<Vec<GitRef>> {
@@ -620,22 +729,20 @@ impl GitHub for RestGitHub {
         let items = self.get_pages(
             repo,
             &what,
-            &format!(
-                "/repos/{repo}/git/matching-refs/tags/{}",
-                encode(prefix, true)
-            ),
+            &matching_refs(repo, "tags", prefix),
             None,
             100_000,
         )?;
-        Ok(items
-            .iter()
-            .filter_map(|v| git_ref(v, "refs/tags/"))
-            .collect())
+        all(&what, &items, |v| git_ref(v, "refs/tags/"))
     }
 
     fn tag_object(&self, repo: &RepoSlug, sha: &str) -> Read<AnnotatedTag> {
         let what = format!("tag object {sha} of {repo}");
-        let (v, _) = self.get_json(repo, &what, &format!("/repos/{repo}/git/tags/{sha}"))?;
+        let (v, _) = self.get_json(
+            repo,
+            &what,
+            &format!("/repos/{repo}/git/tags/{}", encode(sha, false)),
+        )?;
         Ok(AnnotatedTag {
             name: str_of(&v, "tag"),
             message: str_of(&v, "message"),
@@ -662,8 +769,10 @@ impl GitHub for RestGitHub {
             committer_date: time_of(&v["commit"]["committer"], "date"),
             parents: v["parents"]
                 .as_array()
-                .map(|a| a.iter().map(|p| str_of(p, "sha")).collect())
-                .unwrap_or_default(),
+                .ok_or_else(|| ReadError::unreadable(&what, "no parent list in the answer"))?
+                .iter()
+                .map(|p| str_of(p, "sha"))
+                .collect(),
         })
     }
 
@@ -687,7 +796,9 @@ impl GitHub for RestGitHub {
                 ));
             }
         };
-        let total = first["total_commits"].as_u64().unwrap_or(0);
+        let total = first["total_commits"]
+            .as_u64()
+            .ok_or_else(|| ReadError::unreadable(&what, "no commit count in the answer"))?;
         let summary = |c: &Value| CommitSummary {
             sha: str_of(c, "sha"),
             subject: str_of(&c["commit"], "message")
@@ -718,8 +829,10 @@ impl GitHub for RestGitHub {
         }
         let files: Vec<String> = first["files"]
             .as_array()
-            .map(|a| a.iter().map(|f| str_of(f, "filename")).collect())
-            .unwrap_or_default();
+            .ok_or_else(|| ReadError::unreadable(&what, "no file list in the answer"))?
+            .iter()
+            .map(|f| str_of(f, "filename"))
+            .collect();
         if files.len() >= MAX_COMPARE_FILES {
             return Err(ReadError::unreadable(
                 &what,
@@ -771,33 +884,31 @@ impl GitHub for RestGitHub {
 
     fn open_pulls(&self, repo: &RepoSlug, base: Option<&str>) -> Read<Vec<PullRequest>> {
         let what = format!("open PRs of {repo}");
-        let query = Self::pull_query("OPEN", base);
-        let mut out = Vec::new();
-        let mut cursor = Value::Null;
-        loop {
-            let mut vars = json!({"owner": repo.owner, "name": repo.name, "cursor": cursor});
-            if let Some(b) = base {
-                vars["base"] = json!(b);
-            }
-            let data = self.graphql(repo, &what, &query, vars)?;
-            let conn = &data["repository"]["pullRequests"];
-            let nodes = conn["nodes"]
-                .as_array()
-                .ok_or_else(|| ReadError::unreadable(&what, "no PR list in the answer"))?;
-            for n in nodes {
-                out.push(pull_from_gql(n).map_err(|e| ReadError::unreadable(&what, e))?);
+        let mut out: Vec<PullRequest> = Vec::new();
+        let total = self.pull_pages(repo, &what, "OPEN", base, &mut |pull| {
+            if !out.iter().any(|p| p.number == pull.number) {
+                out.push(pull);
             }
             if out.len() > MAX_OPEN_PULLS {
-                return Err(ReadError::unreadable(
-                    &what,
-                    format!("more than {MAX_OPEN_PULLS} open PRs"),
-                ));
+                return Err(format!("more than {MAX_OPEN_PULLS} open PRs"));
             }
-            if conn["pageInfo"]["hasNextPage"].as_bool() != Some(true) {
-                return Ok(out);
-            }
-            cursor = conn["pageInfo"]["endCursor"].clone();
+            Ok(true)
+        })?;
+        // Pages are offsets of a moving list: a PR updated between two pages
+        // shifts the others, and one can be skipped. The count says so.
+        if total != Some(out.len() as u64) {
+            return Err(ReadError::unreadable(
+                &what,
+                format!(
+                    "the list moved while it was read ({} read, GitHub counts {})",
+                    out.len(),
+                    total
+                        .map(|t| t.to_string())
+                        .unwrap_or_else(|| "nothing".into())
+                ),
+            ));
         }
+        Ok(out)
     }
 
     fn pull(&self, repo: &RepoSlug, number: u64) -> Read<PullRequest> {
@@ -832,48 +943,30 @@ impl GitHub for RestGitHub {
             "PRs merged{} of {repo}",
             base.map(|b| format!(" into {b}")).unwrap_or_default()
         );
-        let query = Self::pull_query("MERGED", base);
-        let mut out = Vec::new();
-        let mut cursor = Value::Null;
-        loop {
-            let mut vars = json!({"owner": repo.owner, "name": repo.name, "cursor": cursor});
-            if let Some(b) = base {
-                vars["base"] = json!(b);
-            }
-            let data = self.graphql(repo, &what, &query, vars)?;
-            let conn = &data["repository"]["pullRequests"];
-            let nodes = conn["nodes"]
-                .as_array()
-                .ok_or_else(|| ReadError::unreadable(&what, "no PR list in the answer"))?;
-            for n in nodes {
-                let pull = pull_from_gql(n).map_err(|e| ReadError::unreadable(&what, e))?;
-                // Ordered by update time: once a PR was last updated before
-                // the window, every later one was too.
-                if let (Some(since), Some(updated)) = (since, pull.updated_at) {
-                    if updated < since {
-                        return Ok(out);
-                    }
-                }
-                let in_window = match (since, pull.merged_at) {
-                    (Some(since), Some(merged)) => merged >= since,
-                    (Some(_), None) => false,
-                    (None, _) => true,
-                };
-                if in_window {
-                    out.push(pull);
-                }
-                if out.len() > limit {
-                    return Err(ReadError::unreadable(
-                        &what,
-                        format!("more than {limit} merged PRs: the list would be cut"),
-                    ));
+        let mut out: Vec<PullRequest> = Vec::new();
+        self.pull_pages(repo, &what, "MERGED", base, &mut |pull| {
+            // Ordered by update time: once a PR was last updated before the
+            // window, every later one was too (a merge updates a PR).
+            if let (Some(since), Some(updated)) = (since, pull.updated_at) {
+                if updated < since {
+                    return Ok(false);
                 }
             }
-            if conn["pageInfo"]["hasNextPage"].as_bool() != Some(true) {
-                return Ok(out);
+            let in_window = match (since, pull.merged_at) {
+                (Some(since), Some(merged)) => merged >= since,
+                _ => true,
+            };
+            if in_window && !out.iter().any(|p| p.number == pull.number) {
+                out.push(pull);
             }
-            cursor = conn["pageInfo"]["endCursor"].clone();
-        }
+            if out.len() > limit {
+                return Err(format!(
+                    "more than {limit} merged PRs: the list would be cut"
+                ));
+            }
+            Ok(true)
+        })?;
+        Ok(out)
     }
 
     fn pull_files(&self, repo: &RepoSlug, number: u64) -> Read<Vec<String>> {
@@ -885,7 +978,18 @@ impl GitHub for RestGitHub {
             None,
             MAX_PULL_FILES - 1,
         )?;
-        Ok(items.iter().map(|f| str_of(f, "filename")).collect())
+        // A rename names both paths: moving a file out of a sensitive
+        // directory touches that directory.
+        let mut out = Vec::new();
+        for f in &items {
+            let name = opt_str(f, "filename")
+                .ok_or_else(|| ReadError::unreadable(&what, "a file entry without a name"))?;
+            if let Some(previous) = opt_str(f, "previous_filename") {
+                out.push(previous);
+            }
+            out.push(name);
+        }
+        Ok(out)
     }
 
     fn commit_pulls(&self, repo: &RepoSlug, sha: &str) -> Read<Vec<CommitPull>> {
@@ -893,23 +997,23 @@ impl GitHub for RestGitHub {
         let items = self.get_pages(
             repo,
             &what,
-            &format!("/repos/{repo}/commits/{sha}/pulls?per_page=100"),
+            &format!(
+                "/repos/{repo}/commits/{}/pulls?per_page=100",
+                encode(sha, false)
+            ),
             None,
             1000,
         )?;
-        Ok(items
-            .iter()
-            .filter_map(|p| {
-                Some(CommitPull {
-                    number: p["number"].as_u64()?,
-                    url: str_of(p, "html_url"),
-                    merged_at: time_of(p, "merged_at"),
-                    merge_commit_sha: opt_str(p, "merge_commit_sha"),
-                    base_ref: str_of(&p["base"], "ref"),
-                    head_ref: str_of(&p["head"], "ref"),
-                })
+        all(&what, &items, |p| {
+            Some(CommitPull {
+                number: p["number"].as_u64()?,
+                url: str_of(p, "html_url"),
+                merged_at: time_of(p, "merged_at"),
+                merge_commit_sha: opt_str(p, "merge_commit_sha"),
+                base_ref: str_of(&p["base"], "ref"),
+                head_ref: str_of(&p["head"], "ref"),
             })
-            .collect())
+        })
     }
 
     fn required_checks(&self, repo: &RepoSlug, branch: &str) -> Read<RequiredChecks> {
@@ -991,18 +1095,15 @@ impl GitHub for RestGitHub {
             None,
             10_000,
         )?;
-        Ok(items
-            .iter()
-            .filter_map(|c| {
-                Some(Comment {
-                    id: c["id"].as_u64()?,
-                    author: actor_rest(&c["user"]),
-                    body: str_of(c, "body"),
-                    created_at: time_of(c, "created_at"),
-                    url: str_of(c, "html_url"),
-                })
+        all(&what, &items, |c| {
+            Some(Comment {
+                id: c["id"].as_u64()?,
+                author: actor_rest(&c["user"]),
+                body: str_of(c, "body"),
+                created_at: time_of(c, "created_at"),
+                url: str_of(c, "html_url"),
             })
-            .collect())
+        })
     }
 
     fn release(&self, repo: &RepoSlug, tag: &str) -> Read<Release> {
@@ -1044,21 +1145,18 @@ impl GitHub for RestGitHub {
         let runs = v["workflow_runs"]
             .as_array()
             .ok_or_else(|| ReadError::unreadable(&what, "no run list in the answer"))?;
-        Ok(runs
-            .iter()
-            .filter_map(|r| {
-                Some(WorkflowRun {
-                    id: r["id"].as_u64()?,
-                    head_sha: str_of(r, "head_sha"),
-                    head_branch: str_of(r, "head_branch"),
-                    event: str_of(r, "event"),
-                    status: str_of(r, "status"),
-                    conclusion: opt_str(r, "conclusion"),
-                    url: str_of(r, "html_url"),
-                    created_at: time_of(r, "created_at"),
-                })
+        all(&what, runs, |r| {
+            Some(WorkflowRun {
+                id: r["id"].as_u64()?,
+                head_sha: str_of(r, "head_sha"),
+                head_branch: str_of(r, "head_branch"),
+                event: str_of(r, "event"),
+                status: str_of(r, "status"),
+                conclusion: opt_str(r, "conclusion"),
+                url: str_of(r, "html_url"),
+                created_at: time_of(r, "created_at"),
             })
-            .collect())
+        })
     }
 
     fn run_jobs(&self, repo: &RepoSlug, run_id: u64) -> Read<Vec<Job>> {
@@ -1088,16 +1186,13 @@ impl GitHub for RestGitHub {
             Some("artifacts"),
             10_000,
         )?;
-        Ok(items
-            .iter()
-            .filter_map(|a| {
-                Some(Artifact {
-                    id: a["id"].as_u64()?,
-                    name: str_of(a, "name"),
-                    expired: a["expired"].as_bool().unwrap_or(false),
-                })
+        all(&what, &items, |a| {
+            Some(Artifact {
+                id: a["id"].as_u64()?,
+                name: str_of(a, "name"),
+                expired: a["expired"].as_bool().unwrap_or(false),
             })
-            .collect())
+        })
     }
 
     fn merge_pull(
@@ -1115,7 +1210,14 @@ impl GitHub for RestGitHub {
             Some(json!({"sha": head_sha, "merge_method": method.as_str()})),
             &[200],
         )?;
-        Ok(str_of(&v, "sha"))
+        match (v["merged"].as_bool(), opt_str(&v, "sha")) {
+            (Some(true), Some(sha)) => Ok(sha),
+            _ => Err(WriteError {
+                what: format!("merge of PR #{number}"),
+                status: Some(200),
+                detail: "GitHub did not confirm the merge".into(),
+            }),
+        }
     }
 
     fn update_branch(&self, repo: &RepoSlug, number: u64, head_sha: &str) -> Write<()> {
@@ -1176,7 +1278,7 @@ impl GitHub for RestGitHub {
                 encode(label, false)
             ),
             None,
-            &[200, 404],
+            &[200],
         )
         .map(|_| ())
     }
@@ -1190,8 +1292,13 @@ impl GitHub for RestGitHub {
             Some(json!({"body": body})),
             &[201],
         )?;
+        let id = v["id"].as_u64().ok_or_else(|| WriteError {
+            what: format!("comment on #{number}"),
+            status: Some(201),
+            detail: "GitHub answered no comment id".into(),
+        })?;
         Ok(Comment {
-            id: v["id"].as_u64().unwrap_or(0),
+            id,
             author: actor_rest(&v["user"]),
             body: str_of(&v, "body"),
             created_at: time_of(&v, "created_at"),

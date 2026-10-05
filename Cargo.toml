@@ -28,6 +28,15 @@ toml = "1.1"
 ureq = { version = "3.4", default-features = false, features = ["rustls", "gzip"] }
 
 [dev-dependencies]
+rand = "0.8"
+rsa = { version = "0.9", features = ["pem"] }
+
+# RSA key generation in the App tests is slow without optimisation.
+[profile.dev.package.num-bigint-dig]
+opt-level = 3
+
+[profile.dev.package.rsa]
+opt-level = 3
 
 [profile.release]
 strip = true

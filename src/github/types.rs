@@ -97,7 +97,9 @@ impl ReadError {
 
 pub type Read<T> = Result<T, ReadError>;
 
-/// A write GitHub did not perform.
+/// A write GitHub did not perform, or whose outcome is unknown: with no
+/// status (the transport failed after sending) or a 5xx, GitHub may have
+/// performed it; the caller re-reads before concluding (REQ-MERGE-058).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{what} refused{}: {detail}", status.map(|s| format!(" (HTTP {s})")).unwrap_or_default())]
 pub struct WriteError {
