@@ -26,6 +26,27 @@ enum Command {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+    /// Ticket commands.
+    Ticket {
+        #[command(subcommand)]
+        command: TicketCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum TicketCommand {
+    /// The refinement gate (`docs/spec/01-ticket-contract.md`): says whether a
+    /// ticket's contract is complete, or lists what is missing (exit 1).
+    Check {
+        /// The ticket's identifier in the configured tracker.
+        item: Option<String>,
+        /// Judge a description read from this file instead (`-` for stdin).
+        #[arg(long, conflicts_with = "item")]
+        description: Option<PathBuf>,
+        /// The configuration naming the tracker.
+        #[arg(long, default_value = config::FILE_NAME)]
+        file: PathBuf,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -61,6 +82,81 @@ where
         Command::Config {
             command: ConfigCommand::Check { file },
         } => config_check(&file, &mut out, &mut err),
+        Command::Ticket {
+            command:
+                TicketCommand::Check {
+                    item,
+                    description,
+                    file,
+                },
+        } => ticket_check(item, description, &file, &mut out, &mut err),
+    }
+}
+
+fn ticket_check(
+    item: Option<String>,
+    description: Option<PathBuf>,
+    file: &std::path::Path,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> ExitCode {
+    let (name, text) = match (item, description) {
+        (_, Some(path)) => {
+            let text = if path.as_os_str() == "-" {
+                let mut s = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut s).map(|_| s)
+            } else {
+                std::fs::read_to_string(&path)
+            };
+            match text {
+                Ok(t) => (path.display().to_string(), t),
+                Err(e) => {
+                    let _ = writeln!(err, "{} could not be read: {e}", path.display());
+                    return ExitCode::from(2);
+                }
+            }
+        }
+        (Some(key), None) => {
+            let config = match Config::load(file) {
+                Ok(c) => c,
+                Err(errors) => {
+                    let _ = writeln!(err, "{}: invalid configuration", file.display());
+                    for e in &errors.0 {
+                        let _ = writeln!(err, "  {e}");
+                    }
+                    return ExitCode::from(2);
+                }
+            };
+            let tracker = match crate::host::linear(&config, &crate::host::process_env) {
+                Ok(t) => t,
+                Err(e) => {
+                    let _ = writeln!(err, "{e}");
+                    return ExitCode::from(2);
+                }
+            };
+            match crate::tracker::Tracker::get(&tracker, &key) {
+                Ok(item) => (format!("{} {}", item.key, item.title), item.description),
+                Err(e) => {
+                    let _ = writeln!(err, "{e}");
+                    return ExitCode::from(2);
+                }
+            }
+        }
+        (None, None) => {
+            let _ = writeln!(err, "name a ticket, or pass --description <file>");
+            return ExitCode::from(2);
+        }
+    };
+    let missing = crate::method::contract::missing_from_contract(&text);
+    if missing.is_empty() {
+        let _ = writeln!(out, "{name}: the contract is complete");
+        ExitCode::SUCCESS
+    } else {
+        let _ = writeln!(out, "{name}: the contract is incomplete");
+        for m in &missing {
+            let _ = writeln!(out, "  - {m}");
+        }
+        ExitCode::from(1)
     }
 }
 

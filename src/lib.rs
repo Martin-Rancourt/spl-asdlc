@@ -2,9 +2,12 @@
 //! into tracker state and tracker state into GitHub actions
 //! (`docs/spec/07-the-bridge.md`). It contains no model call.
 
+pub mod action_log;
 pub mod cli;
 pub mod config;
+pub mod dry;
 pub mod github;
+pub mod host;
 pub mod http;
 pub mod method;
 pub mod notify;

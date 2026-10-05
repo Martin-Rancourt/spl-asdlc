@@ -34,6 +34,20 @@ pub fn fit(text: &str, n: &dyn Notifier) -> String {
     })
 }
 
+/// Where the bridge sends a notice: the configured channels, or a dry run's
+/// record of what it would send.
+pub trait Signal {
+    /// Send `text` to every channel subscribed to `event`; the names of the
+    /// channels it reached, or an error naming those it did not.
+    fn signal(&self, event: &str, text: &str) -> Result<Vec<String>, String>;
+}
+
+impl Signal for Channels {
+    fn signal(&self, event: &str, text: &str) -> Result<Vec<String>, String> {
+        self.notify(event, text)
+    }
+}
+
 /// The configured channels and the events each one takes.
 pub struct Channels {
     channels: Vec<(Vec<String>, Box<dyn Notifier>)>,
