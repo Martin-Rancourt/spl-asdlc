@@ -173,9 +173,7 @@ fn one(
                     .map_err(|e| e.to_string())
             },
         );
-        if done.is_none() {
-            return None;
-        }
+        done?;
         status = Some(Status::InProgress);
     }
     if !matches!(status, Some(Status::InProgress | Status::InReview)) {
