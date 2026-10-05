@@ -3,7 +3,10 @@
 //! is decided here; the `tick` only reads the facts and applies the answers.
 
 pub mod business_rules;
+pub mod checks;
 pub mod contract;
 pub mod done_gate;
+pub mod glob;
 pub mod markdown;
+pub mod review;
 pub mod vocabulary;

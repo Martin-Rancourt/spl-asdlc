@@ -514,3 +514,36 @@ impl GitHub for FakeGitHub {
         ))
     }
 }
+
+/// A plain open PR for tests: green-less (no checks), no review, on `main`.
+pub fn pull_request(number: u64) -> PullRequest {
+    PullRequest {
+        number,
+        url: format!("https://github.com/example-org/acme/pull/{number}"),
+        title: format!("feat: change {number}"),
+        body: String::new(),
+        state: PrState::Open,
+        draft: false,
+        author: Some(Actor {
+            login: "author-login".into(),
+            is_bot: false,
+        }),
+        base_ref: "main".into(),
+        head_ref: format!("feat/change-{number}"),
+        head_sha: format!("head-{number}"),
+        labels: Vec::new(),
+        mergeable: Mergeable::Mergeable,
+        merge_state: "CLEAN".into(),
+        additions: 10,
+        deletions: 2,
+        created_at: None,
+        updated_at: None,
+        merged_at: None,
+        merged_by: None,
+        merge_commit_sha: None,
+        checks: Vec::new(),
+        reviews: Vec::new(),
+        threads: Vec::new(),
+        truncated: Vec::new(),
+    }
+}
