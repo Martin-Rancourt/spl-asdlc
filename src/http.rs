@@ -106,6 +106,8 @@ pub struct ScriptedTransport {
 struct Route {
     method: &'static str,
     url_prefix: String,
+    /// The request body must contain this text (GraphQL routes by query).
+    body_contains: Option<String>,
     responses: Vec<HttpResponse>,
 }
 
@@ -136,20 +138,54 @@ impl ScriptedTransport {
                 .collect(),
             body: body.as_bytes().to_vec(),
         };
+        self.add(method, url_prefix, None, response);
+        self
+    }
+
+    /// Answer requests whose body contains `body_contains` (a GraphQL query
+    /// by one of its words); preferred over a route without a body match.
+    pub fn on_body(
+        &self,
+        method: &'static str,
+        url_prefix: &str,
+        body_contains: &str,
+        status: u16,
+        body: &str,
+    ) -> &Self {
+        let response = HttpResponse {
+            status,
+            headers: Vec::new(),
+            body: body.as_bytes().to_vec(),
+        };
+        self.add(
+            method,
+            url_prefix,
+            Some(body_contains.to_string()),
+            response,
+        );
+        self
+    }
+
+    fn add(
+        &self,
+        method: &'static str,
+        url_prefix: &str,
+        body_contains: Option<String>,
+        response: HttpResponse,
+    ) {
         let mut routes = self.routes.lock().unwrap();
-        if let Some(r) = routes
-            .iter_mut()
-            .find(|r| r.method == method && r.url_prefix == url_prefix)
-        {
+        if let Some(r) = routes.iter_mut().find(|r| {
+            r.method == method && r.url_prefix == url_prefix && r.body_contains == body_contains
+        }) {
             r.responses.push(response);
         } else {
             routes.push(Route {
                 method,
                 url_prefix: url_prefix.to_string(),
+                body_contains,
                 responses: vec![response],
             });
         }
-        self
     }
 
     /// The requests sent so far, as `METHOD url`.
@@ -178,10 +214,21 @@ impl Transport for ScriptedTransport {
         let mut routes = self.routes.lock().unwrap();
         // The longest matching prefix wins, so a specific route can sit
         // beside a general one.
+        let body = String::from_utf8_lossy(request.body.as_deref().unwrap_or_default()).to_string();
         let best = routes
             .iter_mut()
             .filter(|r| r.method == request.method && request.url.starts_with(&r.url_prefix))
-            .max_by_key(|r| r.url_prefix.len());
+            .filter(|r| {
+                r.body_contains
+                    .as_ref()
+                    .is_none_or(|b| body.contains(b.as_str()))
+            })
+            .max_by_key(|r| {
+                (
+                    r.body_contains.as_ref().map(|b| b.len()).unwrap_or(0),
+                    r.url_prefix.len(),
+                )
+            });
         match best {
             Some(route) => {
                 if route.responses.len() > 1 {
