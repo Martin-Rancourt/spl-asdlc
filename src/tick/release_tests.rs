@@ -829,3 +829,119 @@ fn a_dry_run_of_the_release_pass_writes_nothing() {
         intents.lines()
     );
 }
+
+// ---- multi-component GO (spec 05 §9, REQ-REL-077/078) ----
+
+fn multi_config() -> Config {
+    let spec = include_str!("../../docs/spec/08-configuration.md");
+    let start = spec.find("```toml\n").unwrap() + "```toml\n".len();
+    let end = start + spec[start..].find("```").unwrap();
+    let text = spec[start..end]
+        .replace(
+            "# components = [\"app\", \"website\", \"admin\"]",
+            "components = [\"app\", \"website\"]",
+        )
+        .replace(
+            "# version_component = \"app\"",
+            "version_component = \"app\"",
+        )
+        .replace("# gate_record = ", "gate_record = ");
+    Config::parse(&text).unwrap()
+}
+
+fn component_pr(w: &World, number: u64, component: &str) -> PullRequest {
+    let mut pr = green(pull_request(number));
+    pr.base_ref = BRANCH.into();
+    pr.head_ref = format!("release-please--branches--{BRANCH}--components--{component}");
+    pr.title = format!("chore(release): release {component} 1.2.0");
+    pr.labels = vec!["autorelease: pending".into()];
+    pr.author = Some(Actor {
+        login: bot("release-app"),
+        is_bot: true,
+    });
+    let changelog = "## [1.2.0](x) (2026-10-05)\n\n### Features\n\n* m1 ([m1](x))\n".to_string();
+    let mut s = w.github.state.borrow_mut();
+    s.files.insert(
+        (repo(), pr.head_sha.clone(), "release-please-config.json".into()),
+        Ok(r#"{"packages": {"apps/app": {"component": "app"}, "apps/website": {"component": "website"}}}"#.into()),
+    );
+    s.files.insert(
+        (
+            repo(),
+            pr.head_sha.clone(),
+            format!("apps/{component}/CHANGELOG.md"),
+        ),
+        Ok(changelog),
+    );
+    pr
+}
+
+#[test]
+fn a_multi_component_go_lands_the_record_then_merges_the_version_component_last() {
+    let mut w = World::new();
+    w.config = multi_config();
+    w.tick();
+    all_angles_merged(&w);
+    w.github.state.borrow_mut().commits.insert(
+        (repo(), BRANCH.into()),
+        Ok(Commit {
+            sha: "c1".into(),
+            message: String::new(),
+            committer_date: None,
+            parents: vec![],
+        }),
+    );
+    let app = component_pr(&w, 41, "app");
+    let site = component_pr(&w, 42, "website");
+    w.open_on_branch(vec![app.clone(), site.clone()]);
+    let r = w.tick();
+    let writes = w.github.writes();
+    assert!(
+        writes
+            .iter()
+            .any(|l| l.starts_with("put-file") && l.contains("docs/releases/v1.2.0.md")),
+        "{writes:?} {r:?}"
+    );
+    assert!(
+        writes.iter().any(|l| l.starts_with("create-pull")),
+        "{writes:?}"
+    );
+    assert!(
+        !writes.iter().any(|l| l.starts_with("merge")),
+        "no release PR before the record"
+    );
+
+    // The record lands on the release branch: the components follow, one per tick.
+    let record = w
+        .github
+        .state
+        .borrow()
+        .files
+        .get(&(
+            repo(),
+            format!("release-record/{CAND}"),
+            "docs/releases/v1.2.0.md".into(),
+        ))
+        .cloned()
+        .unwrap()
+        .unwrap();
+    w.github.state.borrow_mut().files.insert(
+        (repo(), BRANCH.into(), "docs/releases/v1.2.0.md".into()),
+        Ok(record),
+    );
+    w.tick();
+    let merges: Vec<String> = w
+        .github
+        .writes()
+        .into_iter()
+        .filter(|l| l.starts_with("merge"))
+        .collect();
+    assert_eq!(
+        merges,
+        vec![format!(
+            "merge example-org/acme#42 at {} squash",
+            site.head_sha
+        )],
+        "website first, app last"
+    );
+}

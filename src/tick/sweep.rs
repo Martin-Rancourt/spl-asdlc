@@ -15,7 +15,7 @@ use super::{Report, Tick};
 pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) {
     let hours = i64::from(t.config.bridge.sweep_hours);
     let since = crate::github::Timestamp(t.now.0 - time::Duration::hours(hours));
-    let prs = match t.github.merged_pulls(&t.repo, None, Some(since), 100) {
+    let prs = match t.github.merged_pulls(&t.repo, None, Some(since), 500) {
         Ok(p) => p,
         Err(e) => {
             t.unreadable(report, "merged PRs", e);
