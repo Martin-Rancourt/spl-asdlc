@@ -139,6 +139,13 @@ pub struct Recorder {
     pub max: usize,
 }
 
+impl Signal for Recorder {
+    fn signal(&self, event: &str, text: &str) -> Result<Vec<String>, String> {
+        self.send(&format!("[{event}] {text}"))?;
+        Ok(vec![self.name()])
+    }
+}
+
 impl Notifier for Recorder {
     fn name(&self) -> String {
         "recorder".into()

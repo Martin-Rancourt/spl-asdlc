@@ -27,6 +27,15 @@ pub struct FakeState {
     next: u64,
 }
 
+impl FakeState {
+    /// Make `key` a child of `parent` (as the tracker would show it).
+    pub fn set_parent(&mut self, key: &str, parent: &str) {
+        if let Some(st) = self.items.get_mut(key) {
+            st.item.parent = Some(parent.to_string());
+        }
+    }
+}
+
 pub struct FakeTracker {
     pub team: String,
     pub bridge: User,

@@ -161,6 +161,15 @@ pub enum MergeMethod {
     Merge,
 }
 
+impl From<MergeMethod> for crate::github::MergeMethod {
+    fn from(m: MergeMethod) -> Self {
+        match m {
+            MergeMethod::Squash => crate::github::MergeMethod::Squash,
+            MergeMethod::Merge => crate::github::MergeMethod::Merge,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HumanApproval {
     Never,
