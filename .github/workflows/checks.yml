@@ -13,5 +13,6 @@ jobs:
       - uses: actions/checkout@v4
       - name: Scan every tracked file
         env:
-          SPL_ASDLC_FORBIDDEN_WORDS: ${{ secrets.SPL_ASDLC_FORBIDDEN_WORDS }}
+          # A repository secret or, failing that, a repository variable of the same name.
+          SPL_ASDLC_FORBIDDEN_WORDS: ${{ secrets.SPL_ASDLC_FORBIDDEN_WORDS || vars.SPL_ASDLC_FORBIDDEN_WORDS }}
         run: bash scripts/check-no-instance-names.sh
