@@ -31,7 +31,7 @@ use livela_core::{
 use spl_asdlc::tracker::livela::{LivelaItem, LivelaRelation, LivelaStore, PARTICIPANT};
 
 /// The runner's store, as the `spl-asdlc` adapter sees it.
-pub struct Glue(pub Store);
+pub struct Glue<'a>(pub &'a mut Store);
 
 fn rel(k: LivelaRelation) -> RelationKind {
     match k {
@@ -78,7 +78,7 @@ fn priority(p: Option<u8>) -> Option<Priority> {
     }
 }
 
-impl LivelaStore for Glue {
+impl LivelaStore for Glue<'_> {
     fn bridge_participant(&mut self) -> Result<String, String> {
         self.0.ensure_participant(ParticipantType::Agent, PARTICIPANT).map_err(|e| e.to_string())
     }
@@ -190,6 +190,59 @@ impl LivelaStore for Glue {
 }
 ```
 
-Wire it as `Livela::new(Glue(store), StatusTable::from_config(&config.tracker.statuses))`.
+Wire it as `Livela::new(Glue(&mut store), StatusTable::from_config(&config.tracker.statuses))`.
 
 The adapter reads before every write and skips a write that changes nothing. It signs each write as `spl-asdlc` through `swap_author` and gives the store back its previous author.
+
+## The daemon job
+
+The wrapper below is the runner's `BridgeJob` (`docs/livela-contract.md` §3). It is one line in `registered()` of `crates/livela-runner/src/jobs.rs`.
+
+```rust
+use std::path::Path;
+
+use livela_core::{DaemonJob, JobContext, JobOutcome, Store};
+use spl_asdlc::config::Config;
+use spl_asdlc::tracker::StatusTable;
+use spl_asdlc::tracker::livela::Livela;
+
+
+/// The bridge as a job of the runner's daemon (`docs/livela-contract.md` §3).
+pub struct BridgeJob;
+
+impl DaemonJob for BridgeJob {
+    fn name(&self) -> &str {
+        "spl-asdlc"
+    }
+
+    fn run(&mut self, store: &mut Store, ctx: &JobContext) -> JobOutcome {
+        let Some(path) = ctx.config.as_deref() else {
+            return JobOutcome::failed("LIVELA_SPL_ASDLC_CONFIG is not set");
+        };
+        let statuses = match Config::load(path) {
+            Ok(c) => StatusTable::from_config(&c.tracker.statuses),
+            Err(e) => return JobOutcome::failed(format!("{}: {}", path.display(), e.0.len())),
+        };
+        let tracker = Livela::new(Glue(store), statuses);
+        let out = spl_asdlc::job::pass(&spl_asdlc::job::Host {
+            config_path: Path::new(path),
+            tracker: &tracker,
+            // Stop taking decisions with a margin: the runner fails a pass over its budget.
+            budget: Some(ctx.budget.mul_f32(0.8)),
+            log_path: None,
+            env: &|k| std::env::var(k).ok(),
+        });
+        if out.ok { JobOutcome::ok(out.message) } else { JobOutcome::failed(out.message) }
+    }
+}
+```
+
+Checked against `livela-core` with `run_jobs`:
+
+- Without GitHub credentials, the pass fails and says why (`SPL_ASDLC_APP_ID is not set`).
+- It writes no item.
+- The runner records the failure, and only it, under `job:spl-asdlc`.
+
+A pass that works leaves only its writes on the items; a pass with nothing to do leaves nothing. The tick stops taking decisions at 80% of `LIVELA_JOB_BUDGET_SECONDS`, because the runner fails a pass that overruns its budget.
+
+Where the runner gets the `spl-asdlc` crate is open (contract, point 3).

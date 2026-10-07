@@ -541,6 +541,27 @@ impl<S: LivelaStore> Tracker for Livela<S> {
         })
     }
 
+    fn keeps_html_comments(&self) -> bool {
+        // The description and comments are stored as written.
+        true
+    }
+
+    fn keys_in_text(&self, text: &str) -> Vec<String> {
+        let mut keys: Vec<String> = text
+            .match_indices("livela://item/")
+            .map(|(i, m)| {
+                text[i + m.len()..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                    .collect::<String>()
+            })
+            .filter(|k| !k.is_empty())
+            .collect();
+        keys.sort();
+        keys.dedup();
+        keys
+    }
+
     fn link_pr(&self, key: &str, pr_url: &str, title: &str) -> TResult<()> {
         let id = self.id_of(key)?;
         if self.store.borrow().find_by_web_link(pr_url).contains(&id) {

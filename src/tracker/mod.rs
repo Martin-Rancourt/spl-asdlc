@@ -174,6 +174,18 @@ pub trait Tracker {
     fn relate(&self, a: &str, b: &str, kind: RelationKind) -> TResult<()>;
     fn unrelate(&self, relation_id: &str) -> TResult<()>;
     fn link_pr(&self, key: &str, pr_url: &str, title: &str) -> TResult<()>;
+
+    /// Whether HTML comments survive a write: when they do not, the bridge
+    /// writes its markers visible (as inline code).
+    fn keeps_html_comments(&self) -> bool {
+        false
+    }
+
+    /// Item identifiers named by tracker URLs in a text (the configured
+    /// `link_fallback = "body-url"`); never bare identifiers.
+    fn keys_in_text(&self, _text: &str) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// The status table of a project: canonical name -> tracker name, and back.

@@ -186,3 +186,17 @@ fn a_ticket_cannot_close_the_block_from_its_snippet() {
     let b = block("rc", &[evil], &[], None);
     assert_eq!(b.matches("spl-asdlc:release-note:end").count(), 1, "{b}");
 }
+
+#[test]
+fn a_block_whose_delimiters_a_tracker_made_visible_is_replaced_not_doubled() {
+    let first = crate::method::texts::visible_markers(&splice(
+        "## Release note\n\n_x_\n",
+        &format!("{START}\nold\n{END}"),
+    ));
+    let again = splice(
+        &first,
+        &crate::method::texts::visible_markers(&format!("{START}\nnew\n{END}")),
+    );
+    assert!(again.contains("new") && !again.contains("old"), "{again}");
+    assert_eq!(again.matches("release-note:start").count(), 1);
+}

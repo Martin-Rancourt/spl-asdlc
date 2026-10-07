@@ -258,6 +258,8 @@ pub enum CheckKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Review {
     pub author: Option<String>,
+    /// The review's own text (an angle names its sub-item there).
+    pub body: String,
     /// `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, `DISMISSED`, `PENDING`.
     pub state: String,
     pub commit_sha: Option<String>,
@@ -286,6 +288,9 @@ pub struct PullRequest {
     pub base_ref: String,
     /// Empty when GitHub did not say (treated as a merge-back by the method).
     pub head_ref: String,
+    /// The head branch lives in another repository (a fork). Unknown reads
+    /// as true: the bridge never deletes a branch it cannot place.
+    pub cross_repository: bool,
     pub head_sha: String,
     pub labels: Vec<String>,
     pub mergeable: Mergeable,

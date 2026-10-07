@@ -27,6 +27,15 @@ pub struct FakeState {
     next: u64,
 }
 
+impl FakeState {
+    /// Make `key` a child of `parent` (as the tracker would show it).
+    pub fn set_parent(&mut self, key: &str, parent: &str) {
+        if let Some(st) = self.items.get_mut(key) {
+            st.item.parent = Some(parent.to_string());
+        }
+    }
+}
+
 pub struct FakeTracker {
     pub team: String,
     pub bridge: User,
@@ -418,6 +427,22 @@ impl Tracker for FakeTracker {
             .relations
             .retain(|(id, ..)| id != relation_id);
         Ok(())
+    }
+
+    fn keys_in_text(&self, text: &str) -> Vec<String> {
+        let mut keys: Vec<String> = text
+            .match_indices("https://tracker.test/")
+            .map(|(i, m)| {
+                text[i + m.len()..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                    .collect::<String>()
+            })
+            .filter(|k| !k.is_empty())
+            .collect();
+        keys.sort();
+        keys.dedup();
+        keys
     }
 
     fn link_pr(&self, key: &str, pr_url: &str, _title: &str) -> TResult<()> {

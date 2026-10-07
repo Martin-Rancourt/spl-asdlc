@@ -366,12 +366,12 @@ impl RestGitHub {
 const PULL_FRAGMENT: &str = "fragment Pull on PullRequest {
   number url title body state isDraft
   author { __typename login }
-  baseRefName headRefName headRefOid
+  baseRefName headRefName headRefOid isCrossRepository
   labels(first: 50) { pageInfo { hasNextPage } nodes { name } }
   mergeable mergeStateStatus additions deletions createdAt updatedAt mergedAt
   mergedBy { __typename login }
   mergeCommit { oid }
-  reviews(first: 100) { pageInfo { hasNextPage } nodes { author { login } state commit { oid } submittedAt } }
+  reviews(first: 100) { pageInfo { hasNextPage } nodes { author { login } state body commit { oid } submittedAt } }
   reviewThreads(first: 100) { pageInfo { hasNextPage } nodes { isResolved isOutdated path comments(first: 1) { nodes { author { login } body } } } }
   commits(last: 1) { nodes { commit { oid statusCheckRollup { contexts(first: 100) {
     pageInfo { hasNextPage }
@@ -542,6 +542,7 @@ fn pull_from_gql(v: &Value) -> Result<PullRequest, String> {
         .iter()
         .map(|r| Review {
             author: r["author"]["login"].as_str().map(str::to_string),
+            body: str_of(r, "body"),
             state: str_of(r, "state"),
             commit_sha: r["commit"]["oid"].as_str().map(str::to_string),
             submitted_at: time_of(r, "submittedAt"),
@@ -628,6 +629,7 @@ fn pull_from_gql(v: &Value) -> Result<PullRequest, String> {
         author: actor_gql(&v["author"]),
         base_ref: str_of(v, "baseRefName"),
         head_ref: str_of(v, "headRefName"),
+        cross_repository: v["isCrossRepository"].as_bool().unwrap_or(true),
         head_sha,
         labels,
         mergeable,

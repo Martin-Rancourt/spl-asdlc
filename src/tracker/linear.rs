@@ -822,6 +822,17 @@ impl Tracker for Linear {
         .map(|_| ())
     }
 
+    fn keys_in_text(&self, text: &str) -> Vec<String> {
+        static URL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+            regex::Regex::new(r"https://linear\.app/[A-Za-z0-9_-]+/issue/([A-Z][A-Z0-9]*-[0-9]+)")
+                .unwrap()
+        });
+        let mut keys: Vec<String> = URL.captures_iter(text).map(|c| c[1].to_string()).collect();
+        keys.sort();
+        keys.dedup();
+        keys
+    }
+
     fn link_pr(&self, key: &str, pr_url: &str, title: &str) -> TResult<()> {
         let id = self.issue_id(key)?;
         self.write(
