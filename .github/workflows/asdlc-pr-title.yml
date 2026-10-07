@@ -1,0 +1,191 @@
+name: asdlc-pr-title
+
+# Refuse a pull request whose title is not a Conventional Commit
+# (docs/requirements/ci.md, REQ-CI-015..021). Every delivery PR is squash-merged
+# and the squash commit's subject is the PR title: release-please reads it to
+# pick the version bump and the release-note section, and drops a title it
+# cannot parse.
+#
+# The caller owns the trigger (pull_request: opened, edited, synchronize,
+# reopened, ready_for_review; bases main and release/**), its own concurrency
+# group per PR, and the job id. The context it reports is `conventional-title`;
+# it is not aggregated into `required-check` (REQ-CI-021). No `if:` anywhere: a
+# job skipped by `if:` reports SKIPPED, which must never turn a red title green.
+
+on:
+  workflow_call:
+    inputs:
+      title:
+        description: The PR title.
+        type: string
+        required: true
+      head-ref:
+        description: The PR's head branch.
+        type: string
+        required: true
+      base-ref:
+        description: The PR's base branch.
+        type: string
+        required: true
+      allowed-types:
+        description: Comma list of types; equal to the release-please changelog sections.
+        type: string
+        default: build,chore,ci,docs,feat,fix,perf,refactor,revert,style,test
+      default-branch:
+        description: The base of a merge-back.
+        type: string
+        default: main
+      release-branch-prefix:
+        description: Head prefix of release branches.
+        type: string
+        default: release/
+      release-please-head-prefix:
+        description: Head prefix release-please owns.
+        type: string
+        default: release-please--
+      default-branch-exempt-heads:
+        description: >-
+          Comma list of head prefixes exempt when the base is the default branch
+          (a PR merged as a merge commit, whose title never becomes a commit).
+        type: string
+        default: chore/merge-back-
+      release-branch-exempt-heads:
+        description: >-
+          Comma list of head prefixes exempt when the base is a release branch:
+          the angle PRs and the gate record, merged as merge commits.
+        type: string
+        default: qa/,release-record/
+      runs-on:
+        description: A runner label, or a JSON array of labels.
+        type: string
+        default: ubuntu-latest
+    outputs:
+      exempt:
+        description: '`true` when the PR is one the release chain opens itself.'
+        value: ${{ jobs.conventional-title.outputs.exempt }}
+
+permissions: {}
+
+jobs:
+  conventional-title:
+    name: conventional-title
+    runs-on: ${{ startsWith(inputs.runs-on, '[') && fromJSON(inputs.runs-on) || inputs.runs-on }}
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      exempt: ${{ steps.title.outputs.exempt }}
+    steps:
+      - name: Refuse a PR title that is not a Conventional Commit
+        id: title
+        # Author-controlled text reaches the script through the environment,
+        # never as an expression expanded into it (REQ-CI-003).
+        env:
+          TITLE: ${{ inputs.title }}
+          HEAD_REF: ${{ inputs.head-ref }}
+          BASE_REF: ${{ inputs.base-ref }}
+          ALLOWED_TYPES: ${{ inputs.allowed-types }}
+          DEFAULT_BRANCH: ${{ inputs.default-branch }}
+          RELEASE_PREFIX: ${{ inputs.release-branch-prefix }}
+          RELEASE_PLEASE_PREFIX: ${{ inputs.release-please-head-prefix }}
+          DEFAULT_EXEMPT: ${{ inputs.default-branch-exempt-heads }}
+          RELEASE_EXEMPT: ${{ inputs.release-branch-exempt-heads }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${GITHUB_OUTPUT:-/dev/null}"
+
+          exempt() {
+            echo "Exempt: $1"
+            echo 'exempt=true' >> "$out"
+            exit 0
+          }
+          # A head that starts with one of the comma-listed prefixes.
+          starts_with_one_of() {
+            local list="$1" prefix
+            IFS=',' read -r -a prefixes <<< "$list"
+            for prefix in ${prefixes[@]+"${prefixes[@]}"}; do
+              prefix="${prefix#"${prefix%%[![:space:]]*}"}"
+              prefix="${prefix%"${prefix##*[![:space:]]}"}"
+              if [ -n "$prefix" ] && [[ "$HEAD_REF" == "$prefix"* ]]; then
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          # Exemptions are keyed on the branches the release chain owns, never
+          # on the identity that opens the PR (REQ-CI-017).
+          if [ -n "$RELEASE_PLEASE_PREFIX" ] && [[ "$HEAD_REF" == "$RELEASE_PLEASE_PREFIX"* ]]; then
+            exempt "release-please's own release PR (head '$HEAD_REF')."
+          fi
+          if [ "$BASE_REF" = "$DEFAULT_BRANCH" ]; then
+            if [[ "$HEAD_REF" == "$RELEASE_PREFIX"* ]]; then
+              exempt "merge-back of '$HEAD_REF' into $DEFAULT_BRANCH."
+            fi
+            if starts_with_one_of "$DEFAULT_EXEMPT"; then
+              exempt "'$HEAD_REF' into $DEFAULT_BRANCH is merged as a merge commit."
+            fi
+          fi
+          if [[ "$BASE_REF" == "$RELEASE_PREFIX"* ]] && starts_with_one_of "$RELEASE_EXEMPT"; then
+            exempt "'$HEAD_REF' into the release branch is merged as a merge commit."
+          fi
+          echo 'exempt=false' >> "$out"
+
+          # The allowed types: lower-case words, joined into an alternation.
+          types=""
+          IFS=',' read -r -a list <<< "$ALLOWED_TYPES"
+          for t in ${list[@]+"${list[@]}"}; do
+            t="${t//[[:space:]]/}"
+            if [ -z "$t" ]; then
+              continue
+            fi
+            if ! [[ "$t" =~ ^[a-z]+$ ]]; then
+              echo "::error title=Invalid allowed-types::'$t' is not a lower-case type."
+              exit 1
+            fi
+            types="${types:+$types|}$t"
+          done
+          if [ -z "$types" ]; then
+            echo "::error title=Invalid allowed-types::no type is allowed."
+            exit 1
+          fi
+
+          # type, optional (scope) with no space or parenthesis, optional `!`,
+          # then ": " and a subject that neither starts nor ends with a space.
+          pattern="^(${types})(\([^()[:space:]]+\))?!?: [^[:space:]](.*[^[:space:]])?$"
+          if [[ "$TITLE" =~ $pattern ]]; then
+            echo "Conventional Commit title: $TITLE"
+            exit 0
+          fi
+
+          # Refused: say what is wrong in a way the author can act on.
+          shown="${types//|/, }"
+          head="${TITLE%%:*}"
+          lead="${TITLE%%[(:!]*}"
+          lead_lower="$(tr '[:upper:]' '[:lower:]' <<< "$lead")"
+          type_re="^(${types})$"
+          header_re="^(${types})(\([^()[:space:]]+\))?!?$"
+          empty_scope_re="^(${types})\(\)!?$"
+          spaced_scope_re="^(${types})\([^()]*[[:space:]][^()]*\)!?$"
+          hint="Expected 'type(scope): subject' or 'type: subject', e.g. 'fix(merge): subject'."
+          if [[ "$TITLE" =~ ^[A-Za-z]+-[0-9] ]]; then
+            hint="The title starts with a ticket id. Put the type first and the id at the end: 'fix(scope): subject (ABC-123)'."
+          elif [[ "$TITLE" != *:* ]]; then
+            hint="The title has no 'type: ' prefix. Start it with one of ${shown}, e.g. 'fix(scope): subject'."
+          elif [[ "$lead_lower" =~ $type_re && "$lead" != "$lead_lower" ]]; then
+            hint="The type is lower-case: '${lead_lower}', not '${lead}'."
+          elif [[ "$head" =~ $header_re ]]; then
+            hint="After the colon comes exactly one space, then a subject that does not end with a space: 'type(scope): subject'."
+          elif [[ "$head" =~ $empty_scope_re ]]; then
+            hint="The scope is empty: drop the '()' or name the part of the code, e.g. 'fix(merge): subject'."
+          elif [[ "$head" =~ $spaced_scope_re ]]; then
+            hint="The scope holds no space: 'fix(pr-merge): subject', not 'fix(pr merge): subject'."
+          elif ! [[ "$lead_lower" =~ $type_re ]]; then
+            hint="'${lead}' is not an allowed type. Allowed: ${shown}."
+          fi
+          echo "::error title=PR title is not a Conventional Commit::${hint}"
+          echo "Title:  $TITLE"
+          echo "Why:    the squash commit's message is this title; release-please reads it to pick the version bump and the release-note section, and drops a title it cannot parse."
+          echo "Rule:   type(scope)?!?: subject, with the types ${shown}."
+          echo "Fix:    edit the PR title; this check re-runs on the edit."
+          exit 1

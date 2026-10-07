@@ -1,0 +1,949 @@
+name: asdlc-release-gate
+
+# The deterministic half of a release's QA (docs/requirements/ci.md,
+# REQ-CI-055..075; docs/spec/05-release-cycle.md §3): the project's suites run
+# against the exact candidate commit, and the verdict is published as data
+# only: the run conclusion, `results/suites.json` in the evidence artifact
+# `release-gate-evidence-<sha>`, and the commit status `release-gate`. Binary:
+# a suite that is not green blocks, a suite that never ran is not green, and a
+# skipped suites job never reads as a pass. No brief, no label, no tracker, no
+# notification.
+#
+# The bridge reads the run of the CALLER (`[release] gate_workflow`, default
+# `release-gate.yml`) whose event is `push`, whose head branch is the RC tag
+# and whose head commit is the tag's: only its conclusion `success` is green.
+# Example caller (lot 4 writes the real one):
+#
+#   name: release-gate
+#   on:
+#     push: {tags: ['acme-v*-rc.*']}
+#     # Diagnostics only: a dispatch certifies whatever ref it is given.
+#     workflow_dispatch:
+#       inputs: {release_class: {type: choice, options: ['', routine, sensible], default: ''}}
+#   concurrency: {group: release-gate, cancel-in-progress: false}
+#   permissions: {contents: read}
+#   jobs:
+#     preflight: {...the project's own build and tests on the exact commit...}
+#     gate:
+#       needs: preflight
+#       if: always()
+#       permissions: {contents: read, statuses: write}
+#       uses: <owner>/spl-asdlc/.github/workflows/asdlc-release-gate.yml@<ref>
+#       with:
+#         candidate-tag: acme-v{version}-rc.{rc}
+#         release-tag: acme-v{version}
+#         upstream-result: ${{ needs.preflight.result }}
+#         dispatch-class: ${{ inputs.release_class }}
+#         suites: >-
+#           [{"id": "tests", "run": "cargo test --locked 2>&1 | tee \"$EVIDENCE_DIR/tests.log\"",
+#             "expect-nonempty": "tests.log"}]
+#
+# Called jobs (stable names): `candidate`, `suites`, `gate-status`,
+# `auto-rerun-decision`.
+#
+# `suites` is an ordered JSON array of
+#   {"id": "^[a-z][a-z0-9_]*$", "run": "<bash>", "name"?, "shell"?: "bash",
+#    "requires"?: [earlier ids], "timeout-minutes"?: n,
+#    "expect-nonempty"?: "<file>" | {"file", "count": "<jq>"},
+#    "flaky"?: {"file", "count": "<jq>"}, "artifacts"?: ["<file>"]}
+# run in order in one job, each under `bash -e -o pipefail`, with
+# EVIDENCE_DIR, LAST_TAG, CANDIDATE, RELEASE_CLASS and HEAD_SHA set. Files are
+# relative to EVIDENCE_DIR, the root of the evidence pack.
+
+on:
+  workflow_call:
+    inputs:
+      candidate-tag:
+        description: 'The RC tag pattern, as `[release] candidate_tag`.'
+        type: string
+        required: true
+      release-tag:
+        description: 'The published tag pattern, as `[release] release_tag`.'
+        type: string
+        required: true
+      suites:
+        description: The ordered JSON array of suites (see the header).
+        type: string
+        required: true
+      setup-command:
+        description: Run once before the suites; a failed setup leaves every suite not-run.
+        type: string
+        default: ''
+      upstream-result:
+        description: The result of the project's preflight job; anything but `success` runs no suite.
+        type: string
+        default: success
+      dispatch-class:
+        description: The class a workflow_dispatch names; it outranks the tag on a dispatch only.
+        type: string
+        default: ''
+      evidence-include:
+        description: JSON array of workspace paths or globs copied into the pack.
+        type: string
+        default: '[]'
+      changelog-path:
+        description: File copied to release-please-CHANGELOG.md in the pack.
+        type: string
+        default: ''
+      evidence-retention-days:
+        description: Retention of the evidence artifact (at most 90).
+        type: number
+        default: 30
+      rerun-pr-guards:
+        description: Run guard-commands against the candidate before the suites.
+        type: boolean
+        default: true
+      guard-commands:
+        description: 'JSON array of {"name", "run"}, as given to pr-guards; each runs with BASE_SHA (the last release), HEAD_SHA, HEAD_REF and BASE_REF.'
+        type: string
+        default: '[]'
+      pr-guard-exceptions-file:
+        description: 'JSON object {"<guard name>": "<reason, 12 characters or more>"} of guards the gate does not run.'
+        type: string
+        default: .github/release-gate/pr-guard-exceptions.json
+      known-flakes-file:
+        description: The allow-list auto-rerun-decision reads.
+        type: string
+        default: .github/release-gate/known-flakes.json
+      env:
+        description: JSON object of static, non-secret environment for the setup and the suites.
+        type: string
+        default: '{}'
+      runs-on:
+        description: A runner label, or a JSON array of labels, for the suites job.
+        type: string
+        default: ubuntu-latest
+      timeout-minutes:
+        description: The suites job's timeout.
+        type: number
+        default: 60
+    outputs:
+      failed-suites:
+        description: Comma list of the suites that are not `success`; empty when none, or when nothing reported.
+        value: ${{ jobs.suites.outputs.failed-suites }}
+      summary-written:
+        description: '`true` only when the report step completed.'
+        value: ${{ jobs.suites.outputs.summary-written }}
+      release-class:
+        description: '`routine` or `sensible`, never a default `routine`.'
+        value: ${{ jobs.candidate.outputs.release-class }}
+      release-class-source:
+        description: Where the class came from.
+        value: ${{ jobs.candidate.outputs.release-class-source }}
+      last-tag:
+        description: The published release the candidate is measured from.
+        value: ${{ jobs.candidate.outputs.last-tag }}
+      conclusion:
+        description: '`success` or `failure`.'
+        value: ${{ jobs.gate-status.outputs.conclusion }}
+      stage:
+        description: Where a red gate failed.
+        value: ${{ jobs.gate-status.outputs.stage }}
+      evidence-artifact:
+        description: The evidence artifact's name.
+        value: ${{ jobs.suites.outputs.evidence-artifact }}
+      evidence-sha:
+        description: The commit the evidence attests.
+        value: ${{ jobs.suites.outputs.evidence-sha }}
+      rerun-eligible:
+        description: The in-run decision on attempt 1 (`true`/`false`), empty when not taken.
+        value: ${{ jobs.auto-rerun-decision.outputs.eligible }}
+
+# gh finds the caller's repository without a checkout.
+env:
+  GH_REPO: ${{ github.repository }}
+
+permissions:
+  contents: read
+
+jobs:
+  candidate:
+    name: candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      release-class: ${{ steps.class.outputs.class }}
+      release-class-source: ${{ steps.class.outputs.source }}
+      last-tag: ${{ steps.last.outputs.last-tag }}
+      candidate: ${{ steps.last.outputs.candidate }}
+    steps:
+      # The class lives in the tag OBJECT: checkout passes --no-tags unless
+      # told otherwise, and `ref:` is a bare commit here.
+      - name: Check out the candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Resolve the release class
+        id: class
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_CLASS: ${{ inputs.dispatch-class }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${GITHUB_OUTPUT:-/dev/stdout}"
+          emit() {
+            echo "Release class: $1 ($2)"
+            {
+              echo "class=$1"
+              echo "source=$2"
+            } >> "$out"
+            exit 0
+          }
+          # Only on a dispatch: an input forwarded on a tag push must not
+          # outrank the tag.
+          if [ "$EVENT_NAME" = workflow_dispatch ] && [ -n "$DISPATCH_CLASS" ]; then
+            case "$DISPATCH_CLASS" in
+              routine | sensible) emit "$DISPATCH_CLASS" "workflow_dispatch input" ;;
+              *) emit sensible "undetermined - invalid workflow_dispatch input, treated as sensible" ;;
+            esac
+          fi
+          if [ "$REF_TYPE" != tag ]; then
+            emit sensible "undetermined - $REF_NAME is not a tag, treated as sensible"
+          fi
+          if ! git fetch --quiet --no-tags origin "+refs/tags/$REF_NAME:refs/tags/$REF_NAME"; then
+            echo "::warning::Could not re-fetch $REF_NAME; reading the checkout's copy."
+          fi
+          msg="$(mktemp)"
+          trap 'rm -f "$msg"' EXIT
+          # %(contents) of a lightweight tag is the commit message: a
+          # Release-Class line there is a classification nobody made.
+          if ! objtype="$(git for-each-ref --format='%(objecttype)' "refs/tags/$REF_NAME")" || [ "$objtype" != tag ]; then
+            emit sensible "undetermined - $REF_NAME is not an annotated tag, treated as sensible"
+          fi
+          git for-each-ref --format='%(contents)' "refs/tags/$REF_NAME" > "$msg"
+          # The first Release-Class line decides, as the bridge reads it;
+          # anything but exactly routine or sensible there is unclassified.
+          field() {
+            awk -v k="$1:" 'index($0, k) == 1 { v = substr($0, length(k) + 1); gsub(/^[[:space:]]+|[[:space:]]+$/, "", v); print v; exit }' "$msg"
+          }
+          class="$(field Release-Class)"
+          surfaces="$(field Release-Class-Surfaces)"
+          justification="$(field Release-Class-Justification)"
+          case "$class" in
+            sensible) emit sensible "tag annotation" ;;
+            routine)
+              # Missing evidence is not "no risk".
+              if [ -z "$surfaces" ]; then
+                emit sensible "tag annotation said routine without recorded reviewed paths (a hand-cut tag) - treated as sensible"
+              elif [ "$surfaces" = none ]; then
+                emit routine "tag annotation"
+              elif [ -n "$justification" ]; then
+                emit routine "tag annotation - routine despite reviewed paths ($surfaces), justified: $justification"
+              else
+                emit sensible "tag annotation said routine, but the delta touches $surfaces with no recorded justification - treated as sensible"
+              fi
+              ;;
+            *) emit sensible "undetermined - no valid Release-Class line in the annotation, treated as sensible" ;;
+          esac
+
+      - name: Find the last published release
+        id: last
+        env:
+          CANDIDATE_TAG: ${{ inputs.candidate-tag }}
+          RELEASE_TAG: ${{ inputs.release-tag }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${GITHUB_OUTPUT:-/dev/stdout}"
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          rank() { # X.Y.Z -> a sortable key
+            local major minor patch
+            IFS=. read -r major minor patch <<< "$1"
+            printf '%012d%012d%012d' "$major" "$minor" "$patch"
+          }
+          rel_glob="$(printf '%s' "$RELEASE_TAG" | sed -e 's/{version}/*/')"
+          rel_re="^$(printf '%s' "$RELEASE_TAG" | sed -e 's/\./\\./g' -e 's/{version}/([0-9]+\\.[0-9]+\\.[0-9]+)/')\$"
+          cand_re="^$(printf '%s' "$CANDIDATE_TAG" | sed -e 's/\./\\./g' -e 's/{version}/([0-9]+\\.[0-9]+\\.[0-9]+)/' -e 's/{rc}/([0-9]+)/')\$"
+          candidate=''
+          below=''
+          if [ "$REF_TYPE" = tag ] && [[ "$REF_NAME" =~ $cand_re ]]; then
+            candidate="$REF_NAME"
+            below="$(rank "${BASH_REMATCH[1]}")"
+          fi
+          if ! git tag --list "$rel_glob" > "$work/tags"; then
+            echo "::error title=Release gate::Could not list the tags."
+            exit 1
+          fi
+          # RC tags may match the glob too: the pattern excludes them, or the
+          # candidate itself becomes the base and every delta is empty. On a
+          # candidate, the base is the highest release below its version.
+          : > "$work/ranked"
+          while read -r t; do
+            if [[ "$t" =~ $rel_re ]]; then
+              key="$(rank "${BASH_REMATCH[1]}")"
+              if [ -z "$below" ] || [[ "$key" < "$below" ]]; then
+                printf '%s %s\n' "$key" "$t" >> "$work/ranked"
+              fi
+            fi
+          done < "$work/tags"
+          sort "$work/ranked" > "$work/sorted"
+          last="$(tail -n 1 "$work/sorted" | awk '{ print $2 }')"
+          if [ -z "$last" ]; then
+            echo "::error title=Release gate::No published release ($rel_glob) below ${REF_NAME}: the candidate has nothing to be measured from. The first release of a product needs its base tagged by hand."
+            exit 1
+          fi
+          echo "Candidate: ${candidate:-none (not an RC tag)}; last published release: $last"
+          {
+            echo "last-tag=$last"
+            echo "candidate=$candidate"
+          } >> "$out"
+
+  suites:
+    name: suites
+    needs: candidate
+    runs-on: ${{ startsWith(inputs.runs-on, '[') && fromJSON(inputs.runs-on) || inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+    outputs:
+      failed-suites: ${{ steps.summary.outputs.failed }}
+      summary-written: ${{ steps.summary.outputs.written }}
+      evidence-artifact: release-gate-evidence-${{ github.sha }}
+      evidence-sha: ${{ github.sha }}
+    env:
+      EVIDENCE_DIR: release-gate-evidence
+      SUITES: ${{ inputs.suites }}
+      RERUN_GUARDS: ${{ inputs.rerun-pr-guards }}
+      GUARDS: ${{ inputs.guard-commands }}
+      UPSTREAM_RESULT: ${{ inputs.upstream-result }}
+      LAST_TAG: ${{ needs.candidate.outputs.last-tag }}
+      CANDIDATE: ${{ needs.candidate.outputs.candidate }}
+      RELEASE_CLASS: ${{ needs.candidate.outputs.release-class }}
+    steps:
+      # The exact candidate commit: the pack, suites.json and the artifact
+      # name attest to it. No credentials stay behind for the suites.
+      - name: Check out the candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Prepare the evidence pack
+        id: prepare
+        env:
+          EXCEPTIONS_FILE: ${{ inputs.pr-guard-exceptions-file }}
+          CHANGELOG_PATH: ${{ inputs.changelog-path }}
+          STATIC_ENV: ${{ inputs.env }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          state="${RUNNER_TEMP:?}/asdlc-gate"
+          mkdir -p "$state" "$EVIDENCE_DIR/results"
+          bad=0
+          # Every declared suite is blocking, and a gate with nothing to run
+          # is never green.
+          if ! jq -r '
+            def err($i; $m): "suite \($i): \($m)";
+            . as $all
+            | if type != "array" then "the suites input is not a JSON array"
+              elif length == 0 then "the suites input declares no suite"
+              else to_entries[] | .key as $i | .value as $s
+                | if ($s | type) != "object" then err($i; "not an object")
+                  else
+                    (if ($s.id | type) != "string" or ($s.id | test("^[a-z][a-z0-9_]*$") | not) then err($i; "id must match ^[a-z][a-z0-9_]*$") else empty end),
+                    (if $s.id == "pr_guards" then err($i; "the id pr_guards is reserved for the PR guards") else empty end),
+                    (if ([$all[] | objects | select(.id == $s.id)] | length) > 1 then err($i; "duplicate id") else empty end),
+                    (if ($s.run | type) != "string" or ($s.run | length) == 0 then err($i; "run must be a command") else empty end),
+                    (if $s.shell != null and $s.shell != "bash" then err($i; "shell must be bash") else empty end),
+                    (if $s.requires != null and (($s.requires | type) != "array"
+                        or any($s.requires[]; . as $r | ([$all[:$i][] | objects | .id] | index($r)) == null))
+                     then err($i; "requires must name suites declared before it") else empty end),
+                    (if $s["timeout-minutes"] != null and (($s["timeout-minutes"] | type) != "number" or $s["timeout-minutes"] < 1 or ($s["timeout-minutes"] | floor) != $s["timeout-minutes"])
+                     then err($i; "timeout-minutes must be a positive integer") else empty end),
+                    (if $s["expect-nonempty"] != null and (($s["expect-nonempty"] | type) != "string" or ($s["expect-nonempty"] | length) == 0)
+                        and (($s["expect-nonempty"] | type) != "object" or ($s["expect-nonempty"].file | type) != "string" or ($s["expect-nonempty"].count | type) != "string")
+                     then err($i; "expect-nonempty must be a file, or {\"file\", \"count\"}") else empty end),
+                    (if $s.flaky != null and (($s.flaky | type) != "object" or ($s.flaky.file | type) != "string" or ($s.flaky.count | type) != "string")
+                     then err($i; "flaky must be {\"file\", \"count\"}") else empty end),
+                    (if $s.artifacts != null and (($s.artifacts | type) != "array" or any($s.artifacts[]; type != "string"))
+                     then err($i; "artifacts must be a list of files") else empty end)
+                  end
+              end
+          ' > "$state/errors" <<< "$SUITES"; then
+            echo "the suites input is not JSON" > "$state/errors"
+          fi
+          if [ -s "$state/errors" ]; then
+            while IFS= read -r e; do
+              echo "::error title=Invalid suites::$e"
+            done < "$state/errors"
+            bad=1
+          else
+            jq -c '.' <<< "$SUITES" > "$state/suites.json"
+          fi
+          echo '{}' > "$state/exceptions.json"
+          if [ "$RERUN_GUARDS" = true ]; then
+            if ! jq -e 'type == "array" and all(.[]; type == "object" and (.name | type == "string" and length > 0) and (.run | type == "string" and length > 0))
+                        and ([.[].name] | length == (unique | length))' > /dev/null 2>&1 <<< "$GUARDS"; then
+              echo "::error title=Invalid guard-commands::guard-commands must be a JSON array of {\"name\", \"run\"} with distinct names."
+              bad=1
+            elif [ -f "$EXCEPTIONS_FILE" ]; then
+              # An exception needs a written reason, and one that excuses no
+              # guard is stale.
+              if ! jq -e --argjson guards "$GUARDS" 'type == "object"
+                    and all(to_entries[]; (.value | type == "string" and (gsub("^[[:space:]]+|[[:space:]]+$"; "") | length >= 12))
+                                         and (.key as $k | [$guards[].name] | index($k) != null))' \
+                  "$EXCEPTIONS_FILE" > /dev/null 2>&1; then
+                echo "::error title=Invalid guard exceptions::$EXCEPTIONS_FILE must map the name of a guard the gate is given to a written reason of 12 characters or more."
+                bad=1
+              else
+                cp "$EXCEPTIONS_FILE" "$state/exceptions.json"
+              fi
+            fi
+          fi
+          if ! jq -e 'type == "object" and all(.[]; type == "string" or type == "number" or type == "boolean")' > /dev/null 2>&1 <<< "$STATIC_ENV"; then
+            echo "::error title=Invalid env::env must be a JSON object of plain values."
+            bad=1
+          else
+            name_re='^[A-Za-z_][A-Za-z0-9_]*$'
+            while IFS= read -r key; do
+              if ! [[ "$key" =~ $name_re ]] || [[ "$key" == GITHUB_* || "$key" == RUNNER_* ]]; then
+                echo "::error title=Invalid env::'$key' is not a variable this workflow may set."
+                bad=1
+                continue
+              fi
+              delimiter="ENV_$(date +%s)_$RANDOM"
+              {
+                echo "$key<<$delimiter"
+                jq -r --arg k "$key" '.[$k] | tostring' <<< "$STATIC_ENV"
+                echo "$delimiter"
+              } >> "${GITHUB_ENV:-/dev/null}"
+            done < <(jq -r 'keys[]' <<< "$STATIC_ENV" 2> /dev/null)
+          fi
+
+          # The scope of the candidate, for the reviewers.
+          if ! git rev-parse --quiet --verify "refs/tags/$LAST_TAG" > /dev/null; then
+            echo "::error title=Release gate::The last release $LAST_TAG is not in the checkout."
+            exit 1
+          fi
+          git log --date=iso-strict --pretty=format:'%H%x09%ad%x09%an%x09%s' "$LAST_TAG..HEAD" > "$EVIDENCE_DIR/commits.tsv"
+          git diff --stat "$LAST_TAG..HEAD" > "$EVIDENCE_DIR/changes-stat.txt"
+          git diff --binary "$LAST_TAG..HEAD" > "$EVIDENCE_DIR/changes.diff"
+          cap=5242880
+          if [ "$(wc -c < "$EVIDENCE_DIR/changes.diff")" -gt "$cap" ]; then
+            head -c "$cap" "$EVIDENCE_DIR/changes.diff" > "$state/diff"
+            mv "$state/diff" "$EVIDENCE_DIR/changes.diff"
+            echo "changes.diff is cut at $cap bytes; the whole diff is: git diff --binary $LAST_TAG..$GITHUB_SHA" > "$EVIDENCE_DIR/changes.diff.truncated"
+          fi
+          jq -n --arg run "${GITHUB_RUN_ID:-}" --arg sha "$GITHUB_SHA" --arg last "$LAST_TAG" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{run: $run, sha: $sha, lastReleaseTag: $last, generatedAt: $at}' > "$EVIDENCE_DIR/run.json"
+          if [ -n "$CHANGELOG_PATH" ]; then
+            if [ ! -f "$CHANGELOG_PATH" ]; then
+              echo "::error title=Release gate::changelog-path $CHANGELOG_PATH is not in the candidate."
+              bad=1
+            else
+              cp "$CHANGELOG_PATH" "$EVIDENCE_DIR/release-please-CHANGELOG.md"
+            fi
+          fi
+          if [ "$bad" -ne 0 ]; then
+            exit 1
+          fi
+          echo "Evidence prepared since $LAST_TAG."
+
+      - name: Set up the suites
+        id: setup
+        if: steps.prepare.outcome == 'success' && inputs.upstream-result == 'success' && inputs.setup-command != ''
+        continue-on-error: true
+        env:
+          SETUP_COMMAND: ${{ inputs.setup-command }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -e -o pipefail -c "$SETUP_COMMAND"
+
+      # One step runs every suite and records each outcome in a file: the
+      # suites are data, so they cannot be steps of their own. A suite whose
+      # requirement is not green is not attempted (one root cause, not N
+      # symptoms); a failure never stops the next suite.
+      - name: Run the suites
+        id: run
+        if: always() && steps.prepare.outcome == 'success'
+        env:
+          SETUP_OUTCOME: ${{ steps.setup.outcome }}
+          HAS_SETUP: ${{ inputs.setup-command != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          state="${RUNNER_TEMP:?}/asdlc-gate"
+          pack="$PWD/$EVIDENCE_DIR"
+          outcomes="$pack/results/outcomes.tsv"
+          mkdir -p "$pack/results"
+          : > "$outcomes"
+          one_line() {
+            printf '%s' "$1" | tr '\t\r\n' '   '
+          }
+          record() { # id, outcome, detail, flaky
+            printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$(one_line "${3:-}")" "${4:-}" >> "$outcomes"
+          }
+          outcome_of() {
+            awk -F'\t' -v id="$1" '$1 == id && $2 != "started" { o = $2 } END { print o }' "$outcomes"
+          }
+          if [ "$UPSTREAM_RESULT" != success ]; then
+            echo "::error title=Release gate::The project's preflight ended '$UPSTREAM_RESULT': no suite runs."
+            exit 0
+          fi
+          if [ "$HAS_SETUP" = true ] && [ "$SETUP_OUTCOME" != success ]; then
+            echo "::error title=Release gate::The setup command ended '${SETUP_OUTCOME:-not-run}': no suite runs."
+            exit 0
+          fi
+          export EVIDENCE_DIR="$pack" LAST_TAG CANDIDATE RELEASE_CLASS
+          export HEAD_SHA="$GITHUB_SHA"
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+
+          # The PR guards, against the whole release range (REQ-CI-067).
+          if [ "$RERUN_GUARDS" = true ] && [ "$(jq 'length' <<< "$GUARDS")" -gt 0 ]; then
+            record pr_guards started
+            base_sha="$(git rev-parse "$LAST_TAG^{commit}")"
+            failed=()
+            count="$(jq 'length' <<< "$GUARDS")"
+            : > "$pack/pr_guards.log"
+            for ((i = 0; i < count; i++)); do
+              name="$(jq -r ".[$i].name" <<< "$GUARDS")"
+              cmd="$(jq -r ".[$i].run" <<< "$GUARDS")"
+              reason="$(jq -r --arg n "$name" '.[$n] // ""' "$state/exceptions.json")"
+              if [ -n "$reason" ]; then
+                echo "Guard '$name' is not run at the gate: $reason" | tee -a "$pack/pr_guards.log"
+                continue
+              fi
+              echo "::group::guard $name"
+              set +e
+              BASE_SHA="$base_sha" HEAD_REF="${GITHUB_REF_NAME:-}" BASE_REF="$LAST_TAG" \
+                bash -e -o pipefail -c "$cmd" 2>&1 | tee -a "$pack/pr_guards.log"
+              rc="${PIPESTATUS[0]}"
+              set -e
+              echo "::endgroup::"
+              if [ "$rc" -ne 0 ]; then
+                echo "::error title=Guard failed::$name"
+                failed+=("$name")
+              fi
+            done
+            if [ "${#failed[@]}" -gt 0 ]; then
+              record pr_guards failure "failed: ${failed[*]}"
+            else
+              record pr_guards success
+            fi
+          fi
+
+          count="$(jq 'length' "$state/suites.json")"
+          for ((i = 0; i < count; i++)); do
+            jq -c ".[$i]" "$state/suites.json" > "$work/suite"
+            id="$(jq -r '.id' "$work/suite")"
+            cmd="$(jq -r '.run' "$work/suite")"
+            minutes="$(jq -r '."timeout-minutes" // ""' "$work/suite")"
+            jq -r '.requires[]?' "$work/suite" > "$work/requires"
+            blocked=''
+            while IFS= read -r req; do
+              got="$(outcome_of "$req")"
+              if [ "$got" != success ]; then
+                blocked="$req is ${got:-not-run}"
+                break
+              fi
+            done < "$work/requires"
+            if [ -n "$blocked" ]; then
+              echo "Suite $id is not attempted: $blocked."
+              record "$id" skipped-upstream "$blocked"
+              continue
+            fi
+            record "$id" started
+            echo "::group::suite $id"
+            set +e
+            if [ -n "$minutes" ] && command -v timeout > /dev/null; then
+              timeout --kill-after=60 "$((minutes * 60))" bash -e -o pipefail -c "$cmd" 2>&1 | tee "$pack/$id.log"
+            else
+              bash -e -o pipefail -c "$cmd" 2>&1 | tee "$pack/$id.log"
+            fi
+            rc="${PIPESTATUS[0]}"
+            set -e
+            echo "::endgroup::"
+            outcome=success
+            detail=''
+            flaky=''
+            if [ "$rc" -ne 0 ]; then
+              outcome=failure
+              detail="exit $rc"
+              if [ "$rc" -eq 124 ] && [ -n "$minutes" ]; then
+                detail="timed out after $minutes minute(s)"
+              fi
+            fi
+            # Zero tests collected is never a pass.
+            if [ "$outcome" = success ] && [ "$(jq '."expect-nonempty" != null' "$work/suite")" = true ]; then
+              file="$(jq -r '."expect-nonempty" | if type == "object" then .file else . end' "$work/suite")"
+              count_filter="$(jq -r '."expect-nonempty" | if type == "object" then .count else "" end' "$work/suite")"
+              if [ -z "$count_filter" ]; then
+                if [ ! -s "$pack/$file" ]; then
+                  outcome=failure
+                  detail="no test executed: $file is missing or empty"
+                fi
+              else
+                n="$(jq -r "$count_filter" "$pack/$file" 2> /dev/null || echo '?')"
+                if ! [[ "$n" =~ ^[0-9]+$ ]] || [ "$n" -eq 0 ]; then
+                  outcome=failure
+                  detail="no test executed: $count_filter of $file is ${n:-empty}"
+                fi
+              fi
+            fi
+            # A run that went green only after a retry is not a pass.
+            if [ "$outcome" = success ] && [ "$(jq '.flaky != null' "$work/suite")" = true ]; then
+              file="$(jq -r '.flaky.file' "$work/suite")"
+              count_filter="$(jq -r '.flaky.count' "$work/suite")"
+              flaky="$(jq -r "$count_filter" "$pack/$file" 2> /dev/null || echo '?')"
+              if ! [[ "$flaky" =~ ^[0-9]+$ ]]; then
+                outcome=partial
+                detail="the flaky count could not be read"
+                flaky=''
+              elif [ "$flaky" -gt 0 ]; then
+                outcome=partial
+                detail="$flaky flaky test(s)"
+              fi
+            fi
+            echo "Suite $id: $outcome${detail:+ ($detail)}"
+            record "$id" "$outcome" "$detail" "$flaky"
+          done
+
+      - name: Collect the extra evidence
+        if: always()
+        env:
+          INCLUDE: ${{ inputs.evidence-include }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          if ! jq -e 'type == "array" and all(.[]; type == "string")' > /dev/null 2>&1 <<< "$INCLUDE"; then
+            echo "::error title=Invalid evidence-include::evidence-include must be a JSON array of paths."
+            exit 1
+          fi
+          list="$(mktemp)"
+          trap 'rm -f "$list"' EXIT
+          jq -r '.[]' <<< "$INCLUDE" > "$list"
+          shopt -s nullglob
+          while IFS= read -r pattern; do
+            if [ -z "$pattern" ] || [[ "$pattern" == /* ]] || [[ "/$pattern/" == */../* ]]; then
+              echo "::error title=Invalid evidence-include::'$pattern' must be a path inside the workspace."
+              exit 1
+            fi
+            found=0
+            saved="$IFS"
+            IFS=''
+            for f in $pattern; do
+              found=1
+              mkdir -p "$EVIDENCE_DIR/$(dirname "$f")"
+              cp -R "$f" "$EVIDENCE_DIR/$(dirname "$f")/"
+            done
+            IFS="$saved"
+            if [ "$found" -eq 0 ]; then
+              echo "::warning::evidence-include '$pattern' matched nothing."
+            fi
+          done < "$list"
+
+      # The one writer of results/suites.json (REQ-CI-064), whatever happened
+      # before it. Every declared suite appears, in order; one that never
+      # started is not-run, one that started and never finished is cancelled.
+      - name: Write the QA report
+        id: summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${GITHUB_OUTPUT:-/dev/stdout}"
+          pack="$EVIDENCE_DIR"
+          mkdir -p "$pack/results"
+          outcomes="$pack/results/outcomes.tsv"
+          if [ ! -f "$outcomes" ]; then
+            : > "$outcomes"
+          fi
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          printf '%s' "$SUITES" > "$work/suites"
+          if jq -e 'type == "array" and length > 0 and all(.[]; type == "object" and (.id | type == "string"))' "$work/suites" > /dev/null 2>&1; then
+            jq -c '[.[].id]' "$work/suites" > "$work/declared"
+            jq -c 'map({(.id): (.artifacts // [] | if type == "array" then map(strings) else [] end)}) | add' "$work/suites" > "$work/artifacts"
+          else
+            # Unreadable suites cannot read as "no suite failed".
+            echo '["suites_input"]' > "$work/declared"
+            echo '{}' > "$work/artifacts"
+            printf 'suites_input\tfailure\tthe suites input is not a JSON array of suites with ids\t\n' >> "$outcomes"
+          fi
+          if [ "$RERUN_GUARDS" = true ] && jq -e 'type == "array" and length > 0' > /dev/null 2>&1 <<< "$GUARDS"; then
+            jq -c '["pr_guards"] + .' "$work/declared" > "$work/declared.new"
+            mv "$work/declared.new" "$work/declared"
+          fi
+          jq -n \
+            --slurpfile declared "$work/declared" \
+            --slurpfile artifacts "$work/artifacts" \
+            --rawfile raw "$outcomes" \
+            --arg sha "$GITHUB_SHA" \
+            --arg ref "${GITHUB_REF_NAME:-}" \
+            --arg candidate "$CANDIDATE" \
+            --arg from_tag "$LAST_TAG" \
+            --arg release_class "$RELEASE_CLASS" \
+            --arg run_url "${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID:-}" \
+            'def norm:
+               if . == "" or . == null then "not-run"
+               elif . == "skipped" then "skipped-upstream"
+               elif . == "started" then "cancelled"
+               else . end;
+             ($raw | split("\n") | map(select(length > 0) | split("\t"))) as $rows
+             | [ $declared[0][] as $name
+                 | ([$rows[] | select(.[0] == $name)] | last) as $r
+                 | (($r // [])[1] | norm) as $outcome
+                 | { name: $name, outcome: $outcome,
+                     artifacts: (($artifacts[0][$name] // [])
+                       + (if $outcome == "not-run" or $outcome == "skipped-upstream" then [] else ["\($name).log"] end)) }
+                 + (if (($r // [])[3] // "") != "" then {flaky: ($r[3] | tonumber)} else {} end)
+                 + (if (($r // [])[2] // "") != "" then {detail: $r[2]} else {} end) ] as $suites
+             | { schema_version: 1,
+                 sha: $sha,
+                 ref: $ref,
+                 candidate: (if $candidate == "" then null else $candidate end),
+                 from_tag: $from_tag,
+                 release_class: $release_class,
+                 run_url: $run_url,
+                 suites: $suites,
+                 failed: [$suites[] | select(.outcome != "success") | .name] }' \
+            > "$pack/results/suites.json"
+          report="$pack/qa-report.md"
+          {
+            echo '# Release gate report'
+            echo
+            echo "Candidate: \`${CANDIDATE:-${GITHUB_REF_NAME:-?}}\` at \`$GITHUB_SHA\`"
+            echo "Previous release: \`${LAST_TAG:-?}\`"
+            echo "Release class: \`${RELEASE_CLASS:-?}\`"
+            echo
+            echo '| Suite | Outcome | Blocking? |'
+            echo '|---|---|---|'
+            jq -r '.suites[] | "| \(.name) | \(if .outcome == "partial" and .flaky then "PARTIAL (\(.flaky) flaky)" else .outcome end)\(if .detail then ": " + .detail else "" end) | yes |"' "$pack/results/suites.json"
+          } > "$report"
+          cp "$report" "$pack/results/qa-report.md"
+          cat "$report" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          # Read back from the file, never from the shell: the file is the
+          # contract.
+          failed="$(jq -r '.failed | join(",")' "$pack/results/suites.json")"
+          jq -r '.suites[] | "  \(.outcome)\t\(.name)"' "$pack/results/suites.json"
+          echo "failed=$failed" >> "$out"
+          # Last: attests that this step ran to completion. Observed, never
+          # inferred from an empty `failed`.
+          echo "written=true" >> "$out"
+
+      - name: Upload the evidence pack
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-gate-evidence-${{ github.sha }}
+          path: release-gate-evidence
+          # A re-run attempt keeps the run id: its pack replaces the first.
+          overwrite: true
+          # The pack carries the verdict: a missing pack is a failure.
+          if-no-files-found: error
+          retention-days: ${{ inputs.evidence-retention-days }}
+
+      # Reads nothing but the file: the runtime verdict and the audit
+      # artefact cannot disagree.
+      - name: Enforce the release gate
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          summary="$EVIDENCE_DIR/results/suites.json"
+          if [ ! -f "$summary" ]; then
+            echo "::error title=Release gate::No suite summary was written - the job died before reporting."
+            exit 1
+          fi
+          failed="$(jq -r '.failed | join(", ")' "$summary")"
+          if [ -n "$failed" ]; then
+            echo "::error title=Release gate::Release gate is RED. Failing suites: $failed"
+            jq -r '.suites[] | select(.outcome != "success") | "  \(.outcome)\t\(.name)"' "$summary"
+            exit 1
+          fi
+          echo "All suites green."
+
+  gate-status:
+    name: gate-status
+    needs: [candidate, suites]
+    # Always, and hosted: a skipped suites job (a runner that never came)
+    # otherwise reports success with zero QA executed.
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      statuses: write
+    outputs:
+      conclusion: ${{ steps.verdict.outputs.conclusion }}
+      stage: ${{ steps.verdict.outputs.stage }}
+    steps:
+      - name: Publish the verdict
+        id: verdict
+        env:
+          CANDIDATE_RESULT: ${{ needs.candidate.result }}
+          SUITES_RESULT: ${{ needs.suites.result }}
+          UPSTREAM_RESULT: ${{ inputs.upstream-result }}
+          FAILED_SUITES: ${{ needs.suites.outputs.failed-suites }}
+          SUMMARY_WRITTEN: ${{ needs.suites.outputs.summary-written }}
+          REF_TYPE: ${{ github.ref_type }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${GITHUB_OUTPUT:-/dev/stdout}"
+          echo "candidate: $CANDIDATE_RESULT; suites: $SUITES_RESULT; failed: ${FAILED_SUITES:-none}; report written: ${SUMMARY_WRITTEN:-no}"
+          stage=''
+          hint=''
+          if [ "$SUITES_RESULT" = success ]; then
+            conclusion=success
+          else
+            conclusion=failure
+            # Where it failed, most upstream first (REQ-CI-068). Only the
+            # literal `true` counts as a written report.
+            if [ "$UPSTREAM_RESULT" != success ]; then
+              stage="preflight (ended '$UPSTREAM_RESULT': the QA suites never ran)"
+            elif [ "$CANDIDATE_RESULT" != success ]; then
+              stage="candidate (the RC could not be read: the QA suites never ran)"
+            elif [ "$SUITES_RESULT" = skipped ]; then
+              stage="suites never started (skipped: is the runner available?)"
+            elif [ "$SUMMARY_WRITTEN" != true ]; then
+              stage="suites never reported (no suite summary was written: infrastructure, not a suite failure)"
+              hint="Read the END of the suites job log first: 'The runner has received a shutdown signal' or exit code 143 means the runner was interrupted, 'exceeded the maximum execution time' means timeout-minutes. A runner interruption is not a defect in the candidate: re-certify the same immutable RC tag with 'gh run rerun <run id> --failed' instead of cutting a new RC."
+            elif [ -z "$FAILED_SUITES" ]; then
+              stage="suites, outside the QA suites (every suite passed: a housekeeping step failed)"
+              hint="The report is green: look for the red step around it (the evidence upload, the extra evidence)."
+            else
+              stage="suites"
+            fi
+          fi
+          {
+            echo "conclusion=$conclusion"
+            echo "stage=$stage"
+          } >> "$out"
+          if [ -n "$stage" ]; then
+            echo "Stage: $stage"
+          fi
+          if [ -n "$hint" ]; then
+            echo "Hint: $hint"
+          fi
+          {
+            echo "## Release gate: $conclusion"
+            echo
+            if [ "$conclusion" != success ]; then
+              echo "- Failing suites: ${FAILED_SUITES:-none named}"
+              echo "- Stage: $stage"
+              if [ -n "$hint" ]; then
+                echo "- Hint: $hint"
+              fi
+            fi
+          } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          # The run conclusion is the verdict the bridge reads; the status is
+          # for humans and cheap polling, so a failed write is a warning.
+          if [ "$REF_TYPE" = tag ]; then
+            if [ "$conclusion" = success ]; then
+              state=success
+              description=green
+            else
+              state=failure
+              description="${FAILED_SUITES:-${stage:-red}}"
+              description="${description:0:140}"
+            fi
+            if ! gh api --method POST "repos/$GH_REPO/statuses/$SHA" \
+                -f state="$state" -f context=release-gate -f target_url="$RUN_URL" -f description="$description" > /dev/null; then
+              echo "::warning::Could not publish the commit status release-gate on $SHA."
+            fi
+          fi
+          if [ "$conclusion" != success ]; then
+            echo "::error title=Release gate::The suites job did not succeed (result: $SUITES_RESULT). A skipped or failed suites job never makes a green gate."
+            exit 1
+          fi
+          echo "The release gate is green."
+
+  # The decision only, on attempt 1: GitHub refuses to rerun a run still in
+  # progress, so the rerun itself is asdlc-release-gate-auto-rerun.yml's,
+  # once this run has completed. Hosted: the abort it exists to catch is the
+  # runner being gone. `always()`: without a status function GitHub adds
+  # success(), and this job would never run after a failure.
+  auto-rerun-decision:
+    name: auto-rerun-decision
+    needs: suites
+    if: always() && needs.suites.result == 'failure' && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      eligible: ${{ steps.decide.outputs.rerun }}
+      reason: ${{ steps.decide.outputs.reason }}
+    steps:
+      - name: Check out the known flakes
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: ${{ inputs.known-flakes-file }}
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # The same script as asdlc-release-gate-auto-rerun.yml's (a test holds
+      # them equal).
+      - name: Decide whether a rerun is warranted
+        id: decide
+        env:
+          FAILED_SUITES: ${{ needs.suites.outputs.failed-suites }}
+          SUMMARY_WRITTEN: ${{ needs.suites.outputs.summary-written }}
+          KNOWN_FLAKES: ${{ inputs.known-flakes-file }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${GITHUB_OUTPUT:-/dev/stdout}"
+          today="${TODAY:-$(date -u +%Y-%m-%d)}"
+          if ! [[ "$today" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+            echo "::error::TODAY '$today' is not YYYY-MM-DD."
+            exit 1
+          fi
+          # Missing or garbage reads as "no known flake": it must never
+          # manufacture an excuse to rerun.
+          flakes='[]'
+          if [ ! -f "$KNOWN_FLAKES" ]; then
+            echo "::warning::Could not read the known-flakes file $KNOWN_FLAKES: nothing is a known flake."
+          elif ! jq empty "$KNOWN_FLAKES" > /dev/null 2>&1; then
+            echo "::warning::The known-flakes file $KNOWN_FLAKES is not valid JSON: nothing is a known flake."
+          elif [ "$(jq -r 'type' "$KNOWN_FLAKES")" != array ]; then
+            echo "::warning::The known-flakes file $KNOWN_FLAKES must be a JSON array: nothing is a known flake."
+          else
+            flakes="$(jq -c '[.[] | objects]' "$KNOWN_FLAKES")"
+          fi
+          decision="$(mktemp)"
+          trap 'rm -f "$decision"' EXIT
+          # (a) no report: a probable runner abort, whatever else is claimed;
+          # (b) a report naming nothing: a contradiction, never a rerun;
+          # (c) every failed suite covered by an unexpired entry: rerun;
+          # (d) anything else is a real failure.
+          jq -rn --arg failed "$FAILED_SUITES" --arg written "$SUMMARY_WRITTEN" --arg today "$today" --argjson flakes "$flakes" '
+            def iso: . as $d | type == "string" and (try ((strptime("%Y-%m-%d") | mktime | strftime("%Y-%m-%d")) == $d) catch false);
+            def trim: gsub("^[[:space:]]+|[[:space:]]+$"; "");
+            def covering($s): [$flakes[] | select(.suite == $s and (.expires | iso) and .expires >= $today)] | first;
+            ($failed | split(",") | map(trim) | map(select(length > 0))) as $suites
+            | if ($written | trim | ascii_downcase) != "true" then [true, "no suites summary produced (probable runner abort)"]
+              elif ($suites | length) == 0 then [false, "summary was written but named no failed suite; not a recognised abort or flake"]
+              else [$suites[] | {suite: ., entry: covering(.)}] as $m
+                | [$m[] | select(.entry == null) | .suite] as $unmatched
+                | if ($unmatched | length) > 0
+                  then [false, "not all failed suites are covered by an unexpired known flake: \($unmatched | join(", "))"]
+                  else [true, "every failed suite matches an unexpired known flake (\([$m[] | .entry.ticket // "?" | tostring] | join(", ")))"]
+                  end
+              end
+            | "rerun=\(.[0])", "reason=\(.[1] | gsub("[[:space:]]+"; " ") | trim)"
+          ' > "$decision"
+          cat "$decision"
+          cat "$decision" >> "$out"

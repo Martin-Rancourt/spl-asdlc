@@ -11,6 +11,8 @@
 
 **Workflow callers**: one short workflow per reusable workflow, under `.github/workflows/`, calling `spl-asdlc-ci` at a pinned tag with the project's inputs (test command, suites, runner labels, publication and deployment steps). Examples are in `docs/setup/examples/`.
 
+**Release close**: the publication workflow merges the release branch back into `main` as a merge commit, through the App, which must stay on the `main` bypass list (the merge still waits for `required-check`). When the merge back is DIRTY (a real conflict), resolve it off the release branch, never by bringing `main` into `release/**`: cut `chore/merge-back-<stamp>` from the release branch, merge `main` into that branch and resolve there, open its PR into `main` and merge it as a merge commit, then dispatch the publication workflow on the release branch with `replay: true`, which deletes the branch and publishes nothing. Any other block (`required-check` not green, the App refused by the ruleset) is fixed where it is, then replayed the same way.
+
 **Files**:
 - `spl-asdlc.toml` at the root (`docs/spec/08-configuration.md`); `spl-asdlc config check` must pass.
 - `docs/business-rules.md` with the registry format (`docs/spec/02-business-rules.md`), even if empty of rows.
