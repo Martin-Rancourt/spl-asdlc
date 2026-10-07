@@ -3,8 +3,9 @@
 //!
 //! 1. the release item, found by its label and marker or created;
 //! 2. the candidate's record (comment and `## Candidates` line), the
-//!    embarked tickets labelled, the angle sub-items and the consolidation
-//!    item of the candidate, the brief;
+//!    embarked tickets labelled; once the candidate's gate is green, and
+//!    never before, the angle sub-items and the consolidation item of the
+//!    candidate, then the brief (BR-ASDLC-004);
 //! 3. the angle PRs: merged into the release branch when approved, green and
 //!    carrying a valid report; the findings of a merged report filed;
 //! 4. the GO, and on GO the release-please PR merged;
@@ -123,16 +124,47 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
         return false;
     }
     let offered = offered(t, &candidate);
-    let children = open_round(t, log, report, &item, &candidate, &branch, &label, &offered);
-    brief(
+    let gate = match gate_run(t, &candidate) {
+        Ok(run) => run,
+        Err(e) => {
+            t.unreadable(
+                report,
+                &item.key,
+                format!("the gate of {}: {e}", candidate.tag),
+            );
+            return false;
+        }
+    };
+    // The round opens on a green gate only (BR-ASDLC-004); until then the
+    // children are read, never created.
+    let round = qa_round(
         t,
-        log,
         report,
         &shape,
         &item,
         &candidate,
         previous.as_deref(),
+        gate,
     );
+    let children = match round {
+        Round::Wait => match t.tracker.children(&item.key) {
+            Ok(c) => c,
+            Err(e) => {
+                t.unreadable(report, &item.key, format!("children: {e}"));
+                Vec::new()
+            }
+        },
+        Round::Open => open_round(t, log, report, &item, &candidate, &branch, &label, &offered)
+            .unwrap_or_default(),
+        Round::Brief(b) => {
+            // The round first, the brief last (REQ-REL-046).
+            let opened = open_round(t, log, report, &item, &candidate, &branch, &label, &offered);
+            if opened.is_some() {
+                post_brief(t, log, report, &item, &candidate, &b);
+            }
+            opened.unwrap_or_default()
+        }
+    };
 
     let mut merged = false;
     let angle_prs = match t.github.open_pulls(&t.repo, Some(&branch)) {
@@ -607,9 +639,56 @@ fn label_embarked(
     all
 }
 
+/// What the gate of the candidate allows of its QA round.
+enum Round {
+    /// The gate is red, pending or never ran, or the brief's facts could not
+    /// be read: nothing of the round is created, no agent starts.
+    Wait,
+    /// The gate is green and the brief already posted: the round is
+    /// completed when a creation failed at an earlier tick.
+    Open,
+    /// The gate is green and the brief, its facts read, is to be posted
+    /// once the round is open.
+    Brief(Box<texts::Brief>),
+}
+
+/// The angle sub-items, the consolidation item and the brief come only once
+/// the candidate's own gate run is green (REQ-REL-046/048, BR-ASDLC-004).
+/// The brief's facts are read before anything is created: facts that cannot
+/// be read open nothing, so that no agent starts without its brief.
+fn qa_round(
+    t: &Tick,
+    report: &mut Report,
+    shape: &Shape,
+    item: &Item,
+    c: &Candidate,
+    previous: Option<&str>,
+    gate: Option<crate::github::WorkflowRun>,
+) -> Round {
+    let Some(run) = gate.filter(|r| gate::is_green(Some(r))) else {
+        return Round::Wait;
+    };
+    let marker = texts::marker("brief", &[("candidate", &c.tag)]);
+    match tracker_said(t, &item.key, &marker) {
+        Ok(true) => return Round::Open,
+        Ok(false) => {}
+        Err(e) => {
+            t.unreadable(report, &item.key, format!("comments: {e}"));
+            return Round::Wait;
+        }
+    }
+    match brief_facts(t, shape, c, previous, &run) {
+        Ok(b) => Round::Brief(Box::new(b)),
+        Err(e) => {
+            t.unreadable(report, &item.key, format!("the brief of {}: {e}", c.tag));
+            Round::Wait
+        }
+    }
+}
+
 /// The angle sub-items and the consolidation item of the candidate,
-/// created when missing (spec 05 §2, §4). Returns the release item's
-/// children after the creations.
+/// created when missing (spec 05 §3, §4). Returns the release item's
+/// children after the creations, or `None` when they could not be read.
 #[allow(clippy::too_many_arguments)]
 fn open_round(
     t: &Tick,
@@ -620,12 +699,12 @@ fn open_round(
     branch: &str,
     label: &str,
     offered: &[String],
-) -> Vec<Item> {
+) -> Option<Vec<Item>> {
     let mut children = match t.tracker.children(&item.key) {
         Ok(c) => c,
         Err(e) => {
             t.unreadable(report, &item.key, format!("children: {e}"));
-            return Vec::new();
+            return None;
         }
     };
     let product = &t.config.product.name;
@@ -680,7 +759,7 @@ fn open_round(
             children.push(created);
         }
     }
-    children
+    Some(children)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -725,92 +804,103 @@ pub fn angle_of(item: &Item, candidate: &str) -> Option<String> {
     }
 }
 
-/// The brief, once per candidate (spec 05, "The brief"). A range, PR or
-/// ticket that cannot be read makes the brief wait: it is never guessed.
-fn brief(
+/// The facts of the brief (spec 05, "The brief"), read with the candidate's
+/// green gate run. A range, PR, ticket or evidence pack that cannot be read
+/// makes the brief wait: it is never guessed.
+fn brief_facts(
+    t: &Tick,
+    shape: &Shape,
+    c: &Candidate,
+    previous: Option<&str>,
+    run: &crate::github::WorkflowRun,
+) -> Result<texts::Brief, String> {
+    let release_tags = t
+        .github
+        .tags(&t.repo, shape.release_tag_prefix())
+        .map_err(|e| e.to_string())?;
+    let last = shape
+        .previous_release(
+            release_tags.iter().map(|r| r.name.as_str()),
+            Some(c.version),
+        )
+        .map(|(tag, _)| tag);
+    let paths_since_release = match &last {
+        Some(tag) => {
+            t.github
+                .compare(&t.repo, tag, &c.sha)
+                .map_err(|e| e.to_string())?
+                .files
+        }
+        None => Vec::new(),
+    };
+    let paths_since_candidate = match previous {
+        Some(p) => Some(
+            t.github
+                .compare(&t.repo, p, &c.sha)
+                .map_err(|e| e.to_string())?
+                .files,
+        ),
+        None => None,
+    };
+    let mut tickets = Vec::new();
+    for (key, prs) in embarked(t, shape, c)? {
+        let item = t.tracker.get(&key).map_err(|e| e.to_string())?;
+        tickets.push(texts::BriefTicket {
+            id: key,
+            title: item.title,
+            state: item.state.name,
+            prs,
+            description: Some(item.description),
+        });
+    }
+    let rule_paths = &t.config.release.business_rule_paths;
+    let rule_files_touched = crate::method::glob::hits(&paths_since_release, rule_paths);
+    let evidence_url = evidence_url(t, c, run)?;
+    Ok(texts::Brief {
+        candidate: c.tag.clone(),
+        sha: c.sha.clone(),
+        class: c.class.clone(),
+        last_release: last,
+        previous_candidate: previous.map(str::to_string),
+        paths_since_release,
+        paths_since_candidate,
+        gate_url: Some(run.url.clone()),
+        evidence_url: Some(evidence_url),
+        tickets,
+        untracked: Vec::new(),
+        rule_files_touched,
+    })
+}
+
+/// The link to the evidence pack of the green gate run (REQ-REL-044): the
+/// run's artifacts, where `release-gate-evidence-<sha>` stands unexpired.
+fn evidence_url(
+    t: &Tick,
+    c: &Candidate,
+    run: &crate::github::WorkflowRun,
+) -> Result<String, String> {
+    let name = gate::evidence_artifact(&c.sha);
+    let artifacts = t
+        .github
+        .run_artifacts(&t.repo, run.id)
+        .map_err(|e| format!("the artifacts of {}: {e}", run.url))?;
+    match artifacts.iter().find(|a| a.name == name) {
+        Some(a) if !a.expired => Ok(format!("{}#artifacts", run.url)),
+        Some(_) => Err(format!("the evidence pack `{name}` of {} expired", run.url)),
+        None => Err(format!("{} carries no evidence pack `{name}`", run.url)),
+    }
+}
+
+/// The brief, once per candidate, after its round opened (REQ-REL-046).
+fn post_brief(
     t: &Tick,
     log: &mut ActionLog,
     report: &mut Report,
-    shape: &Shape,
     item: &Item,
     c: &Candidate,
-    previous: Option<&str>,
+    b: &texts::Brief,
 ) {
-    let marker = texts::marker("brief", &[("candidate", &c.tag)]);
-    match tracker_said(t, &item.key, &marker) {
-        Ok(true) => return,
-        Ok(false) => {}
-        Err(e) => {
-            t.unreadable(report, &item.key, format!("comments: {e}"));
-            return;
-        }
-    }
-    let facts = (|| -> Result<texts::Brief, String> {
-        let release_tags = t
-            .github
-            .tags(&t.repo, shape.release_tag_prefix())
-            .map_err(|e| e.to_string())?;
-        let last = shape
-            .previous_release(
-                release_tags.iter().map(|r| r.name.as_str()),
-                Some(c.version),
-            )
-            .map(|(tag, _)| tag);
-        let paths_since_release = match &last {
-            Some(tag) => {
-                t.github
-                    .compare(&t.repo, tag, &c.sha)
-                    .map_err(|e| e.to_string())?
-                    .files
-            }
-            None => Vec::new(),
-        };
-        let paths_since_candidate = match previous {
-            Some(p) => Some(
-                t.github
-                    .compare(&t.repo, p, &c.sha)
-                    .map_err(|e| e.to_string())?
-                    .files,
-            ),
-            None => None,
-        };
-        let mut tickets = Vec::new();
-        for (key, prs) in embarked(t, shape, c)? {
-            let item = t.tracker.get(&key).map_err(|e| e.to_string())?;
-            tickets.push(texts::BriefTicket {
-                id: key,
-                title: item.title,
-                state: item.state.name,
-                prs,
-                description: Some(item.description),
-            });
-        }
-        let rule_paths = &t.config.release.business_rule_paths;
-        let rule_files_touched = crate::method::glob::hits(&paths_since_release, rule_paths);
-        let gate_url = gate_run(t, c).ok().flatten().map(|r| r.url);
-        Ok(texts::Brief {
-            candidate: c.tag.clone(),
-            sha: c.sha.clone(),
-            class: c.class.clone(),
-            last_release: last,
-            previous_candidate: previous.map(str::to_string),
-            paths_since_release,
-            paths_since_candidate,
-            gate_url,
-            evidence_url: None,
-            tickets,
-            untracked: Vec::new(),
-            rule_files_touched,
-        })
-    })();
-    let b = match facts {
-        Ok(b) => b,
-        Err(e) => {
-            t.unreadable(report, &item.key, format!("the brief of {}: {e}", c.tag));
-            return;
-        }
-    };
-    let body = for_tracker(t, &texts::brief(&b));
+    let body = for_tracker(t, &texts::brief(b));
     t.act(
         log,
         report,
@@ -1481,12 +1571,16 @@ pub fn decide(
     };
     // The branch moved past the candidate with more than bookkeeping: fixes
     // no gate and no QA has seen (REQ-REL-070).
+    // The gate record is the bridge's own write on the branch, after the
+    // candidate: it is never a gap.
+    let record = shape.gate_record_path(c.version);
     let tip_gaps = match t.github.compare(&t.repo, &c.sha, branch) {
         Ok(cmp) => {
             let moved: Vec<String> = cmp
                 .files
                 .into_iter()
                 .filter(|f| !cfg.release.bookkeeping_paths.iter().any(|b| b == f))
+                .filter(|f| record.as_deref() != Some(f.as_str()))
                 .collect();
             if moved.is_empty() {
                 Vec::new()

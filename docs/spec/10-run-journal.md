@@ -21,8 +21,9 @@ Driven by <who>. Gestures outside the method: <n>, listed below.
 
 ## Timeline
 - <time> — cut (dispatch), RC1 tagged, class <routine|sensible>
-- <time> — release issue, angle sub-items and brief created by the bridge
+- <time> — release issue created by the bridge
 - <time> — gate green on RC1
+- <time> — angle sub-items and brief created by the bridge (once the gate is green)
 - <time> — angle PRs: <angle> (go), <angle> (hold: 1 blocker fixed in branch), …
 - <time> — angle PRs merged, RC2 tagged, gate green
 - <time> — GO computed; release-please PR merged by the bridge

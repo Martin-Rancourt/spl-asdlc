@@ -167,9 +167,12 @@ fn ready_to_close(
             .tagged_at
             .or(published.published_at)
             .map(|at| crate::github::Timestamp(at.0 - time::Duration::days(1)));
+        // Component release PRs are merged into the release branch, not
+        // into the default branch: read every base, the ledger keeps only
+        // the release PRs of the declared components.
         let merged = t
             .github
-            .merged_pulls(&t.repo, Some(&default), since, 500)
+            .merged_pulls(&t.repo, None, since, 500)
             .map_err(|e| e.to_string())?;
         let ledger =
             prs::ledger(&merged, shape).ok_or("the deployment ledger could not be read")?;

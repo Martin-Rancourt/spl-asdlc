@@ -32,7 +32,7 @@
 
 ## The refinement gate
 
-The bridge offers `spl-asdlc ticket check <item>`: it reads the description and answers *contract complete* or lists what is missing (no goal, no acceptance-criterion box, business-rules section absent). Any runtime may call it before serving a ticket; the PR-guards workflow calls it on the PR's linked ticket and fails the check when the contract is incomplete. The judgement is deterministic: it reads headings and checkboxes, never the quality of the prose.
+The bridge offers `spl-asdlc ticket check <item>`: it reads the description and answers *contract complete* or lists what is missing (no goal, no acceptance-criterion box, business-rules section absent). Any runtime may call it before serving a ticket. CI never calls it (CI reads no tracker, `00`): the bridge holds a PR whose ticket's contract is incomplete and says so once on the PR (`04` §2). The judgement is deterministic: it reads headings and checkboxes, never the quality of the prose.
 
 ## Vocabulary
 
