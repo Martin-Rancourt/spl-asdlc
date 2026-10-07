@@ -12,7 +12,7 @@ SPL-ASDLC is agnostic to the agent runtime (AgentForge, a Claude Code session, C
 
 ## Status
 
-First draft. The specification and the requirements are being written (`docs/requirements/` is derived from the Python implementation this product replaces). No code yet. The repository is private until the first pilot cycle is green; it is published under the Apache License 2.0 (see `LICENSE`).
+First draft. The specification and the requirements are written (`docs/requirements/` is derived from the Python implementation this product replaces). The crate is being built lot by lot: `cargo test` runs the suite, `spl-asdlc config check` validates a `spl-asdlc.toml`. The repository is private until the first pilot cycle is green; it is published under the Apache License 2.0 (see `LICENSE`).
 
 ## Layout
 

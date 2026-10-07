@@ -1,0 +1,29 @@
+[package]
+name = "spl-asdlc"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "The bridge of SPL-ASDLC: turns GitHub facts into tracker state and tracker state into GitHub actions."
+license = "Apache-2.0"
+readme = "README.md"
+publish = false
+
+[lib]
+name = "spl_asdlc"
+path = "src/lib.rs"
+
+[[bin]]
+name = "spl-asdlc"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.6", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2.0"
+toml = "1.1"
+
+[dev-dependencies]
+
+[profile.release]
+strip = true
+lto = "thin"

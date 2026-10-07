@@ -249,7 +249,7 @@ Source: `pr_merge.py:1564-1579` (`sensitive_hits`).
 Notes: the Rust implementation must not use a glob library whose `*` stops at `/` without compensating. Test: `test_a_directory_glob_matches_below_itself`. The repo-level guard `tests/test_review_paths.py` (a module that merges, publishes, handles a credential or writes a ticket state must be covered by a glob of the list or be named in `exceptions` with a reason; the list must name itself and its own guard test) is a CI check of AgentForge's own repository; for the bridge's own repository the same property (the list names itself and its guard) is required, the marker scan is Open question Q14.
 
 **REQ-MERGE-047 — The diff-size threshold.**
-`size = additions + deletions`. Trigger 6 fires when `threshold > 0 AND size > threshold`. Threshold = repo-level `diff_threshold`, else global `diff_threshold`, else default 1500; a non-integer value falls back to 1500; a threshold of 0 or less disables the trigger. The default was raised from 400 to 1500 (a past incident): 1400 changed lines must NOT trigger by default.
+`size = additions + deletions`. Trigger 6 fires when `threshold > 0 AND size > threshold`. Threshold = `[review] diff_size_extra_angle` (default 1500), and the trigger adds `[review] diff_size_angle` (`docs/spec/08-configuration.md`); a threshold of 0 disables the trigger; a negative or non-integer value makes the file invalid (rule 7 of spec 08), never falls back. The default was raised from 400 to 1500 (a past incident): 1400 changed lines must NOT trigger by default.
 Source: `pr_merge.py:165-174`, `pr_merge.py:1666-1673`.
 Notes: the threshold is a filter for paths nobody thought to list, not a redundant check on top of the sensitive paths. Tests: `test_the_default_threshold_was_raised_for_agent_produced_diffs`, `test_a_diff_over_the_threshold_buys_a_reviewer`, `test_the_threshold_is_overridable_per_repo`.
 
@@ -300,8 +300,8 @@ Notes: the approval decision is re-derived every tick from the live review list 
 
 ### Merge action and branch deletion
 
-**REQ-MERGE-057 — The merge is a squash merge through the REST merge endpoint, pinned to the head SHA the pass vetted.**
-HTTP PUT `…/pulls/<n>/merge` with `merge_method=squash` and `sha=<vetted head SHA>` (omitted only if no SHA is known). A push after vetting fails the merge (HTTP 409) instead of riding it. It is NOT `gh pr merge` (which refuses client-side any PR whose merge state is BLOCKED, even for ruleset bypass actors); GitHub itself still enforces rulesets on this call, so an identity off the bypass list is refused there. The archived-ticket check is repeated immediately before the call (REQ-MERGE-027).
+**REQ-MERGE-057 — The merge goes through the REST merge endpoint with the configured method (`[review] merge_method`, squash by default), pinned to the head SHA the pass vetted.**
+HTTP PUT `…/pulls/<n>/merge` with `merge_method=<squash|merge>` and `sha=<vetted head SHA>` (omitted only if no SHA is known). A push after vetting fails the merge (HTTP 409) instead of riding it. It is NOT `gh pr merge` (which refuses client-side any PR whose merge state is BLOCKED, even for ruleset bypass actors); GitHub itself still enforces rulesets on this call, so an identity off the bypass list is refused there. The archived-ticket check is repeated immediately before the call (REQ-MERGE-027).
 Source: `pr_merge.py:4367-4420` (`_merge`).
 Notes: reason (a past incident, 2026-09-25): on a base under an "update" ruleset every PR reads BLOCKED, so this pass merged nothing on AgentForge since the ruleset existed (#722 approved and green, refused every tick). Tests: `test_a_green_up_to_date_pr_is_squash_merged`, `test_a_base_under_an_update_ruleset_is_merged_through_rest`, `test_only_one_pr_is_merged_per_tick`.
 

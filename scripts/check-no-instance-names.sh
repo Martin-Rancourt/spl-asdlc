@@ -29,6 +29,9 @@ patterns=(
 for p in "${patterns[@]}"; do
   # Never decide on grep's exit status through xargs (123 when one batch has no match): read the output.
   hits=$(printf '%s\n' "$files" | xargs -r grep -nE -- "$p" 2>/dev/null || true)
+  # A digit run inside a long hexadecimal hash (a lockfile checksum, a commit id) is not an
+  # identifier: strip such hashes from the hit lines and keep only what still matches.
+  hits=$(printf '%s\n' "$hits" | sed -E 's/[0-9a-fA-F]{32,}//g' | grep -E -- "$p" || true)
   # The licence text and this script's own pattern list are the only allowed carriers.
   hits=$(printf '%s\n' "$hits" | grep -v -e '^LICENSE:' -e '^scripts/check-no-instance-names.sh:' -e '^$' || true)
   [ -n "$hits" ] && report "$hits"
