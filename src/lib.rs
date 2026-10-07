@@ -7,4 +7,5 @@ pub mod config;
 pub mod github;
 pub mod http;
 pub mod method;
+pub mod notify;
 pub mod tracker;
