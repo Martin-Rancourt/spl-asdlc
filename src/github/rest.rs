@@ -295,7 +295,7 @@ impl RestGitHub {
         }
     }
 
-    fn pull_query(states: &str, base: Option<&str>) -> String {
+    fn pull_query(states: &str, base: Option<&str>, first: u32) -> String {
         let base_arg = if base.is_some() {
             ", baseRefName: $base"
         } else {
@@ -309,7 +309,7 @@ impl RestGitHub {
         format!(
             "query($owner: String!, $name: String!, $cursor: String{base_var}) {{
   repository(owner: $owner, name: $name) {{
-    pullRequests(states: [{states}], first: 50, after: $cursor{base_arg}, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{
+    pullRequests(states: [{states}], first: {first}, after: $cursor{base_arg}, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{
       totalCount
       pageInfo {{ hasNextPage endCursor }}
       nodes {{ ...Pull }}
@@ -328,9 +328,10 @@ impl RestGitHub {
         what: &str,
         states: &str,
         base: Option<&str>,
+        first: u32,
         visit: &mut dyn FnMut(PullRequest) -> Result<bool, String>,
     ) -> Read<Option<u64>> {
-        let query = Self::pull_query(states, base);
+        let query = Self::pull_query(states, base, first);
         let mut cursor = Value::Null;
         for _ in 0..MAX_PAGES {
             let mut vars = json!({"owner": repo.owner, "name": repo.name, "cursor": cursor});
@@ -887,7 +888,7 @@ impl GitHub for RestGitHub {
     fn open_pulls(&self, repo: &RepoSlug, base: Option<&str>) -> Read<Vec<PullRequest>> {
         let what = format!("open PRs of {repo}");
         let mut out: Vec<PullRequest> = Vec::new();
-        let total = self.pull_pages(repo, &what, "OPEN", base, &mut |pull| {
+        let total = self.pull_pages(repo, &what, "OPEN", base, 50, &mut |pull| {
             if !out.iter().any(|p| p.number == pull.number) {
                 out.push(pull);
             }
@@ -946,7 +947,7 @@ impl GitHub for RestGitHub {
             base.map(|b| format!(" into {b}")).unwrap_or_default()
         );
         let mut out: Vec<PullRequest> = Vec::new();
-        self.pull_pages(repo, &what, "MERGED", base, &mut |pull| {
+        self.pull_pages(repo, &what, "MERGED", base, 50, &mut |pull| {
             // Ordered by update time: once a PR was last updated before the
             // window, every later one was too (a merge updates a PR).
             if let (Some(since), Some(updated)) = (since, pull.updated_at) {
@@ -979,7 +980,9 @@ impl GitHub for RestGitHub {
     ) -> Read<Vec<PullRequest>> {
         let what = format!("PRs closed without merge of {repo}");
         let mut out: Vec<PullRequest> = Vec::new();
-        self.pull_pages(repo, &what, "CLOSED", None, &mut |pull| {
+        // Small pages: the full fragment on 50 closed PRs takes GitHub close
+        // to its timeout (a 502), and the window usually ends on the first page.
+        self.pull_pages(repo, &what, "CLOSED", None, 10, &mut |pull| {
             // Newest update first: past the window, every later one is too.
             if pull.updated_at.is_some_and(|u| u < since) {
                 return Ok(false);
