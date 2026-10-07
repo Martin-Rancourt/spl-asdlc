@@ -199,6 +199,8 @@ fn release_pleases_heads_skip_everything() {
         &body,
         &[
             ("HEAD_REF", "release-please--branches--main"),
+            ("HEAD_REPO", "o/r"),
+            ("REPO", "o/r"),
             ("SKIP_PREFIXES", "release-please--"),
         ],
         &repo.dir.0,
@@ -208,6 +210,8 @@ fn release_pleases_heads_skip_everything() {
         &body,
         &[
             ("HEAD_REF", "feat/x"),
+            ("HEAD_REPO", "o/r"),
+            ("REPO", "o/r"),
             ("SKIP_PREFIXES", "release-please--"),
         ],
         &repo.dir.0,
@@ -215,7 +219,35 @@ fn release_pleases_heads_skip_everything() {
     assert_eq!(r.output("skipped").as_deref(), Some("false"));
     let r = run(
         &body,
-        &[("HEAD_REF", "release-please--x"), ("SKIP_PREFIXES", "")],
+        &[
+            ("HEAD_REF", "release-please--x"),
+            ("HEAD_REPO", "o/r"),
+            ("REPO", "o/r"),
+            ("SKIP_PREFIXES", ""),
+        ],
+        &repo.dir.0,
+    );
+    assert_eq!(r.output("skipped").as_deref(), Some("false"), "{}", r.log);
+    // A fork naming its branch like release-please's is never skipped.
+    let r = run(
+        &body,
+        &[
+            ("HEAD_REF", "release-please--x"),
+            ("HEAD_REPO", "fork/r"),
+            ("REPO", "o/r"),
+            ("SKIP_PREFIXES", "release-please--"),
+        ],
+        &repo.dir.0,
+    );
+    assert_eq!(r.output("skipped").as_deref(), Some("false"), "{}", r.log);
+    let r = run(
+        &body,
+        &[
+            ("HEAD_REF", "release-please--x"),
+            ("HEAD_REPO", ""),
+            ("REPO", "o/r"),
+            ("SKIP_PREFIXES", "release-please--"),
+        ],
         &repo.dir.0,
     );
     assert_eq!(r.output("skipped").as_deref(), Some("false"), "{}", r.log);
