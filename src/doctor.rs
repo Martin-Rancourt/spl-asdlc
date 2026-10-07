@@ -170,9 +170,10 @@ fn files(config: &Config, github: &dyn GitHub, repo: &RepoSlug, rev: &str) -> Ve
         });
     }
     for path in [
-        "release-please-config.json",
-        ".release-please-manifest.json",
+        &config.release.release_please_config,
+        &config.release.release_please_manifest,
     ] {
+        let path = path.as_str();
         out.push(match read(path) {
             Ok(text) if serde_json::from_str::<serde_json::Value>(&text).is_ok() => {
                 check(path, Verdict::Ok, "valid JSON")

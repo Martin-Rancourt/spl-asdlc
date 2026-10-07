@@ -949,6 +949,79 @@ fn a_multi_component_go_lands_the_record_then_merges_the_version_component_last(
 }
 
 #[test]
+fn the_release_please_config_is_read_where_the_product_says_and_never_guessed() {
+    let mut w = World::new();
+    let spec = include_str!("../../docs/spec/08-configuration.md");
+    let start = spec.find("```toml\n").unwrap() + "```toml\n".len();
+    let end = start + spec[start..].find("```").unwrap();
+    let text = spec[start..end]
+        .replace(
+            "# components = [\"app\", \"website\", \"admin\"]",
+            "components = [\"app\", \"website\"]",
+        )
+        .replace(
+            "# version_component = \"app\"",
+            "version_component = \"app\"",
+        )
+        .replace("# gate_record = ", "gate_record = ")
+        .replace(
+            "release_please_config = \"release-please-config.json\"",
+            "release_please_config = \".release-please-config.json\"",
+        );
+    w.config = Config::parse(&text).unwrap();
+    w.tick();
+    all_angles_merged(&w);
+    w.github.state.borrow_mut().commits.insert(
+        (repo(), BRANCH.into()),
+        Ok(Commit {
+            sha: "c1".into(),
+            message: String::new(),
+            committer_date: None,
+            parents: vec![],
+        }),
+    );
+    // The configuration only at the default path: the product's own is
+    // missing, so each component's note cannot be placed and the GO is false.
+    let app = component_pr(&w, 41, "app");
+    let site = component_pr(&w, 42, "website");
+    w.open_on_branch(vec![app.clone(), site.clone()]);
+    w.tick();
+    let record = |w: &World| {
+        w.github
+            .writes()
+            .iter()
+            .any(|l| l.starts_with("put-file") && l.contains("docs/releases/v1.2.0.md"))
+    };
+    assert!(!record(&w), "{:?}", w.github.writes());
+
+    // At the path the product names: the GO holds and the record is written.
+    {
+        let mut s = w.github.state.borrow_mut();
+        for pr in [&app, &site] {
+            let c = s
+                .files
+                .get(&(
+                    repo(),
+                    pr.head_sha.clone(),
+                    "release-please-config.json".into(),
+                ))
+                .cloned()
+                .unwrap();
+            s.files.insert(
+                (
+                    repo(),
+                    pr.head_sha.clone(),
+                    ".release-please-config.json".into(),
+                ),
+                c,
+            );
+        }
+    }
+    w.tick();
+    assert!(record(&w), "{:?}", w.github.writes());
+}
+
+#[test]
 fn a_version_released_without_a_release_item_of_the_bridge_is_not_its_cycle() {
     // Released before the bridge took the product over: no item to open,
     // nothing to close, no note to send.

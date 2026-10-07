@@ -49,6 +49,8 @@ auto_candidate = false
 cut_workflow = "release-cut.yml"
 gate_workflow = "release-gate.yml"
 release_please_workflow = "release-please.yml"
+release_please_config = "release-please-config.json"
+release_please_manifest = ".release-please-manifest.json"
 # Multi-component products
 # components = ["app", "website", "admin"]
 # version_component = "app"
@@ -160,6 +162,8 @@ events = ["release-note", "escalation", "stagnation", "stuck-pr", "blind-pass"]
 | `release.cut_workflow` | `release-cut.yml` | Workflow the bridge dispatches for `release cut`. | Not a file name: file invalid; absent on GitHub: the dispatch fails and says so. |
 | `release.gate_workflow` | `release-gate.yml` | Workflow whose run on the RC tag is the gate. | No run on the tag: the gate is not green. |
 | `release.release_please_workflow` | `release-please.yml` | Workflow redispatched once when release-please's PR is stale. | — |
+| `release.release_please_config` | `release-please-config.json` | release-please's configuration (its `config-file`), read at the release PR's head for each component's changelog path. | Unreadable for a multi-component product: a note gap, the GO is false. |
+| `release.release_please_manifest` | `.release-please-manifest.json` | release-please's manifest (its `manifest-file`). | — |
 | `[[release.angles]]` | at least one required | `key` (required), `title` (default `<Key> review`), `assignee` (participant hint), `notes` (path). | No angle: file invalid — a release with no angle would compute its GO from nobody. |
 
 ### `[review]`

@@ -1259,11 +1259,8 @@ fn release_prs(
     open: &[PullRequest],
 ) -> (Vec<String>, Vec<String>, Vec<ReleasePr>) {
     let cfg = t.config;
-    let rp_config = |pr: &PullRequest| {
-        t.github
-            .file(&t.repo, "release-please-config.json", &pr.head_sha)
-            .ok()
-    };
+    let rp_path = cfg.release.release_please_config.as_str();
+    let rp_config = |pr: &PullRequest| t.github.file(&t.repo, rp_path, &pr.head_sha);
     // The range, read once: unreadable is a gap, never an empty range.
     let range: Result<Vec<crate::github::CommitSummary>, String> = t
         .github
@@ -1289,7 +1286,7 @@ fn release_prs(
         notes::coverage(
             version,
             changelog.as_deref(),
-            rp_config(pr).as_deref(),
+            rp_config(pr).ok().as_deref(),
             commits,
         )
     };
@@ -1366,7 +1363,16 @@ fn release_prs(
     let mut missing: Option<Vec<crate::github::CommitSummary>> = None;
     let mut unreadable = None;
     for f in &found {
-        let path = changelog_path(rp_config(f.pr).as_deref(), &f.component);
+        // Where each component's note lives is read from release-please's
+        // configuration: unreadable is a gap, never the root changelog.
+        let config = match rp_config(f.pr) {
+            Ok(c) => c,
+            Err(e) => {
+                unreadable.get_or_insert(format!("{}: {rp_path}: {e}", f.component));
+                continue;
+            }
+        };
+        let path = changelog_path(Some(config.as_str()), &f.component);
         let cov = coverage(f.pr, f.version, &path);
         if let Some(why) = cov.unreadable {
             unreadable.get_or_insert(format!("{}: {why}", f.component));

@@ -57,6 +57,14 @@ fn a_minimal_file_gets_every_documented_default() {
     assert_eq!(c.release.record, ".spl-asdlc/qa/{candidate}/");
     assert_eq!(c.release.release_pr_label, "autorelease: pending");
     assert_eq!(c.release.registry_path, "docs/business-rules.md");
+    assert_eq!(
+        c.release.release_please_config,
+        "release-please-config.json"
+    );
+    assert_eq!(
+        c.release.release_please_manifest,
+        ".release-please-manifest.json"
+    );
     assert_eq!(c.release.stagnation_hours, 2);
     assert_eq!(c.release.escalation_label, "blocked-by-human");
     assert!(!c.release.auto_candidate);
