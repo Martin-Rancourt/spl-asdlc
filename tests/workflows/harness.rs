@@ -1,7 +1,8 @@
 //! Read the shipped YAML and run a step's script.
 
-// The executions are Unix-only; on Windows only the lints use this module.
-#![cfg_attr(not(unix), allow(dead_code))]
+
+// Support code: not every test file uses every helper.
+#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 
@@ -153,6 +154,7 @@ pub fn run(script: &str, env: &[(&str, &str)], cwd: &Path) -> Ran {
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", &scratch.0)
         .env("GITHUB_OUTPUT", &outputs);
+    // A PATH in `env` (stubs first) replaces the inherited one.
     for (k, v) in env {
         cmd.env(k, v);
     }
@@ -217,4 +219,35 @@ impl Repo {
         self.git(&["commit", "-q", "--allow-empty", "-m", message]);
         self.git(&["rev-parse", "HEAD"])
     }
+}
+
+/// A stub command: an executable `name` in `dir` running `script` (bash),
+/// for `gh`, `git` or anything a step calls. Each call appends its argv,
+/// one line, to `dir/<name>.calls`.
+#[cfg(unix)]
+pub fn stub(dir: &Path, name: &str, script: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let p = dir.join(name);
+    let body = format!(
+        "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"{calls}\"\n{script}\n",
+        calls = dir.join(format!("{name}.calls")).display()
+    );
+    std::fs::write(&p, body).unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// The argv lines a stub recorded.
+#[cfg(unix)]
+pub fn calls(dir: &Path, name: &str) -> Vec<String> {
+    std::fs::read_to_string(dir.join(format!("{name}.calls")))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+/// A PATH that finds the stubs of `dir` first.
+#[cfg(unix)]
+pub fn path_with(dir: &Path) -> String {
+    format!("{}:{}", dir.display(), std::env::var("PATH").unwrap_or_default())
 }
