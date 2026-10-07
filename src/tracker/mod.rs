@@ -173,6 +173,8 @@ pub trait Tracker {
     /// `relate(a, b, Blocks)`: `a` blocks `b`. The caller checks for loops.
     fn relate(&self, a: &str, b: &str, kind: RelationKind) -> TResult<()>;
     fn unrelate(&self, relation_id: &str) -> TResult<()>;
+    /// Attach the PR to the item; a link already there is a no-op. `key` is
+    /// the item's key as the tracker reads it back ([`Item::key`]).
     fn link_pr(&self, key: &str, pr_url: &str, title: &str) -> TResult<()>;
 
     /// Whether HTML comments survive a write: when they do not, the bridge
