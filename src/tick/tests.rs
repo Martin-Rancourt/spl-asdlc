@@ -1014,6 +1014,24 @@ fn a_pr_closed_unmerged_leaves_the_ticket_in_review_while_another_is_reviewed() 
 }
 
 #[test]
+fn a_pr_whose_round_is_done_but_not_merged_keeps_the_ticket_in_review() {
+    // PR #7 finished its round and waits for its merge (an approval, the
+    // one-merge slot); PR #8 is closed unmerged. The ticket stays In Review:
+    // the pass and the state rules agree, and no tick flips it back and forth.
+    let w = World::new();
+    let (a, b) = two_in_review(&w);
+    for item in round(&w, "ABC-7", &a) {
+        crate::tracker::Tracker::set_status(&w.tracker, &item.key, Status::Done, None).unwrap();
+    }
+    close_unmerged(&w, &b);
+    w.tick(false);
+    assert!(all_in(&round(&w, "ABC-7", &b), Status::Canceled));
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::InReview));
+    quiet(&w);
+    quiet(&w);
+}
+
+#[test]
 fn an_unreadable_ticket_of_another_pr_holds_the_state_after_a_merge() {
     let w = World::new();
     let pr = in_review(&w, 7);

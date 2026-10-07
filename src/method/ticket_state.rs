@@ -28,15 +28,18 @@ pub struct OpenPr {
     pub draft: bool,
     /// A coordinator's request for changes stands at its head (spec 04 §5).
     pub sent_back: bool,
-    /// Its review round is open on the ticket: an angle sub-item or the
-    /// consolidation item scoped to this PR is not resolved yet.
-    pub round_open: bool,
+    /// It has a review round on the ticket, open or finished: an angle
+    /// sub-item or the consolidation item scoped to it, not canceled. A PR
+    /// whose round is done but which waits for its merge (an approval, the
+    /// one-merge slot) is still in review: its cycle runs in full, and the
+    /// pass, which opened the round, agrees.
+    pub in_round: bool,
 }
 
 impl OpenPr {
-    /// In review: ready, its round open, not sent back.
+    /// In review: ready, in its round, not sent back.
     pub fn in_review(&self) -> bool {
-        !self.draft && !self.sent_back && self.round_open
+        !self.draft && !self.sent_back && self.in_round
     }
 }
 
@@ -143,7 +146,7 @@ mod tests {
             number,
             draft: false,
             sent_back: false,
-            round_open: false,
+            in_round: false,
         }
     }
 
@@ -192,7 +195,7 @@ mod tests {
     #[test]
     fn the_review_rule_comes_before_the_completeness_rule() {
         let open = [OpenPr {
-            round_open: true,
+            in_round: true,
             ..pr(8)
         }];
         assert_eq!(
@@ -212,7 +215,7 @@ mod tests {
     #[test]
     fn a_pr_sent_back_or_a_draft_is_not_in_review() {
         let sent_back = [OpenPr {
-            round_open: true,
+            in_round: true,
             sent_back: true,
             ..pr(8)
         }];
@@ -222,7 +225,7 @@ mod tests {
         );
         let draft = [OpenPr {
             draft: true,
-            round_open: true,
+            in_round: true,
             ..pr(8)
         }];
         assert_eq!(

@@ -1074,3 +1074,25 @@ fn a_version_released_without_a_release_item_of_the_bridge_is_not_its_cycle() {
     assert!(w.tracker.writes().is_empty(), "{:?}", w.tracker.writes());
     assert!(w.github.writes().is_empty(), "{:?}", w.github.writes());
 }
+
+#[test]
+fn a_ticket_whose_latest_pr_shipped_later_is_left_to_that_release() {
+    // ABC-5 is embarked through PR #5, but its latest merged PR (#99) came
+    // after this release's range: the release that ships #99 judges it.
+    let run = |latest: &str| {
+        let w = World::new();
+        w.tick();
+        crate::tracker::Tracker::comment(
+            &w.tracker,
+            "ABC-5",
+            &format!("Merged.\n\nmerged_pr: https://github.com/example-org/acme/pull/{latest}"),
+        )
+        .unwrap();
+        publish(&w);
+        let r = w.tick();
+        assert!(r.ok(), "{r:?}");
+        w.tracker.item("ABC-5").state.status
+    };
+    assert_eq!(run("99"), Some(Status::ToDeploy));
+    assert_eq!(run("5"), Some(Status::Done));
+}

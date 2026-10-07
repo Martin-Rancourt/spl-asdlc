@@ -56,6 +56,16 @@ pub fn close(
             return;
         }
     };
+    // What this release shipped, ticket by ticket (its PRs in the range): a
+    // ticket whose latest merged PR is not among them waits for the release
+    // that ships it (several PRs per ticket, spec 04 §10).
+    let shipped: std::collections::BTreeMap<String, Vec<u64>> = match embarked(t, shape, c) {
+        Ok(k) => k.into_iter().collect(),
+        Err(e) => {
+            t.unreadable(report, &object, format!("the shipped tickets: {e}"));
+            return;
+        }
+    };
     let registry = read_registry(t, &published.tag);
     let mut result = CloseResult::default();
     for m in &members {
@@ -63,7 +73,16 @@ pub fn close(
             report.out_of_time = true;
             return;
         }
-        judge_member(t, log, report, m, item, registry.as_ref(), &mut result);
+        judge_member(
+            t,
+            log,
+            report,
+            m,
+            item,
+            registry.as_ref(),
+            &shipped,
+            &mut result,
+        );
     }
     let marker = texts::marker("closure", &[("tag", &published.tag)]);
     match tracker_said(t, &item.key, &marker) {
@@ -197,6 +216,7 @@ fn judge_member(
     m: &Item,
     release: &Item,
     registry: Option<&Registry>,
+    shipped: &std::collections::BTreeMap<String, Vec<u64>>,
     result: &mut CloseResult,
 ) {
     let bridge_child = m.parent.as_deref() == Some(release.key.as_str())
@@ -238,6 +258,18 @@ fn judge_member(
             // again) belongs to its implementer, not to this cycle's replays.
             if !matches!(m.state.status, Some(Status::ToDeploy | Status::PostDeploy)) {
                 return;
+            }
+            match latest_merged_pr(t, &m.key) {
+                Ok(Some(n)) if !shipped.get(&m.key).is_some_and(|prs| prs.contains(&n)) => {
+                    // Its latest PR merged after this release's range: the
+                    // release that ships it judges it.
+                    return;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    t.unreadable(report, &m.key, format!("its merged PRs: {e}"));
+                    return;
+                }
             }
             let gate = match contract_gate(t, m) {
                 Ok(g) => g,
@@ -444,4 +476,17 @@ fn release_note(
         },
     )
     .is_some()
+}
+
+/// The number of the ticket's latest PR the bridge recorded as merged (its
+/// `merged_pr: <url>` line), if any.
+fn latest_merged_pr(t: &Tick, key: &str) -> TResult<Option<u64>> {
+    let comments = t.tracker.comments(key)?;
+    Ok(comments
+        .iter()
+        .filter(|c| c.by_bridge)
+        .flat_map(|c| c.body.lines())
+        .filter_map(|l| l.trim().strip_prefix("merged_pr: "))
+        .filter_map(|url| url.trim().rsplit('/').next()?.parse::<u64>().ok())
+        .next_back())
 }

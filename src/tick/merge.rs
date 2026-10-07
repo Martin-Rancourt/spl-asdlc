@@ -93,8 +93,8 @@ impl OpenPrs {
     }
 }
 
-/// The open PRs of a ticket but `except`, each with whether its review round
-/// is open on the ticket. The ticket's children are read only when it has
+/// The open PRs of a ticket but `except`, each with whether it has a review
+/// round on the ticket (open or finished, not canceled). The ticket's children are read only when it has
 /// such a PR.
 pub fn open_prs_of(
     t: &Tick,
@@ -113,9 +113,9 @@ pub fn open_prs_of(
             number: o.number,
             draft: o.draft,
             sent_back: o.sent_back,
-            round_open: children
+            in_round: children
                 .iter()
-                .any(|c| !c.state.is_resolved() && round_of(c, &o.url)),
+                .any(|c| c.state.status != Some(Status::Canceled) && round_of(c, &o.url)),
         })
         .collect())
 }
