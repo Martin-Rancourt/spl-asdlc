@@ -971,6 +971,32 @@ impl GitHub for RestGitHub {
         Ok(out)
     }
 
+    fn closed_pulls(
+        &self,
+        repo: &RepoSlug,
+        since: Timestamp,
+        limit: usize,
+    ) -> Read<Vec<PullRequest>> {
+        let what = format!("PRs closed without merge of {repo}");
+        let mut out: Vec<PullRequest> = Vec::new();
+        self.pull_pages(repo, &what, "CLOSED", None, &mut |pull| {
+            // Newest update first: past the window, every later one is too.
+            if pull.updated_at.is_some_and(|u| u < since) {
+                return Ok(false);
+            }
+            if !out.iter().any(|p| p.number == pull.number) {
+                out.push(pull);
+            }
+            if out.len() > limit {
+                return Err(format!(
+                    "more than {limit} closed PRs: the list would be cut"
+                ));
+            }
+            Ok(true)
+        })?;
+        Ok(out)
+    }
+
     fn pull_files(&self, repo: &RepoSlug, number: u64) -> Read<Vec<String>> {
         let what = format!("files of PR #{number} of {repo}");
         let items = self.get_pages(

@@ -573,6 +573,18 @@ impl Tracker for Linear {
         )
     }
 
+    fn find_labelled_containing(&self, label: &str, needle: &str) -> TResult<Vec<Item>> {
+        let (team_id, _) = self.team()?;
+        self.issues(
+            &format!("items labelled {label} containing {needle}"),
+            &format!(
+                "query($label: String!, $team: ID!, $needle: String!, $after: String) {{ issues(filter: {{labels: {{name: {{eqIgnoreCase: $label}}}}, team: {{id: {{eq: $team}}}}, description: {{contains: $needle}}}}, first: 50, after: $after, includeArchived: true) {{ nodes {{ {LIST_ISSUE_FIELDS} }} pageInfo {{ hasNextPage endCursor }} }} }}"
+            ),
+            json!({"label": label, "team": team_id, "needle": needle}),
+            &["issues"],
+        )
+    }
+
     fn items_linked_to_pr(&self, pr_url: &str) -> TResult<Vec<String>> {
         let data = self.read(
             &format!("items linked to {pr_url}"),

@@ -818,8 +818,10 @@ fn a_dry_run_of_the_release_pass_writes_nothing() {
         dry_run: true,
     };
     let mut log = ActionLog::in_memory();
-    run(&t, &mut log);
+    let r = run(&t, &mut log);
     assert!(w.tracker.writes().is_empty() && w.github.writes().is_empty());
+    // The item it would create is read as empty, never as a failure.
+    assert!(r.failures.is_empty(), "{r:?}");
     assert!(
         intents
             .lines()
@@ -1017,4 +1019,16 @@ fn the_release_please_config_is_read_where_the_product_says_and_never_guessed() 
     }
     w.tick();
     assert!(record(&w), "{:?}", w.github.writes());
+}
+
+#[test]
+fn a_version_released_without_a_release_item_of_the_bridge_is_not_its_cycle() {
+    // Released before the bridge took the product over: no item to open,
+    // nothing to close, no note to send.
+    let w = World::new();
+    publish(&w);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(w.tracker.writes().is_empty(), "{:?}", w.tracker.writes());
+    assert!(w.github.writes().is_empty(), "{:?}", w.github.writes());
 }

@@ -201,6 +201,8 @@ pub struct Review {
     pub sensitive_angle: String,
     pub coordinators: Vec<String>,
     pub human_reviewer: Option<String>,
+    /// Apps whose PRs need no ticket: the bridge opens one for each.
+    pub ticketless_authors: Vec<String>,
     pub angles: Vec<Angle>,
     pub path_angles: Vec<PathAngle>,
 }
@@ -912,6 +914,12 @@ impl Validator {
         }
         let coordinators = self.list("review.coordinators", raw.coordinators, Vec::new(), true);
         let human_reviewer = self.optional("review.human_reviewer", raw.human_reviewer);
+        let ticketless_authors = self.list(
+            "review.ticketless_authors",
+            raw.ticketless_authors,
+            Vec::new(),
+            false,
+        );
         let angles = self.angles(
             "review.angles",
             raw.angles
@@ -946,6 +954,7 @@ impl Validator {
             sensitive_angle,
             coordinators,
             human_reviewer,
+            ticketless_authors,
             angles,
             path_angles,
         })

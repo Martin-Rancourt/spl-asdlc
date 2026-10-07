@@ -187,6 +187,8 @@ impl Verdict {
 pub const QA_FINDING_LABEL: &str = "qa-finding";
 /// Label a PR author adds to ask for a review whatever the paths say.
 pub const NEEDS_REVIEW_LABEL: &str = "needs-review";
+/// The tickets the bridge opens for PRs of `review.ticketless_authors`.
+pub const TICKETLESS_LABEL: &str = "ticketless-pr";
 /// Label a component's deployment job sets on its merged release PR.
 pub const DEPLOYED_LABEL: &str = "deployed: production";
 

@@ -69,6 +69,14 @@ impl GitHub for DryGitHub<'_> {
     ) -> Read<Vec<github::PullRequest>> {
         self.inner.merged_pulls(repo, base, since, limit)
     }
+    fn closed_pulls(
+        &self,
+        repo: &RepoSlug,
+        since: Timestamp,
+        limit: usize,
+    ) -> Read<Vec<github::PullRequest>> {
+        self.inner.closed_pulls(repo, since, limit)
+    }
     fn pull_files(&self, repo: &RepoSlug, number: u64) -> Read<Vec<String>> {
         self.inner.pull_files(repo, number)
     }
@@ -216,6 +224,13 @@ pub struct DryTracker<'a> {
     pub intents: &'a Intents,
 }
 
+/// The key of an item a dry run would create.
+const NEW_KEY: &str = "(new: ";
+
+fn would_create(key: &str) -> bool {
+    key.starts_with(NEW_KEY)
+}
+
 fn first_line(text: &str) -> &str {
     text.lines().next().unwrap_or("")
 }
@@ -236,22 +251,40 @@ impl Tracker for DryTracker<'_> {
     fn get(&self, key: &str) -> TResult<Item> {
         self.inner.get(key)
     }
+    // An item this dry run would have created exists nowhere: it has no
+    // relation, comment or child yet, as it would have none once created.
     fn relations(&self, key: &str) -> TResult<Relations> {
+        if would_create(key) {
+            return Ok(Relations::default());
+        }
         self.inner.relations(key)
     }
     fn comments(&self, key: &str) -> TResult<Vec<Comment>> {
+        if would_create(key) {
+            return Ok(Vec::new());
+        }
         self.inner.comments(key)
     }
     fn children(&self, key: &str) -> TResult<Vec<Item>> {
+        if would_create(key) {
+            return Ok(Vec::new());
+        }
         self.inner.children(key)
     }
     fn list_by_label(&self, label: &str) -> TResult<Vec<Item>> {
         self.inner.list_by_label(label)
     }
+    fn find_labelled_containing(&self, label: &str, needle: &str) -> TResult<Vec<Item>> {
+        self.inner.find_labelled_containing(label, needle)
+    }
     fn items_linked_to_pr(&self, pr_url: &str) -> TResult<Vec<String>> {
         self.inner.items_linked_to_pr(pr_url)
     }
     fn ensure_label(&self, name: &str) -> TResult<()> {
+        // A label some item carries exists: the real write would be a no-op.
+        if !self.inner.list_by_label(name)?.is_empty() {
+            return Ok(());
+        }
         self.intents.push(format!("tracker: ensure label {name}"));
         Ok(())
     }
@@ -267,7 +300,7 @@ impl Tracker for DryTracker<'_> {
         ));
         Ok(Item {
             id: String::new(),
-            key: format!("(new: {})", item.title),
+            key: format!("{NEW_KEY}{})", item.title),
             title: item.title.clone(),
             description: item.description.clone(),
             url: String::new(),
@@ -401,6 +434,48 @@ mod tests {
                 "tracker: ABC-1 → To Deploy",
                 "tracker: comment on ABC-1: Merged.",
                 "github acme/widget: merge #7 at abc (squash)",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_dry_run_shows_only_what_a_real_run_would_write() {
+        let t = FakeTracker::default();
+        t.seed(
+            "ABC-1",
+            "t",
+            "d",
+            Status::InReview,
+            &["release/acme-v1.2.0"],
+        );
+        let intents = Intents::default();
+        let dry = DryTracker {
+            inner: &t,
+            intents: &intents,
+        };
+        // A label an item carries exists: ensuring it writes nothing.
+        dry.ensure_label("release/acme-v1.2.0").unwrap();
+        dry.ensure_label("release/acme-v1.3.0").unwrap();
+        // An item it would create is read as new: no comment, child or relation.
+        let new = dry
+            .create_item(&NewItem {
+                title: "Release acme v1.3.0".into(),
+                description: String::new(),
+                labels: Vec::new(),
+                status: Status::Ready,
+                priority: None,
+                assignee: None,
+                parent: None,
+            })
+            .unwrap();
+        assert!(dry.comments(&new.key).unwrap().is_empty());
+        assert!(dry.children(&new.key).unwrap().is_empty());
+        assert_eq!(dry.relations(&new.key).unwrap(), Relations::default());
+        assert_eq!(
+            intents.lines(),
+            vec![
+                "tracker: ensure label release/acme-v1.3.0",
+                "tracker: create \"Release acme v1.3.0\" [Ready]",
             ]
         );
     }

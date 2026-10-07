@@ -17,9 +17,10 @@ use crate::github::{PrState, PullRequest, RequiredChecks};
 use crate::method::business_rules::{self, Registry};
 use crate::method::checks::{self, CheckState};
 use crate::method::contract;
+use crate::method::release::prs::trusted_author;
 use crate::method::review::{self, Approval, BranchState, ReviewFacts, SensitivePaths};
 use crate::method::texts::{self, BridgeItem};
-use crate::method::vocabulary::Status;
+use crate::method::vocabulary::{Status, TICKETLESS_LABEL};
 use crate::tracker::{Item, NewItem};
 
 use super::link::{self, Linked};
@@ -108,6 +109,10 @@ fn one(
     let ticket = match link::ticket_item(&pr, t.tracker, t.config.tracker.link_fallback) {
         Err(e) => {
             t.unreadable(report, &object, format!("the linked ticket: {e}"));
+            return None;
+        }
+        Ok(Linked::None) if trusted_author(&pr, &t.config.review.ticketless_authors) => {
+            open_pr_ticket(t, log, report, &pr);
             return None;
         }
         Ok(Linked::None) => {
@@ -754,6 +759,106 @@ fn create(
         },
     );
     Some(item.key)
+}
+
+/// A PR of an App whose PRs need no ticket (`review.ticketless_authors`,
+/// spec 04 §9): the bridge opens its ticket and links it; the next tick
+/// takes the PR like any other. A ticket opened before whose link was lost
+/// is linked again, never opened twice.
+fn open_pr_ticket(t: &Tick, log: &mut ActionLog, report: &mut Report, pr: &PullRequest) {
+    let object = format!("pr#{}", pr.number);
+    let marker = texts::pr_ticket_marker(&pr.url);
+    // Only an open ticket is the PR's: a resolved one keeps its link, so a
+    // PR found here without a link has none open.
+    let opened: Vec<Item> = match t
+        .tracker
+        .find_labelled_containing(TICKETLESS_LABEL, texts::token(&marker))
+    {
+        Ok(items) => items
+            .into_iter()
+            .filter(|i| {
+                !i.archived && !i.state.is_resolved() && texts::has_marker(&i.description, &marker)
+            })
+            .collect(),
+        Err(e) => {
+            t.unreadable(
+                report,
+                &object,
+                format!("the items labelled {TICKETLESS_LABEL}: {e}"),
+            );
+            return;
+        }
+    };
+    if opened.len() > 1 {
+        let keys: Vec<&str> = opened.iter().map(|i| i.key.as_str()).collect();
+        t.unreadable(
+            report,
+            &object,
+            format!(
+                "several open tickets were opened for it: {}",
+                keys.join(", ")
+            ),
+        );
+        return;
+    }
+    let key = match opened.into_iter().next() {
+        Some(item) => item.key,
+        None => {
+            let ensured = t.act(
+                log,
+                report,
+                &object,
+                &format!("ensure label {TICKETLESS_LABEL}"),
+                json!({}),
+                || {
+                    t.tracker
+                        .ensure_label(TICKETLESS_LABEL)
+                        .map_err(|e| e.to_string())
+                },
+            );
+            if ensured.is_none() {
+                return;
+            }
+            let author = pr.author.as_ref().map(|a| a.login.as_str()).unwrap_or("");
+            let (title, description) = texts::pr_ticket(pr.number, &pr.title, author, &pr.url);
+            let created = t.act(
+                log,
+                report,
+                &object,
+                "open ticket",
+                json!({"pr": pr.url, "author": author}),
+                || {
+                    t.tracker
+                        .create_item(&NewItem {
+                            title: title.clone(),
+                            description: for_tracker(t, &description),
+                            labels: vec![TICKETLESS_LABEL.to_string()],
+                            status: Status::Ready,
+                            priority: None,
+                            assignee: None,
+                            parent: None,
+                        })
+                        .map_err(|e| e.to_string())
+                },
+            );
+            match created {
+                Some(item) => item.key,
+                None => return,
+            }
+        }
+    };
+    t.act(
+        log,
+        report,
+        &key,
+        &format!("link {}", pr.url),
+        json!({}),
+        || {
+            t.tracker
+                .link_pr(&key, &pr.url, &pr.title)
+                .map_err(|e| e.to_string())
+        },
+    );
 }
 
 /// The assignee hint of an angle, when the tracker knows the person.

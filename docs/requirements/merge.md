@@ -136,6 +136,7 @@ Notes: reason: on 2026-09-26 the first bare identifier of a body ("found live wh
 Decision `skip` ("no ticket"), whatever its paths or labels. The ticket status is a write destination rather than a gate, but the link to a ticket is the audit trail the deterministic pass requires before acting. A GREEN ticketless PR raises the stuck notice (REQ-MERGE-080); a red or pending one raises nothing.
 Source: `pr_merge.py:4009-4040`.
 Notes: tests `test_a_pr_without_a_linear_ticket_is_not_merged`, `test_a_sensitive_pr_without_a_linear_ticket_is_not_routed_for_review`, `test_a_green_ticketless_pr_pages_a_human_once`, `test_a_red_ticketless_pr_does_not_page_anyone`.
+Corrected by the spec (2026-10-07, spec 04 §9): a PR of an App listed in `review.ticketless_authors` (for example Dependabot) and linked to no ticket gets a ticket opened by the bridge, then takes the usual path; this requirement holds for every other PR.
 
 **REQ-MERGE-026 — Any write that moves a ticket's board state from a PR's mere existence (reopen) or from the sweep requires the strict "board-write" link only.**
 Only the branch-name link or an explicit `Closes|Fixes|Resolves <URL>` line may move a ticket. A contextual URL, a bare identifier in title/body, or a ticket "only mentioned" in the body may let the PR be judged (REQ-MERGE-022) but never moves a card (not reopened, not promoted by the sweep).
