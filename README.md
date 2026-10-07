@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/brand/wordmark-dark.svg">
+  <img alt="<asdlc />" src="assets/brand/wordmark.svg" width="280">
+</picture>
+
 # SPL-ASDLC
 
 **ASDLC by Side Projects Lab.** An agentic software development life cycle: a defined process, the documentation that explains it, and the executable tooling that applies it to any repository where agents write code.
@@ -24,7 +29,9 @@ First draft. The specification and the requirements are written (`docs/requireme
 | `docs/setup/` | How to configure a repository, a GitHub App and a tracker identity for SPL-ASDLC |
 | `docs/business-rules.md` | The product's own business rules, each with its test |
 | `docs/livela-contract.md` | What the Livela tracker must offer for its adapter |
-| `scripts/` | Checks that run in CI (no instance names, …) |
+| `docs/brand.md` | The logo: what it means, its colors, which file to use where |
+| `assets/brand/` | Logo files: SVG masters, favicons, app icon PNGs |
+| `scripts/` | Checks that run in CI (no instance names, …) and the logo generator (`scripts/brand/`) |
 
 ## Rule zero
 

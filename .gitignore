@@ -1,2 +1,3 @@
 /target/
 /.spl-asdlc/forbidden-words.txt
+/scripts/brand/node_modules/
