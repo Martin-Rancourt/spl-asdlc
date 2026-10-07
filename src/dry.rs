@@ -69,6 +69,14 @@ impl GitHub for DryGitHub<'_> {
     ) -> Read<Vec<github::PullRequest>> {
         self.inner.merged_pulls(repo, base, since, limit)
     }
+    fn closed_pulls(
+        &self,
+        repo: &RepoSlug,
+        since: Timestamp,
+        limit: usize,
+    ) -> Read<Vec<github::PullRequest>> {
+        self.inner.closed_pulls(repo, since, limit)
+    }
     fn pull_files(&self, repo: &RepoSlug, number: u64) -> Read<Vec<String>> {
         self.inner.pull_files(repo, number)
     }
@@ -265,6 +273,9 @@ impl Tracker for DryTracker<'_> {
     }
     fn list_by_label(&self, label: &str) -> TResult<Vec<Item>> {
         self.inner.list_by_label(label)
+    }
+    fn find_labelled_containing(&self, label: &str, needle: &str) -> TResult<Vec<Item>> {
+        self.inner.find_labelled_containing(label, needle)
     }
     fn items_linked_to_pr(&self, pr_url: &str) -> TResult<Vec<String>> {
         self.inner.items_linked_to_pr(pr_url)

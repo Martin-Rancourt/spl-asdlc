@@ -768,10 +768,18 @@ fn create(
 fn open_pr_ticket(t: &Tick, log: &mut ActionLog, report: &mut Report, pr: &PullRequest) {
     let object = format!("pr#{}", pr.number);
     let marker = texts::pr_ticket_marker(&pr.url);
-    let opened = match t.tracker.list_by_label(TICKETLESS_LABEL) {
+    // Only an open ticket is the PR's: a resolved one keeps its link, so a
+    // PR found here without a link has none open.
+    let opened: Vec<Item> = match t
+        .tracker
+        .find_labelled_containing(TICKETLESS_LABEL, texts::token(&marker))
+    {
         Ok(items) => items
             .into_iter()
-            .find(|i| !i.archived && texts::has_marker(&i.description, &marker)),
+            .filter(|i| {
+                !i.archived && !i.state.is_resolved() && texts::has_marker(&i.description, &marker)
+            })
+            .collect(),
         Err(e) => {
             t.unreadable(
                 report,
@@ -781,7 +789,19 @@ fn open_pr_ticket(t: &Tick, log: &mut ActionLog, report: &mut Report, pr: &PullR
             return;
         }
     };
-    let key = match opened {
+    if opened.len() > 1 {
+        let keys: Vec<&str> = opened.iter().map(|i| i.key.as_str()).collect();
+        t.unreadable(
+            report,
+            &object,
+            format!(
+                "several open tickets were opened for it: {}",
+                keys.join(", ")
+            ),
+        );
+        return;
+    }
+    let key = match opened.into_iter().next() {
         Some(item) => item.key,
         None => {
             let ensured = t.act(

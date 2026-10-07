@@ -55,6 +55,14 @@ pub trait GitHub {
         since: Option<Timestamp>,
         limit: usize,
     ) -> Read<Vec<PullRequest>>;
+    /// PRs closed without being merged and updated since `since`, newest
+    /// first; more than `limit` of them is unreadable.
+    fn closed_pulls(
+        &self,
+        repo: &RepoSlug,
+        since: Timestamp,
+        limit: usize,
+    ) -> Read<Vec<PullRequest>>;
     /// Paths a PR changes; a listing GitHub caps is unreadable.
     fn pull_files(&self, repo: &RepoSlug, number: u64) -> Read<Vec<String>>;
     /// PRs GitHub associates with a commit.

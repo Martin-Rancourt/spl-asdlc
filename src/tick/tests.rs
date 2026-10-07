@@ -686,3 +686,68 @@ fn only_the_listed_apps_skip_the_ticket_and_never_a_human_with_their_login() {
         .count();
     assert_eq!(comments, 2, "both are told they need a ticket");
 }
+
+#[test]
+fn a_ticketless_pr_closed_without_merge_cancels_its_ticket_and_sub_items() {
+    let mut w = World::new();
+    w.config.review.ticketless_authors = vec!["dependabot".into()];
+    let pr = app_pr(7, "dependabot");
+    w.open(pr.clone());
+    w.tick(false);
+    w.tick(false);
+    let ticket = pr_ticket(&w, &pr).unwrap();
+    assert_eq!(ticket.state.status, Some(Status::InReview));
+    // Dependabot supersedes it: closed, not merged.
+    {
+        let mut s = w.github.state.borrow_mut();
+        if let Some(Ok(list)) = s.open_pulls.get_mut(&repo()) {
+            list.clear();
+        }
+        let mut closed = pr.clone();
+        closed.state = PrState::Closed;
+        s.closed_pulls.insert(repo(), Ok(vec![closed]));
+    }
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(
+        w.tracker.item(&ticket.key).state.status,
+        Some(Status::Canceled)
+    );
+    for child in children_of(&w, &ticket.key) {
+        assert_eq!(child.state.status, Some(Status::Canceled), "{}", child.key);
+    }
+    // Reopened: it stays on its canceled ticket until a person reopens it;
+    // the bridge neither revives it nor opens a second one.
+    {
+        let mut s = w.github.state.borrow_mut();
+        s.closed_pulls.insert(repo(), Ok(Vec::new()));
+    }
+    w.open(pr.clone());
+    let before = w.tracker.writes().len();
+    w.tick(false);
+    assert_eq!(
+        w.tracker.writes().len(),
+        before,
+        "{:?}",
+        &w.tracker.writes()[before..]
+    );
+}
+
+#[test]
+fn two_open_tickets_for_one_ticketless_pr_open_none_and_say_so() {
+    let mut w = World::new();
+    w.config.review.ticketless_authors = vec!["dependabot".into()];
+    let pr = app_pr(7, "dependabot");
+    let (title, description) = texts::pr_ticket(7, &pr.title, &bot("dependabot"), &pr.url);
+    for key in ["ABC-8", "ABC-9"] {
+        w.tracker
+            .seed(key, &title, &description, Status::Ready, &["ticketless-pr"]);
+    }
+    w.open(pr.clone());
+    let (report, _) = w.tick(false);
+    assert!(
+        report.failures.iter().any(|f| f.contains("ABC-8, ABC-9")),
+        "{report:?}"
+    );
+    assert!(w.tracker.writes().is_empty(), "{:?}", w.tracker.writes());
+}
