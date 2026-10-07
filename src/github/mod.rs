@@ -9,7 +9,7 @@
 
 pub mod auth;
 pub mod fake;
-pub mod http;
+pub use crate::http;
 mod rest;
 pub mod types;
 
