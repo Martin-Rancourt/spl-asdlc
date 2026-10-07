@@ -742,6 +742,48 @@ fn a_reopened_ticket_is_said_once_while_the_closure_retries() {
 }
 
 #[test]
+fn a_merged_pr_ships_while_its_ticket_is_still_in_progress() {
+    // BR-ASDLC-005: every merged PR is deployable; its ticket, back In
+    // Progress for the boxes a later PR delivers, is embarked and left alone.
+    let w = World::new();
+    w.tracker.seed(
+        "ABC-5",
+        "Shipped in two PRs",
+        "## Goal\nShip it.\n\n## Acceptance criteria\n- [x] shipped\n- [ ] fast\n\n## Business rules\nNo new rule.\n\n## Release note\nYou can now ship.\n",
+        Status::InProgress,
+        &[],
+    );
+    w.tracker
+        .link("ABC-5", "https://github.com/example-org/acme/pull/5");
+    w.tick();
+    assert!(
+        w.tracker.item("ABC-5").labels.contains(&LABEL.to_string()),
+        "embarked"
+    );
+    publish(&w);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.tracker.item("ABC-5").state.status,
+        Some(Status::InProgress),
+        "not judged: its later PR is on the way"
+    );
+    assert!(
+        !w.tracker
+            .writes()
+            .iter()
+            .any(|l| l.starts_with("comment ABC-5")),
+        "{:?}",
+        w.tracker.writes()
+    );
+    assert_eq!(
+        w.tracker.item(&w.release_item().key).state.status,
+        Some(Status::Done),
+        "the cycle closes"
+    );
+}
+
+#[test]
 fn a_blocker_canceled_as_a_false_alarm_is_not_filed_again() {
     let w = World::new();
     w.tick();

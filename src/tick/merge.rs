@@ -4,6 +4,11 @@
 //! the business-rule guard, the branch, then entering In Review, changes
 //! requested, and the merge, at most one per repository per tick.
 //!
+//! A ticket may have several PRs (spec 04 §10): the pass reads the ticket of
+//! every open PR first, each PR has its own review round, and the state of
+//! the ticket follows the state rules of `method::ticket_state` whenever one
+//! of its PRs resolves.
+//!
 //! Idempotence reads the observable state first (statuses, children, the
 //! PR); a hidden marker is used only for what nobody can observe, a message
 //! said once, and it is read only in comments the bridge itself wrote.
@@ -20,6 +25,7 @@ use crate::method::contract;
 use crate::method::release::prs::trusted_author;
 use crate::method::review::{self, Approval, BranchState, ReviewFacts, SensitivePaths};
 use crate::method::texts::{self, BridgeItem};
+use crate::method::ticket_state::{self, Facts, OpenPr};
 use crate::method::vocabulary::{Status, TICKETLESS_LABEL};
 use crate::tracker::{Item, NewItem};
 
@@ -39,20 +45,138 @@ pub struct Candidate {
     pub approved_by: String,
 }
 
-/// Run the pass; returns the PRs ready to merge, in the order they would be
-/// merged (oldest PR first). The caller merges at most one per tick.
-pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> Vec<Candidate> {
+/// What the pass found: the PRs ready to merge, and the open PRs of each
+/// ticket, which the state rules read when another PR of the ticket
+/// resolves (spec 04 §10).
+#[derive(Default)]
+pub struct Pass {
+    /// In the order they would be merged (oldest PR first). The caller
+    /// merges at most one per tick.
+    pub candidates: Vec<Candidate>,
+    pub open: OpenPrs,
+}
+
+/// The open PRs of the repository, by the ticket they are linked to.
+#[derive(Debug, Default)]
+pub struct OpenPrs {
+    by_ticket: BTreeMap<String, Vec<Open>>,
+    /// Every open PR had its ticket read: "no other PR" can be said.
+    pub known: bool,
+}
+
+#[derive(Debug, Clone)]
+struct Open {
+    number: u64,
+    url: String,
+    draft: bool,
+    sent_back: bool,
+}
+
+impl OpenPrs {
+    fn add(&mut self, ticket: &str, pr: &PullRequest, coordinators: &[String]) {
+        self.by_ticket
+            .entry(ticket.to_string())
+            .or_default()
+            .push(Open {
+                number: pr.number,
+                url: pr.url.clone(),
+                draft: pr.draft,
+                sent_back: changes_requested_at_head(pr, coordinators),
+            });
+    }
+
+    fn of(&self, ticket: &str, except: Option<u64>) -> Vec<&Open> {
+        self.by_ticket
+            .get(ticket)
+            .map(|l| l.iter().filter(|o| Some(o.number) != except).collect())
+            .unwrap_or_default()
+    }
+}
+
+/// The open PRs of a ticket but `except`, each with whether its review round
+/// is open on the ticket. The ticket's children are read only when it has
+/// such a PR.
+pub fn open_prs_of(
+    t: &Tick,
+    open: &OpenPrs,
+    ticket: &str,
+    except: Option<u64>,
+) -> Result<Vec<OpenPr>, String> {
+    let list = open.of(ticket, except);
+    if list.is_empty() {
+        return Ok(Vec::new());
+    }
+    let children = t.tracker.children(ticket).map_err(|e| e.to_string())?;
+    Ok(list
+        .into_iter()
+        .map(|o| OpenPr {
+            number: o.number,
+            draft: o.draft,
+            sent_back: o.sent_back,
+            round_open: children
+                .iter()
+                .any(|c| !c.state.is_resolved() && round_of(c, &o.url)),
+        })
+        .collect())
+}
+
+/// Whether an item is an angle sub-item or the consolidation item of a
+/// review round of this PR (any head).
+pub fn round_of(item: &Item, pr_url: &str) -> bool {
+    let prefix = format!("{pr_url}@");
+    match texts::bridge_item(&item.description, item.parent.as_deref()) {
+        Some(BridgeItem::Angle { scope, .. } | BridgeItem::Consolidation { scope }) => {
+            scope.starts_with(&prefix)
+        }
+        _ => false,
+    }
+}
+
+/// Run the pass. The tickets of every open PR are read first: the state of a
+/// ticket depends on all its PRs.
+pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> Pass {
     let mut prs = match t.github.open_pulls(&t.repo, None) {
         Ok(p) => p,
         Err(e) => {
             t.unreadable(report, "open PRs", e);
-            return Vec::new();
+            return Pass::default();
         }
     };
     prs.sort_by_key(|p| p.number);
+    let release = &t.config.release;
+    let coordinators = &t.config.review.coordinators;
+    let mut open = OpenPrs {
+        known: true,
+        ..OpenPrs::default()
+    };
+    let mut linked = Vec::new();
+    for pr in prs {
+        if !t.in_time() {
+            report.out_of_time = true;
+            return Pass::default();
+        }
+        if review::excluded_from_merge_pass(&pr, &release.branch_prefix, &release.release_pr_label)
+            .is_some()
+        {
+            continue;
+        }
+        let link = link::ticket_item(&pr, t.tracker, t.config.tracker.link_fallback);
+        match &link {
+            Ok(Linked::One(item)) => open.add(&item.key, &pr, coordinators),
+            // A PR that several tickets claim is live work on each of them.
+            Ok(Linked::Several(keys)) => {
+                for key in keys {
+                    open.add(key, &pr, coordinators);
+                }
+            }
+            Ok(Linked::None) => {}
+            Err(_) => open.known = false,
+        }
+        linked.push((pr, link));
+    }
     let mut bases: BTreeMap<String, Base> = BTreeMap::new();
     let mut candidates = Vec::new();
-    for pr in prs {
+    for (pr, link) in linked {
         if !t.in_time() {
             report.out_of_time = true;
             break;
@@ -60,11 +184,11 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> Vec<Candidate
         let base = bases
             .entry(pr.base_ref.clone())
             .or_insert_with(|| read_base(t, &pr.base_ref));
-        if let Some(c) = one(t, log, report, pr, base) {
+        if let Some(c) = one(t, log, report, pr, link, base, &open) {
             candidates.push(c);
         }
     }
-    candidates
+    Pass { candidates, open }
 }
 
 fn read_base(t: &Tick, base: &str) -> Base {
@@ -89,24 +213,22 @@ fn read_base(t: &Tick, base: &str) -> Base {
     }
 }
 
-/// One PR, up to the point where something holds it.
+/// One PR, up to the point where something holds it. The exclusions were
+/// applied and its ticket resolved by the pass.
 fn one(
     t: &Tick,
     log: &mut ActionLog,
     report: &mut Report,
     pr: PullRequest,
+    link: crate::tracker::TResult<Linked>,
     base: &Base,
+    open: &OpenPrs,
 ) -> Option<Candidate> {
     let object = format!("pr#{}", pr.number);
     let release = &t.config.release;
-    if review::excluded_from_merge_pass(&pr, &release.branch_prefix, &release.release_pr_label)
-        .is_some()
-    {
-        return None;
-    }
 
     // ---- the ticket ----
-    let ticket = match link::ticket_item(&pr, t.tracker, t.config.tracker.link_fallback) {
+    let ticket = match link {
         Err(e) => {
             t.unreadable(report, &object, format!("the linked ticket: {e}"));
             return None;
@@ -158,9 +280,29 @@ fn one(
     }
     let object = format!("pr#{} {}", pr.number, ticket.key);
 
+    // ---- an open PR on a ticket past the merge (REQ-MERGE-028) ----
+    if ticket
+        .state
+        .status
+        .is_some_and(Status::is_terminal_for_open_pr)
+    {
+        reopen_for_open_pr(t, log, report, &pr, &ticket, open);
+        return None;
+    }
+
     // ---- reviews submitted close their angle sub-items ----
+    let mut has_round = true;
     if ticket.state.status == Some(Status::InReview) {
-        close_reviewed_sub_items(t, log, report, &pr, &ticket);
+        match t.tracker.children(&ticket.key) {
+            Ok(children) => {
+                has_round = children.iter().any(|c| round_of(c, &pr.url));
+                close_reviewed_sub_items(t, log, report, &pr, &children);
+            }
+            Err(e) => {
+                t.unreadable(report, &ticket.key, format!("the ticket's children: {e}"));
+                return None;
+            }
+        }
     }
 
     // ---- a PR appears: Ready → In Progress (spec 03) ----
@@ -344,7 +486,9 @@ fn one(
         );
     }
     let changes_at_head = changes_requested_at_head(&pr, &t.config.review.coordinators);
-    if status == Some(Status::InProgress) {
+    // A ticket In Review for another of its PRs: this PR gets its own round
+    // (a round is scoped to its PR, BR-ASDLC-007).
+    if status == Some(Status::InProgress) || !has_round {
         if changes_at_head {
             return None;
         }
@@ -355,7 +499,20 @@ fn one(
     // ---- In Review: changes requested, or the merge ----
     let approval = review::pr_approval(&pr, &t.config.review.coordinators);
     if let Approval::ChangesRequested { by } = &approval {
-        if changes_at_head {
+        if !changes_at_head {
+            return None;
+        }
+        // The review rule first: while another PR of the ticket is in
+        // review, the ticket stays In Review (BR-ASDLC-008); when an open
+        // PR's ticket could not be read, it may be one: the state waits.
+        let another = match open_prs_of(t, open, &ticket.key, Some(pr.number)) {
+            Ok(others) => others.iter().any(OpenPr::in_review),
+            Err(e) => {
+                t.unreadable(report, &object, format!("the ticket's children: {e}"));
+                return None;
+            }
+        };
+        if !another && open.known {
             t.act(
                 log,
                 report,
@@ -406,9 +563,16 @@ fn one(
     })
 }
 
-/// Merge the first candidate: pinned to its head, then the branch deleted
-/// and the ticket To Deploy (spec 04 §6). Returns whether a merge happened.
-pub fn merge(t: &Tick, log: &mut ActionLog, report: &mut Report, c: &Candidate) -> bool {
+/// Merge the first candidate: pinned to its head, then the branch deleted,
+/// the PR's review round closed and the ticket where the state rules put it
+/// (spec 04 §6, §10). Returns whether a merge happened.
+pub fn merge(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    c: &Candidate,
+    open: &OpenPrs,
+) -> bool {
     let pr = &c.pr;
     let object = format!("pr#{} {}", pr.number, c.ticket.key);
     let method: crate::github::MergeMethod = t.config.review.merge_method.into();
@@ -448,47 +612,185 @@ pub fn merge(t: &Tick, log: &mut ActionLog, report: &mut Report, c: &Candidate) 
             },
         );
     }
-    to_deploy(t, log, report, pr, &c.ticket, None);
+    close_round(t, log, report, &c.ticket.key, &pr.url, true);
+    // Read again: the pass may have moved the ticket for another of its PRs.
+    match t.tracker.get(&c.ticket.key) {
+        Ok(ticket) => after_merge(t, log, report, pr, &ticket, None, open),
+        // The sweep catches the ticket up: its merge is not recorded yet.
+        Err(e) => t.unreadable(report, &object, format!("the ticket: {e}")),
+    }
     true
 }
 
-/// A merged PR's ticket goes To Deploy, with the merge comment, once
-/// (REQ-MERGE-062 as spec 04 §6 corrects it: never Done, never backwards).
-pub fn to_deploy(
+/// A PR resolves, so its review round is over (BR-ASDLC-007): the angle
+/// sub-items and the consolidation item of every round of this PR still
+/// open go Done at a merge, Canceled at a close without merge, whatever
+/// becomes of the ticket.
+pub fn close_round(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    ticket: &str,
+    pr_url: &str,
+    merged: bool,
+) -> bool {
+    let children = match t.tracker.children(ticket) {
+        Ok(c) => c,
+        Err(e) => {
+            t.unreadable(report, ticket, format!("the ticket's children: {e}"));
+            return false;
+        }
+    };
+    let (status, why) = if merged {
+        (Status::Done, "PR merged")
+    } else {
+        (Status::Canceled, "PR closed without merge")
+    };
+    let mut all = true;
+    for child in children
+        .iter()
+        .filter(|c| !c.state.is_resolved() && round_of(c, pr_url))
+    {
+        all &= t
+            .act(
+                log,
+                report,
+                &child.key,
+                &format!("status {status} ({why})"),
+                json!({"pr": pr_url}),
+                || {
+                    t.tracker
+                        .set_status(&child.key, status, None)
+                        .map_err(|e| e.to_string())
+                },
+            )
+            .is_some();
+    }
+    all
+}
+
+/// An open PR on a ticket past the merge (To Deploy, Done) puts the ticket
+/// back where the state rules say (REQ-MERGE-028 under BR-ASDLC-008): In
+/// Review, unless a request for changes or an open box sends it In
+/// Progress. The PR is not operated on this tick. Post Deploy is not
+/// reopened; the bridge's own items are not tickets.
+fn reopen_for_open_pr(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    pr: &PullRequest,
+    ticket: &Item,
+    open: &OpenPrs,
+) {
+    let object = format!("pr#{} {}", pr.number, ticket.key);
+    let prs = match open_prs_of(t, open, &ticket.key, None) {
+        Ok(p) => p,
+        Err(e) => {
+            t.unreadable(report, &object, format!("the ticket's children: {e}"));
+            return;
+        }
+    };
+    let facts = Facts {
+        open: &prs,
+        open_known: open.known,
+        description: &ticket.description,
+        merged: true,
+    };
+    let Some((to, why)) = ticket_state::decide(&facts) else {
+        t.unreadable(
+            report,
+            &object,
+            "an open PR's ticket could not be read, so the state of this one waits",
+        );
+        return;
+    };
+    if ticket.state.status != Some(to) {
+        t.act(
+            log,
+            report,
+            &object,
+            &format!("status {to}"),
+            json!({"pr": pr.url, "from": ticket.state.status.map(|s| s.name()), "next": why.next()}),
+            || {
+                t.tracker
+                    .set_status(&ticket.key, to, None)
+                    .map_err(|e| e.to_string())
+            },
+        );
+    }
+}
+
+/// A merged PR's ticket goes where the state rules say (spec 04 §10,
+/// BR-ASDLC-008): In Review while another of its PRs is in review, In
+/// Progress while a box of its contract is open, otherwise To Deploy; never
+/// backwards past the merge (REQ-MERGE-062 as the spec corrects it, never
+/// Done). The merge comment records it, once.
+pub fn after_merge(
     t: &Tick,
     log: &mut ActionLog,
     report: &mut Report,
     pr: &PullRequest,
     ticket: &Item,
     merged_by: Option<&str>,
+    open: &OpenPrs,
 ) {
     let object = format!("pr#{} {}", pr.number, ticket.key);
+    let mut state = ticket.state.status;
+    let mut next = "none — its state is left alone.".to_string();
     if matches!(
-        ticket.state.status,
+        state,
         Some(Status::InProgress | Status::InReview | Status::Ready)
     ) {
-        let moved = t.act(
-            log,
-            report,
-            &object,
-            "status To Deploy",
-            json!({"merged_pr": pr.url}),
-            || {
-                t.tracker
-                    .set_status(&ticket.key, Status::ToDeploy, None)
-                    .map_err(|e| e.to_string())
-            },
-        );
-        // The comment records the transition: without it, the sweep retries
-        // the status at the next tick.
-        if moved.is_none() {
+        let prs = match open_prs_of(t, open, &ticket.key, Some(pr.number)) {
+            Ok(p) => p,
+            Err(e) => {
+                t.unreadable(report, &object, format!("the ticket's children: {e}"));
+                return;
+            }
+        };
+        let facts = Facts {
+            open: &prs,
+            open_known: open.known,
+            description: &ticket.description,
+            merged: true,
+        };
+        // Unknown: the sweep retries at the next tick, the merge not being
+        // recorded yet.
+        let Some((to, why)) = ticket_state::decide(&facts) else {
+            t.unreadable(
+                report,
+                &object,
+                "an open PR's ticket could not be read, so the state after the merge waits",
+            );
             return;
+        };
+        if state != Some(to) {
+            let moved = t.act(
+                log,
+                report,
+                &object,
+                &format!("status {to}"),
+                json!({"merged_pr": pr.url, "next": why.next()}),
+                || {
+                    t.tracker
+                        .set_status(&ticket.key, to, None)
+                        .map_err(|e| e.to_string())
+                },
+            );
+            // The comment records the transition: without it, the sweep
+            // retries the status at the next tick.
+            if moved.is_none() {
+                return;
+            }
         }
+        state = Some(to);
+        next = why.next();
     }
+    let state = state.map(|s| s.name()).unwrap_or("unknown");
     match merge_recorded(t, &ticket.key, &pr.url) {
         Ok(true) => {}
         Ok(false) => {
-            let body = texts::merged_comment(&pr.url, &pr.base_ref, merged_by, "To Deploy");
+            let body = texts::merged_comment(&pr.url, &pr.base_ref, merged_by, state, &next);
             t.act(log, report, &object, "comment merged", json!({}), || {
                 t.tracker
                     .comment(&ticket.key, &body)
@@ -508,6 +810,15 @@ pub fn merge_recorded(t: &Tick, key: &str, pr_url: &str) -> Result<bool, String>
         .map_err(|e| e.to_string())?
         .iter()
         .any(|c| c.by_bridge && c.body.lines().any(|l| l.trim() == line)))
+}
+
+/// Whether the bridge recorded the merge of any PR on the ticket.
+pub fn any_merge_recorded(t: &Tick, key: &str) -> Result<bool, String> {
+    Ok(t.tracker
+        .comments(key)
+        .map_err(|e| e.to_string())?
+        .iter()
+        .any(|c| c.by_bridge && c.body.lines().any(|l| l.trim().starts_with("merged_pr: "))))
 }
 
 fn read_registry(t: &Tick, head: &str) -> Registry {
@@ -699,6 +1010,10 @@ fn enter_review(
             return;
         }
     }
+    // A ticket already In Review for another of its PRs stays so.
+    if ticket.state.status == Some(Status::InReview) {
+        return;
+    }
     t.act(
         log,
         report,
@@ -873,15 +1188,8 @@ fn close_reviewed_sub_items(
     log: &mut ActionLog,
     report: &mut Report,
     pr: &PullRequest,
-    ticket: &Item,
+    children: &[Item],
 ) {
-    let children = match t.tracker.children(&ticket.key) {
-        Ok(c) => c,
-        Err(e) => {
-            t.unreadable(report, &ticket.key, format!("the ticket's children: {e}"));
-            return;
-        }
-    };
     let prefix = format!("{}@", pr.url);
     for child in children {
         let Some(BridgeItem::Angle { scope, .. }) =

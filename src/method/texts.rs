@@ -691,9 +691,17 @@ pub fn record_names(text: &str, candidate: &str) -> bool {
     has_marker && carried.len() == 1 && carried[0].trim().eq_ignore_ascii_case("none")
 }
 
-/// The comment on a ticket when its PR is merged (REQ-MERGE-062 as the
-/// specification corrects it: always `To Deploy`).
-pub fn merged_comment(pr_url: &str, base: &str, merged_by: Option<&str>, state: &str) -> String {
+/// The comment on a ticket when one of its PRs is merged (REQ-MERGE-062 as
+/// spec 04 §10 corrects it): the state the rules gave the ticket, and what
+/// comes next. Its `merged_pr:` line is the record of the merge
+/// (REQ-MERGE-075).
+pub fn merged_comment(
+    pr_url: &str,
+    base: &str,
+    merged_by: Option<&str>,
+    state: &str,
+    next: &str,
+) -> String {
     let how = match merged_by {
         None => format!(
             "{pr_url} was green, approved and up to date with `{base}`, so the bridge merged it."
@@ -702,14 +710,18 @@ pub fn merged_comment(pr_url: &str, base: &str, merged_by: Option<&str>, state: 
             "{pr_url} was merged by `{who}` outside the bridge; the bridge applies the same state rule to it."
         ),
     };
-    let next = if state == "To Deploy" {
-        "the release closure moves it to `Done` once every box of its contract is checked."
-    } else {
-        "none — its state is left alone."
-    };
     format!(
         "{how}\n\nmerged_by: {}\nmerged_pr: {pr_url}\nstate: {state}\nnext: {next}",
         merged_by.unwrap_or("bridge")
+    )
+}
+
+/// The comment on a ticket when one of its PRs is closed without merge and
+/// the state rules move the ticket (spec 04 §10).
+pub fn closed_unmerged_comment(pr_url: &str, state: &str, next: &str) -> String {
+    format!(
+        "{pr_url} was closed without merge: its review round is canceled and it delivers nothing.\n\nstate: {state}\nnext: {next}\n\n{}",
+        marker("closed-unmerged", &[("pr", pr_url)])
     )
 }
 
