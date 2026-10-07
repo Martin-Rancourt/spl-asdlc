@@ -31,6 +31,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       TAG: ${{ inputs.tag || github.ref_name }}
+      TARGET: ${{ matrix.target }}
+      ARCHIVE: ${{ matrix.archive }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -43,20 +45,22 @@ jobs:
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           test "v$version" = "$TAG" || { echo "Cargo.toml says $version, the tag is $TAG"; exit 1; }
-      - run: cargo test --locked --target ${{ matrix.target }}
-      - run: cargo build --locked --release --target ${{ matrix.target }}
+      - shell: bash
+        run: cargo test --locked --target "$TARGET"
+      - shell: bash
+        run: cargo build --locked --release --target "$TARGET"
       - name: Package
         shell: bash
         run: |
-          name="spl-asdlc-$TAG-${{ matrix.target }}"
+          name="spl-asdlc-$TAG-$TARGET"
           mkdir "$name"
           cp README.md LICENSE "$name/"
-          if [ "${{ matrix.archive }}" = zip ]; then
-            cp "target/${{ matrix.target }}/release/spl-asdlc.exe" "$name/"
+          if [ "$ARCHIVE" = zip ]; then
+            cp "target/$TARGET/release/spl-asdlc.exe" "$name/"
             7z a "$name.zip" "$name" > /dev/null
             echo "ASSET=$name.zip" >> "$GITHUB_ENV"
           else
-            cp "target/${{ matrix.target }}/release/spl-asdlc" "$name/"
+            cp "target/$TARGET/release/spl-asdlc" "$name/"
             tar czf "$name.tar.gz" "$name"
             echo "ASSET=$name.tar.gz" >> "$GITHUB_ENV"
           fi

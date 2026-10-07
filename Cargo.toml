@@ -30,6 +30,8 @@ ureq = { version = "3.4", default-features = false, features = ["rustls", "gzip"
 
 [dev-dependencies]
 rand = "0.8"
+# The workflow shape tests parse the shipped YAML (tests/workflows.rs).
+yaml-rust2 = "0.13"
 rsa = { version = "0.9", features = ["pem"] }
 
 # RSA key generation in the App tests is slow without optimisation.
