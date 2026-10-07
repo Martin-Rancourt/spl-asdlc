@@ -72,6 +72,8 @@ pub(super) struct RawRelease {
     pub cut_workflow: Option<String>,
     pub gate_workflow: Option<String>,
     pub release_please_workflow: Option<String>,
+    pub release_please_config: Option<String>,
+    pub release_please_manifest: Option<String>,
     #[serde(default)]
     pub angles: Vec<RawReleaseAngle>,
 }

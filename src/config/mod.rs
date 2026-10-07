@@ -146,6 +146,10 @@ pub struct Release {
     pub cut_workflow: String,
     pub gate_workflow: String,
     pub release_please_workflow: String,
+    /// release-please's configuration and manifest, at the repository root
+    /// unless the product names them otherwise.
+    pub release_please_config: String,
+    pub release_please_manifest: String,
     pub angles: Vec<Angle>,
 }
 
@@ -799,6 +803,15 @@ impl Validator {
             raw.release_please_workflow,
             "release-please.yml",
         );
+        let release_please_config = self
+            .optional("release.release_please_config", raw.release_please_config)
+            .unwrap_or_else(|| "release-please-config.json".to_string());
+        let release_please_manifest = self
+            .optional(
+                "release.release_please_manifest",
+                raw.release_please_manifest,
+            )
+            .unwrap_or_else(|| ".release-please-manifest.json".to_string());
         let angles = self.angles(
             "release.angles",
             raw.angles
@@ -829,6 +842,8 @@ impl Validator {
             cut_workflow,
             gate_workflow,
             release_please_workflow,
+            release_please_config,
+            release_please_manifest,
             angles,
         })
     }
