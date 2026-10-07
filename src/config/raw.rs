@@ -97,6 +97,7 @@ pub(super) struct RawReview {
     pub sensitive_angle: Option<String>,
     pub coordinators: Option<Vec<String>>,
     pub human_reviewer: Option<String>,
+    pub ticketless_authors: Option<Vec<String>>,
     #[serde(default)]
     pub angles: Vec<RawReviewAngle>,
     #[serde(default)]

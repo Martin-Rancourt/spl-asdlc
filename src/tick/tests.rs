@@ -583,3 +583,106 @@ fn a_marker_in_someone_elses_comment_is_not_the_bridges() {
         "the bridge still says it once"
     );
 }
+
+// ---- spec 04 §9: PRs of Apps that need no ticket ----
+
+fn app_pr(number: u64, slug: &str) -> PullRequest {
+    let mut pr = green(pull_request(number));
+    pr.title = "build(deps): bump sharp from 0.35.2 to 0.35.4".into();
+    pr.author = Some(Actor {
+        login: bot(slug),
+        is_bot: true,
+    });
+    pr
+}
+
+fn pr_ticket(w: &World, pr: &PullRequest) -> Option<crate::tracker::Item> {
+    let keys = crate::tracker::Tracker::items_linked_to_pr(&w.tracker, &pr.url).unwrap();
+    keys.first().map(|k| w.tracker.item(k))
+}
+
+#[test]
+fn a_pr_of_a_ticketless_app_gets_a_ticket_and_then_the_path_of_every_pr() {
+    let mut w = World::new();
+    w.config.review.ticketless_authors = vec!["dependabot".into()];
+    let pr = app_pr(7, "dependabot");
+    w.open(pr.clone());
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    let ticket = pr_ticket(&w, &pr).expect("the bridge opened and linked a ticket");
+    assert_eq!(ticket.state.status, Some(Status::Ready));
+    assert!(ticket.labels.contains(&"ticketless-pr".to_string()));
+    assert!(ticket.title.contains("PR #7"), "{}", ticket.title);
+    assert!(
+        crate::method::contract::missing_from_contract(&ticket.description).is_empty()
+            && !crate::method::contract::declares_nothing(&ticket.description),
+        "its contract is complete: {}",
+        ticket.description
+    );
+    assert!(
+        !w.github_writes().iter().any(|l| l.starts_with("comment")),
+        "no 'no ticket' comment: {:?}",
+        w.github_writes()
+    );
+
+    // The next tick takes it like any ticketed PR: the review round opens.
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(
+        w.tracker.item(&ticket.key).state.status,
+        Some(Status::InReview)
+    );
+    assert!(!children_of(&w, &ticket.key).is_empty());
+    let opened = w
+        .tracker
+        .writes()
+        .iter()
+        .filter(|l| l.starts_with("create PR #7"))
+        .count();
+    assert_eq!(opened, 1, "{:?}", w.tracker.writes());
+}
+
+#[test]
+fn a_ticket_opened_before_whose_link_was_lost_is_linked_again_not_opened_twice() {
+    let mut w = World::new();
+    w.config.review.ticketless_authors = vec!["dependabot".into()];
+    let pr = app_pr(7, "dependabot");
+    let (title, description) = texts::pr_ticket(7, &pr.title, "dependabot[bot]", &pr.url);
+    w.tracker.seed(
+        "ABC-9",
+        &title,
+        &description,
+        Status::Ready,
+        &["ticketless-pr"],
+    );
+    w.open(pr.clone());
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(pr_ticket(&w, &pr).map(|i| i.key), Some("ABC-9".to_string()));
+    assert!(
+        !w.tracker.writes().iter().any(|l| l.starts_with("create")),
+        "{:?}",
+        w.tracker.writes()
+    );
+}
+
+#[test]
+fn only_the_listed_apps_skip_the_ticket_and_never_a_human_with_their_login() {
+    let mut w = World::new();
+    w.config.review.ticketless_authors = vec!["dependabot".into()];
+    w.open(app_pr(7, "renovate"));
+    let mut human = app_pr(8, "dependabot");
+    human.author = Some(Actor {
+        login: "dependabot".into(),
+        is_bot: false,
+    });
+    w.open(human);
+    w.tick(false);
+    assert!(w.tracker.writes().is_empty(), "{:?}", w.tracker.writes());
+    let comments = w
+        .github_writes()
+        .into_iter()
+        .filter(|l| l.starts_with("comment"))
+        .count();
+    assert_eq!(comments, 2, "both are told they need a ticket");
+}

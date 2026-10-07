@@ -12,7 +12,7 @@ use crate::method::review::is_release_please_shaped;
 use crate::method::vocabulary::DEPLOYED_LABEL;
 
 /// `<slug>[bot]`, `app/<slug>` and `<slug>` name the same App.
-fn author_key(login: &str) -> String {
+pub(crate) fn author_key(login: &str) -> String {
     let l = login.trim().to_ascii_lowercase();
     let l = l.strip_prefix("app/").unwrap_or(&l);
     l.strip_suffix("[bot]").unwrap_or(l).to_string()

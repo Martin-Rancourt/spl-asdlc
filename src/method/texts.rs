@@ -294,6 +294,29 @@ pub fn review_angle_item(
     (title, body)
 }
 
+/// The marker of the ticket the bridge opened for the PR at `pr_url`.
+pub fn pr_ticket_marker(pr_url: &str) -> String {
+    marker("pr-ticket", &[("pr", pr_url)])
+}
+
+/// The ticket the bridge opens for a PR of an App that needs none
+/// (`review.ticketless_authors`, spec 04): a complete contract whose one box
+/// the PR meets, so the PR takes the path of every ticketed PR.
+pub fn pr_ticket(number: u64, title: &str, author: &str, pr_url: &str) -> (String, String) {
+    let title = format!("PR #{number}: {}", inert(title));
+    let body = format!(
+        "{marker}\n\n## Goal\nShip {pr_url}, opened by `{author}`, an App whose PRs need no ticket: the bridge \
+         opened this one so the PR is reviewed, merged, released and deployed like any other.\n\n\
+         ## Non-goals\n- Anything beyond the PR's diff.\n\n\
+         ## Acceptance criteria\n- [x] The PR's change is reviewed and merged with its checks green.\n\n\
+         ## Business rules\n{absence}",
+        marker = pr_ticket_marker(pr_url),
+        author = inert(author),
+        absence = crate::method::business_rules::ABSENCE_DECLARATION,
+    );
+    (title, body)
+}
+
 /// The consolidation item of a PR review or of a release candidate.
 pub fn consolidation_item(scope: &str, title_of: &str, protocol: &str) -> (String, String) {
     let title = format!("Consolidation — {title_of}");

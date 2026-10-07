@@ -72,6 +72,7 @@ sensitive_paths = ".github/review-paths.json"  # globs that add the sensitive an
 sensitive_angle = "security"
 coordinators = ["coordinator-login"]
 human_reviewer = "owner-login"         # optional: asked to look at a green PR stuck on a human
+ticketless_authors = ["dependabot"]    # Apps whose PRs need no ticket: the bridge opens one (spec 04 §9)
 
 [[review.angles]]
 key = "maintainability"
@@ -173,6 +174,7 @@ events = ["release-note", "escalation", "stagnation", "stuck-pr", "blind-pass"]
 | `review.sensitive_paths` | not declared | Path of the sensitive-path list read at the PR's base (rule 5). | Declared and absent or unreadable: the PR waits, one human notice. |
 | `review.sensitive_angle` | `security` | The angle a sensitive path adds. | — |
 | `review.coordinators` | required | GitHub logins whose approval at the head SHA lets the bridge merge a PR. A later `COMMENTED` review never cancels an approval; a standing `CHANGES_REQUESTED` from any configured login blocks. | No approval at the head SHA: not merged. |
+| `review.ticketless_authors` | `[]` | Apps whose PRs need no ticket (`<slug>`, `<slug>[bot]` or `app/<slug>`): for such a PR linked to no ticket, the bridge opens one labelled `ticketless-pr` with a complete contract, and the PR takes the usual path (spec 04 §9). | A human account whose login matches never qualifies; any other PR without a ticket waits. |
 | `review.human_reviewer` | none | GitHub login asked to look at a green PR stuck on something only a human can lift. | Absent: the notice says that a reviewer must be assigned by hand. |
 | `[[review.angles]]` | at least one required | Base angles of every PR review: `key` (required), `assignee`. | No angle: file invalid. |
 | `[[review.path_angles]]` | none | `paths` (globs, `*` crosses `/`) and the `angle` they add. | — |
