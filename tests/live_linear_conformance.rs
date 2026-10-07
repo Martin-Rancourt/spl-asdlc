@@ -21,8 +21,8 @@ fn linear_passes_the_conformance_suite() {
         std::env::var(ENV_TOKEN),
         std::env::var("SPL_ASDLC_CONFORMANCE_TEAM"),
     ) else {
-        eprintln!("{ENV_TOKEN} and SPL_ASDLC_CONFORMANCE_TEAM are not set: nothing to do");
-        return;
+        // Run on purpose (`--ignored`): a missing setting is a failure, never a pass.
+        panic!("{ENV_TOKEN} and SPL_ASDLC_CONFORMANCE_TEAM must be set");
     };
     let mut map = BTreeMap::new();
     for pair in std::env::var("SPL_ASDLC_CONFORMANCE_STATUSES")

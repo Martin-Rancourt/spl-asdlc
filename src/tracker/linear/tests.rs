@@ -277,7 +277,7 @@ fn items_are_found_by_the_url_of_their_pr() {
 fn an_item_is_created_with_its_state_labels_and_parent() {
     let (l, t) = linear();
     team(&t);
-    t.on_body("POST", URL, "issueLabels(filter", 200, r#"{"data":{"issueLabels":{"nodes":[{"id":"l-1","name":"release/acme-v1.2.3","team":{"id":"team-1"}}]}}}"#);
+    t.on_body("POST", URL, "issueLabels(filter", 200, r#"{"data":{"issueLabels":{"nodes":[{"id":"l-1","name":"release/acme-v1.2.3","team":{"id":"team-1"}}],"pageInfo":{"hasNextPage":false}}}}"#);
     t.on_body(
         "POST",
         URL,
@@ -334,7 +334,7 @@ fn a_label_the_team_lacks_is_created_once() {
         URL,
         "issueLabels(filter",
         200,
-        r#"{"data":{"issueLabels":{"nodes":[]}}}"#,
+        r#"{"data":{"issueLabels":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}"#,
     );
     t.on_body(
         "POST",
@@ -377,4 +377,119 @@ fn a_label_list_is_read_page_by_page_and_refused_without_its_page_info() {
 fn a_relation_without_an_id_is_never_deleted() {
     let (l, _) = linear();
     assert!(l.unrelate("").is_err());
+}
+
+#[test]
+fn a_creation_whose_answer_is_lost_is_looked_up_by_the_id_it_chose() {
+    let (l, t) = linear();
+    team(&t);
+    t.on_body("POST", URL, "issueCreate", 502, "upstream timeout");
+    t.on_body(
+        "POST",
+        URL,
+        "issue(id: $id) { id identifier",
+        200,
+        &format!(
+            r#"{{"data":{{"issue":{}}}}}"#,
+            issue("ABC-7", "Ready", "unstarted")
+        ),
+    );
+    let created = l
+        .create_item(&NewItem {
+            title: "t".into(),
+            description: "d".into(),
+            labels: vec![],
+            status: Status::Ready,
+            priority: None,
+            assignee: None,
+            parent: None,
+        })
+        .unwrap();
+    assert_eq!(created.key, "ABC-7", "found, not created twice");
+    let bodies = t.bodies();
+    let create = bodies.iter().find(|b| b.contains("issueCreate")).unwrap();
+    let lookup = bodies
+        .iter()
+        .find(|b| b.contains("issue(id: $id)"))
+        .unwrap();
+    let chosen = serde_json::from_str::<Value>(create).unwrap()["variables"]["input"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(looks_like_uuid(&chosen));
+    assert!(lookup.contains(&chosen));
+}
+
+#[test]
+fn an_existing_relation_is_not_created_again() {
+    let (l, t) = linear();
+    for key in ["ABC-1", "ABC-2"] {
+        t.on_body(
+            "POST",
+            URL,
+            "issue(id: $id) { id identifier",
+            200,
+            &format!(
+                r#"{{"data":{{"issue":{}}}}}"#,
+                issue(key, "Ready", "unstarted")
+            ),
+        );
+    }
+    t.on_body("POST", URL, "relations(first", 200, r#"{"data":{"issue":{
+        "relations":{"nodes":[{"id":"r1","type":"blocks","relatedIssue":{"identifier":"ABC-2"}}],"pageInfo":{"hasNextPage":false}},
+        "inverseRelations":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}}"#);
+    l.relate("ABC-1", "ABC-2", RelationKind::Blocks).unwrap();
+    assert!(!t.bodies().iter().any(|b| b.contains("issueRelationCreate")));
+}
+
+#[test]
+fn a_relation_that_names_no_item_is_unreadable() {
+    let (l, t) = linear();
+    t.on_body("POST", URL, "relations(first", 200, r#"{"data":{"issue":{
+        "relations":{"nodes":[{"id":"r1","type":"blocks","relatedIssue":null}],"pageInfo":{"hasNextPage":false}},
+        "inverseRelations":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}}"#);
+    assert!(matches!(
+        l.relations("ABC-1").unwrap_err(),
+        TrackerError::Unreadable { .. }
+    ));
+}
+
+#[test]
+fn lists_include_archived_items_and_ask_few_labels_per_item() {
+    let (l, t) = linear();
+    t.on_body("POST", URL, "children(first", 200, &format!(r#"{{"data":{{"issue":{{"children":{{"nodes":[{}],"pageInfo":{{"hasNextPage":false}}}}}}}}}}"#, issue("ABC-2", "Done", "completed")));
+    assert_eq!(l.children("ABC-1").unwrap().len(), 1);
+    let body = &t.bodies()[0];
+    assert!(body.contains("includeArchived: true"), "{body}");
+    assert!(body.contains("labels(first: 20)"), "{body}");
+}
+
+#[test]
+fn labels_are_looked_up_without_case_within_the_team() {
+    let (l, t) = linear();
+    team(&t);
+    t.on_body("POST", URL, "issueLabels(filter", 200, r#"{"data":{"issueLabels":{"nodes":[{"id":"l-1","name":"Release","team":{"id":"team-1"}}],"pageInfo":{"hasNextPage":false}}}}"#);
+    l.ensure_label("release").unwrap();
+    let bodies = t.bodies();
+    assert!(!bodies.iter().any(|b| b.contains("issueLabelCreate")));
+    let lookup = bodies.iter().find(|b| b.contains("issueLabels")).unwrap();
+    assert!(
+        lookup.contains("eqIgnoreCase") && lookup.contains("team-1"),
+        "{lookup}"
+    );
+}
+
+#[test]
+fn a_user_is_found_by_id_as_well_as_by_name() {
+    let (l, t) = linear();
+    let id = new_uuid();
+    t.on_body(
+        "POST",
+        URL,
+        "user(id: $id)",
+        200,
+        &format!(r#"{{"data":{{"user":{{"id":"{id}","name":"n","displayName":"Dev"}}}}}}"#),
+    );
+    assert_eq!(l.user(&id).unwrap().name, "Dev");
+    assert_ne!(new_uuid(), new_uuid());
 }

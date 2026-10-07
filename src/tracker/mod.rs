@@ -10,6 +10,7 @@
 pub mod conformance;
 pub mod fake;
 pub mod linear;
+pub mod livela;
 
 use std::fmt;
 
@@ -162,6 +163,12 @@ pub trait Tracker {
     -> TResult<()>;
     fn assign(&self, key: &str, user: Option<&User>) -> TResult<()>;
     fn comment(&self, key: &str, body: &str) -> TResult<Comment>;
+    /// Whether the tracker can edit a comment in place. Without it, the
+    /// bridge keeps no rewritten status row (merge Q22): informational facts
+    /// stay in its action log, messages that ask someone to act are comments.
+    fn can_edit_comments(&self) -> bool {
+        true
+    }
     fn update_comment(&self, comment_id: &str, body: &str) -> TResult<()>;
     /// `relate(a, b, Blocks)`: `a` blocks `b`. The caller checks for loops.
     fn relate(&self, a: &str, b: &str, kind: RelationKind) -> TResult<()>;

@@ -1,8 +1,195 @@
 # 3b. Tracker: Livela
 
-- **Service participant**: an `agent` participant named `spl-asdlc` (the contract, `docs/livela-contract.md`, point 4).
-- **Statuses**: `to_deploy` and `post_deploy` exist for `ticket` and `bug` in the `validation` group (contract, point 1); `set_status` accepts the English names, so the mapping in `spl-asdlc.toml` is the identity.
-- **Hosting**: the bridge is a `DaemonJob` of the Livela runner (contract, point 3): the runner depends on the public `spl-asdlc` crate and registers `BridgeJob`; the daemon calls it every pass with `LIVELA_SPL_ASDLC_CONFIG` (path of `spl-asdlc.toml`) and `LIVELA_JOB_BUDGET_SECONDS` (60 by default); the App's key and the tracker identity come from the environment the runner starts with. It writes directly in the local store, and the facts propagate through Livela's own sync. `todo-runner jobs` runs one pass by hand.
-- **Links**: the bridge adds the PR URL as a web link on the item and finds items by that URL (contract, point 3).
+- **Service participant**: an `agent` participant named `spl-asdlc` (`docs/livela-contract.md`, point 4).
+- **Statuses**: `in_review`, `to_deploy` and `post_deploy` are the `validation` group: open, still blocking, never served by "what's next" (contract, point 1). `set_status` accepts the English names, so the mapping in `spl-asdlc.toml` is the identity.
+- **Hosting**: the bridge is a `DaemonJob` of the Livela runner (contract, point 3).
+  - The daemon calls it every pass with `LIVELA_SPL_ASDLC_CONFIG` (the path of `spl-asdlc.toml`) and `LIVELA_JOB_BUDGET_SECONDS` (60 by default).
+  - The App's key and the tracker identity come from the environment the runner starts with.
+  - It writes directly in the local store, and the facts propagate through Livela's own sync.
+  - A pass that changes nothing writes nothing; only a failed pass is recorded, under `job:spl-asdlc`.
+  - `livela-runner jobs` runs one pass by hand.
+  - How the runner links the crate is open (contract, point 3).
+- **Links**: the bridge adds the PR URL as a web link on the item and finds items by that URL (contract, point 4).
 
 **Verify**: `spl-asdlc doctor` run from the runner's environment reports `tracker: ok` and `bridge-host: livela-runner`.
+
+## The glue in the runner
+
+The adapter (`spl_asdlc::tracker::livela::Livela`) is written against `LivelaStore`, the slice of the core's `Store` the contract promises. The runner implements it for its `Store`.
+
+This glue was run against `livela-core` on 2026-10-05 and passed the conformance suite (`spl_asdlc::tracker::conformance::run_with`, 60 steps), with a journal that counts facts:
+
+- every step passed except the comment edit, which the core does not offer;
+- writing unchanged values recorded no fact;
+- every fact on the items was signed by `spl-asdlc`;
+- the runner's own author was restored after each write.
+
+```rust
+use livela_core::{
+    BaseFields, Filter, ItemType, ParticipantType, Priority, RelationKind, ShortIdLookup, Sort, Store,
+};
+use spl_asdlc::tracker::livela::{LivelaItem, LivelaRelation, LivelaStore, PARTICIPANT};
+
+/// The runner's store, as the `spl-asdlc` adapter sees it.
+pub struct Glue(pub Store);
+
+fn rel(k: LivelaRelation) -> RelationKind {
+    match k {
+        LivelaRelation::BlockedBy => RelationKind::BlockedBy,
+        LivelaRelation::RelatedTo => RelationKind::RelatedTo,
+        LivelaRelation::DuplicateOf => RelationKind::DuplicateOf,
+    }
+}
+
+fn convert(i: livela_core::Item) -> LivelaItem {
+    let status = i.item_type.status(&i.status).map(|st| st.label.to_string()).unwrap_or(i.status.clone());
+    LivelaItem {
+        id: i.id,
+        short_id: i.short_id,
+        title: i.title,
+        description: i.description,
+        status,
+        tags: i.tags,
+        assignee: i.assignee,
+        parent: i.relations.parent,
+        blocked_by: i.relations.blocked_by,
+        blocks: i.relations.blocks,
+        related_to: i.relations.related_to,
+        duplicate_of: i.relations.duplicate_of,
+        comments: i.comments.into_iter().map(|c| (c.id, c.author, c.text)).collect(),
+        web_links: i.web_links.into_iter().map(|w| w.url).collect(),
+        deleted: i.deleted,
+    }
+}
+
+fn all(s: &Store, f: Filter) -> Vec<LivelaItem> {
+    s.list_items_filtered(&Filter { include_unavailable: true, ..f }, Sort::default())
+        .into_iter()
+        .map(convert)
+        .collect()
+}
+
+fn priority(p: Option<u8>) -> Option<Priority> {
+    match p? {
+        1 => Some(Priority::Urgent),
+        2 => Some(Priority::High),
+        3 => Some(Priority::Medium),
+        _ => Some(Priority::Low),
+    }
+}
+
+impl LivelaStore for Glue {
+    fn bridge_participant(&mut self) -> Result<String, String> {
+        self.0.ensure_participant(ParticipantType::Agent, PARTICIPANT).map_err(|e| e.to_string())
+    }
+    fn existing_bridge_participant(&self) -> Option<String> {
+        let mut ids: Vec<String> = self
+            .0
+            .list_participants()
+            .into_iter()
+            .filter(|p| p.name == PARTICIPANT && p.participant_type == ParticipantType::Agent)
+            .map(|p| p.id)
+            .collect();
+        ids.sort();
+        ids.into_iter().next()
+    }
+    fn swap_author(&mut self, participant: &str) -> String {
+        let previous = self.0.current_author();
+        self.0.set_author(participant);
+        previous
+    }
+    fn participants_named(&self, name: &str) -> Vec<(String, String)> {
+        self.0.list_participants().into_iter().filter(|p| p.name == name).map(|p| (p.id, p.name)).collect()
+    }
+    fn participant_name(&self, id: &str) -> Option<String> {
+        self.0.get_participant(id).ok().map(|p| p.name)
+    }
+    fn resolve(&self, short_id: &str) -> Result<Option<String>, String> {
+        match self.0.find_by_short_id(short_id) {
+            ShortIdLookup::Found { id } => Ok(Some(id)),
+            ShortIdLookup::NotFound => Ok(None),
+            ShortIdLookup::Ambiguous { ids } => Err(format!("{} items share {short_id}", ids.len())),
+        }
+    }
+    fn item(&self, id: &str) -> Result<LivelaItem, String> {
+        self.0.get_item(id).map(convert).map_err(|e| e.to_string())
+    }
+    fn items(&self, tag: Option<&str>, parent: Option<&str>) -> Vec<LivelaItem> {
+        all(&self.0, Filter { tag: tag.map(str::to_string), parent: parent.map(str::to_string), ..Filter::default() })
+    }
+    fn duplicates_of(&self, id: &str) -> Vec<String> {
+        all(&self.0, Filter::default()).into_iter().filter(|i| i.duplicate_of.as_deref() == Some(id)).map(|i| i.id).collect()
+    }
+    fn prefix(&self) -> String {
+        livela_core::short_id::DEFAULT_PREFIX.to_string()
+    }
+    fn ticket_statuses(&self) -> Vec<String> {
+        ItemType::Ticket.statuses().iter().map(|s| s.label.to_string()).collect()
+    }
+    fn find_by_web_link(&self, url: &str) -> Vec<String> {
+        self.0.find_by_web_link(url)
+    }
+    fn create_ticket(
+        &mut self,
+        title: &str,
+        description: &str,
+        tags: &[String],
+        assignee: Option<&str>,
+        parent: Option<&str>,
+        priority_: Option<u8>,
+        status: &str,
+    ) -> Result<String, String> {
+        let id = self
+            .0
+            .create_item_with(
+                ItemType::Ticket,
+                BaseFields {
+                    title: title.into(),
+                    description: Some(description.into()).filter(|d: &String| !d.is_empty()),
+                    tags: tags.to_vec(),
+                    assignee: assignee.map(str::to_string),
+                    parent: parent.map(str::to_string),
+                    priority: priority(priority_),
+                    ..BaseFields::default()
+                },
+            )
+            .map_err(|e| e.to_string())?;
+        // The ticket starts in the type's initial status; one more fact only when it differs.
+        if !ItemType::Ticket.initial_status().label.eq_ignore_ascii_case(status) {
+            self.0.set_status(&id, status).map_err(|e| e.to_string())?;
+        }
+        Ok(id)
+    }
+    fn set_status(&mut self, id: &str, status: &str) -> Result<(), String> {
+        self.0.set_status(id, status).map_err(|e| e.to_string())
+    }
+    fn set_description(&mut self, id: &str, text: &str) -> Result<(), String> {
+        self.0.set_field(id, "description", serde_json::json!(text)).map_err(|e| e.to_string())
+    }
+    fn add_tag(&mut self, id: &str, tag: &str) -> Result<(), String> {
+        self.0.add_tag(id, tag).map_err(|e| e.to_string())
+    }
+    fn remove_tag(&mut self, id: &str, tag: &str) -> Result<(), String> {
+        self.0.remove_tag(id, tag).map_err(|e| e.to_string())
+    }
+    fn assign(&mut self, id: &str, participant: Option<&str>) -> Result<(), String> {
+        self.0.assign(id, participant).map_err(|e| e.to_string())
+    }
+    fn comment(&mut self, id: &str, author: &str, text: &str) -> Result<String, String> {
+        self.0.comment(id, author, text).map_err(|e| e.to_string())
+    }
+    fn add_relation(&mut self, id: &str, kind: LivelaRelation, target: &str) -> Result<(), String> {
+        self.0.add_relation(id, rel(kind), target).map_err(|e| e.to_string())
+    }
+    fn remove_relation(&mut self, id: &str, kind: LivelaRelation, target: &str) -> Result<(), String> {
+        self.0.remove_relation(id, rel(kind), target).map_err(|e| e.to_string())
+    }
+    fn add_web_link(&mut self, id: &str, url: &str, title: &str) -> Result<(), String> {
+        self.0.add_web_link(id, url, Some(title)).map(|_| ()).map_err(|e| e.to_string())
+    }
+}
+```
+
+Wire it as `Livela::new(Glue(store), StatusTable::from_config(&config.tracker.statuses))`.
+
+The adapter reads before every write and skips a write that changes nothing. It signs each write as `spl-asdlc` through `swap_author` and gives the store back its previous author.

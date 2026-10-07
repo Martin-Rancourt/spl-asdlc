@@ -88,9 +88,15 @@ impl ItemState {
         }
     }
 
-    /// Completed or canceled; an unknown kind is open.
+    /// Done or Canceled. The validation statuses (In Review, To Deploy,
+    /// Post Deploy) are open: they still block their dependents, whatever
+    /// category the tracker files them under. A state outside the status
+    /// table is read by its kind; an unknown kind is open.
     pub fn is_resolved(&self) -> bool {
-        matches!(self.kind, StateKind::Completed | StateKind::Canceled)
+        match self.status {
+            Some(status) => status.is_resolved(),
+            None => matches!(self.kind, StateKind::Completed | StateKind::Canceled),
+        }
     }
 }
 
@@ -221,8 +227,24 @@ mod tests {
             kind: StateKind::Unknown,
         };
         assert!(!unknown.is_resolved());
-        assert!(ItemState::of(Status::ToDeploy).is_resolved());
         assert!(!ItemState::of(Status::InReview).is_resolved());
+        assert!(ItemState::of(Status::Done).is_resolved());
+        assert!(ItemState::of(Status::Canceled).is_resolved());
+    }
+
+    #[test]
+    fn the_validation_statuses_are_open() {
+        // Livela's `validation` group (2026-10-05): open, still blocking,
+        // even where the tracker files To Deploy as a completed state.
+        for s in [Status::InReview, Status::ToDeploy, Status::PostDeploy] {
+            assert!(!ItemState::of(s).is_resolved(), "{s}");
+        }
+        let shipped = ItemState {
+            name: "Shipped".into(),
+            status: None,
+            kind: StateKind::Completed,
+        };
+        assert!(shipped.is_resolved(), "outside the table, the kind decides");
     }
 
     #[test]
