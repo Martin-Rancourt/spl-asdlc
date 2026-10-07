@@ -134,6 +134,21 @@ impl Ran {
             .find_map(|l| l.strip_prefix(&format!("{key}=")))
             .map(str::to_string)
     }
+
+    /// A multi-line output written as `key<<DELIMITER`.
+    pub fn block(&self, key: &str) -> Option<String> {
+        let mut lines = self.outputs.lines();
+        let delimiter = lines.find_map(|l| l.strip_prefix(&format!("{key}<<")))?;
+        let body: Vec<&str> = lines.take_while(|l| *l != delimiter).collect();
+        Some(body.join("\n"))
+    }
+}
+
+/// `run` with owned values.
+#[cfg(unix)]
+pub fn run_owned(script: &str, env: &[(&str, String)], cwd: &Path) -> Ran {
+    let pairs: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    run(script, &pairs, cwd)
 }
 
 /// Run a step's script the way the runner does (`bash --noprofile --norc -eo
@@ -217,6 +232,28 @@ impl Repo {
         self.git(&["add", "-A"]);
         self.git(&["commit", "-q", "--allow-empty", "-m", message]);
         self.git(&["rev-parse", "HEAD"])
+    }
+
+    /// The same, with a bare `origin` holding `main`.
+    pub fn with_origin() -> (Repo, Scratch) {
+        let repo = Repo::new();
+        let origin = Scratch::new("origin");
+        let out = std::process::Command::new("git")
+            .args(["init", "-q", "--bare", "-b", "main"])
+            .current_dir(&origin.0)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git init --bare");
+        repo.git(&["remote", "add", "origin", &origin.0.display().to_string()]);
+        repo.git(&["push", "-q", "origin", "main"]);
+        (repo, origin)
+    }
+
+    /// An annotated tag at HEAD.
+    pub fn annotated(&self, tag: &str, message: &str) {
+        self.git(&["tag", "-a", tag, "-m", message]);
     }
 }
 
