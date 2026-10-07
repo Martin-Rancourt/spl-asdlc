@@ -149,6 +149,10 @@ on:
         description: The in-run decision on attempt 1 (`true`/`false`), empty when not taken.
         value: ${{ jobs.auto-rerun-decision.outputs.eligible }}
 
+# gh finds the caller's repository without a checkout.
+env:
+  GH_REPO: ${{ github.repository }}
+
 permissions:
   contents: read
 
@@ -739,6 +743,8 @@ jobs:
         with:
           name: release-gate-evidence-${{ github.sha }}
           path: release-gate-evidence
+          # A re-run attempt keeps the run id: its pack replaces the first.
+          overwrite: true
           # The pack carries the verdict: a missing pack is a failure.
           if-no-files-found: error
           retention-days: ${{ inputs.evidence-retention-days }}

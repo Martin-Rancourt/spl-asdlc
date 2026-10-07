@@ -14,7 +14,10 @@ name: asdlc-release-publish
 # workflow three times, choosing the stage with `stage`; every job here runs
 # for one stage only, and `closing-guard` runs on every call. The caller owns
 # the trigger, the concurrency group, the GitHub environment of its deploy and
-# the replay dispatch. Intended caller (lot 4 writes the real ones):
+# the replay dispatch. A called job holds at most the caller job's permissions:
+# the `verify` call needs `contents: read`, `actions: read` and
+# `pull-requests: read`, or it fails at startup. Intended caller (lot 4
+# writes the real ones):
 #
 #   on:
 #     release: {types: [published]}          # created by the bridge's App
@@ -219,6 +222,10 @@ on:
       held:
         description: '`open-release-pr`, `undeployed` or `unknown` when the cycle is not over yet.'
         value: ${{ jobs.close.outputs.held }}
+
+# gh finds the caller's repository without a checkout.
+env:
+  GH_REPO: ${{ github.repository }}
 
 permissions:
   contents: read
@@ -956,8 +963,11 @@ jobs:
           # REQ-CI-089: a branch with no commit the default branch lacks (a
           # replay, or a conflict resolved off the release branch) only needs
           # deleting. A compare that cannot be read changes nothing.
-          if ahead="$(gh api "repos/$REPO/compare/$DEFAULT_BRANCH...$BRANCH" --jq '.ahead_by')" \
-              && [ "$ahead" = 0 ]; then
+          ahead_read=false
+          if ahead="$(gh api "repos/$REPO/compare/$DEFAULT_BRANCH...$BRANCH" --jq '.ahead_by')"; then
+            ahead_read=true
+          fi
+          if [ "$ahead_read" = true ] && [ "$ahead" = 0 ]; then
             echo "$DEFAULT_BRANCH already holds every commit of $BRANCH."
             must_delete
             done_merged ""
@@ -978,10 +988,14 @@ jobs:
               exit 1
             fi
             if [ -n "$MERGED" ]; then
-              echo "number=$MERGED" >> "$out"
-              echo "#$MERGED already merged $BRANCH into $DEFAULT_BRANCH; only the deletion is left."
-              must_delete
-              done_merged "$MERGED"
+              # A merged PR proves nothing about commits made after it: the
+              # branch is deleted only when read as fully in the default
+              # branch (above). Here it was not, or could not be read.
+              if [ "$ahead_read" != true ]; then
+                echo "::error title=Compare unreadable::#$MERGED merged $BRANCH once, and whether commits came after it could not be read; nothing is deleted."
+                exit 1
+              fi
+              echo "#$MERGED merged $BRANCH once, but $ahead commit(s) came after it: a new merge-back PR follows."
             fi
             body="$(printf '%s\n' \
               "The merge back of \`$BRANCH\`${RELEASE_TAG:+ (\`$RELEASE_TAG\`)}, opened by the release close." \

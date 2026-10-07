@@ -1420,23 +1420,41 @@ fn the_replay_reuses_the_open_pr_or_only_deletes_after_a_merged_one() {
     let r = mergeback(&dir.0);
     assert_eq!(r.code, 0, "{}", r.log);
     assert!(position(&gh_calls(&dir.0), "pr create").is_none());
-    // Merged already, branch surviving: only the deletion.
+    // Merged already and nothing came after: only the deletion.
     let dir = fresh("OPEN|CLEAN|h1\n", "success\n");
     put(&dir.0, "merged-pr", "7\n");
+    put(&dir.0, "ahead", "0\n");
     let r = mergeback(&dir.0);
     assert_eq!(r.code, 0, "{}", r.log);
-    assert_eq!(r.output("number").as_deref(), Some("7"));
     let c = gh_calls(&dir.0);
     assert!(position(&c, "pr create").is_none() && position(&c, DELETE).is_some());
+    // Merged once, but commits came after: never deleted, a new PR instead.
+    let dir = fresh("OPEN|CLEAN|h1\n", "success\n");
+    put(&dir.0, "merged-pr", "7\n");
+    put(&dir.0, "merge-ok", "");
+    let r = mergeback(&dir.0);
+    assert_eq!(r.code, 0, "{}", r.log);
+    let c = gh_calls(&dir.0);
+    assert!(position(&c, "pr create").is_some(), "{c:?}");
+    assert!(position(&c, "pr create") < position(&c, DELETE), "{c:?}");
+    // Merged once, and the compare is unreadable: nothing is deleted.
+    let dir = fresh("OPEN|CLEAN|h1\n", "success\n");
+    put(&dir.0, "merged-pr", "7\n");
+    put(&dir.0, "ahead", "fail\n");
+    let r = mergeback(&dir.0);
+    assert_eq!(r.code, 1, "{}", r.log);
+    assert!(position(&gh_calls(&dir.0), DELETE).is_none());
     // Merged and the branch already gone: a no-op.
     let dir = fresh("OPEN|CLEAN|h1\n", "success\n");
     put(&dir.0, "merged-pr", "7\n");
+    put(&dir.0, "ahead", "0\n");
     std::fs::remove_file(dir.0.join("delete-ok")).unwrap();
     std::fs::remove_file(dir.0.join("ref")).unwrap();
     assert_eq!(mergeback(&dir.0).code, 0);
     // Merged, and the surviving branch cannot be deleted: red, by name.
     let dir = fresh("OPEN|CLEAN|h1\n", "success\n");
     put(&dir.0, "merged-pr", "7\n");
+    put(&dir.0, "ahead", "0\n");
     std::fs::remove_file(dir.0.join("delete-ok")).unwrap();
     let r = mergeback(&dir.0);
     assert_eq!(r.code, 1, "{}", r.log);

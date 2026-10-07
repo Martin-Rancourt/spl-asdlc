@@ -154,6 +154,10 @@ on:
         description: '`true` when nothing was pushed by design.'
         value: ${{ jobs.cut.outputs.dry-run }}
 
+# gh finds the caller's repository without a checkout.
+env:
+  GH_REPO: ${{ github.repository }}
+
 permissions:
   contents: read
 

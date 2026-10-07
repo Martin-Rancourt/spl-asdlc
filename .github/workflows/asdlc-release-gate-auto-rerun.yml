@@ -124,10 +124,21 @@ jobs:
           set -uo pipefail
           out="${GITHUB_OUTPUT:-/dev/stdout}"
           dir="$(mktemp -d)"
-          if gh run download "$SOURCE_RUN_ID" --repo "$GH_REPO" --name "release-gate-evidence-$SOURCE_SHA" --dir "$dir"; then
+          # Absent and unreadable are different answers: only an artifact
+          # listed as absent reads as a runner abort.
+          name="release-gate-evidence-$SOURCE_SHA"
+          if ! listed="$(gh api "repos/$GH_REPO/actions/runs/$SOURCE_RUN_ID/artifacts" --paginate \
+                --jq ".artifacts[] | select(.name == \"$name\") | .name")"; then
+            echo "::error title=Artifacts unreadable::the artifacts of run $SOURCE_RUN_ID could not be listed; no rerun is decided on that."
+            exit 1
+          fi
+          if [ -z "$listed" ]; then
+            echo "No evidence artifact on run $SOURCE_RUN_ID: treated as a runner abort."
+          elif gh run download "$SOURCE_RUN_ID" --repo "$GH_REPO" --name "$name" --dir "$dir"; then
             echo "Evidence downloaded."
           else
-            echo "No evidence artifact on run $SOURCE_RUN_ID: treated as a runner abort."
+            echo "::error title=Evidence unreadable::the evidence of run $SOURCE_RUN_ID exists but could not be downloaded."
+            exit 1
           fi
           if [ -f "$dir/results/suites.json" ]; then
             # A summary that exists but cannot be read names nothing: the

@@ -1087,11 +1087,16 @@ fn the_facts_come_from_the_runs_evidence_and_a_missing_pack_is_an_abort() {
     let dir = Scratch::new("cwd");
     let download = |suites: Option<&str>| {
         let stubs = Scratch::new("stubs");
+        // The listing answers first (absent and unreadable differ), then
+        // the download.
         let body = match suites {
-            None => "echo 'no artifact matches' >&2; exit 1".to_string(),
+            None => r#"if [ "$1" = api ]; then exit 0; fi
+echo 'no artifact matches' >&2; exit 1"#
+                .to_string(),
             Some(json) => {
                 std::fs::write(stubs.0.join("suites.json"), json).unwrap();
-                r#"while [ $# -gt 0 ]; do if [ "$1" = --dir ]; then d="$2"; fi; shift; done
+                r#"if [ "$1" = api ]; then echo release-gate-evidence-abc123; exit 0; fi
+while [ $# -gt 0 ]; do if [ "$1" = --dir ]; then d="$2"; fi; shift; done
 mkdir -p "$d/results" && cp "$(dirname "$0")/suites.json" "$d/results/""#
                     .to_string()
             }
@@ -1099,10 +1104,19 @@ mkdir -p "$d/results" && cp "$(dirname "$0")/suites.json" "$d/results/""#
         stub(&stubs.0, "gh", &body);
         let r = rerun_step("evidence", &stubs.0, &dir.0, &[]);
         assert_eq!(r.code, 0, "{}", r.log);
-        assert_eq!(
-            calls(&stubs.0, "gh")[0].split(" --dir ").next().unwrap(),
-            "run download 41 --repo example-org/acme --name release-gate-evidence-abc123"
+        let c = calls(&stubs.0, "gh");
+        assert!(
+            c[0].starts_with("api repos/example-org/acme/actions/runs/41/artifacts"),
+            "{c:?}"
         );
+        if suites.is_some() {
+            assert_eq!(
+                c[1].split(" --dir ").next().unwrap(),
+                "run download 41 --repo example-org/acme --name release-gate-evidence-abc123"
+            );
+        } else {
+            assert_eq!(c.len(), 1, "an absent pack is not downloaded: {c:?}");
+        }
         (
             r.output("summary_written").unwrap(),
             r.output("failed_suites").unwrap(),
@@ -1289,4 +1303,14 @@ fn the_rerun_runs_trusted_code_once_on_a_failed_first_attempt() {
         !text.contains("needs."),
         "another run's outputs are out of reach"
     );
+}
+
+#[test]
+fn an_unreadable_artifact_list_decides_no_rerun() {
+    let dir = Scratch::new("cwd");
+    let stubs = Scratch::new("stubs");
+    stub(&stubs.0, "gh", "exit 1");
+    let r = rerun_step("evidence", &stubs.0, &dir.0, &[]);
+    assert_eq!(r.code, 1, "{}", r.log);
+    assert!(r.log.contains("could not be listed"), "{}", r.log);
 }
