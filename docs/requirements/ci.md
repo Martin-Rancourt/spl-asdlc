@@ -31,7 +31,7 @@ Terminology: *candidate* = an annotated RC tag `<prefix>vX.Y.Z-rc.N`; *cycle* = 
 
 ## Workflows
 
-Inventory of reusable units to build (names are targets; every one is `on: workflow_call` unless marked composite/script):
+Inventory of reusable units to build (names are targets; every one is `on: workflow_call` unless marked composite/script). The reusable files are named `asdlc-<unit>.yml` (corrected 2026-10-07): the bare names (`release-cut.yml`, `release-gate.yml`, spec 08) belong to the project's callers, which the bridge dispatches and reads by file name, and `spl-asdlc` is itself a caller.
 
 | Unit | Kind | Replaces |
 |---|---|---|

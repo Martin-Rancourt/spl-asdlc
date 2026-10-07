@@ -1,4 +1,4 @@
-name: pr-guards
+name: asdlc-pr-guards
 
 # Everything a pull request runs before merge that is not the project's own
 # test suite, and nothing that can release or deploy

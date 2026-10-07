@@ -5,14 +5,14 @@ use crate::harness::{Ran, Repo, run, run_body, step, workflow};
 
 fn step_body(id: &str) -> String {
     run_body(&step(
-        &workflow(".github/workflows/pr-guards.yml"),
+        &workflow(".github/workflows/asdlc-pr-guards.yml"),
         "guards",
         id,
     ))
 }
 
 fn prose_default() -> String {
-    workflow(".github/workflows/pr-guards.yml")["on"]["workflow_call"]["inputs"]["prose-regex"]["default"]
+    workflow(".github/workflows/asdlc-pr-guards.yml")["on"]["workflow_call"]["inputs"]["prose-regex"]["default"]
         .as_str()
         .unwrap()
         .to_string()

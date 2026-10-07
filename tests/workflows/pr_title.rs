@@ -3,7 +3,7 @@
 use crate::harness::{Ran, Scratch, run, run_body, step, workflow};
 
 fn check(title: &str, head: &str, base: &str) -> Ran {
-    let doc = workflow(".github/workflows/pr-title.yml");
+    let doc = workflow(".github/workflows/asdlc-pr-title.yml");
     let body = run_body(&step(&doc, "conventional-title", "title"));
     let inputs = &doc["on"]["workflow_call"]["inputs"];
     let default = |k: &str| inputs[k]["default"].as_str().unwrap().to_string();

@@ -246,7 +246,7 @@ fn a_reusable_workflow_takes_its_runner_as_an_input() {
 
 #[test]
 fn the_title_check_has_no_if_anywhere() {
-    let doc = crate::harness::workflow(".github/workflows/pr-title.yml");
+    let doc = crate::harness::workflow(".github/workflows/asdlc-pr-title.yml");
     for (id, job) in doc["jobs"].as_hash().unwrap() {
         assert!(
             job["if"].is_badvalue(),

@@ -1,4 +1,4 @@
-name: pr-title
+name: asdlc-pr-title
 
 # Refuse a pull request whose title is not a Conventional Commit
 # (docs/requirements/ci.md, REQ-CI-015..021). Every delivery PR is squash-merged
