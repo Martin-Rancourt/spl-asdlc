@@ -1032,3 +1032,112 @@ fn a_version_released_without_a_release_item_of_the_bridge_is_not_its_cycle() {
     assert!(w.tracker.writes().is_empty(), "{:?}", w.tracker.writes());
     assert!(w.github.writes().is_empty(), "{:?}", w.github.writes());
 }
+
+#[test]
+fn the_gate_record_the_bridge_lands_is_no_tip_gap() {
+    // Once the record is on the release branch, the branch is ahead of the
+    // candidate by that one file: the GO holds and the components merge.
+    let mut w = World::new();
+    w.config = multi_config();
+    w.tick();
+    all_angles_merged(&w);
+    w.github.state.borrow_mut().commits.insert(
+        (repo(), BRANCH.into()),
+        Ok(Commit {
+            sha: "c1".into(),
+            message: String::new(),
+            committer_date: None,
+            parents: vec![],
+        }),
+    );
+    let app = component_pr(&w, 41, "app");
+    let site = component_pr(&w, 42, "website");
+    w.open_on_branch(vec![app, site.clone()]);
+    w.tick();
+    let record = w
+        .github
+        .state
+        .borrow()
+        .files
+        .get(&(
+            repo(),
+            format!("release-record/{CAND}"),
+            "docs/releases/v1.2.0.md".into(),
+        ))
+        .cloned()
+        .unwrap()
+        .unwrap();
+    {
+        let mut s = w.github.state.borrow_mut();
+        s.files.insert(
+            (repo(), BRANCH.into(), "docs/releases/v1.2.0.md".into()),
+            Ok(record),
+        );
+        s.compares.insert(
+            (repo(), "c1".into(), BRANCH.into()),
+            cmp(CompareStatus::Ahead, &["r1"], &["docs/releases/v1.2.0.md"]),
+        );
+    }
+    let r = w.tick();
+    let merges: Vec<String> = w
+        .github
+        .writes()
+        .into_iter()
+        .filter(|l| l.starts_with("merge"))
+        .collect();
+    assert_eq!(
+        merges,
+        vec![format!(
+            "merge example-org/acme#42 at {} squash",
+            site.head_sha
+        )],
+        "{r:?}"
+    );
+}
+
+#[test]
+fn the_deployment_ledger_reads_the_component_prs_merged_into_the_release_branch() {
+    // Release-please's component PRs target the release branch: a ledger
+    // read off the default branch would find nothing and never close.
+    let mut w = World::new();
+    w.config = multi_config();
+    w.tick();
+    let item = w.release_item();
+    publish(&w);
+    let merged = |n: u64, component: &str, deployed: bool| {
+        let mut pr = component_pr(&w, n, component);
+        pr.base_ref = BRANCH.into();
+        pr.state = crate::github::PrState::Merged;
+        pr.merged_at = Timestamp::parse("2026-10-05T13:00:00Z");
+        if deployed {
+            pr.labels.push("deployed: production".into());
+        }
+        pr
+    };
+    let app = merged(41, "app", true);
+    let site = merged(42, "website", false);
+    w.github
+        .state
+        .borrow_mut()
+        .merged_pulls
+        .insert(repo(), Ok(vec![app.clone(), site]));
+    let r = w.tick();
+    assert!(
+        !r.failures.iter().any(|f| f.contains("ledger")),
+        "the ledger is read: {r:?}"
+    );
+    assert_ne!(
+        w.tracker.item(&item.key).state.status,
+        Some(Status::Done),
+        "a component not deployed holds the closure"
+    );
+    // Both deployed: the closure proceeds.
+    let site = merged(42, "website", true);
+    w.github
+        .state
+        .borrow_mut()
+        .merged_pulls
+        .insert(repo(), Ok(vec![app, site]));
+    let r = w.tick();
+    assert!(!r.failures.iter().any(|f| f.contains("ledger")), "{r:?}");
+}
