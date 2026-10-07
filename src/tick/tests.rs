@@ -647,7 +647,7 @@ fn a_ticket_opened_before_whose_link_was_lost_is_linked_again_not_opened_twice()
     let mut w = World::new();
     w.config.review.ticketless_authors = vec!["dependabot".into()];
     let pr = app_pr(7, "dependabot");
-    let (title, description) = texts::pr_ticket(7, &pr.title, "dependabot[bot]", &pr.url);
+    let (title, description) = texts::pr_ticket(7, &pr.title, &bot("dependabot"), &pr.url);
     w.tracker.seed(
         "ABC-9",
         &title,
