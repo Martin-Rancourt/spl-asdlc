@@ -317,6 +317,44 @@ pub fn pr_ticket(number: u64, title: &str, author: &str, pr_url: &str) -> (Strin
     (title, body)
 }
 
+/// The marker of the validation sub-task of a ticket in Post Deploy.
+pub fn post_deploy_validation_marker(parent: &str) -> String {
+    marker("post-deploy-validation", &[("parent", parent)])
+}
+
+/// The validation sub-task of a ticket the closure moved to Post Deploy
+/// (BR-ASDLC-003): served to an agent like any ticket, with a complete
+/// contract, it asks for the parent's `## Post deploy` boxes to be verified
+/// in production and checked, and hands to the owner what an agent cannot
+/// verify.
+pub fn post_deploy_validation_item(
+    parent: &str,
+    parent_title: &str,
+    parent_url: &str,
+    owner: &str,
+) -> (String, String) {
+    let title = format!("Post-deploy validation — {parent}: {}", inert(parent_title));
+    let body = format!(
+        "{marker}\n\n## Goal\nValidate in production the `## Post deploy` boxes of {parent} ({parent_url}), now that its \
+         release is deployed: check on {parent} each box you can verify yourself, then close this sub-task. If a check \
+         needs a human or is beyond you, name it in a comment here and reassign this sub-task to the owner (`{owner}`), \
+         so a human finishes. The bridge moves {parent} to `Done` at the tick that finds every one of its `## Post deploy` \
+         boxes checked.\n\n\
+         ## Non-goals\n- Changing the code, or any box of {parent} outside its `## Post deploy` section.\n\
+         - Checking a box whose check was not verified in production.\n\n\
+         ## Acceptance criteria\n\
+         - [ ] Every `## Post deploy` box of {parent} is checked, each once its check was verified in production.\n\
+         - [ ] Every check you could not verify yourself is named in a comment here, and this sub-task was reassigned to \
+         the owner (`{owner}`) to finish it.\n\n\
+         ## Business rules\n{absence}\n\n\
+         ## Context\n- Parent: {parent}\n- The owner: `{owner}`",
+        marker = post_deploy_validation_marker(parent),
+        owner = inert(owner),
+        absence = crate::method::business_rules::ABSENCE_DECLARATION,
+    );
+    (title, body)
+}
+
 /// The consolidation item of a PR review or of a release candidate.
 pub fn consolidation_item(scope: &str, title_of: &str, protocol: &str) -> (String, String) {
     let title = format!("Consolidation — {title_of}");

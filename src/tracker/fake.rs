@@ -101,7 +101,7 @@ impl FakeTracker {
             .push(prefix.to_string());
     }
 
-    /// Reads of this key answer `Unreadable`.
+    /// Reads of this key (or lists of this label) answer `Unreadable`.
     pub fn make_unreadable(&self, key: &str) {
         self.state.borrow_mut().unreadable.push(key.to_string());
     }
@@ -239,6 +239,9 @@ impl Tracker for FakeTracker {
     }
 
     fn list_by_label(&self, label: &str) -> TResult<Vec<Item>> {
+        if self.state.borrow().unreadable.iter().any(|k| k == label) {
+            return Err(TrackerError::unreadable(label, "injected outage"));
+        }
         Ok(self
             .state
             .borrow()
