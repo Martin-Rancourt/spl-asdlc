@@ -73,6 +73,18 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
             return false;
         }
     };
+    if published.is_some() {
+        // Released without a release item of the bridge's (before it took
+        // the product over): not its cycle, nothing to do.
+        match find_release_item(t, &shape, version) {
+            Ok(Some(_)) => {}
+            Ok(None) => return false,
+            Err(e) => {
+                t.unreadable(report, &object, e);
+                return false;
+            }
+        }
+    }
     let Some(item) = release_item(t, log, report, &shape, version) else {
         return false;
     };

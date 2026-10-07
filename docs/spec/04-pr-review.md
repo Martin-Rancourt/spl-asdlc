@@ -12,6 +12,7 @@ Fast, on the diff, with several angles and one coordinator. The volume is tens o
 6. **CI again, then the bridge merges.** The merge requires: coordinator approval at the head SHA, required checks green at that SHA, no unresolved thread, branch up to date if required, one merge per repository per tick. The merge is a squash by default (configurable), pinned to the head SHA; the branch is deleted; the ticket goes to **To Deploy**.
 7. **The merge is idempotent and observable.** The bridge records every merge decision in its action log; a PR merged outside the bridge is swept and given the same transitions, once.
 8. **Exclusions.** PRs of the release machinery (release-please PRs, release records, merge-backs) are never reviewed by angles and never merged by this path; `05-release-cycle.md` governs them.
+9. **PRs of Apps that need no ticket.** A PR is linked to exactly one ticket, which a human or an agent writes; a PR authored by an App the project lists (`review.ticketless_authors`, for example Dependabot) gets its ticket from the bridge instead. When such a PR is linked to no ticket, the bridge opens one: labelled `ticketless-pr`, with a complete contract whose one box the PR meets, linked to the PR. From the next tick the PR takes the path of every PR (review round, merge, To Deploy, release, closure). Only an App qualifies, never a human whose login matches. When such a PR is closed without merge (an App superseding its own PR), the bridge cancels the ticket it opened and that ticket's open sub-items; a PR reopened later stays on that ticket until a person sets it back to Ready. Any other PR without a ticket waits, and its author is told once.
 
 ## What the reviewer receives
 
@@ -29,3 +30,4 @@ Everything the reviewers received, plus every review thread, the CI status, and 
 - Base angles and path-triggered angles, each with an optional assignee hint.
 - Merge method (`squash` | `merge`), whether the branch must be up to date, the diff size above which an extra angle is added.
 - Whether a human must approve in addition to the coordinator (policy `human-approval: always | sensitive-paths | never`).
+- The Apps whose PRs need no ticket (§9).

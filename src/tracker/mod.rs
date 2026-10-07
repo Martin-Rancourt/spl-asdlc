@@ -149,6 +149,17 @@ pub trait Tracker {
     fn children(&self, key: &str) -> TResult<Vec<Item>>;
     /// Every item carrying a label (a list the tracker cuts is unreadable).
     fn list_by_label(&self, label: &str) -> TResult<Vec<Item>>;
+    /// Items carrying a label whose description contains `needle` (a
+    /// marker's text): a tracker that can search does it on its side, so the
+    /// answer does not grow with the label's history. The caller still checks
+    /// the marker whole.
+    fn find_labelled_containing(&self, label: &str, needle: &str) -> TResult<Vec<Item>> {
+        Ok(self
+            .list_by_label(label)?
+            .into_iter()
+            .filter(|i| i.description.contains(needle))
+            .collect())
+    }
     /// Items whose link (attachment, web link) is this PR URL.
     fn items_linked_to_pr(&self, pr_url: &str) -> TResult<Vec<String>>;
 

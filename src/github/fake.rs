@@ -27,6 +27,8 @@ pub struct FakeState {
     pub files: HashMap<(RepoSlug, String, String), Read<String>>,
     pub open_pulls: BTreeMap<RepoSlug, Read<Vec<PullRequest>>>,
     pub merged_pulls: BTreeMap<RepoSlug, Read<Vec<PullRequest>>>,
+    /// Closed without merge; none when not scripted.
+    pub closed_pulls: BTreeMap<RepoSlug, Read<Vec<PullRequest>>>,
     pub pull_files: HashMap<(RepoSlug, u64), Read<Vec<String>>>,
     pub commit_pulls: HashMap<(RepoSlug, String), Read<Vec<CommitPull>>>,
     pub required_checks: HashMap<(RepoSlug, String), Read<RequiredChecks>>,
@@ -249,6 +251,32 @@ impl GitHub for FakeGitHub {
             }
             Some(Err(e)) => Err(e.clone()),
             None => not_scripted(format!("merged PRs of {repo}")),
+        }
+    }
+
+    fn closed_pulls(
+        &self,
+        repo: &RepoSlug,
+        since: Timestamp,
+        limit: usize,
+    ) -> Read<Vec<PullRequest>> {
+        match self.state.borrow().closed_pulls.get(repo) {
+            Some(Ok(p)) => {
+                let list: Vec<PullRequest> = p
+                    .iter()
+                    .filter(|p| p.updated_at.is_none_or(|u| u >= since))
+                    .cloned()
+                    .collect();
+                if list.len() > limit {
+                    return Err(ReadError::unreadable(
+                        format!("closed PRs of {repo}"),
+                        format!("more than {limit} closed PRs"),
+                    ));
+                }
+                Ok(list)
+            }
+            Some(Err(e)) => Err(e.clone()),
+            None => Ok(Vec::new()),
         }
     }
 

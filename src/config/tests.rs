@@ -91,6 +91,15 @@ fn the_example_of_the_specification_is_a_valid_file() {
 }
 
 #[test]
+fn the_apps_whose_prs_need_no_ticket_are_read() {
+    let spec = include_str!("../../docs/spec/08-configuration.md");
+    let start = spec.find("```toml\n").unwrap() + "```toml\n".len();
+    let end = start + spec[start..].find("```").unwrap();
+    let c = Config::parse(&spec[start..end]).unwrap();
+    assert_eq!(c.review.ticketless_authors, vec!["dependabot".to_string()]);
+}
+
+#[test]
 fn an_unknown_key_is_refused_never_ignored() {
     let text = MINIMAL.replace("[bridge]", "").to_string() + "\n[bridge]\npoll_minute = 5\n";
     assert_refused_with(&text, "poll_minute");

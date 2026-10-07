@@ -562,3 +562,30 @@ fn the_body_url_fallback_reads_only_linear_urls() {
     let body = "Closes https://linear.app/acme-ws/issue/ABC-12/some-title and mentions ABC-13 and BR-AF-001.";
     assert_eq!(l.keys_in_text(body), vec!["ABC-12"]);
 }
+
+#[test]
+fn a_marker_is_searched_on_linears_side_not_over_the_labels_history() {
+    let (l, t) = linear();
+    team(&t);
+    t.on_body(
+        "POST",
+        URL,
+        "description: {contains",
+        200,
+        r#"{"data":{"issues":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}"#,
+    );
+    assert!(
+        l.find_labelled_containing("ticketless-pr", "spl-asdlc:pr-ticket pr=u")
+            .unwrap()
+            .is_empty()
+    );
+    let body = t
+        .bodies()
+        .into_iter()
+        .find(|b| b.contains("description: {contains"))
+        .unwrap();
+    assert!(
+        body.contains("spl-asdlc:pr-ticket pr=u") && body.contains("ticketless-pr"),
+        "{body}"
+    );
+}
