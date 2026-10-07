@@ -308,12 +308,14 @@ fn a_merge_is_said_once_with_its_machine_fields() {
         "https://github.com/example-org/acme/pull/9",
         "main",
         None,
-        "To Deploy",
+        "In Progress",
+        "its implementer resumes.",
     );
     assert!(c.contains("merged_pr: https://github.com/example-org/acme/pull/9"));
-    assert!(c.contains("state: To Deploy"));
+    assert!(c.contains("state: In Progress\nnext: its implementer resumes."));
     assert!(
-        merged_comment("u", "main", Some("someone"), "To Deploy").contains("outside the bridge")
+        merged_comment("u", "main", Some("someone"), "To Deploy", "x")
+            .contains("outside the bridge")
     );
 }
 

@@ -8,7 +8,7 @@
 4. **A ticket with checkboxes and none ticked is not reviewed and not merged.** Before a PR is reviewed, its author must have declared what the PR delivers by ticking at least one box.
 5. **A section `## Post deploy`** (optional) holds the boxes that can only be true once the release is deployed. They are part of the contract and keep the ticket from Done, but a release does not count them: a ticket with only those boxes open goes to Post Deploy at closure, not back to In Progress, and to Done at the tick that finds them all checked.
 6. **The release-note snippet is written at refinement.** A short paragraph for a human reader that says what the ticket changes for them. It lives in the ticket under `## Release note` and the release note of a cycle is built from these snippets.
-7. **A ticket is linked to exactly one PR at a time and a PR to exactly one ticket.** The link is a tracker attachment or a URL on the item, resolved by the bridge from the PR; free text in titles and bodies is never parsed to find a ticket.
+7. **A PR is linked to exactly one ticket; a ticket has one PR by default.** A ticket has several PRs only for a real reason, which its implementer records in the ticket's comments; each of them is independently deployable, and the ticket's state follows all of them (`04-pr-review.md` §10). The link is a tracker attachment or a URL on the item, resolved by the bridge from the PR; free text in titles and bodies is never parsed to find a ticket.
 
 ## The template
 

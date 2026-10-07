@@ -11,4 +11,5 @@ pub mod markdown;
 pub mod release;
 pub mod review;
 pub mod texts;
+pub mod ticket_state;
 pub mod vocabulary;

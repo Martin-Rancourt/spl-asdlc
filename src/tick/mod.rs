@@ -140,22 +140,22 @@ pub fn run(t: &Tick, log: &mut ActionLog) -> Report {
         report.out_of_time = true;
         return report;
     }
-    let candidates = merge::pass(t, log, &mut report);
+    let pass = merge::pass(t, log, &mut report);
     if !merged {
         // The first candidate GitHub accepts; a refused merge does not starve
         // the others.
-        for c in &candidates {
+        for c in &pass.candidates {
             if !t.in_time() {
                 report.out_of_time = true;
                 break;
             }
-            if merge::merge(t, log, &mut report, c) {
+            if merge::merge(t, log, &mut report, c, &pass.open) {
                 break;
             }
         }
     }
     if t.in_time() {
-        sweep::pass(t, log, &mut report);
+        sweep::pass(t, log, &mut report, &pass.open);
     } else {
         report.out_of_time = true;
         return report;

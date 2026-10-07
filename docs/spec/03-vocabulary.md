@@ -9,9 +9,9 @@ Canonical names. A tracker adapter maps them to the tracker's own names; configu
 | **Triage** | New; nobody has judged it yet. | The author |
 | **Backlog** | Judged worth keeping; no contract yet, or not scheduled. | The owner |
 | **Ready** | Contract verified by refinement; may be taken. | Refinement (human or the bridge on `ticket check`) |
-| **In Progress** | Taken by an implementer. | The bridge when a branch or PR appears; the runtime's claim |
-| **In Review** | The PR is ready and CI is green; angle sub-items exist. | The bridge |
-| **To Deploy** | Merged; waiting for the next release. A request for deployment, never a claim of completion. | The bridge, at merge |
+| **In Progress** | Taken by an implementer. | The bridge when a branch or PR appears, or when a PR resolves and a box remains open with no PR in review (`04-pr-review.md` §10); the runtime's claim |
+| **In Review** | A PR of the ticket is ready and CI is green; its angle sub-items exist. Also a ticket every box of which is ticked while a PR of it is open and not reviewed yet (`04-pr-review.md` §10). | The bridge |
+| **To Deploy** | Merged, every box ticked (the `## Post deploy` ones apart), no PR open; waiting for the next release. A request for deployment, never a claim of completion. | The bridge, at merge |
 | **Post Deploy** | Released; only `## Post deploy` boxes remain to be verified in production. | The bridge, at closure, which also creates the ticket's validation sub-task |
 | **Done** | Released and every box ticked. | The bridge: at closure, or, for a ticket in Post Deploy, at the tick that finds every box of its `## Post deploy` section checked (no verb: checking the boxes is the gesture) |
 | **Canceled** | Will not be done. | The owner |
@@ -23,8 +23,8 @@ In Review, To Deploy and Post Deploy are **validation** states: the item is stil
 | Item | Parent | Purpose |
 |---|---|---|
 | **Release issue** | none | One per cycle: title names the product and the version; carries the brief and the GO decision. |
-| **Angle sub-item** | the release issue, or the PR's ticket | One per configured angle; served to a reviewer; its PR (release) or its findings (PR review) are its output. |
-| **Consolidation item** | same parent | Served to the coordinator once every angle has reported. |
+| **Angle sub-item** | the release issue, or the PR's ticket | One per configured angle; served to a reviewer; its PR (release) or its findings (PR review) are its output. A PR review's sub-items belong to their PR's round: they close when that PR resolves, whatever becomes of the ticket. |
+| **Consolidation item** | same parent | Served to the coordinator once every angle has reported; closes with its round. |
 | **Validation sub-task** | a ticket the closure moved to Post Deploy | One per ticket, unassigned, in Ready, with a complete contract: an agent verifies the parent's `## Post deploy` boxes in production and checks the ones it can verify, then closes it; a check that needs a human, or is beyond the agent, is named in a comment and the sub-task is reassigned to the owner (`owner.tracker_user`). |
 | **Finding ticket** | none, related to the release issue | A non-blocking finding to fix later; labelled `qa-finding`. |
 | **Blocker** | none, `blocks` the release issue | A blocking finding that an angle could not fix in its branch. |

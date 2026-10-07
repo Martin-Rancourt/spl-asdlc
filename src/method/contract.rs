@@ -114,6 +114,31 @@ pub fn post_deploy_boxes(description: &str) -> Vec<Checkbox> {
     markdown::checkboxes_in_sections(description, is_post_deploy_heading)
 }
 
+/// The completeness rule (spec 04 §10, BR-ASDLC-008): the open boxes of
+/// the ticket's own description outside its `## Post deploy` section(s),
+/// under any heading (spec 01 §3). `None` when it declares no box there:
+/// nothing declared is not everything checked.
+pub fn open_before_deploy(description: &str) -> Option<Vec<String>> {
+    let after: std::collections::BTreeSet<usize> = post_deploy_boxes(description)
+        .iter()
+        .map(|b| b.line_no)
+        .collect();
+    let boxes: Vec<Checkbox> = markdown::checkboxes(description)
+        .into_iter()
+        .filter(|b| !after.contains(&b.line_no))
+        .collect();
+    if boxes.is_empty() {
+        return None;
+    }
+    Some(
+        boxes
+            .into_iter()
+            .filter(|b| !b.checked)
+            .map(|b| b.line)
+            .collect(),
+    )
+}
+
 /// The text of the `## Release note` section (spec 01 §6), trimmed; empty
 /// when the section is absent or empty.
 pub fn release_note_snippet(description: &str) -> String {
@@ -284,6 +309,27 @@ mod tests {
         assert_eq!(
             boxes.iter().map(|b| b.line.as_str()).collect::<Vec<_>>(),
             vec!["- [ ] after", "- [x] done after", "- [ ] nested"]
+        );
+    }
+
+    // ---- spec 04 §10: the completeness rule ----
+
+    #[test]
+    fn the_boxes_before_deploy_set_the_post_deploy_section_apart() {
+        let text =
+            "## Acceptance criteria\n- [x] a\n- [ ] b\n## Post deploy\n- [ ] in production\n";
+        assert_eq!(open_before_deploy(text), Some(vec!["- [ ] b".to_string()]));
+        let done = text.replace("- [ ] b", "- [x] b");
+        assert_eq!(open_before_deploy(&done), Some(Vec::new()));
+        assert_eq!(
+            open_before_deploy("## Post deploy\n- [ ] in production\n"),
+            None,
+            "no box before deploy: nothing declared"
+        );
+        assert_eq!(
+            open_before_deploy("```\n- [ ] an example\n```\n- [x] a\n"),
+            Some(Vec::new()),
+            "a fenced box is an example"
         );
     }
 

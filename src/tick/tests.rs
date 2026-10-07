@@ -136,6 +136,12 @@ fn children_of(w: &World, key: &str) -> Vec<crate::tracker::Item> {
     crate::tracker::Tracker::children(&w.tracker, key).unwrap()
 }
 
+/// The implementer ticks the last box: the ticket's contract is complete.
+fn check_every_box(w: &World, key: &str) {
+    let all = COMPLETE.replace("- [ ] it is fast", "- [x] it is fast");
+    crate::tracker::Tracker::update_description(&w.tracker, key, &all).unwrap();
+}
+
 // ---- spec 04 §3: entering In Review ----
 
 #[test]
@@ -276,6 +282,7 @@ fn in_review(w: &World, number: u64) -> PullRequest {
 fn an_approved_green_pr_is_merged_and_its_ticket_goes_to_deploy() {
     let w = World::new();
     let mut pr = in_review(&w, 7);
+    check_every_box(&w, "ABC-7");
     let angle = children_of(&w, "ABC-7")
         .into_iter()
         .find(|c| c.title.starts_with("Maintainability"))
@@ -456,6 +463,7 @@ fn a_pr_merged_outside_the_bridge_is_swept_once() {
         is_bot: false,
     });
     w.ticket("ABC-9", Status::InReview, &pr);
+    check_every_box(&w, "ABC-9");
     w.github
         .state
         .borrow_mut()
@@ -478,7 +486,7 @@ fn a_ticket_the_closure_sent_back_is_not_swept_forward_again() {
     crate::tracker::Tracker::comment(
         &w.tracker,
         "ABC-9",
-        &texts::merged_comment(&pr.url, "main", None, "To Deploy"),
+        &texts::merged_comment(&pr.url, "main", None, "To Deploy", "the closure"),
     )
     .unwrap();
     w.github
@@ -502,6 +510,7 @@ fn bot(slug: &str) -> String {
 fn a_status_write_that_fails_after_the_merge_is_retried_by_the_sweep() {
     let w = World::new();
     let mut pr = in_review(&w, 7);
+    check_every_box(&w, "ABC-7");
     pr.reviews = vec![review("coordinator-login", "APPROVED", &pr.head_sha, "ok")];
     w.open(pr);
     w.tracker
@@ -750,4 +759,306 @@ fn two_open_tickets_for_one_ticketless_pr_open_none_and_say_so() {
         "{report:?}"
     );
     assert!(w.tracker.writes().is_empty(), "{:?}", w.tracker.writes());
+}
+
+// ---- spec 04 §10: a ticket and its PRs (BR-ASDLC-007, BR-ASDLC-008) ----
+
+fn approved(mut pr: PullRequest) -> PullRequest {
+    pr.reviews = vec![review("coordinator-login", "APPROVED", &pr.head_sha, "ok")];
+    pr
+}
+
+/// The items of the review rounds of a PR, on its ticket.
+fn round(w: &World, ticket: &str, pr: &PullRequest) -> Vec<crate::tracker::Item> {
+    let items: Vec<_> = children_of(w, ticket)
+        .into_iter()
+        .filter(|c| merge::round_of(c, &pr.url))
+        .collect();
+    assert!(!items.is_empty(), "{} has a round on {ticket}", pr.url);
+    items
+}
+
+fn all_in(items: &[crate::tracker::Item], status: Status) -> bool {
+    items.iter().all(|i| i.state.status == Some(status))
+}
+
+/// A second tick on unchanged facts writes nothing, anywhere.
+fn quiet(w: &World) {
+    let before = (w.tracker.writes().len(), w.github_writes().len());
+    let (report, log) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert!(log.entries().is_empty(), "{:?}", log.entries());
+    assert_eq!(
+        (w.tracker.writes().len(), w.github_writes().len()),
+        before,
+        "{:?}",
+        &w.tracker.writes()[before.0..]
+    );
+}
+
+fn merge_comment(w: &World, ticket: &str, pr: &PullRequest) -> String {
+    crate::tracker::Tracker::comments(&w.tracker, ticket)
+        .unwrap()
+        .into_iter()
+        .find(|c| c.body.contains(&format!("merged_pr: {}", pr.url)))
+        .expect("the merge is recorded")
+        .body
+}
+
+fn close_unmerged(w: &World, pr: &PullRequest) {
+    let mut s = w.github.state.borrow_mut();
+    if let Some(Ok(list)) = s.open_pulls.get_mut(&repo()) {
+        list.retain(|p| p.number != pr.number);
+    }
+    let mut closed = pr.clone();
+    closed.state = PrState::Closed;
+    s.closed_pulls.insert(repo(), Ok(vec![closed]));
+}
+
+#[test]
+fn a_merge_that_leaves_a_box_open_sends_the_ticket_back_to_work() {
+    let w = World::new();
+    let pr = in_review(&w, 7);
+    w.open(approved(pr.clone()));
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert!(w.github_writes().iter().any(|l| l.starts_with("merge")));
+    assert_eq!(
+        w.tracker.item("ABC-7").state.status,
+        Some(Status::InProgress),
+        "the completeness rule: a box is open"
+    );
+    let comment = merge_comment(&w, "ABC-7", &pr);
+    assert!(comment.contains("state: In Progress"), "{comment}");
+    assert!(
+        comment.contains("1 box(es) of its contract remain open"),
+        "{comment}"
+    );
+    quiet(&w);
+}
+
+#[test]
+fn a_merge_with_every_box_checked_goes_to_deploy_once() {
+    let w = World::new();
+    let pr = in_review(&w, 7);
+    check_every_box(&w, "ABC-7");
+    w.open(approved(pr.clone()));
+    w.tick(false);
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::ToDeploy));
+    assert!(merge_comment(&w, "ABC-7", &pr).contains("state: To Deploy"));
+    quiet(&w);
+}
+
+#[test]
+fn a_rounds_items_close_when_its_pr_merges_while_the_ticket_stays_open() {
+    let w = World::new();
+    let pr = in_review(&w, 7);
+    assert!(all_in(&round(&w, "ABC-7", &pr), Status::Ready));
+    w.open(approved(pr.clone()));
+    w.tick(false);
+    assert_eq!(
+        w.tracker.item("ABC-7").state.status,
+        Some(Status::InProgress),
+        "the ticket stays open for a later PR"
+    );
+    assert!(
+        all_in(&round(&w, "ABC-7", &pr), Status::Done),
+        "the angle sub-items and the consolidation item close with their PR"
+    );
+    quiet(&w);
+}
+
+#[test]
+fn a_rounds_items_are_canceled_when_its_pr_is_closed_unmerged_while_the_ticket_stays_open() {
+    let w = World::new();
+    let pr = in_review(&w, 7);
+    close_unmerged(&w, &pr);
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert!(all_in(&round(&w, "ABC-7", &pr), Status::Canceled));
+    assert_eq!(
+        w.tracker.item("ABC-7").state.status,
+        Some(Status::InProgress),
+        "no PR in review and a box open: back to work, not canceled"
+    );
+    let said = crate::tracker::Tracker::comments(&w.tracker, "ABC-7")
+        .unwrap()
+        .iter()
+        .filter(|c| c.body.contains("was closed without merge"))
+        .count();
+    assert_eq!(said, 1);
+    quiet(&w);
+}
+
+#[test]
+fn a_second_pr_on_a_ticket_past_the_merge_brings_it_back_to_review() {
+    let w = World::new();
+    let all = COMPLETE.replace("- [ ] it is fast", "- [x] it is fast");
+    w.tracker
+        .seed("ABC-7", "A ticket", &all, Status::ToDeploy, &[]);
+    let pr = green(pull_request(8));
+    w.tracker.link("ABC-7", &pr.url);
+    w.open(pr.clone());
+
+    // REQ-MERGE-028 under the state rules: back In Review, the PR not
+    // operated on this tick.
+    w.tick(false);
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::InReview));
+    assert!(children_of(&w, "ABC-7").is_empty());
+
+    // The review rule: its round opens and its cycle runs in full.
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert!(all_in(&round(&w, "ABC-7", &pr), Status::Ready));
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::InReview));
+    quiet(&w);
+
+    w.open(approved(pr.clone()));
+    w.tick(false);
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::ToDeploy));
+    quiet(&w);
+}
+
+/// Two PRs of one ticket, both in review.
+fn two_in_review(w: &World) -> (PullRequest, PullRequest) {
+    let a = green(pull_request(7));
+    let b = green(pull_request(8));
+    w.ticket("ABC-7", Status::InProgress, &a);
+    w.tracker.link("ABC-7", &b.url);
+    w.open(a.clone());
+    w.open(b.clone());
+    w.tick(false);
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::InReview));
+    assert!(all_in(&round(w, "ABC-7", &a), Status::Ready));
+    assert!(all_in(&round(w, "ABC-7", &b), Status::Ready));
+    quiet(w);
+    (a, b)
+}
+
+#[test]
+fn while_another_pr_is_in_review_the_ticket_stays_in_review() {
+    let w = World::new();
+    let (a, b) = two_in_review(&w);
+    w.open(approved(a.clone()));
+    w.tick(false);
+    assert!(
+        w.github_writes()
+            .contains(&"merge example-org/acme#7 at head-7 squash".to_string())
+    );
+    assert_eq!(
+        w.tracker.item("ABC-7").state.status,
+        Some(Status::InReview),
+        "the review rule comes before the completeness rule"
+    );
+    assert!(merge_comment(&w, "ABC-7", &a).contains("state: In Review"));
+    assert!(all_in(&round(&w, "ABC-7", &a), Status::Done));
+    assert!(
+        all_in(&round(&w, "ABC-7", &b), Status::Ready),
+        "the other PR's round is its own"
+    );
+    quiet(&w);
+
+    // The last PR merges: the completeness rule decides.
+    w.open(approved(b.clone()));
+    w.tick(false);
+    assert_eq!(
+        w.tracker.item("ABC-7").state.status,
+        Some(Status::InProgress)
+    );
+    assert!(all_in(&round(&w, "ABC-7", &b), Status::Done));
+    quiet(&w);
+}
+
+#[test]
+fn changes_requested_on_one_pr_wait_while_another_is_in_review() {
+    let w = World::new();
+    let (a, mut b) = two_in_review(&w);
+    b.reviews = vec![review(
+        "coordinator-login",
+        "CHANGES_REQUESTED",
+        &b.head_sha,
+        "redo",
+    )];
+    w.open(b.clone());
+    w.tick(false);
+    assert_eq!(
+        w.tracker.item("ABC-7").state.status,
+        Some(Status::InReview),
+        "PR #7 is still in review"
+    );
+    quiet(&w);
+    // PR #7 merges: PR #8, sent back, is its implementer's.
+    w.open(approved(a));
+    w.tick(false);
+    assert_eq!(
+        w.tracker.item("ABC-7").state.status,
+        Some(Status::InProgress)
+    );
+    assert!(
+        all_in(&round(&w, "ABC-7", &b), Status::Ready),
+        "PR #8 is still open: its round stays"
+    );
+    quiet(&w);
+}
+
+#[test]
+fn a_pr_closed_unmerged_leaves_the_ticket_in_review_while_another_is_reviewed() {
+    let w = World::new();
+    let (a, b) = two_in_review(&w);
+    close_unmerged(&w, &b);
+    w.tick(false);
+    assert!(all_in(&round(&w, "ABC-7", &b), Status::Canceled));
+    assert!(all_in(&round(&w, "ABC-7", &a), Status::Ready));
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::InReview));
+    quiet(&w);
+}
+
+#[test]
+fn a_pr_whose_round_is_done_but_not_merged_keeps_the_ticket_in_review() {
+    // PR #7 finished its round and waits for its merge (an approval, the
+    // one-merge slot); PR #8 is closed unmerged. The ticket stays In Review:
+    // the pass and the state rules agree, and no tick flips it back and forth.
+    let w = World::new();
+    let (a, b) = two_in_review(&w);
+    for item in round(&w, "ABC-7", &a) {
+        crate::tracker::Tracker::set_status(&w.tracker, &item.key, Status::Done, None).unwrap();
+    }
+    close_unmerged(&w, &b);
+    w.tick(false);
+    assert!(all_in(&round(&w, "ABC-7", &b), Status::Canceled));
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::InReview));
+    quiet(&w);
+    quiet(&w);
+}
+
+#[test]
+fn an_unreadable_ticket_of_another_pr_holds_the_state_after_a_merge() {
+    let w = World::new();
+    let pr = in_review(&w, 7);
+    let other = green(pull_request(9));
+    w.tracker
+        .seed("ABC-9", "Another", COMPLETE, Status::InProgress, &[]);
+    w.tracker.link("ABC-9", &other.url);
+    w.open(other);
+    w.tracker.make_unreadable("ABC-9");
+    w.open(approved(pr.clone()));
+    let (report, _) = w.tick(false);
+    assert!(
+        w.github_writes()
+            .iter()
+            .any(|l| l.starts_with("merge example-org/acme#7"))
+    );
+    assert!(!report.ok());
+    assert_eq!(
+        w.tracker.item("ABC-7").state.status,
+        Some(Status::InReview),
+        "PR #9 may be this ticket's: the state waits (fail closed)"
+    );
+    // Readable again: the sweep settles it.
+    w.tracker.state.borrow_mut().unreadable.clear();
+    w.tick(false);
+    assert_eq!(
+        w.tracker.item("ABC-7").state.status,
+        Some(Status::InProgress)
+    );
 }
