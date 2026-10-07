@@ -15,6 +15,8 @@ use crate::github::{
 use crate::method::release::gate;
 use crate::method::texts::{self, BridgeItem};
 use crate::method::vocabulary::Status;
+
+const POST_DEPLOY_LABEL: &str = "post-deploy-validation/acme";
 use crate::notify::Recorder;
 use crate::tracker::Tracker;
 use crate::tracker::fake::FakeTracker;
@@ -1310,6 +1312,295 @@ fn a_version_released_without_a_release_item_of_the_bridge_is_not_its_cycle() {
     assert!(r.ok(), "{r:?}");
     assert!(w.tracker.writes().is_empty(), "{:?}", w.tracker.writes());
     assert!(w.github.writes().is_empty(), "{:?}", w.github.writes());
+}
+
+// ---- post-deploy validation (BR-ASDLC-002, BR-ASDLC-003) ----
+
+const PR5: &str = "https://github.com/example-org/acme/pull/5";
+const POST: &str = "## Goal\nShip it.\n\n## Non-goals\n- More.\n\n## Acceptance criteria\n- [x] shipped\n\n## Post deploy\n- [ ] the dashboard shows it\n- [ ] the export opens\n\n## Business rules\nNo new rule.\n";
+
+fn validation_tasks(w: &World, parent: &str) -> Vec<crate::tracker::Item> {
+    let marker = texts::post_deploy_validation_marker(parent);
+    w.tracker
+        .children(parent)
+        .unwrap()
+        .into_iter()
+        .filter(|c| texts::has_marker(&c.description, &marker))
+        .collect()
+}
+
+/// A cycle closed over one shipped ticket whose only open boxes are its
+/// `## Post deploy` ones.
+fn closed_with_post_deploy() -> World {
+    let w = World::new();
+    w.tracker
+        .seed("ABC-5", "Shipped", POST, Status::ToDeploy, &[]);
+    w.tracker.link("ABC-5", PR5);
+    w.tick();
+    publish(&w);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    w
+}
+
+fn check_box(w: &World, key: &str, text: &str) {
+    let d = w
+        .tracker
+        .item(key)
+        .description
+        .replace(&format!("- [ ] {text}"), &format!("- [x] {text}"));
+    w.tracker.update_description(key, &d).unwrap();
+}
+
+fn labelled(w: &World, key: &str) -> bool {
+    w.tracker
+        .item(key)
+        .labels
+        .iter()
+        .any(|l| l == POST_DEPLOY_LABEL)
+}
+
+#[test]
+fn the_closure_moves_a_ticket_to_post_deploy_with_one_unassigned_validation_sub_task() {
+    let w = closed_with_post_deploy();
+    let ticket = w.tracker.item("ABC-5");
+    assert_eq!(ticket.state.status, Some(Status::PostDeploy));
+    assert!(labelled(&w, "ABC-5"), "the post-deploy pass finds it again");
+    assert_eq!(ticket.assignee, None, "the ticket itself is never served");
+    let tasks = validation_tasks(&w, "ABC-5");
+    assert_eq!(tasks.len(), 1, "{:?}", w.tracker.writes());
+    let task = &tasks[0];
+    assert_eq!(task.state.status, Some(Status::Ready), "a followed status");
+    assert_eq!(task.assignee, None);
+    assert!(crate::method::contract::has_contract(&task.description));
+    assert!(task.description.contains("the owner (`owner-handle`)"));
+    let release = w.release_item();
+    let closure = w
+        .tracker
+        .comments(&release.key)
+        .unwrap()
+        .into_iter()
+        .find(|c| c.body.starts_with("Deployed."))
+        .expect("the closure comment");
+    assert!(closure.body.contains("Moved to `Post Deploy`: `ABC-5`"));
+    assert!(!closure.body.contains("post-release-check"), "no verb");
+    // Idempotent: the label, the status and the sub-task are there.
+    let before = w.tracker.writes().len();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.tracker.writes().len(),
+        before,
+        "{:?}",
+        &w.tracker.writes()[before..]
+    );
+}
+
+#[test]
+fn a_partially_checked_post_deploy_ticket_stays_in_post_deploy() {
+    let w = closed_with_post_deploy();
+    check_box(&w, "ABC-5", "the dashboard shows it");
+    let before = w.tracker.writes().len();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.tracker.item("ABC-5").state.status,
+        Some(Status::PostDeploy)
+    );
+    assert_eq!(
+        w.tracker.writes().len(),
+        before,
+        "{:?}",
+        &w.tracker.writes()[before..]
+    );
+}
+
+#[test]
+fn a_post_deploy_ticket_moves_to_done_at_the_tick_that_finds_every_box_checked() {
+    let w = closed_with_post_deploy();
+    check_box(&w, "ABC-5", "the dashboard shows it");
+    check_box(&w, "ABC-5", "the export opens");
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(w.tracker.item("ABC-5").state.status, Some(Status::Done));
+    assert!(!labelled(&w, "ABC-5"), "the index keeps only what waits");
+    // The sub-task is the agent's or the owner's to close.
+    assert_eq!(
+        validation_tasks(&w, "ABC-5")[0].state.status,
+        Some(Status::Ready)
+    );
+    let before = w.tracker.writes().len();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.tracker.writes().len(),
+        before,
+        "{:?}",
+        &w.tracker.writes()[before..]
+    );
+}
+
+#[test]
+fn a_lost_creation_answer_is_found_and_the_sub_task_never_created_twice() {
+    let w = World::new();
+    w.tick();
+    w.tracker.seed(
+        "ABC-9",
+        "Waiting",
+        POST,
+        Status::PostDeploy,
+        &[POST_DEPLOY_LABEL],
+    );
+    // The creation went through and its answer was lost: the sub-task is
+    // there, its marker visible as the tracker keeps it.
+    let (title, body) = texts::post_deploy_validation_item(
+        "ABC-9",
+        "Waiting",
+        "https://tracker.test/ABC-9",
+        "owner-handle",
+    );
+    w.tracker.seed(
+        "ABC-10",
+        &title,
+        &texts::visible_markers(&body),
+        Status::Ready,
+        &[],
+    );
+    w.tracker.state.borrow_mut().set_parent("ABC-10", "ABC-9");
+    let before = w.tracker.writes().len();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.tracker.writes().len(),
+        before,
+        "{:?}",
+        &w.tracker.writes()[before..]
+    );
+    assert_eq!(validation_tasks(&w, "ABC-9").len(), 1);
+}
+
+#[test]
+fn a_refused_validation_sub_task_is_created_at_a_later_tick_once() {
+    let w = World::new();
+    w.tracker
+        .seed("ABC-5", "Shipped", POST, Status::ToDeploy, &[]);
+    w.tracker.link("ABC-5", PR5);
+    w.tick();
+    publish(&w);
+    w.tracker
+        .fail_writes_starting_with("create Post-deploy validation");
+    let r = w.tick();
+    assert!(!r.ok(), "the refusal is reported");
+    assert_eq!(
+        w.tracker.item("ABC-5").state.status,
+        Some(Status::PostDeploy)
+    );
+    assert!(validation_tasks(&w, "ABC-5").is_empty());
+    w.tracker.state.borrow_mut().failing_writes.clear();
+    // The release item is closed by now: the post-deploy pass repairs it.
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(validation_tasks(&w, "ABC-5").len(), 1);
+    let before = w.tracker.writes().len();
+    w.tick();
+    assert_eq!(w.tracker.writes().len(), before);
+}
+
+#[test]
+fn an_unreadable_read_moves_nothing_and_is_reported() {
+    let w = World::new();
+    w.tick();
+    let checked = POST.replace("- [ ]", "- [x]");
+    w.tracker.seed(
+        "ABC-9",
+        "Waiting",
+        &checked,
+        Status::PostDeploy,
+        &[POST_DEPLOY_LABEL],
+    );
+    w.tracker.make_unreadable("ABC-9");
+    let before = w.tracker.writes().len();
+    let r = w.tick();
+    assert!(r.failures.iter().any(|f| f.starts_with("ABC-9")), "{r:?}");
+    assert_eq!(
+        w.tracker.item("ABC-9").state.status,
+        Some(Status::PostDeploy)
+    );
+    // The list itself unreadable: said, nothing written.
+    w.tracker.state.borrow_mut().unreadable.clear();
+    w.tracker.make_unreadable(POST_DEPLOY_LABEL);
+    let r = w.tick();
+    assert!(
+        r.failures.iter().any(|f| f.contains(POST_DEPLOY_LABEL)),
+        "{r:?}"
+    );
+    assert_eq!(
+        w.tracker.writes().len(),
+        before,
+        "{:?}",
+        &w.tracker.writes()[before..]
+    );
+}
+
+#[test]
+fn a_ticket_resolved_by_hand_loses_the_index_label_once() {
+    let w = World::new();
+    w.tick();
+    w.tracker.seed(
+        "ABC-9",
+        "Dropped",
+        POST,
+        Status::Canceled,
+        &[POST_DEPLOY_LABEL],
+    );
+    let before = w.tracker.writes().len();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.tracker.writes()[before..],
+        [format!("label ABC-9 -{POST_DEPLOY_LABEL}")]
+    );
+    assert_eq!(w.tracker.item("ABC-9").state.status, Some(Status::Canceled));
+    let before = w.tracker.writes().len();
+    w.tick();
+    assert_eq!(w.tracker.writes().len(), before);
+}
+
+#[test]
+fn a_dry_run_of_the_post_deploy_pass_writes_nothing() {
+    let w = World::new();
+    w.tick();
+    let checked = POST.replace("- [ ]", "- [x]");
+    w.tracker.seed(
+        "ABC-9",
+        "Waiting",
+        &checked,
+        Status::PostDeploy,
+        &[POST_DEPLOY_LABEL],
+    );
+    let before = w.tracker.writes().len();
+    let intents = crate::dry::Intents::default();
+    let tr = crate::dry::DryTracker {
+        inner: &w.tracker,
+        intents: &intents,
+    };
+    let t = Tick {
+        tracker: &tr,
+        dry_run: true,
+        ..w.tick_ctx()
+    };
+    let mut log = ActionLog::in_memory();
+    let mut report = Report::default();
+    post_deploy::pass(&t, &mut log, &mut report);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(w.tracker.writes().len(), before);
+    assert_eq!(
+        intents.lines(),
+        vec![
+            "tracker: ABC-9 → Done".to_string(),
+            format!("tracker: label ABC-9 -{POST_DEPLOY_LABEL}"),
+        ]
+    );
 }
 
 #[test]

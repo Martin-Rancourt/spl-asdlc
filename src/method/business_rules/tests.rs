@@ -151,7 +151,9 @@ fn no_diff_to_read_skips_the_promotion_half_but_still_checks_ids() {
 fn the_registry_of_this_repo_parses_into_its_real_ids() {
     let real = include_str!("../../../docs/business-rules.md");
     let parsed = registry_ids(real);
-    assert!(parsed.contains("BR-ASDLC-001"), "{parsed:?}");
+    for id in ["BR-ASDLC-001", "BR-ASDLC-002", "BR-ASDLC-003"] {
+        assert!(parsed.contains(id), "{id}: {parsed:?}");
+    }
     assert!(duplicate_registry_ids(real).is_empty());
 }
 

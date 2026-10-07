@@ -175,7 +175,7 @@ pub fn comment(r: &CloseResult) -> String {
     }
     if !r.awaiting_post_release.is_empty() {
         out.push_str(&format!(
-            "\n\nMoved to `Post Deploy`: {} — their `## Post deploy` boxes are verified in production and ticked with `spl-asdlc release post-release-check`; each ticket moves to `Done` when all its boxes are.",
+            "\n\nMoved to `Post Deploy`: {} — their `## Post deploy` boxes are verified in production and checked on each ticket, as its validation sub-task asks; the bridge moves each ticket to `Done` at the tick that finds all its `## Post deploy` boxes checked.",
             list(&r.awaiting_post_release)
         ));
     }
@@ -380,6 +380,9 @@ mod tests {
         assert!(text.contains("Back to `In Progress` (open boxes in their contract): `ABC-3`"));
         assert!(text.contains("the next tick judges them again"));
         assert!(text.contains("Moved to `Post Deploy`: `ABC-4`"));
+        // BR-ASDLC-002: the boxes are the gesture, no verb.
+        assert!(text.contains("at the tick that finds all its `## Post deploy` boxes checked"));
+        assert!(!text.contains("post-release-check"));
         assert!(!r.complete());
         assert_eq!(
             comment(&CloseResult::default()),
