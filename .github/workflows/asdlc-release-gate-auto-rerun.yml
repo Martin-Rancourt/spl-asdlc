@@ -1,0 +1,229 @@
+name: asdlc-release-gate-auto-rerun
+
+# The executing half of the gate's one automatic rerun (docs/requirements/ci.md,
+# REQ-CI-070..073): a red gate run, at its first attempt, whose suites job
+# never reported (a runner abort) or whose every failed suite is an unexpired
+# known flake, is rerun once with `gh run rerun --failed`. Nothing else: no
+# second rerun, no notification. If the rerun call itself fails, this job is
+# red, and that red run is the signal.
+#
+# A `workflow_run` trigger cannot live in a reusable workflow, so the caller
+# owns it; GitHub runs a `workflow_run` workflow from the default branch, so
+# the decision and the allow-list it reads are trusted code, never the
+# candidate's. Example caller (lot 4 writes the real one):
+#
+#   name: release-gate-auto-rerun
+#   on:
+#     workflow_run: {workflows: [release-gate], types: [completed]}
+#   permissions: {contents: read}
+#   jobs:
+#     rerun:
+#       permissions: {contents: read, actions: write}
+#       uses: <owner>/spl-asdlc/.github/workflows/asdlc-release-gate-auto-rerun.yml@<ref>
+#
+# Called job (stable name): `auto-rerun`.
+
+on:
+  workflow_call:
+    inputs:
+      known-flakes-file:
+        description: 'JSON array of {"suite", "ticket", "expires": "YYYY-MM-DD", "note"}, read from the default branch.'
+        type: string
+        default: .github/release-gate/known-flakes.json
+      suites-job:
+        description: The gate's suites job; a job named so, or `<caller job> / <it>`, must have failed.
+        type: string
+        default: suites
+      runs-on:
+        description: Accepted for uniformity; the job is hosted by design (it must report when the project's runner is gone).
+        type: string
+        default: ubuntu-latest
+    outputs:
+      reran:
+        description: '`true` only after the rerun call succeeded.'
+        value: ${{ jobs.auto-rerun.outputs.reran }}
+      decision:
+        description: '`true` when a rerun was warranted.'
+        value: ${{ jobs.auto-rerun.outputs.decision }}
+      reason:
+        description: Why.
+        value: ${{ jobs.auto-rerun.outputs.reason }}
+
+permissions:
+  contents: read
+
+jobs:
+  auto-rerun:
+    name: auto-rerun
+    if: github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # GITHUB_TOKEN with actions: write (the App's Actions grant is not relied
+    # on; ci.md OQ-5 stays open until a real rerun proves it).
+    permissions:
+      contents: read
+      actions: write
+    outputs:
+      reran: ${{ steps.rerun.outputs.reran }}
+      decision: ${{ steps.decide.outputs.rerun }}
+      reason: ${{ steps.decide.outputs.reason }}
+    steps:
+      - name: Check out the known flakes from the default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: ${{ inputs.known-flakes-file }}
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # A failure before the suites (the candidate, the preflight) skips them
+      # and leaves no evidence either: "no evidence" means an abort only once
+      # the suites job itself is proven failed.
+      - name: Verify the suites job itself failed
+        id: source-job
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SUITES_JOB: ${{ inputs.suites-job }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${GITHUB_OUTPUT:-/dev/stdout}"
+          raw="$(mktemp)"
+          sorted="$(mktemp)"
+          trap 'rm -f "$raw" "$sorted"' EXIT
+          if ! gh api --paginate "repos/$GH_REPO/actions/runs/$SOURCE_RUN_ID/jobs" \
+              --jq ".jobs[] | select(.name == \$ENV.SUITES_JOB or (.name | endswith(\" / \" + \$ENV.SUITES_JOB))) | .conclusion" > "$raw"; then
+            echo "::error title=Auto-rerun::Could not read the jobs of run $SOURCE_RUN_ID: no rerun is decided blind."
+            exit 1
+          fi
+          sort -u "$raw" > "$sorted"
+          conclusion="$(paste -sd, - < "$sorted")"
+          if [ "$conclusion" = failure ]; then
+            echo "failed=true" >> "$out"
+            echo "The suites job of run $SOURCE_RUN_ID failed."
+          else
+            echo "failed=false" >> "$out"
+            echo "The suites job of run $SOURCE_RUN_ID concluded '${conclusion:-missing}', not failure: no automatic rerun."
+          fi
+
+      # No `set -e`: failing to find the artifact IS the runner-abort case,
+      # data for the decision. Another run's job outputs are out of reach, so
+      # the facts come from its evidence pack.
+      - name: Read the run's suite summary
+        id: evidence
+        if: steps.source-job.outputs.failed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          out="${GITHUB_OUTPUT:-/dev/stdout}"
+          dir="$(mktemp -d)"
+          # Absent and unreadable are different answers: only an artifact
+          # listed as absent reads as a runner abort.
+          name="release-gate-evidence-$SOURCE_SHA"
+          if ! listed="$(gh api "repos/$GH_REPO/actions/runs/$SOURCE_RUN_ID/artifacts" --paginate \
+                --jq ".artifacts[] | select(.name == \"$name\") | .name")"; then
+            echo "::error title=Artifacts unreadable::the artifacts of run $SOURCE_RUN_ID could not be listed; no rerun is decided on that."
+            exit 1
+          fi
+          if [ -z "$listed" ]; then
+            echo "No evidence artifact on run $SOURCE_RUN_ID: treated as a runner abort."
+          elif gh run download "$SOURCE_RUN_ID" --repo "$GH_REPO" --name "$name" --dir "$dir"; then
+            echo "Evidence downloaded."
+          else
+            echo "::error title=Evidence unreadable::the evidence of run $SOURCE_RUN_ID exists but could not be downloaded."
+            exit 1
+          fi
+          if [ -f "$dir/results/suites.json" ]; then
+            # A summary that exists but cannot be read names nothing: the
+            # decision then refuses (a contradiction), never reruns.
+            if ! failed="$(jq -r '.failed | join(",")' "$dir/results/suites.json")"; then
+              echo "::warning::results/suites.json of run $SOURCE_RUN_ID is unreadable."
+              failed=''
+            fi
+            echo "summary_written=true" >> "$out"
+            echo "failed_suites=$failed" >> "$out"
+          else
+            echo "summary_written=false" >> "$out"
+            echo "failed_suites=" >> "$out"
+          fi
+          rm -rf "$dir"
+
+      # The same script as asdlc-release-gate.yml's auto-rerun-decision (a
+      # test holds them equal).
+      - name: Decide whether a rerun is warranted
+        id: decide
+        if: steps.source-job.outputs.failed == 'true'
+        env:
+          FAILED_SUITES: ${{ steps.evidence.outputs.failed_suites }}
+          SUMMARY_WRITTEN: ${{ steps.evidence.outputs.summary_written }}
+          KNOWN_FLAKES: ${{ inputs.known-flakes-file }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${GITHUB_OUTPUT:-/dev/stdout}"
+          today="${TODAY:-$(date -u +%Y-%m-%d)}"
+          if ! [[ "$today" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+            echo "::error::TODAY '$today' is not YYYY-MM-DD."
+            exit 1
+          fi
+          # Missing or garbage reads as "no known flake": it must never
+          # manufacture an excuse to rerun.
+          flakes='[]'
+          if [ ! -f "$KNOWN_FLAKES" ]; then
+            echo "::warning::Could not read the known-flakes file $KNOWN_FLAKES: nothing is a known flake."
+          elif ! jq empty "$KNOWN_FLAKES" > /dev/null 2>&1; then
+            echo "::warning::The known-flakes file $KNOWN_FLAKES is not valid JSON: nothing is a known flake."
+          elif [ "$(jq -r 'type' "$KNOWN_FLAKES")" != array ]; then
+            echo "::warning::The known-flakes file $KNOWN_FLAKES must be a JSON array: nothing is a known flake."
+          else
+            flakes="$(jq -c '[.[] | objects]' "$KNOWN_FLAKES")"
+          fi
+          decision="$(mktemp)"
+          trap 'rm -f "$decision"' EXIT
+          # (a) no report: a probable runner abort, whatever else is claimed;
+          # (b) a report naming nothing: a contradiction, never a rerun;
+          # (c) every failed suite covered by an unexpired entry: rerun;
+          # (d) anything else is a real failure.
+          jq -rn --arg failed "$FAILED_SUITES" --arg written "$SUMMARY_WRITTEN" --arg today "$today" --argjson flakes "$flakes" '
+            def iso: . as $d | type == "string" and (try ((strptime("%Y-%m-%d") | mktime | strftime("%Y-%m-%d")) == $d) catch false);
+            def trim: gsub("^[[:space:]]+|[[:space:]]+$"; "");
+            def covering($s): [$flakes[] | select(.suite == $s and (.expires | iso) and .expires >= $today)] | first;
+            ($failed | split(",") | map(trim) | map(select(length > 0))) as $suites
+            | if ($written | trim | ascii_downcase) != "true" then [true, "no suites summary produced (probable runner abort)"]
+              elif ($suites | length) == 0 then [false, "summary was written but named no failed suite; not a recognised abort or flake"]
+              else [$suites[] | {suite: ., entry: covering(.)}] as $m
+                | [$m[] | select(.entry == null) | .suite] as $unmatched
+                | if ($unmatched | length) > 0
+                  then [false, "not all failed suites are covered by an unexpired known flake: \($unmatched | join(", "))"]
+                  else [true, "every failed suite matches an unexpired known flake (\([$m[] | .entry.ticket // "?" | tostring] | join(", ")))"]
+                  end
+              end
+            | "rerun=\(.[0])", "reason=\(.[1] | gsub("[[:space:]]+"; " ") | trim)"
+          ' > "$decision"
+          cat "$decision"
+          cat "$decision" >> "$out"
+
+      # The output is the fact, set only once the call exited 0; a failed
+      # call makes this job red.
+      - name: Rerun the failed jobs
+        id: rerun
+        if: steps.decide.outputs.rerun == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          REASON: ${{ steps.decide.outputs.reason }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${GITHUB_OUTPUT:-/dev/stdout}"
+          echo "Rerunning the failed jobs of run $SOURCE_RUN_ID: $REASON"
+          gh run rerun "$SOURCE_RUN_ID" --repo "$GH_REPO" --failed
+          echo "reran=true" >> "$out"
