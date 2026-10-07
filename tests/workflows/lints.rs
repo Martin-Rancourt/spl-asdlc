@@ -70,7 +70,8 @@ fn untrusted_values_reach_scripts_only_through_env() {
 
 #[test]
 fn no_decision_is_taken_on_a_pipe_into_a_quiet_grep() {
-    let piped = Regex::new(r"\|\s*grep\s+(-[A-Za-z]*q|--quiet)").unwrap();
+    let piped =
+        Regex::new(r"\|\s*grep\s+(-[A-Za-z]+\s+)*(-[A-Za-z]*q[A-Za-z]*|--quiet)\b").unwrap();
     let mut bodies: Vec<(String, String)> = Vec::new();
     for f in files() {
         for (step, body) in runs(&load(&f)) {
@@ -194,14 +195,10 @@ fn permissions_are_set_at_the_top_and_restated_per_job_of_a_reusable_workflow() 
 }
 
 #[test]
-fn what_runs_in_another_repository_pins_its_actions_by_commit() {
+fn every_action_is_pinned_by_commit() {
     let pinned = Regex::new(r"^[^@\s]+@[0-9a-f]{40}$").unwrap();
     for f in files() {
         let doc = load(&f);
-        let shipped = is_reusable(&doc) || !doc["runs"].is_badvalue();
-        if !shipped {
-            continue;
-        }
         for (job, s) in steps(&doc) {
             let Some(uses) = s["uses"].as_str() else {
                 continue;

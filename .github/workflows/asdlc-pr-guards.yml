@@ -29,6 +29,12 @@ on:
         description: The PR's base branch.
         type: string
         required: true
+      head-repo:
+        description: >-
+          The PR's head repository (`github.event.pull_request.head.repo.full_name`):
+          a head of skip-head-prefixes is skipped only from this repository, never from a fork.
+        type: string
+        required: true
       skip-head-prefixes:
         description: Comma list of head prefixes for which nothing runs (release-please's PRs).
         type: string
@@ -90,11 +96,19 @@ jobs:
         id: skip
         env:
           HEAD_REF: ${{ inputs.head-ref }}
+          HEAD_REPO: ${{ inputs.head-repo }}
+          REPO: ${{ github.repository }}
           SKIP_PREFIXES: ${{ inputs.skip-head-prefixes }}
         shell: bash
         run: |
           set -euo pipefail
           out="${GITHUB_OUTPUT:-/dev/stdout}"
+          # Only the release chain's own branches skip: a fork can name a
+          # branch anything.
+          if [ -z "$HEAD_REPO" ] || [ "$HEAD_REPO" != "$REPO" ]; then
+            echo 'skipped=false' >> "$out"
+            exit 0
+          fi
           IFS=',' read -r -a prefixes <<< "$SKIP_PREFIXES"
           for prefix in ${prefixes[@]+"${prefixes[@]}"}; do
             prefix="${prefix//[[:space:]]/}"
