@@ -1,6 +1,5 @@
 //! Read the shipped YAML and run a step's script.
 
-
 // Support code: not every test file uses every helper.
 #![allow(dead_code)]
 
@@ -249,5 +248,9 @@ pub fn calls(dir: &Path, name: &str) -> Vec<String> {
 /// A PATH that finds the stubs of `dir` first.
 #[cfg(unix)]
 pub fn path_with(dir: &Path) -> String {
-    format!("{}:{}", dir.display(), std::env::var("PATH").unwrap_or_default())
+    format!(
+        "{}:{}",
+        dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    )
 }

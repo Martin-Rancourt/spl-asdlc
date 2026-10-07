@@ -13,4 +13,6 @@ mod pr_guards;
 #[cfg(unix)]
 mod pr_title;
 #[cfg(unix)]
+mod release_publish;
+#[cfg(unix)]
 mod required_check;
