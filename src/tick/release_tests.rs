@@ -1,5 +1,6 @@
 //! The release pass and the closure against the in-memory GitHub and
-//! tracker (spec 05): the cycle opened at the first tick after the cut, the
+//! tracker (spec 05): the cycle opened at the first tick after the cut, its
+//! QA round and brief only once the candidate's gate is green, the
 //! angle PRs merged with their findings filed once, the GO and the merge of
 //! the release PR, the closure and the release note.
 
@@ -7,10 +8,11 @@ use super::*;
 use crate::config::Config;
 use crate::github::fake::{FakeGitHub, pull_request};
 use crate::github::{
-    Actor, CheckEntry, CheckKind, Commit, CommitPull, CommitSummary, CompareStatus, Comparison,
-    GitRef, Identity, ObjectType, PrState, PullRequest, Release, RepoSlug, RequiredChecks, Review,
-    Timestamp, WorkflowRun,
+    Actor, Artifact, CheckEntry, CheckKind, Commit, CommitPull, CommitSummary, CompareStatus,
+    Comparison, GitRef, Identity, ObjectType, PrState, PullRequest, Release, RepoSlug,
+    RequiredChecks, Review, Timestamp, WorkflowRun,
 };
+use crate::method::release::gate;
 use crate::method::texts::{self, BridgeItem};
 use crate::method::vocabulary::Status;
 use crate::notify::Recorder;
@@ -54,6 +56,32 @@ fn cmp(status: CompareStatus, commits: &[&str], files: &[&str]) -> crate::github
             .collect(),
         files: files.iter().map(|f| f.to_string()).collect(),
     })
+}
+
+fn evidence(name: &str) -> Artifact {
+    Artifact {
+        id: 7,
+        name: name.into(),
+        expired: false,
+    }
+}
+
+/// The gate run `id` of `candidate` at `sha`, concluded as given.
+fn gate_run(id: u64, candidate: &str, sha: &str, conclusion: Option<&str>) -> WorkflowRun {
+    WorkflowRun {
+        id,
+        head_sha: sha.into(),
+        head_branch: candidate.into(),
+        event: "push".into(),
+        status: if conclusion.is_some() {
+            "completed".into()
+        } else {
+            "in_progress".into()
+        },
+        conclusion: conclusion.map(str::to_string),
+        url: format!("https://github.com/example-org/acme/actions/runs/{id}"),
+        created_at: None,
+    }
 }
 
 fn green(mut pr: PullRequest) -> PullRequest {
@@ -139,16 +167,11 @@ impl World {
             );
             s.runs.insert(
                 (repo(), "release-gate.yml".into()),
-                Ok(vec![WorkflowRun {
-                    id: 1,
-                    head_sha: "c1".into(),
-                    head_branch: CAND.into(),
-                    event: "push".into(),
-                    status: "completed".into(),
-                    conclusion: Some("success".into()),
-                    url: "https://github.com/example-org/acme/actions/runs/1".into(),
-                    created_at: None,
-                }]),
+                Ok(vec![gate_run(1, CAND, "c1", Some("success"))]),
+            );
+            s.artifacts.insert(
+                (repo(), 1),
+                Ok(vec![evidence(&gate::evidence_artifact("c1"))]),
             );
             s.open_pulls.insert(repo(), Ok(Vec::new()));
             s.merged_pulls.insert(repo(), Ok(Vec::new()));
@@ -298,6 +321,262 @@ fn the_first_tick_after_the_cut_opens_the_cycle_and_the_second_writes_nothing() 
         "{:?}",
         &w.tracker.writes()[before..]
     );
+}
+
+const CAND2: &str = "acme-v1.2.0-rc.2";
+
+impl World {
+    /// The gate runs of the product, newest first.
+    fn gate(&self, runs: Vec<WorkflowRun>) {
+        self.github
+            .state
+            .borrow_mut()
+            .runs
+            .insert((repo(), "release-gate.yml".into()), Ok(runs));
+    }
+
+    /// The round of `candidate`: its angle sub-items and its consolidation item.
+    fn round(&self, candidate: &str) -> Vec<crate::tracker::Item> {
+        let release = self.release_item();
+        self.tracker
+            .children(&release.key)
+            .unwrap()
+            .into_iter()
+            .filter(
+                |c| match texts::bridge_item(&c.description, c.parent.as_deref()) {
+                    Some(BridgeItem::Angle { scope, .. })
+                    | Some(BridgeItem::Consolidation { scope }) => scope == candidate,
+                    _ => false,
+                },
+            )
+            .collect()
+    }
+
+    /// The briefs posted on the release item for `candidate`.
+    fn briefs(&self, candidate: &str) -> Vec<String> {
+        let release = self.release_item();
+        self.tracker
+            .comments(&release.key)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.body)
+            .filter(|b| b.starts_with(&format!("### Release brief — `{candidate}`")))
+            .collect()
+    }
+
+    /// The tracker writes of one more tick.
+    fn writes_of_a_tick(&self) -> (Report, Vec<String>) {
+        let before = self.tracker.writes().len();
+        let r = self.tick();
+        (r, self.tracker.writes()[before..].to_vec())
+    }
+
+    /// The fix of the first pass merged and `rc.2` tagged on it.
+    fn cut_rc2(&self) {
+        let mut s = self.github.state.borrow_mut();
+        s.tags.insert(
+            repo(),
+            vec![tag("acme-v1.1.0", "r0"), tag(CAND, "c1"), tag(CAND2, "c2")],
+        );
+        s.branches.insert(repo(), vec![tag(BRANCH, "c2")]);
+        s.commits.insert(
+            (repo(), "c2".into()),
+            Ok(Commit {
+                sha: "c2".into(),
+                message: "chore: candidate".into(),
+                committer_date: Timestamp::parse("2026-10-05T11:50:00Z"),
+                parents: vec![],
+            }),
+        );
+        s.compares.insert(
+            (repo(), "c2".into(), BRANCH.into()),
+            cmp(CompareStatus::Identical, &[], &[]),
+        );
+        s.compares.insert(
+            (repo(), "acme-v1.1.0".into(), "c2".into()),
+            cmp(CompareStatus::Ahead, &["m1"], &["src/a.rs", "src/b.rs"]),
+        );
+        s.compares.insert(
+            (repo(), CAND.into(), "c2".into()),
+            cmp(CompareStatus::Ahead, &["f1"], &["src/b.rs"]),
+        );
+        s.artifacts.insert(
+            (repo(), 2),
+            Ok(vec![evidence(&gate::evidence_artifact("c2"))]),
+        );
+    }
+}
+
+#[test]
+fn a_red_gate_opens_the_release_item_but_no_angle_nor_brief() {
+    let w = World::new();
+    w.gate(vec![gate_run(1, CAND, "c1", Some("failure"))]);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let item = w.release_item();
+    assert!(item.description.contains(&format!("`{CAND}`")));
+    assert!(
+        w.tracker
+            .comments(&item.key)
+            .unwrap()
+            .iter()
+            .any(|c| c.body.starts_with(&format!("### Candidate `{CAND}`")))
+    );
+    assert!(w.tracker.item("ABC-5").labels.contains(&LABEL.to_string()));
+    assert!(w.round(CAND).is_empty(), "no agent starts on a red gate");
+    assert!(w.briefs(CAND).is_empty());
+
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(writes.is_empty(), "{writes:?}");
+}
+
+#[test]
+fn the_gate_turning_green_opens_the_round_once_with_the_evidence() {
+    let w = World::new();
+    w.gate(vec![gate_run(1, CAND, "c1", None)]);
+    w.tick();
+    assert!(w.round(CAND).is_empty(), "a pending gate opens nothing");
+    let (_, writes) = w.writes_of_a_tick();
+    assert!(writes.is_empty(), "{writes:?}");
+
+    w.gate(vec![gate_run(1, CAND, "c1", Some("success"))]);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let round = w.round(CAND);
+    assert_eq!(round.len(), 3, "two angles and the consolidation item");
+    assert!(round.iter().all(|i| i.state.status == Some(Status::Ready)));
+    let briefs = w.briefs(CAND);
+    assert_eq!(briefs.len(), 1);
+    assert!(
+        briefs[0].contains("- Gate run: https://github.com/example-org/acme/actions/runs/1\n"),
+        "{}",
+        briefs[0]
+    );
+    assert!(
+        briefs[0].contains(
+            "- Evidence pack: https://github.com/example-org/acme/actions/runs/1#artifacts\n"
+        ),
+        "{}",
+        briefs[0]
+    );
+
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(writes.is_empty(), "{writes:?}");
+}
+
+#[test]
+fn a_later_candidate_with_a_red_gate_waits_again() {
+    let w = World::new();
+    w.tick();
+    assert_eq!(w.round(CAND).len(), 3);
+    w.cut_rc2();
+    w.gate(vec![
+        gate_run(2, CAND2, "c2", Some("failure")),
+        gate_run(1, CAND, "c1", Some("success")),
+    ]);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let item = w.release_item();
+    assert!(item.description.contains(&format!("`{CAND2}`")));
+    assert!(
+        w.tracker
+            .comments(&item.key)
+            .unwrap()
+            .iter()
+            .any(|c| c.body.starts_with(&format!("### Candidate `{CAND2}`")))
+    );
+    assert!(w.round(CAND2).is_empty(), "rc.2 waits for its own gate");
+    assert!(w.briefs(CAND2).is_empty());
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(writes.is_empty(), "{writes:?}");
+
+    w.gate(vec![
+        gate_run(2, CAND2, "c2", Some("success")),
+        gate_run(1, CAND, "c1", Some("success")),
+    ]);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(w.round(CAND2).len(), 3);
+    let briefs = w.briefs(CAND2);
+    assert_eq!(briefs.len(), 1);
+    assert!(
+        briefs[0].contains("actions/runs/2#artifacts"),
+        "{}",
+        briefs[0]
+    );
+}
+
+#[test]
+fn an_unreadable_gate_writes_nothing_more_and_says_why() {
+    let w = World::new();
+    w.github.state.borrow_mut().runs.insert(
+        (repo(), "release-gate.yml".into()),
+        Err(crate::github::ReadError::unreadable(
+            "runs of release-gate.yml",
+            "HTTP 502",
+        )),
+    );
+    let r = w.tick();
+    assert!(
+        r.failures
+            .iter()
+            .any(|f| f.contains(&format!("the gate of {CAND}"))),
+        "{r:?}"
+    );
+    assert!(w.round(CAND).is_empty());
+    assert!(w.briefs(CAND).is_empty());
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(!r.ok());
+    assert!(writes.is_empty(), "{writes:?}");
+}
+
+#[test]
+fn a_green_gate_whose_evidence_cannot_be_read_opens_nothing() {
+    let w = World::new();
+    w.github.state.borrow_mut().artifacts.insert(
+        (repo(), 1),
+        Err(crate::github::ReadError::unreadable(
+            "artifacts of run 1",
+            "HTTP 502",
+        )),
+    );
+    let r = w.tick();
+    assert!(
+        r.failures.iter().any(|f| f.contains("the artifacts of")),
+        "{r:?}"
+    );
+    assert!(
+        w.round(CAND).is_empty(),
+        "no agent starts without its brief"
+    );
+    assert!(w.briefs(CAND).is_empty());
+
+    // A pack the run does not carry is no more a brief than an unread one.
+    w.github
+        .state
+        .borrow_mut()
+        .artifacts
+        .insert((repo(), 1), Ok(vec![evidence("something-else")]));
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(
+        r.failures
+            .iter()
+            .any(|f| f.contains("carries no evidence pack `release-gate-evidence-c1`")),
+        "{r:?}"
+    );
+    assert!(writes.is_empty(), "{writes:?}");
+
+    w.github.state.borrow_mut().artifacts.insert(
+        (repo(), 1),
+        Ok(vec![evidence(&gate::evidence_artifact("c1"))]),
+    );
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(w.round(CAND).len(), 3);
+    assert_eq!(w.briefs(CAND).len(), 1);
 }
 
 #[test]

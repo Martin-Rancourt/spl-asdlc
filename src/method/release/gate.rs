@@ -17,6 +17,12 @@ pub fn gate_run<'a>(
         .find(|r| r.head_sha == sha && r.head_branch == candidate && r.event == "push")
 }
 
+/// The name of the evidence pack the gate run uploads for the commit `sha`
+/// (REQ-REL-037).
+pub fn evidence_artifact(sha: &str) -> String {
+    format!("release-gate-evidence-{sha}")
+}
+
 /// Green only for a run that concluded `success`.
 pub fn is_green(run: Option<&WorkflowRun>) -> bool {
     run.and_then(|r| r.conclusion.as_deref()) == Some("success")
