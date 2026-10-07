@@ -443,6 +443,27 @@ fn an_existing_relation_is_not_created_again() {
 }
 
 #[test]
+fn a_pr_already_linked_is_not_linked_again() {
+    let (l, t) = linear();
+    t.on_body("POST", URL, "attachmentsForURL", 200, r#"{"data":{"attachmentsForURL":{"nodes":[{"issue":{"identifier":"ABC-7"}}],"pageInfo":{"hasNextPage":false}}}}"#);
+    l.link_pr("ABC-7", "https://github.com/example-org/acme/pull/9", "PR")
+        .unwrap();
+    assert!(!t.bodies().iter().any(|b| b.contains("attachmentLinkURL")));
+
+    // An unreadable attachment list is not "not linked": nothing is written.
+    let (l, t) = linear();
+    t.on_body(
+        "POST",
+        URL,
+        "attachmentsForURL",
+        200,
+        r#"{"data":{"attachmentsForURL":{"nodes":[]}}}"#,
+    );
+    assert!(l.link_pr("ABC-7", "u", "PR").is_err());
+    assert!(!t.bodies().iter().any(|b| b.contains("attachmentLinkURL")));
+}
+
+#[test]
 fn a_relation_that_names_no_item_is_unreadable() {
     let (l, t) = linear();
     t.on_body("POST", URL, "relations(first", 200, r#"{"data":{"issue":{
