@@ -12,6 +12,7 @@
 pub mod closure;
 pub mod link;
 pub mod merge;
+pub mod post_deploy;
 pub mod release;
 pub mod sweep;
 
@@ -125,7 +126,8 @@ impl Tick<'_> {
 }
 
 /// One tick over the repository of `t.config`: the release pass, the PR
-/// pass, the sweep (spec 07, "What a tick does"). At most one merge per
+/// pass, the sweep, the post-deploy validation (spec 07, "What a tick
+/// does"). At most one merge per
 /// repository per tick (invariant 6). The caller flushes the action log.
 pub fn run(t: &Tick, log: &mut ActionLog) -> Report {
     let mut report = Report::default();
@@ -154,6 +156,12 @@ pub fn run(t: &Tick, log: &mut ActionLog) -> Report {
     }
     if t.in_time() {
         sweep::pass(t, log, &mut report, &pass.open);
+    } else {
+        report.out_of_time = true;
+        return report;
+    }
+    if t.in_time() {
+        post_deploy::pass(t, log, &mut report);
     } else {
         report.out_of_time = true;
     }

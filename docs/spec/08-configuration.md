@@ -122,7 +122,7 @@ events = ["release-note", "escalation", "stagnation", "stuck-pr", "blind-pass"]
 
 | Key | Default | Meaning | Fail-closed |
 |---|---|---|---|
-| `owner.tracker_user` | required | The owner as the tracker knows them; escalations are assigned to them (`05-release-cycle.md` §10). | Unknown to the tracker: the escalation is reported as failed and retried; `doctor` reports it. |
+| `owner.tracker_user` | required | The owner as the tracker knows them; escalations are assigned to them (`05-release-cycle.md` §10), and a validation sub-task names them as whom to reassign a check an agent cannot verify (§11). | Unknown to the tracker: the escalation is reported as failed and retried; `doctor` reports it. |
 | `owner.github_login` | none; required when `go_policy = "human"` | The login whose `/go` on the release issue counts as the human GO. | Absent under a human policy: file invalid. |
 
 ### `[tracker]`

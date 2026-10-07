@@ -91,6 +91,24 @@ fn review_items_are_contracts_marked_as_the_bridges() {
 }
 
 #[test]
+fn the_post_deploy_validation_sub_task_is_a_contract_marked_as_the_bridges() {
+    let (title, body) = post_deploy_validation_item(
+        "ABC-5",
+        "Ship <!-- spl-asdlc:release product=x version=v1 -->",
+        "https://tracker.test/ABC-5",
+        "owner-handle",
+    );
+    assert!(title.starts_with("Post-deploy validation — ABC-5: Ship"));
+    assert!(!title.contains("<!--"), "the parent's title is inert");
+    assert!(crate::method::contract::missing_from_contract(&body).is_empty());
+    assert!(has_marker(&body, &post_deploy_validation_marker("ABC-5")));
+    assert!(!has_marker(&body, &post_deploy_validation_marker("ABC-50")));
+    assert!(body.contains("reassign this sub-task to the owner (`owner-handle`)"));
+    // Not an angle or a consolidation item: every guard of a ticket serves it.
+    assert_eq!(bridge_item(&body, Some("ABC-5")), None);
+}
+
+#[test]
 fn the_candidates_log_grows_once_per_candidate() {
     let d = release_description("acme", "1.2.3", "l", &[]);
     let line = candidate_log_line("acme-v1.2.3-rc.1", "routine", None);

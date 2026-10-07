@@ -4,7 +4,7 @@ Points the specification leaves open, raised to the owner. Until each is decided
 
 | # | Point | Until decided |
 |---|---|---|
-| 1 | Who moves a ticket from Post Deploy to Done, and when. Spec 03 and 09 give Done only to the closure; the closure comment names a `release post-release-check` verb that spec 07 does not have. | Nothing moves Post Deploy. |
+| 1 | Who moves a ticket from Post Deploy to Done, and when. **Decided by the owner (2026-10-07)**: no verb; the bridge moves the ticket to Done at the tick that finds every `## Post deploy` box checked, and the closure creates a validation sub-task for each ticket it moves to Post Deploy (spec 03, 05 §11, 07, 09; BR-ASDLC-002, BR-ASDLC-003). | Decided: implemented as specified. |
 | 2 | ~~Release angle sub-items and the brief: at the creation of the release item (spec 05 §2), or once the gate of the candidate is green (spec 05 §3, REQ-REL-046/048).~~ **Decided by the owner**: once the candidate's gate is green, never at the release item's creation; spec 05 §2–§3 say so, BR-ASDLC-004 enforces it. | Decided: no longer waits. |
 | 3 | The human GO: the owner's `/go` on the release item is a tracker comment, but spec 08 names `owner.github_login`. | Under `go_policy = "human"` the GO is never given. |
 | 4 | Whose approval counts as the human one under `review.human_approval`. | A PR that needs it is not merged; `review.human_reviewer` is asked once. |

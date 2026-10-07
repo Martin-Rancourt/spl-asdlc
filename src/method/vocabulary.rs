@@ -189,6 +189,11 @@ pub const QA_FINDING_LABEL: &str = "qa-finding";
 pub const NEEDS_REVIEW_LABEL: &str = "needs-review";
 /// The tickets the bridge opens for PRs of `review.ticketless_authors`.
 pub const TICKETLESS_LABEL: &str = "ticketless-pr";
+/// The label on a ticket waiting in Post Deploy for its validation, per
+/// product: two bridges sharing a tracker team never take each other's.
+pub fn post_deploy_label(product: &str) -> String {
+    format!("post-deploy-validation/{product}")
+}
 /// Label a component's deployment job sets on its merged release PR.
 pub const DEPLOYED_LABEL: &str = "deployed: production";
 
@@ -247,6 +252,16 @@ mod tests {
             kind: StateKind::Completed,
         };
         assert!(shipped.is_resolved(), "outside the table, the kind decides");
+    }
+
+    #[test]
+    fn post_deploy_stays_outside_the_in_progress_group() {
+        // BR-ASDLC-003: an implementer is served the unstarted and started
+        // kinds (Ready, In Progress); Post Deploy is neither, its
+        // verification is served through the validation sub-task, in Ready.
+        let kind = StateKind::of(Status::PostDeploy);
+        assert!(!matches!(kind, StateKind::Unstarted | StateKind::Started));
+        assert_eq!(StateKind::of(Status::Ready), StateKind::Unstarted);
     }
 
     #[test]
