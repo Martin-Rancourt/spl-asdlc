@@ -12,7 +12,9 @@ use crate::github::{
     Timestamp, WorkflowRun,
 };
 use crate::method::texts::{self, BridgeItem};
-use crate::method::vocabulary::{POST_DEPLOY_LABEL, Status};
+use crate::method::vocabulary::Status;
+
+const POST_DEPLOY_LABEL: &str = "post-deploy-validation/acme";
 use crate::notify::Recorder;
 use crate::tracker::Tracker;
 use crate::tracker::fake::FakeTracker;

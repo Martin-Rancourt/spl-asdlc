@@ -343,9 +343,8 @@ pub fn post_deploy_validation_item(
          ## Non-goals\n- Changing the code, or any box of {parent} outside its `## Post deploy` section.\n\
          - Checking a box whose check was not verified in production.\n\n\
          ## Acceptance criteria\n\
-         - [ ] Every `## Post deploy` box of {parent} is checked, each once its check was verified in production.\n\
-         - [ ] Every check you could not verify yourself is named in a comment here, and this sub-task was reassigned to \
-         the owner (`{owner}`) to finish it.\n\n\
+         - [ ] Every `## Post deploy` box of {parent} is either checked, once its check was verified in production, or \
+         named in a comment here as a check you could not verify, with this sub-task reassigned to the owner (`{owner}`).\n\n\
          ## Business rules\n{absence}\n\n\
          ## Context\n- Parent: {parent}\n- The owner: `{owner}`",
         marker = post_deploy_validation_marker(parent),

@@ -18,7 +18,7 @@ use serde_json::json;
 
 use crate::action_log::ActionLog;
 use crate::method::texts;
-use crate::method::vocabulary::{POST_DEPLOY_LABEL, Status};
+use crate::method::vocabulary::{Status, post_deploy_label};
 use crate::tracker::{Item, NewItem};
 
 use super::closure::contract_gate;
@@ -29,13 +29,14 @@ use super::{Report, Tick};
 /// Deploy whose contract is complete moves to Done; one that still waits
 /// gets its validation sub-task if it lost it.
 pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) {
-    let items = match t.tracker.list_by_label(POST_DEPLOY_LABEL) {
+    let label = label(t);
+    let items = match t.tracker.list_by_label(&label) {
         Ok(i) => i,
         Err(e) => {
             t.unreadable(
                 report,
                 "post-deploy validation",
-                format!("the items labelled {POST_DEPLOY_LABEL}: {e}"),
+                format!("the items labelled {label}: {e}"),
             );
             return;
         }
@@ -92,40 +93,40 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) {
     }
 }
 
-fn labelled(item: &Item) -> bool {
-    item.labels
-        .iter()
-        .any(|l| l.eq_ignore_ascii_case(POST_DEPLOY_LABEL))
+fn label(t: &Tick) -> String {
+    post_deploy_label(&t.config.product.name)
+}
+
+fn labelled(t: &Tick, item: &Item) -> bool {
+    let label = label(t);
+    item.labels.iter().any(|l| l.eq_ignore_ascii_case(&label))
 }
 
 /// Put the index label on a ticket going to Post Deploy; whether it carries
 /// it now. Nothing is written when it already does.
 pub fn watch(t: &Tick, log: &mut ActionLog, report: &mut Report, item: &Item) -> bool {
-    if labelled(item) {
+    let label = label(t);
+    if labelled(t, item) {
         return true;
     }
     t.act(
         log,
         report,
         &item.key,
-        &format!("ensure label {POST_DEPLOY_LABEL}"),
+        &format!("ensure label {label}"),
         json!({}),
-        || {
-            t.tracker
-                .ensure_label(POST_DEPLOY_LABEL)
-                .map_err(|e| e.to_string())
-        },
+        || t.tracker.ensure_label(&label).map_err(|e| e.to_string()),
     )
     .is_some()
         && t.act(
             log,
             report,
             &item.key,
-            &format!("label {POST_DEPLOY_LABEL}"),
+            &format!("label {label}"),
             json!({}),
             || {
                 t.tracker
-                    .add_label(&item.key, POST_DEPLOY_LABEL)
+                    .add_label(&item.key, &label)
                     .map_err(|e| e.to_string())
             },
         )
@@ -134,18 +135,19 @@ pub fn watch(t: &Tick, log: &mut ActionLog, report: &mut Report, item: &Item) ->
 
 /// Take the index label off a resolved ticket.
 fn unwatch(t: &Tick, log: &mut ActionLog, report: &mut Report, item: &Item) {
-    if !labelled(item) {
+    let label = label(t);
+    if !labelled(t, item) {
         return;
     }
     t.act(
         log,
         report,
         &item.key,
-        &format!("unlabel {POST_DEPLOY_LABEL}"),
+        &format!("unlabel {label}"),
         json!({}),
         || {
             t.tracker
-                .remove_label(&item.key, POST_DEPLOY_LABEL)
+                .remove_label(&item.key, &label)
                 .map_err(|e| e.to_string())
         },
     );

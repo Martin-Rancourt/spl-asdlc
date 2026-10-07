@@ -45,7 +45,7 @@ In Review, To Deploy and Post Deploy are **validation** states: the item is stil
 
 ## Labels
 
-`release/<product>-v<version>` on every ticket embarked in a cycle; `qa-finding` on finding tickets; `blocked-by-human` on an item waiting for a human gesture; `post-deploy-validation` on a ticket in Post Deploy (the bridge's index, since a tracker cannot be listed by status: set by the closure, removed once the ticket is resolved).
+`release/<product>-v<version>` on every ticket embarked in a cycle; `qa-finding` on finding tickets; `blocked-by-human` on an item waiting for a human gesture; `post-deploy-validation/<product>` on a ticket in Post Deploy (the bridge's index, since a tracker cannot be listed by status: set by the closure, removed once the ticket is resolved).
 
 ## Other terms
 

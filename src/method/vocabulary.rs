@@ -189,10 +189,11 @@ pub const QA_FINDING_LABEL: &str = "qa-finding";
 pub const NEEDS_REVIEW_LABEL: &str = "needs-review";
 /// The tickets the bridge opens for PRs of `review.ticketless_authors`.
 pub const TICKETLESS_LABEL: &str = "ticketless-pr";
-/// The bridge's index of the tickets in Post Deploy (BR-ASDLC-002): set when
-/// the closure moves a ticket there, removed once the ticket is resolved, so
-/// the list stays as short as the tickets still waiting.
-pub const POST_DEPLOY_LABEL: &str = "post-deploy-validation";
+/// The label on a ticket waiting in Post Deploy for its validation, per
+/// product: two bridges sharing a tracker team never take each other's.
+pub fn post_deploy_label(product: &str) -> String {
+    format!("post-deploy-validation/{product}")
+}
 /// Label a component's deployment job sets on its merged release PR.
 pub const DEPLOYED_LABEL: &str = "deployed: production";
 
