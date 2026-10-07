@@ -834,6 +834,15 @@ impl Tracker for Linear {
     }
 
     fn link_pr(&self, key: &str, pr_url: &str, title: &str) -> TResult<()> {
+        // Linear refuses a second attachment of the same URL on an item: a
+        // link already there is a no-op, and a lost answer is found here.
+        if self
+            .items_linked_to_pr(pr_url)?
+            .iter()
+            .any(|k| k.eq_ignore_ascii_case(key))
+        {
+            return Ok(());
+        }
         let id = self.issue_id(key)?;
         self.write(
             &format!("link of {pr_url} on {key}"),

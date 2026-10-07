@@ -443,6 +443,68 @@ fn an_existing_relation_is_not_created_again() {
 }
 
 #[test]
+fn a_pr_already_linked_is_not_linked_again() {
+    let (l, t) = linear();
+    t.on_body("POST", URL, "attachmentsForURL", 200, r#"{"data":{"attachmentsForURL":{"nodes":[{"issue":{"identifier":"ABC-7"}}],"pageInfo":{"hasNextPage":false}}}}"#);
+    l.link_pr("ABC-7", "https://github.com/example-org/acme/pull/9", "PR")
+        .unwrap();
+    assert!(!t.bodies().iter().any(|b| b.contains("attachmentLinkURL")));
+
+    // An unreadable attachment list is not "not linked": nothing is written.
+    let (l, t) = linear();
+    t.on_body(
+        "POST",
+        URL,
+        "attachmentsForURL",
+        200,
+        r#"{"data":{"attachmentsForURL":{"nodes":[]}}}"#,
+    );
+    assert!(l.link_pr("ABC-7", "u", "PR").is_err());
+    assert!(!t.bodies().iter().any(|b| b.contains("attachmentLinkURL")));
+}
+
+#[test]
+fn a_pr_linked_to_another_item_or_to_none_is_linked() {
+    for nodes in [r#"[{"issue":{"identifier":"ABC-8"}}]"#, "[]"] {
+        let (l, t) = linear();
+        t.on_body(
+            "POST",
+            URL,
+            "attachmentsForURL",
+            200,
+            &format!(
+                r#"{{"data":{{"attachmentsForURL":{{"nodes":{nodes},"pageInfo":{{"hasNextPage":false}}}}}}}}"#
+            ),
+        );
+        t.on_body(
+            "POST",
+            URL,
+            "issue(id: $id) { id identifier",
+            200,
+            &format!(
+                r#"{{"data":{{"issue":{}}}}}"#,
+                issue("ABC-7", "Ready", "unstarted")
+            ),
+        );
+        t.on_body(
+            "POST",
+            URL,
+            "attachmentLinkURL",
+            200,
+            r#"{"data":{"attachmentLinkURL":{"success":true}}}"#,
+        );
+        l.link_pr("ABC-7", "https://github.com/example-org/acme/pull/9", "PR")
+            .unwrap();
+        let link = t
+            .bodies()
+            .into_iter()
+            .find(|b| b.contains("attachmentLinkURL"))
+            .expect("the link is written");
+        assert!(link.contains("pull/9"), "{link}");
+    }
+}
+
+#[test]
 fn a_relation_that_names_no_item_is_unreadable() {
     let (l, t) = linear();
     t.on_body("POST", URL, "relations(first", 200, r#"{"data":{"issue":{
