@@ -4,7 +4,7 @@ One App per organisation or account, named after the product's service identity 
 
 **Create** (Settings → Developer settings → GitHub Apps → New):
 - Name: the service identity. Homepage: the product's repository. Webhook: off (the bridge polls).
-- Repository permissions: Contents **read and write** (branches, tags, merges, files), Pull requests **read and write** (reviews, comments, labels, merges), Checks **read**, Actions **read and write** (dispatch the cut, read runs and artifacts), Metadata **read**, Workflows **read and write** only if the App must push workflow files (the bootstrap does; a running installation does not).
+- Repository permissions: Contents **read and write** (branches, tags, merges, files), Pull requests **read and write** (reviews, comments, labels, merges), Checks **read**, Commit statuses **read**, Actions **read and write** (dispatch the cut, read runs and artifacts), Administration **read** (the required status checks of classic branch protection: without it the bridge cannot tell which checks are required and merges nothing), Metadata **read**, Workflows **read and write** only if the App must push workflow files (the bootstrap does; a running installation does not).
 - Where can it be installed: only this account.
 - Generate a private key; store it where the bridge runs and as the repository secret the workflows read. Note the App id and the installation id.
 

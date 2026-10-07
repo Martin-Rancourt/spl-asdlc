@@ -17,12 +17,26 @@ name = "spl-asdlc"
 path = "src/main.rs"
 
 [dependencies]
+base64 = "0.23"
 clap = { version = "4.6", features = ["derive"] }
+jsonwebtoken = { version = "11.1", default-features = false, features = ["use_pem", "rust_crypto"] }
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 thiserror = "2.0"
+time = { version = "0.3", features = ["parsing", "formatting", "macros"] }
 toml = "1.1"
+ureq = { version = "3.4", default-features = false, features = ["rustls", "gzip"] }
 
 [dev-dependencies]
+rand = "0.8"
+rsa = { version = "0.9", features = ["pem"] }
+
+# RSA key generation in the App tests is slow without optimisation.
+[profile.dev.package.num-bigint-dig]
+opt-level = 3
+
+[profile.dev.package.rsa]
+opt-level = 3
 
 [profile.release]
 strip = true
