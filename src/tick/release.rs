@@ -1481,12 +1481,16 @@ pub fn decide(
     };
     // The branch moved past the candidate with more than bookkeeping: fixes
     // no gate and no QA has seen (REQ-REL-070).
+    // The gate record is the bridge's own write on the branch, after the
+    // candidate: it is never a gap.
+    let record = shape.gate_record_path(c.version);
     let tip_gaps = match t.github.compare(&t.repo, &c.sha, branch) {
         Ok(cmp) => {
             let moved: Vec<String> = cmp
                 .files
                 .into_iter()
                 .filter(|f| !cfg.release.bookkeeping_paths.iter().any(|b| b == f))
+                .filter(|f| record.as_deref() != Some(f.as_str()))
                 .collect();
             if moved.is_empty() {
                 Vec::new()
