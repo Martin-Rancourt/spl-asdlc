@@ -310,11 +310,10 @@ fn done_gate_refusal_names_the_unreadable_reason_instead() {
 }
 
 #[test]
-fn reassigns_to_its_author_or_says_why_it_is_left_unassigned() {
+fn a_reopened_ticket_is_said_unassigned_with_nobody_named() {
     let gate = gate_of(&[("ABC-1", "- [ ] a")]);
-    let assigned = reopen_comment("ABC-1", &gate, Ok("implementer-handle"));
-    assert!(assigned.contains("reassigned to its implementer (implementer-handle)"));
-    let alone = reopen_comment("ABC-1", &gate, Err("no implementer is known"));
-    assert!(alone.contains("left unassigned — no implementer is known"));
-    assert!(alone.contains("The default implementer picks it up"));
+    let text = reopen_comment("ABC-1", &gate);
+    assert!(text.starts_with(&refusal("ABC-1", &gate, false)));
+    assert!(text.ends_with(RETURNED_UNASSIGNED), "{text}");
+    assert!(!text.contains("reassigned"));
 }

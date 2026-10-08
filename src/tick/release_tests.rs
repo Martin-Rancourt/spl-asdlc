@@ -1942,3 +1942,113 @@ fn the_deployment_ledger_reads_the_component_prs_merged_into_the_release_branch(
     let r = w.tick();
     assert!(!r.failures.iter().any(|f| f.contains("ledger")), "{r:?}");
 }
+
+// ---- a ticket the closure reopens is unassigned (BR-ASDLC-009) ----
+
+/// ABC-5 shipped with `description`, assigned to whoever took it last.
+fn assigned_ticket(w: &World, description: &str) {
+    w.tracker
+        .seed("ABC-5", "Shipped", description, Status::ToDeploy, &[]);
+    w.tracker
+        .link("ABC-5", "https://github.com/example-org/acme/pull/5");
+    let last = crate::tracker::User {
+        id: "u-last".into(),
+        name: "last-taker".into(),
+    };
+    w.tracker.assign("ABC-5", Some(&last)).unwrap();
+}
+
+const INCOMPLETE: &str = "## Goal\nShip it.\n\n## Acceptance criteria\n- [x] shipped\n- [ ] fast\n\n## Business rules\nNo new rule.\n";
+
+#[test]
+fn the_closure_reopens_an_incomplete_ticket_unassigned_once() {
+    let w = World::new();
+    assigned_ticket(&w, INCOMPLETE);
+    w.tick();
+    assert!(w.tracker.item("ABC-5").assignee.is_some());
+    publish(&w);
+    let before = w.tracker.writes().len();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let ticket = w.tracker.item("ABC-5");
+    assert_eq!(ticket.state.status, Some(Status::InProgress));
+    assert_eq!(ticket.assignee, None, "nobody is named");
+    assert!(
+        w.tracker.writes()[before..].contains(&"status ABC-5 In Progress (unassigned)".to_string()),
+        "state and assignee in one write: {:?}",
+        w.tracker.writes()
+    );
+    let said = w.tracker.comments("ABC-5").unwrap();
+    assert!(
+        said.iter().any(|c| c
+            .body
+            .contains(crate::method::done_gate::RETURNED_UNASSIGNED)),
+        "{said:?}"
+    );
+    let before = w.tracker.writes().len();
+    w.tick();
+    assert_eq!(w.tracker.writes().len(), before, "a replay writes nothing");
+}
+
+#[test]
+fn the_closure_reopens_a_ticket_citing_an_unknown_rule_unassigned() {
+    let w = World::new();
+    assigned_ticket(
+        &w,
+        "## Goal\nShip it.\n\n## Acceptance criteria\n- [x] shipped\n\n## Business rules\nBR-ACME-001 applies.\n\n## Release note\nYou can now ship.\n",
+    );
+    w.github.state.borrow_mut().files.insert(
+        (
+            repo(),
+            "acme-v1.2.0".into(),
+            "docs/business-rules.md".into(),
+        ),
+        Ok("| ID | Rule |\n|---|---|\n| BR-ACME-002 | Another rule. |\n".into()),
+    );
+    w.tick();
+    publish(&w);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let ticket = w.tracker.item("ABC-5");
+    assert_eq!(ticket.state.status, Some(Status::InProgress));
+    assert_eq!(ticket.assignee, None);
+    let before = w.tracker.writes().len();
+    w.tick();
+    assert_eq!(w.tracker.writes().len(), before, "a replay writes nothing");
+}
+
+#[test]
+fn a_dry_run_of_the_closure_prints_the_unassign() {
+    let w = World::new();
+    assigned_ticket(&w, INCOMPLETE);
+    w.tick();
+    publish(&w);
+    let before = w.tracker.writes().len();
+    let intents = crate::dry::Intents::default();
+    let tr = crate::dry::DryTracker {
+        inner: &w.tracker,
+        intents: &intents,
+    };
+    let sig = crate::dry::DrySignal { intents: &intents };
+    let t = Tick {
+        tracker: &tr,
+        signal: &sig,
+        dry_run: true,
+        ..w.tick_ctx()
+    };
+    let mut log = ActionLog::in_memory();
+    run(&t, &mut log);
+    assert_eq!(
+        w.tracker.writes().len(),
+        before,
+        "the real tracker saw no write"
+    );
+    assert!(w.tracker.item("ABC-5").assignee.is_some());
+    assert!(
+        intents
+            .lines()
+            .contains(&"tracker: ABC-5 → In Progress, unassigned".to_string()),
+        "{:?}",
+        intents.lines()
+    );
+}

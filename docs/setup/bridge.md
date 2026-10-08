@@ -4,7 +4,7 @@ The bridge is the `spl-asdlc` binary (or the library linked into a tracker's run
 
 | Host | How |
 |---|---|
-| Livela runner | `BridgeJob`, a `DaemonJob` of the runner, called every pass; see `tracker-livela.md` |
+| Livela runner | `BridgeJob`, a `DaemonJob` in the runner's own code that depends on this crate by version, called every pass; see `tracker-livela.md` |
 | A server or workstation | A timer or cron: `spl-asdlc tick` every five minutes; `spl-asdlc tick --dry-run` first |
 | An interactive session | A skill or alias that runs `spl-asdlc tick` on demand; the latency is then the human's |
 

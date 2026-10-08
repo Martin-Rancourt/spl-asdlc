@@ -59,10 +59,10 @@ pub enum Judgement {
     /// Only its own post-deploy boxes remain.
     PostDeploy,
     /// Open boxes, unreadable or absent contract: back to In Progress,
-    /// reassigned to its implementer.
+    /// unassigned (BR-ASDLC-009).
     Reopen,
     /// It cites rules the registry at the tag does not declare: back to In
-    /// Progress (no reassignment), with the missing ids.
+    /// Progress, unassigned too, with the missing ids.
     UnknownRules(Vec<String>),
     /// It cites rules and the registry could not be read: left in its state.
     RulesUnverified(String),
@@ -117,7 +117,8 @@ pub fn unknown_rules_comment(missing: &[String], registry_path: &str, product: &
     format!(
         "Business rules: {ids} cited in `Business rules` (absent from `{registry_path}` of `{product}` at this release's tag; \
          if the id is a typo, fix it in `Business rules`; if the rule is new, open a PR adding it to the registry — it ships \
-         with the next release). Returned to `In Progress` by the release closure."
+         with the next release). {}",
+        crate::method::done_gate::RETURNED_UNASSIGNED
     )
 }
 
@@ -284,7 +285,7 @@ mod tests {
         );
         let text = unknown_rules_comment(&["BR-ACME-001".into()], "docs/business-rules.md", "acme");
         assert!(text.contains("at this release's tag"));
-        assert!(text.ends_with("Returned to `In Progress` by the release closure."));
+        assert!(text.ends_with(crate::method::done_gate::RETURNED_UNASSIGNED));
     }
 
     #[test]

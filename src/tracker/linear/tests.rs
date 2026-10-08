@@ -235,6 +235,36 @@ fn state_and_assignee_change_in_one_write() {
 }
 
 #[test]
+fn a_status_write_can_unassign_in_the_same_write() {
+    let (l, t) = linear();
+    team(&t);
+    t.on_body(
+        "POST",
+        URL,
+        "issueUpdate",
+        200,
+        r#"{"data":{"issueUpdate":{"success":true}}}"#,
+    );
+    l.set_status("ABC-2", Status::Ready, Some(None)).unwrap();
+    let updates: Vec<String> = t
+        .bodies()
+        .into_iter()
+        .filter(|b| b.contains("issueUpdate"))
+        .collect();
+    assert_eq!(updates.len(), 1, "one write: {updates:?}");
+    assert!(
+        updates[0].contains(r#""assigneeId":null"#),
+        "{}",
+        updates[0]
+    );
+    assert!(
+        updates[0].contains(r#""stateId":"s-ready""#),
+        "{}",
+        updates[0]
+    );
+}
+
+#[test]
 fn a_write_linear_does_not_confirm_is_refused() {
     let (l, t) = linear();
     t.on_body(
