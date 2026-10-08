@@ -12,7 +12,7 @@ name: asdlc-release-cut
 # dispatches the caller by its file name (`[release] cut_workflow`, default
 # `release-cut.yml`) with ONE input, `action`, on the default branch for `open`
 # and on the release branch for `candidate`: every other dispatch input must
-# have a default. Example caller (lot 4 writes the real one):
+# have a default. Example caller (in full: docs/setup/examples/):
 #
 #   name: release-cut
 #   on:

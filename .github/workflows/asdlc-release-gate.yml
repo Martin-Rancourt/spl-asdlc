@@ -12,7 +12,7 @@ name: asdlc-release-gate
 # The bridge reads the run of the CALLER (`[release] gate_workflow`, default
 # `release-gate.yml`) whose event is `push`, whose head branch is the RC tag
 # and whose head commit is the tag's: only its conclusion `success` is green.
-# Example caller (lot 4 writes the real one):
+# Example caller (in full: docs/setup/examples/):
 #
 #   name: release-gate
 #   on:

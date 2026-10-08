@@ -2,7 +2,8 @@
 //! YAML this repository ships is parsed, the repository lints run on it, and
 //! the scripts of its steps are executed as shipped (never a copy), with the
 //! untrusted values in the environment. The example callers of
-//! `docs/setup/examples/` are checked against the workflows they call.
+//! `docs/setup/examples/` and this repository's own callers are checked
+//! against the workflows they call.
 //!
 //! The lints run everywhere; the executions need `bash`, `git` and `jq`, so
 //! they run on Unix only.
@@ -10,6 +11,7 @@
 mod examples;
 mod harness;
 mod lints;
+mod own;
 #[cfg(unix)]
 mod pr_guards;
 #[cfg(unix)]

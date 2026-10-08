@@ -2,7 +2,8 @@
 //! each one parses, calls a reusable workflow or action of this repository
 //! with only the inputs and secrets it declares, every required one given,
 //! grants the permissions its called jobs ask for, pins every other action
-//! by commit, and keeps expressions out of its scripts.
+//! by commit, and keeps expressions out of its scripts. The checks of a call
+//! are shared with this repository's own callers (`own.rs`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -29,7 +30,7 @@ fn example(name: &str) -> Yaml {
     load(&root().join("docs/setup/examples").join(name))
 }
 
-fn keys(y: &Yaml) -> BTreeSet<String> {
+pub(crate) fn keys(y: &Yaml) -> BTreeSet<String> {
     y.as_hash()
         .map(|h| {
             h.keys()
@@ -40,7 +41,7 @@ fn keys(y: &Yaml) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
-fn jobs(doc: &Yaml) -> Vec<(String, Yaml)> {
+pub(crate) fn jobs(doc: &Yaml) -> Vec<(String, Yaml)> {
     doc["jobs"]
         .as_hash()
         .expect("jobs")
@@ -146,17 +147,24 @@ fn every_reusable_workflow_and_action_has_an_example_caller() {
     }
 }
 
-#[test]
-fn a_called_workflow_gets_only_declared_inputs_and_every_required_one() {
-    for f in examples() {
-        let doc = load(&f);
+/// How a caller names a unit of this repository: the `uses:` value and a
+/// label for messages -> the unit's path (a workflow file or an action
+/// directory). It panics on any other shape.
+pub(crate) type Resolve = fn(&str, &str) -> String;
+
+/// Each job of `files` that calls a workflow gives it only the inputs and
+/// secrets it declares, every required one, and each secret by name.
+pub(crate) fn check_called_workflows(files: &[PathBuf], resolve: Resolve) {
+    for f in files {
+        let doc = load(f);
         for (id, job) in jobs(&doc) {
             let Some(uses) = job["uses"].as_str() else {
                 continue;
             };
-            let what = format!("{} job {id}", relative(&f));
-            let called = workflow(&local(uses, &what));
+            let what = format!("{} job {id}", relative(f));
+            let called = workflow(&resolve(uses, &what));
             let call = &called["on"]["workflow_call"];
+            assert!(!call.is_badvalue(), "{what}: {uses} is not callable");
             check_with(&keys(&job["with"]), &declared(&call["inputs"]), &what);
 
             let secrets = &call["secrets"];
@@ -192,19 +200,30 @@ fn a_called_workflow_gets_only_declared_inputs_and_every_required_one() {
 }
 
 #[test]
-fn a_called_action_gets_only_declared_inputs_and_every_required_one() {
-    for f in examples() {
-        for (job, s) in steps(&load(&f)) {
-            let Some(uses) = s["uses"].as_str().filter(|u| u.starts_with(PREFIX)) else {
+fn a_called_workflow_gets_only_declared_inputs_and_every_required_one() {
+    check_called_workflows(&examples(), local);
+}
+
+/// Each step of `files` that uses an action of this repository (`ours`)
+/// gives it only the inputs it declares, every required one.
+pub(crate) fn check_called_actions(files: &[PathBuf], ours: fn(&str) -> bool, resolve: Resolve) {
+    for f in files {
+        for (job, s) in steps(&load(f)) {
+            let Some(uses) = s["uses"].as_str().filter(|u| ours(u)) else {
                 continue;
             };
-            let what = format!("{} job {job}", relative(&f));
-            let dir = local(uses, &what);
+            let what = format!("{} job {job}", relative(f));
+            let dir = resolve(uses, &what);
             assert!(dir.starts_with("actions/"), "{what}: a step uses {dir}");
             let action = workflow(&format!("{dir}/action.yml"));
             check_with(&keys(&s["with"]), &declared(&action["inputs"]), &what);
         }
     }
+}
+
+#[test]
+fn a_called_action_gets_only_declared_inputs_and_every_required_one() {
+    check_called_actions(&examples(), |u| u.starts_with(PREFIX), local);
 }
 
 /// `none` < `read` < `write`.
@@ -225,17 +244,19 @@ fn grants(p: &Yaml, what: &str) -> BTreeMap<String, u8> {
         .collect()
 }
 
-#[test]
-fn a_caller_grants_every_permission_its_called_jobs_ask_for() {
-    for f in examples() {
-        let doc = load(&f);
+/// Each file of `files` sets top-level permissions, each job states its
+/// own, and a job that calls a workflow grants every permission the called
+/// jobs ask for.
+pub(crate) fn check_permissions(files: &[PathBuf], resolve: Resolve) {
+    for f in files {
+        let doc = load(f);
         assert!(
             !doc["permissions"].is_badvalue(),
             "{}: no top-level permissions (REQ-CI-005)",
-            relative(&f)
+            relative(f)
         );
         for (id, job) in jobs(&doc) {
-            let what = format!("{} job {id}", relative(&f));
+            let what = format!("{} job {id}", relative(f));
             assert!(
                 !job["permissions"].is_badvalue(),
                 "{what}: permissions not stated"
@@ -244,7 +265,7 @@ fn a_caller_grants_every_permission_its_called_jobs_ask_for() {
                 continue;
             };
             let have = grants(&job["permissions"], &what);
-            let called = workflow(&local(uses, &what));
+            let called = workflow(&resolve(uses, &what));
             // GitHub refuses at startup a called job asking more than its
             // caller job holds, whatever that job's `if:` says.
             let mut asked = vec![("top level".to_string(), called["permissions"].clone())];
@@ -265,32 +286,48 @@ fn a_caller_grants_every_permission_its_called_jobs_ask_for() {
 }
 
 #[test]
-fn every_other_action_is_pinned_by_commit_as_this_repository_pins_it() {
+fn a_caller_grants_every_permission_its_called_jobs_ask_for() {
+    check_permissions(&examples(), local);
+}
+
+/// Every action of `files` but this repository's own (`ours`) is pinned by
+/// commit, with its version in a comment, at the commit this repository's
+/// workflows and actions pin it to.
+pub(crate) fn check_pins(files: &[PathBuf], ours: fn(&str) -> bool) {
     let pinned = Regex::new(r"^([^@\s]+)@([0-9a-f]{40})$").unwrap();
     // The pins of this repository's own workflows.
-    let mut ours: BTreeMap<String, String> = BTreeMap::new();
+    let mut pins: BTreeMap<String, String> = BTreeMap::new();
     for f in crate::harness::files() {
         for (_, s) in steps(&load(&f)) {
             if let Some(c) = s["uses"].as_str().and_then(|u| pinned.captures(u)) {
-                ours.insert(c[1].to_string(), c[2].to_string());
+                if let Some(sha) = pins.get(&c[1]) {
+                    assert_eq!(
+                        sha.as_str(),
+                        &c[2],
+                        "{}: {} is pinned elsewhere here",
+                        relative(&f),
+                        &c[1]
+                    );
+                }
+                pins.insert(c[1].to_string(), c[2].to_string());
             }
         }
     }
     let commented = Regex::new(r"uses:\s*\S+@[0-9a-f]{40} # v?\S+").unwrap();
-    for f in examples() {
-        let text = std::fs::read_to_string(&f).unwrap();
-        for (job, s) in steps(&load(&f)) {
+    for f in files {
+        let text = std::fs::read_to_string(f).unwrap();
+        for (job, s) in steps(&load(f)) {
             let Some(uses) = s["uses"].as_str() else {
                 continue;
             };
-            if uses.starts_with(PREFIX) {
+            if ours(uses) {
                 continue;
             }
-            let what = format!("{} ({job})", relative(&f));
+            let what = format!("{} ({job})", relative(f));
             let c = pinned
                 .captures(uses)
                 .unwrap_or_else(|| panic!("{what}: `{uses}` is not pinned to a commit"));
-            if let Some(sha) = ours.get(&c[1]) {
+            if let Some(sha) = pins.get(&c[1]) {
                 assert_eq!(
                     &c[2],
                     sha.as_str(),
@@ -308,6 +345,11 @@ fn every_other_action_is_pinned_by_commit_as_this_repository_pins_it() {
             );
         }
     }
+}
+
+#[test]
+fn every_other_action_is_pinned_by_commit_as_this_repository_pins_it() {
+    check_pins(&examples(), |u| u.starts_with(PREFIX));
 }
 
 #[test]

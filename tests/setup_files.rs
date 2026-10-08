@@ -164,7 +164,8 @@ fn this_repositorys_sensitive_paths_parse_and_cover_what_releases_and_authentica
     for sensitive in [
         ".github/review-paths.json",
         ".github/workflows/asdlc-release-cut.yml",
-        ".github/workflows/checks.yml",
+        ".github/workflows/pr.yml",
+        ".github/workflows/binaries.yml",
         "actions/required-check/action.yml",
         "scripts/check-no-instance-names.sh",
         "src/github/auth.rs",
@@ -223,13 +224,13 @@ fn this_repositorys_release_please_files_make_the_existing_tags() {
     let package = &config["packages"]["."];
     assert_eq!(package["release-type"], "rust");
     assert_eq!(package["component"], "spl-asdlc");
-    // Tags are `v<X.Y.Z>` (the existing v0.1.0, binaries.yml's trigger), so
-    // the component stays out of the tag.
+    // Tags are `v<X.Y.Z>` (the existing v0.1.0, the release tag of this
+    // repository's release callers), so the component stays out of the tag.
     assert_eq!(package["include-component-in-tag"], false);
-    let binaries = read(".github/workflows/binaries.yml");
+    let publish = read(".github/workflows/release-publish.yml");
     assert!(
-        binaries.contains(r#"tags: ["v[0-9]+.[0-9]+.[0-9]+"]"#),
-        "binaries.yml builds on v<X.Y.Z> tags"
+        publish.contains("release-tag-pattern: v{version}\n"),
+        "release-publish.yml publishes v<X.Y.Z> tags"
     );
     // Without the component in the tag release-please leaves it out of its
     // PR title too, and release-cut finds the staged version after the

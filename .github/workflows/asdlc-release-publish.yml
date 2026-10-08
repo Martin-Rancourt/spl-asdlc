@@ -16,8 +16,8 @@ name: asdlc-release-publish
 # the trigger, the concurrency group, the GitHub environment of its deploy and
 # the replay dispatch. A called job holds at most the caller job's permissions:
 # the `verify` call needs `contents: read`, `actions: read` and
-# `pull-requests: read`, or it fails at startup. Intended caller (lot 4
-# writes the real ones):
+# `pull-requests: read`, or it fails at startup. Intended caller (in
+# full: docs/setup/examples/release-publish.yml):
 #
 #   on:
 #     release: {types: [published]}          # created by the bridge's App
