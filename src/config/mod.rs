@@ -114,6 +114,15 @@ pub enum GoPolicy {
     Human,
 }
 
+/// How the nits of a release become tickets (spec 05 §6): one shared
+/// ticket per release, for a tracker that limits its ticket count, or one
+/// ticket per nit, for a tracker that does not. Each carries a contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NitsGrouping {
+    Shared,
+    PerNit,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Angle {
     pub key: String,
@@ -130,6 +139,7 @@ pub struct Release {
     pub max_rc_passes: u32,
     pub later_passes: LaterPasses,
     pub go_policy: GoPolicy,
+    pub nits: NitsGrouping,
     pub record: String,
     pub components: Vec<String>,
     pub version_component: Option<String>,
@@ -721,6 +731,15 @@ impl Validator {
             Some(GoPolicy::Computed),
             &[("computed", GoPolicy::Computed), ("human", GoPolicy::Human)],
         );
+        let nits = self.choice(
+            "release.nits",
+            raw.nits,
+            Some(NitsGrouping::Shared),
+            &[
+                ("shared", NitsGrouping::Shared),
+                ("per-nit", NitsGrouping::PerNit),
+            ],
+        );
         let record = raw
             .record
             .unwrap_or_else(|| ".spl-asdlc/qa/{candidate}/".to_string());
@@ -828,6 +847,7 @@ impl Validator {
             max_rc_passes,
             later_passes: later_passes?,
             go_policy: go_policy?,
+            nits: nits?,
             record,
             components,
             version_component,

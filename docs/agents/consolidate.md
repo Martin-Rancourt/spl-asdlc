@@ -14,6 +14,7 @@
 
 1. For each angle PR (`qa/<candidate>/<angle>` → release branch): read the report file and the diff of the fixes. Confirm or reject each finding in a review thread of that PR, with reasons; confirm or change severities.
 2. Check the report is valid (schema, `checked` non-empty, verdict consistent with the findings). An invalid report is a change request to its angle.
+   For each `nit`, you document, you do not solve (BR-ASDLC-013): check that the report captures it as faithfully as it can, `summary` what was observed, `anchor` where, `evidence` in what context (how it was met, what it looks like), since the bridge copies those three into the nit's box and whoever triages it later has nothing else. A vague nit is a change request to its angle. Never hunt for a fix; you may note one already obvious at the end of `evidence`. Whether the nit is kept or dropped is not yours to decide either: the agent who takes the nits ticket up at refinement classifies it.
 3. Resolve conflicts between angle branches on the angle branch itself (rebase or merge the release branch into it), never on the release branch directly.
 4. Approve each angle PR when its fixes are right and its report is valid. The bridge merges them into the release branch and creates the tickets from the reports.
 5. When every angle PR is merged, tag the next RC (cut workflow, action `candidate`) unless the project automates it. The gate runs; the GO is computed by the bridge from the facts. You never declare it.

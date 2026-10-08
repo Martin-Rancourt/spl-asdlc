@@ -115,28 +115,152 @@ fn a_finding_ticket_is_a_contract_carrying_its_test() {
     );
 }
 
-#[test]
-fn a_nit_creates_one_line_and_filing_it_again_does_not_duplicate() {
-    let line = nit_line("src/a.rs:1", "typo in   a\n comment");
-    assert_eq!(line, "- [ ] src/a.rs:1: typo in a comment");
-    let once = append_nit("", &line).unwrap();
-    assert_eq!(append_nit(&once, &line), None);
-    let ticked = once.replace("- [ ]", "- [x]");
+fn nit(id: &str, summary: &str, anchor: &str, evidence: &str) -> Finding {
+    Finding {
+        id: id.into(),
+        severity: Severity::Nit,
+        summary: summary.into(),
+        anchor: anchor.into(),
+        evidence: evidence.into(),
+        fixed_in_branch: false,
+        testable: false,
+        proposed_test: None,
+        ticket: None,
+    }
+}
+
+const RC: &str = "acme-v1.2.3-rc.1";
+
+/// The judgement of `spl-asdlc ticket check`, and the business-rule guard:
+/// a text served to an agent passes both.
+fn assert_contract(body: &str) {
+    assert!(
+        crate::method::contract::missing_from_contract(body).is_empty(),
+        "{body}"
+    );
     assert_eq!(
-        append_nit(&ticked, &line),
+        crate::method::business_rules::new_rule_statement(body),
         None,
-        "a ticked-off nit is not re-added"
+        "{body}"
     );
 }
 
 #[test]
-fn appending_never_reformats_content_it_did_not_write() {
-    let human = "Some prose a person wrote.\n\n- [ ] src/b.rs:2: other\n";
-    let out = append_nit(human, &nit_line("src/c.rs:3", "new")).unwrap();
-    assert!(out.starts_with("Some prose a person wrote.\n\n- [ ] src/b.rs:2: other\n"));
-    assert!(out.ends_with("- [ ] src/c.rs:3: new\n"));
-    assert_eq!(open_nits(&out), 2);
+fn a_nit_line_carries_what_where_and_context_on_one_line() {
+    let f = nit(
+        "design-2",
+        "typo in   a\n label",
+        "screen `Settings`",
+        "seen on the\nsave button <!-- spl-asdlc:x -->",
+    );
+    let line = nit_line(RC, "design", &f);
+    assert_eq!(
+        line,
+        "- [ ] `acme-v1.2.3-rc.1/design/design-2` typo in a label — where: `screen 'Settings'` — context: \
+         seen on the save button &lt;!-- spl-asdlc :x -->"
+    );
+    assert!(line.starts_with(&format!("- [ ] {}", nit_key(RC, "design", "design-2"))));
+    let bare = nit_line(RC, "design", &nit("design-3", "s", "a", " "));
+    assert!(bare.ends_with("context: (none given)"), "{bare}");
+}
+
+#[test]
+fn the_shared_nits_ticket_is_a_contract_whose_goal_is_to_triage() {
+    let f = nit("design-2", "typo", "src/a.rs:1", "e");
+    let body = nits_ticket("ABC-100", "acme", "1.2.3", &[nit_line(RC, "design", &f)]);
+    assert_contract(&body);
+    for part in [
+        "## Goal\nTriage the nits",
+        "**kept** or **dropped**; never presume a nit fixed",
+        "A dropped nit is closed with its reason",
+        "## Non-goals\n",
+        "## Business rules\nNo new rule.",
+    ] {
+        assert!(body.contains(part), "{part}: {body}");
+    }
+    let acs = crate::method::markdown::checkboxes_in_sections(
+        &body,
+        crate::method::contract::is_acceptance_heading,
+    );
+    assert_eq!(acs.len(), 1);
+    assert!(
+        acs[0]
+            .line
+            .contains("typo — where: `src/a.rs:1` — context: e")
+    );
     assert_eq!(nits_title("acme", "1.2.3"), "Nits — acme v1.2.3");
+}
+
+#[test]
+fn a_nit_ticket_of_its_own_is_a_contract_keyed_like_a_finding() {
+    let f = nit("design-2", "typo", "src/a.rs:1", "e");
+    let (title, body) = nit_ticket("ABC-100", RC, "design", &f, "u", "p");
+    assert_eq!(title, "typo (nit — design)");
+    assert_contract(&body);
+    assert!(
+        body.contains("## Goal\nTriage the nit `design-2`"),
+        "{body}"
+    );
+    assert!(body.contains("never presume it fixed"), "{body}");
+    assert_eq!(
+        parse_finding_marker(&body),
+        Some((
+            "ABC-100".into(),
+            RC.into(),
+            "design".into(),
+            "design-2".into()
+        ))
+    );
+    assert_eq!(parse_blocker_marker(&body), None, "a nit never blocks");
+}
+
+#[test]
+fn a_nit_goes_under_the_acceptance_criteria_once_and_the_ticket_stays_a_contract() {
+    let first = nit_line(RC, "design", &nit("design-1", "one", "a", "e"));
+    let body = nits_ticket("ABC-100", "acme", "1.2.3", std::slice::from_ref(&first));
+    let k2 = nit_key(RC, "design", "design-2");
+    let second = nit_line(RC, "design", &nit("design-2", "two", "b", "e"));
+    let once = append_nit(&body, &k2, &second).unwrap().unwrap();
+    assert!(
+        once.contains(&format!("{first}\n{second}\n\n## Business rules")),
+        "{once}"
+    );
+    assert_contract(&once);
+    assert_eq!(open_nits(&once), 2);
+    assert_eq!(append_nit(&once, &k2, &second), Ok(None));
+    // Ticked and given a reason: still that nit, never re-added.
+    let judged = once.replace(
+        &second,
+        &format!(
+            "{} — dropped: not worth it",
+            second.replace("- [ ]", "- [x]")
+        ),
+    );
+    assert_eq!(append_nit(&judged, &k2, &second), Ok(None));
+    // `design-1` is not a prefix of `design-10`.
+    let k10 = nit_key(RC, "design", "design-10");
+    assert!(append_nit(&once, &k10, "- [ ] x").unwrap().is_some());
+}
+
+#[test]
+fn appending_never_reformats_content_it_did_not_write() {
+    let line = nit_line(RC, "design", &nit("design-1", "one", "a", "e"));
+    let human = format!(
+        "{}\nA person's note.\n",
+        nits_ticket("ABC-100", "acme", "1.2.3", &[line])
+    );
+    let human = human.replace("## Non-goals\n", "## Non-goals\n- Their own   spacing.\n");
+    let k = nit_key(RC, "design", "design-2");
+    let out = append_nit(&human, &k, "- [ ] new").unwrap().unwrap();
+    assert_eq!(out.replace("\n- [ ] new", ""), human);
+}
+
+#[test]
+fn a_nits_ticket_without_a_contract_is_left_alone() {
+    let older = "- [ ] src/b.rs:2: other\n";
+    let err = append_nit(older, "`k`", "- [ ] `k` new").unwrap_err();
+    assert!(err.contains("carries no contract"), "{err}");
+    assert!(err.contains("no `## Goal` section"), "{err}");
 }
 
 fn graph(edges: &[(&str, &[&str])]) -> HashMap<String, Result<Vec<String>, String>> {

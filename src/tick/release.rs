@@ -19,7 +19,7 @@
 use serde_json::json;
 
 use crate::action_log::ActionLog;
-use crate::config::LaterPasses;
+use crate::config::{LaterPasses, NitsGrouping};
 use crate::github::{CompareStatus, GitRef, ObjectType, PullRequest};
 use crate::method::checks::{self, CheckState};
 use crate::method::release::findings;
@@ -1170,35 +1170,62 @@ fn file_findings(
     };
     let product = &t.config.product.name;
     let v = c.version.to_string();
-    // The shared nits ticket, once found or created in this call.
-    let mut nits: Option<Item> = None;
+    let shared = t.config.release.nits == NitsGrouping::Shared;
+    // The shared nits ticket, once found or created in this call: its key
+    // and its description as this call last wrote it. `Err` once it is
+    // refused (unreadable, or no contract): no nit of this call goes in.
+    let mut nits: Option<Result<(String, String), ()>> = None;
     for f in r.findings.iter().filter(|f| !f.fixed_in_branch) {
         match f.severity {
-            Severity::Nit => {
+            Severity::Nit if shared => {
                 let title = findings::nits_title(product, &v);
-                let line = findings::nit_line(&f.anchor, &f.summary);
+                let key = findings::nit_key(&c.tag, angle, &f.id);
+                let line = findings::nit_line(&c.tag, angle, f);
                 if nits.is_none() {
-                    nits = labelled.iter().find(|i| i.title == title).cloned();
+                    if let Some(n) = labelled.iter().find(|i| i.title == title) {
+                        nits = Some(match t.tracker.get(&n.key) {
+                            Ok(i) => Ok((i.key, i.description)),
+                            Err(e) => {
+                                t.unreadable(report, &n.key, e);
+                                Err(())
+                            }
+                        });
+                    }
                 }
-                match &nits {
-                    Some(n) => {
-                        let current = t.tracker.get(&n.key).map(|i| i.description);
-                        if let Ok(Some(next)) = current.map(|d| findings::append_nit(&d, &line)) {
-                            t.act(
-                                log,
-                                report,
-                                &n.key,
-                                "append nit",
-                                json!({"finding": f.id}),
-                                || {
-                                    t.tracker
-                                        .update_description(&n.key, &next)
-                                        .map_err(|e| e.to_string())
-                                },
-                            );
+                match &mut nits {
+                    Some(Err(())) => {}
+                    Some(Ok((key_of, current))) => {
+                        // Fail-closed: a nits ticket without a contract (the
+                        // older format) is left alone and said, never rewritten.
+                        match findings::append_nit(current, &key, &line) {
+                            Err(e) => {
+                                t.unreadable(report, key_of, format!("the nits ticket {e}"));
+                                nits = Some(Err(()));
+                            }
+                            Ok(None) => {}
+                            Ok(Some(next)) => {
+                                let next = for_tracker(t, &next);
+                                let done = t.act(
+                                    log,
+                                    report,
+                                    key_of,
+                                    "append nit",
+                                    json!({"finding": f.id}),
+                                    || {
+                                        t.tracker
+                                            .update_description(key_of, &next)
+                                            .map_err(|e| e.to_string())
+                                    },
+                                );
+                                if done.is_some() {
+                                    *current = next;
+                                }
+                            }
                         }
                     }
                     None => {
+                        let body =
+                            for_tracker(t, &findings::nits_ticket(&item.key, product, &v, &[line]));
                         let created = t.act(
                             log,
                             report,
@@ -1209,7 +1236,7 @@ fn file_findings(
                                 t.tracker
                                     .create_item(&NewItem {
                                         title: title.clone(),
-                                        description: format!("{line}\n"),
+                                        description: body.clone(),
                                         labels: vec![label.to_string()],
                                         status: Status::Triage,
                                         priority: None,
@@ -1221,12 +1248,14 @@ fn file_findings(
                         );
                         if let Some(n) = created {
                             relate(t, log, report, &n.key, &item.key, RelationKind::Related);
-                            nits = Some(n);
+                            nits = Some(Ok((n.key, body)));
                         }
                     }
                 }
             }
-            Severity::Blocker | Severity::ShouldFix => {
+            // A blocker, a should-fix, or a nit under `release.nits =
+            // "per-nit"`: a ticket of its own, keyed by its finding marker.
+            _ => {
                 let release_id = item.key.as_str();
                 // Filed once, whatever became of it: a blocker canceled as a
                 // false alarm or requalified stays so (the merged report does
@@ -1248,11 +1277,14 @@ fn file_findings(
                     }
                     continue;
                 }
-                let (title, body) =
-                    findings::finding_ticket(release_id, &c.tag, angle, f, pr_url, path);
+                let (title, body) = if f.severity == Severity::Nit {
+                    findings::nit_ticket(release_id, &c.tag, angle, f, pr_url, path)
+                } else {
+                    findings::finding_ticket(release_id, &c.tag, angle, f, pr_url, path)
+                };
                 let blocker = f.severity == Severity::Blocker;
                 let mut labels = vec![label.to_string()];
-                if !blocker {
+                if f.severity == Severity::ShouldFix {
                     labels.push(vocabulary::QA_FINDING_LABEL.to_string());
                 }
                 let body = for_tracker(t, &body);

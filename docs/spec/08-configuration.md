@@ -36,6 +36,7 @@ branch_prefix = "release/"
 max_rc_passes = 2
 later_passes = "full"                  # "full" | "gate-and-coordinator"
 go_policy = "computed"                 # "computed" | "human"
+nits = "shared"                        # "shared" | "per-nit": one nits ticket per release, or one per nit
 record = ".spl-asdlc/qa/{candidate}/"  # where angle reports live
 release_pr_label = "autorelease: pending"
 release_please_authors = ["app/release-app"]
@@ -146,6 +147,7 @@ events = ["release-note", "escalation", "stagnation", "stuck-pr", "blind-pass"]
 | `release.max_rc_passes` | `2` | RC passes with QA before escalation to the owner. | Not a positive integer: file invalid. |
 | `release.later_passes` | `"full"` | Whether passes after the first run every angle (`full`) or only the gate and the coordinator. | Other value: file invalid. |
 | `release.go_policy` | `"computed"` | `human` adds the owner's approval to the computed GO. | Other value: file invalid. |
+| `release.nits` | `"shared"` | How the nits of a release become tickets (`05-release-cycle.md` §6), chosen for the tracker: `shared`, one nits ticket per release whose boxes are the nits, for a tracker that limits its ticket count (Linear's free plan); `per-nit`, one ticket per nit in `Triage`, keyed by candidate, angle and finding id, for a tracker that does not (Livela). Either way each ticket carries a full contract whose goal is to triage. | Other value: file invalid. A shared nits ticket that carries no contract: left alone, said at each tick. |
 | `release.record` | `.spl-asdlc/qa/{candidate}/` | Directory of the angle reports (`06-qa-report.md`). | Without `{candidate}`: file invalid. |
 | `release.components` | `[]` | Components of a multi-component product, each with its own release PR. | Invalid names: file invalid. |
 | `release.version_component` | none; required with components | The component whose release ends the cycle; merged last. | Missing, or not a component: file invalid. |

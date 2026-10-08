@@ -56,6 +56,7 @@ pub(super) struct RawRelease {
     pub max_rc_passes: Option<i64>,
     pub later_passes: Option<String>,
     pub go_policy: Option<String>,
+    pub nits: Option<String>,
     pub record: Option<String>,
     pub components: Option<Vec<String>>,
     pub version_component: Option<String>,
