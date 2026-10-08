@@ -10,7 +10,7 @@ name: asdlc-release-gate-auto-rerun
 # A `workflow_run` trigger cannot live in a reusable workflow, so the caller
 # owns it; GitHub runs a `workflow_run` workflow from the default branch, so
 # the decision and the allow-list it reads are trusted code, never the
-# candidate's. Example caller (lot 4 writes the real one):
+# candidate's. Example caller (in full: docs/setup/examples/):
 #
 #   name: release-gate-auto-rerun
 #   on:

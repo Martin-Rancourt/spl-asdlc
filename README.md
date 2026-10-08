@@ -8,7 +8,7 @@ SPL-ASDLC is agnostic to the agent runtime (AgentForge, a Claude Code session, C
 
 1. **The method** — `docs/spec/`. What a ticket must contain before anyone takes it, how a PR is reviewed and merged, how a release is cut, reviewed, gated and closed, and the vocabulary everything else uses.
 2. **Agent protocols** — `docs/agents/`. Runtime-agnostic Markdown that any agent can load as a skill: review a PR, review a release on an angle branch, consolidate findings, refine a ticket.
-3. **The tooling** — the Rust crate `spl-asdlc` (library and `spl-asdlc` binary) and the reusable GitHub Actions workflows `spl-asdlc-ci`. The crate is "the bridge": one deterministic process that runs in the user's environment, polls GitHub, writes state transitions to the tracker, computes the GO and merges what must be merged. CI workflows only publish GitHub facts; they never write to a tracker. Agents never change a status; the bridge does.
+3. **The tooling** — the Rust crate `spl-asdlc` (library and `spl-asdlc` binary) and the reusable GitHub Actions workflows `.github/workflows/asdlc-*.yml` with the composite action `actions/required-check`, which a project calls from its own workflows (`docs/setup/examples/`). The crate is "the bridge": one deterministic process that runs in the user's environment, polls GitHub, writes state transitions to the tracker, computes the GO and merges what must be merged. CI workflows only publish GitHub facts; they never write to a tracker. Agents never change a status; the bridge does.
 
 ## Status
 
@@ -25,6 +25,8 @@ First draft. The specification and the requirements are written (`docs/requireme
 | `docs/business-rules.md` | The product's own business rules, each with its test |
 | `docs/livela-contract.md` | What the Livela tracker must offer for its adapter |
 | `scripts/` | Checks that run in CI (no instance names, …) |
+| `.github/workflows/asdlc-*.yml`, `actions/` | The reusable workflows and the composite action a project calls |
+| `.github/workflows/` (the others) | This repository's own CI: `pr.yml`, `pr-title.yml` and the release chain call this commit's `asdlc-*` workflows; `binaries.yml` builds and attaches the binaries of a release |
 
 ## Rule zero
 

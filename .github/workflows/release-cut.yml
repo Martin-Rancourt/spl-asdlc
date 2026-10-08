@@ -1,0 +1,65 @@
+name: release-cut
+
+# This repository's own caller of asdlc-release-cut.yml (`[release]
+# cut_workflow`), as docs/setup/examples/release-cut.yml shows it, called from
+# the dispatched commit (`./`). The tags are `v<X.Y.Z>`, as the existing
+# v0.1.0 and release-please-config.json (`include-component-in-tag: false`)
+# make them; the component is the crate, whose version is the manifest's `.`
+# key. The bridge dispatches it with one input, `action`: `open` on the
+# default branch, `candidate` on the release branch in flight. Every other
+# input has a default. Run by hand, `dry_run` prints the plan and pushes
+# nothing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: '`open` a cycle from the default branch, or cut the next `candidate` on the release branch.'
+        type: choice
+        options: [open, candidate]
+        default: open
+        required: true
+      class:
+        description: '`routine` or `sensible`; empty computes it from .github/review-paths.json.'
+        type: choice
+        options: ['', routine, sensible]
+        default: ''
+      routine_because:
+        description: Why `routine` holds on a delta that touches a reviewed path (recorded in the tag).
+        type: string
+        default: ''
+      main_merge_because:
+        description: Why a candidate is cut over commits the default branch handed the cycle (recorded in the tag).
+        type: string
+        default: ''
+      dry_run:
+        description: Print the plan; create, tag and push nothing.
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-cut
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/asdlc-release-cut.yml
+    with:
+      action: ${{ inputs.action }}
+      class: ${{ inputs.class }}
+      routine-because: ${{ inputs.routine_because }}
+      main-merge-because: ${{ inputs.main_merge_because }}
+      dry-run: ${{ inputs.dry_run }}
+      candidate-tag: v{version}-rc.{rc}
+      release-tag: v{version}
+      component: spl-asdlc
+      manifest-key: .
+      runs-on: ${{ startsWith(vars.SPL_ASDLC_RUNS_ON, '"') && fromJSON(vars.SPL_ASDLC_RUNS_ON) || vars.SPL_ASDLC_RUNS_ON || 'ubuntu-latest' }}
+    secrets:
+      SPL_ASDLC_APP_ID: ${{ secrets.SPL_ASDLC_APP_ID }}
+      SPL_ASDLC_APP_PRIVATE_KEY: ${{ secrets.SPL_ASDLC_APP_PRIVATE_KEY }}

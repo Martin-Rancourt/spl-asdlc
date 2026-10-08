@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use regex::Regex;
 use yaml_rust2::Yaml;
 
-use crate::harness::{files, is_reusable, load, relative, run_body, steps};
+use crate::harness::{files, is_product_workflow, is_reusable, load, relative, run_body, steps};
 
 /// Every `run:` body of a file, with the step's name.
 fn runs(doc: &Yaml) -> Vec<(String, String)> {
@@ -43,6 +43,13 @@ fn a_reusable_workflow_has_no_trigger_of_its_own() {
     for f in files() {
         let doc = load(&f);
         if !is_reusable(&doc) {
+            continue;
+        }
+        if !is_product_workflow(&f) {
+            // This repository's binaries.yml: called by its release-publish.yml,
+            // and dispatched by hand to rebuild a tag. Never a push trigger.
+            assert_eq!(relative(&f), ".github/workflows/binaries.yml");
+            assert!(doc["on"]["push"].is_badvalue(), "{}", relative(&f));
             continue;
         }
         let triggers: Vec<String> = doc["on"]
@@ -219,7 +226,8 @@ fn every_action_is_pinned_by_commit() {
 fn a_reusable_workflow_takes_its_runner_as_an_input() {
     for f in files() {
         let doc = load(&f);
-        if !is_reusable(&doc) {
+        // binaries.yml names its runners: one per target.
+        if !is_reusable(&doc) || !is_product_workflow(&f) {
             continue;
         }
         let input = &doc["on"]["workflow_call"]["inputs"]["runs-on"];

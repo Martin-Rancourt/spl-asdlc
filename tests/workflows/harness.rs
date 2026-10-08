@@ -59,6 +59,23 @@ pub fn is_reusable(doc: &Yaml) -> bool {
     !doc["on"]["workflow_call"].is_badvalue()
 }
 
+/// Whether the file is one of the product's reusable workflows, which other
+/// repositories call (`.github/workflows/asdlc-*.yml`). The other workflows
+/// are this repository's own CI; binaries.yml among them is callable, but by
+/// this repository only.
+pub fn is_product_workflow(path: &Path) -> bool {
+    relative(path).starts_with(".github/workflows/asdlc-")
+}
+
+/// This repository's own workflows: every file of `.github/workflows/` that
+/// is not one of the product's.
+pub fn own_workflows() -> Vec<PathBuf> {
+    files()
+        .into_iter()
+        .filter(|p| relative(p).starts_with(".github/workflows/") && !is_product_workflow(p))
+        .collect()
+}
+
 /// Every step, with the job (or `runs` for a composite action) it is in.
 pub fn steps(doc: &Yaml) -> Vec<(String, Yaml)> {
     let mut out = Vec::new();
