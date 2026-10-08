@@ -3,7 +3,8 @@ name: Binaries
 # On a version tag `v<X.Y.Z>`: build the `spl-asdlc` binary for Linux, macOS
 # and Windows, run the tests on each, and attach the archives and their
 # SHA-256 sums to the GitHub release of the tag. It writes to GitHub only; it
-# never touches a tracker.
+# never touches a tracker. It runs once per version tag: the only place macOS
+# and Windows are built and tested (checks.yml is Linux only).
 
 on:
   push:
