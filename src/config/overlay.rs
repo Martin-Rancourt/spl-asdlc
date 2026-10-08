@@ -45,28 +45,46 @@ pub(super) fn is_instance_key(key: &str) -> bool {
         })
 }
 
+/// The sibling overlay of `file`: `spl-asdlc.instance.toml` beside a file
+/// named `spl-asdlc.toml`, `<stem>.instance.toml` beside any other, so that two
+/// configurations kept in one directory never share an overlay.
+pub fn sibling_of(file: &Path) -> PathBuf {
+    let dir = file.parent().unwrap_or_else(|| Path::new(""));
+    match file.file_name().and_then(|n| n.to_str()) {
+        Some(super::FILE_NAME) | None => dir.join(INSTANCE_FILE_NAME),
+        Some(_) => {
+            let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            dir.join(format!("{stem}.instance.toml"))
+        }
+    }
+}
+
 /// The overlay of `file`: the one named (`--instance`), which must exist,
-/// or else `spl-asdlc.instance.toml` beside `file` when there is one. An
-/// absent sibling means no overlay.
+/// or else its sibling ([`sibling_of`]) when there is one. Nothing at the
+/// sibling's path means no overlay; something there that is not a file (a
+/// directory, a dangling link, an unreadable entry) is an error, never "no
+/// overlay".
 pub fn instance_path(file: &Path, named: Option<&Path>) -> Result<Option<PathBuf>, ConfigErrors> {
+    let refuse = |p: &Path, why: &str| {
+        Err(ConfigErrors(vec![ConfigError {
+            file: None,
+            key: String::new(),
+            message: format!("{} could not be read: {why}", p.display()),
+        }]))
+    };
     if let Some(p) = named {
         if p.is_file() {
             return Ok(Some(p.to_path_buf()));
         }
-        return Err(ConfigErrors(vec![ConfigError {
-            file: None,
-            key: String::new(),
-            message: format!(
-                "{} could not be read: the instance overlay named does not exist",
-                p.display()
-            ),
-        }]));
+        return refuse(p, "the instance overlay named does not exist");
     }
-    let sibling = file
-        .parent()
-        .unwrap_or_else(|| Path::new(""))
-        .join(INSTANCE_FILE_NAME);
-    Ok(sibling.is_file().then_some(sibling))
+    let sibling = sibling_of(file);
+    match std::fs::symlink_metadata(&sibling) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => refuse(&sibling, &e.to_string()),
+        Ok(_) if sibling.is_file() => Ok(Some(sibling)),
+        Ok(_) => refuse(&sibling, "the instance overlay is not a regular file"),
+    }
 }
 
 /// What the merge did: the keys the overlay set (as the validator names

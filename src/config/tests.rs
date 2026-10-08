@@ -689,3 +689,49 @@ fn the_overlay_is_the_one_named_or_else_the_sibling_when_present() {
     assert_eq!(read.unwrap().label, named.display().to_string());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn two_configurations_in_one_directory_never_share_an_overlay() {
+    let dir = std::env::temp_dir().join(format!("spl-asdlc-overlay-two-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let acme = dir.join("acme.toml");
+    let beta = dir.join("beta.toml");
+    std::fs::write(&acme, NEUTRAL).unwrap();
+    std::fs::write(&beta, NEUTRAL).unwrap();
+    std::fs::write(dir.join(INSTANCE_FILE_NAME), OVERLAY).unwrap();
+    assert_eq!(
+        instance_path(&beta, None).unwrap(),
+        None,
+        "spl-asdlc.instance.toml belongs to spl-asdlc.toml only"
+    );
+    assert!(
+        Config::load(&beta).is_err(),
+        "beta takes nobody's identities"
+    );
+    std::fs::write(dir.join("acme.instance.toml"), OVERLAY).unwrap();
+    assert_eq!(
+        instance_path(&acme, None).unwrap(),
+        Some(dir.join("acme.instance.toml"))
+    );
+    assert_eq!(instance_path(&beta, None).unwrap(), None);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn something_at_the_siblings_path_that_is_not_a_file_is_an_error() {
+    let dir = std::env::temp_dir().join(format!("spl-asdlc-overlay-odd-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join(FILE_NAME);
+    std::fs::write(&file, NEUTRAL).unwrap();
+    std::fs::create_dir(dir.join(INSTANCE_FILE_NAME)).unwrap();
+    assert!(instance_path(&file, None).is_err(), "a directory");
+    #[cfg(unix)]
+    {
+        std::fs::remove_dir(dir.join(INSTANCE_FILE_NAME)).unwrap();
+        std::os::unix::fs::symlink(dir.join("gone.toml"), dir.join(INSTANCE_FILE_NAME)).unwrap();
+        assert!(instance_path(&file, None).is_err(), "a dangling link");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

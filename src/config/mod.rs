@@ -18,7 +18,7 @@ use std::path::Path;
 
 use raw::RawConfig;
 
-pub use overlay::{INSTANCE_FILE_NAME, instance_path};
+pub use overlay::{INSTANCE_FILE_NAME, instance_path, sibling_of};
 
 /// The only schema version this build reads.
 pub const SCHEMA_VERSION: i64 = 1;

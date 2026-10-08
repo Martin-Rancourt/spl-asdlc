@@ -270,8 +270,9 @@ fn tick(
     if instance.is_some() && files.len() > 1 {
         let _ = writeln!(
             err,
-            "--instance names the overlay of one configuration: with several --file, each file's overlay is the {} beside it",
-            config::INSTANCE_FILE_NAME
+            "--instance names the overlay of one configuration: with several --file, each file's overlay is the one beside it ({} beside a {}, <stem>.instance.toml beside any other)",
+            config::INSTANCE_FILE_NAME,
+            config::FILE_NAME
         );
         return ExitCode::from(2);
     }
