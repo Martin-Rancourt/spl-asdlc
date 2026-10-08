@@ -1,27 +1,19 @@
 # 08 — Configuration
 
-One file per repository, `spl-asdlc.toml` at the root, read by the bridge and validated by `spl-asdlc config check`. Everything the method leaves to the project is here; nothing here is read by CI workflows (they take explicit inputs). An invalid file stops the bridge for that repository; nothing falls back to a default shape.
+One file per repository, `spl-asdlc.toml` at the root, read by the bridge and validated by `spl-asdlc config check`. Everything the method leaves to the project is here; nothing here is read by CI workflows (they take explicit inputs). The identities of the installation (who and where) may instead come from an instance overlay kept on the host that runs the bridge, outside the repository, so that the repository's file stays neutral (see "The instance overlay"). An invalid file, or an invalid merge of the two, stops the bridge for that repository; nothing falls back to a default shape.
 
 ## Example
 
-A complete file. The example below is valid as written: the crate's test suite parses it.
+The repository's file, then its instance overlay. Both are valid as written: the crate's test suite parses them and merges them. A project that keeps everything in one file writes the overlay's keys in its `spl-asdlc.toml`, each in its table, and an angle's `assignee` in that angle's entry.
 
 ```toml
 schema = 1
 
 [product]
 name = "acme"                          # used in tags, labels and release issue titles
-repository = "example-org/acme"        # <owner>/<repo> on GitHub
-
-[owner]                                # the human of the method: escalations, human GO
-tracker_user = "owner-handle"          # the owner as the tracker knows them
-github_login = "owner-login"           # required when go_policy = "human"
 
 [tracker]
 kind = "linear"                        # "linear" | "livela"
-team = "ABC"                           # team key or workspace id
-service_identity = "spl-asdlc"         # the service account that writes
-team_keys = ["ABC"]                    # identifier prefixes of the team's items
 link_fallback = "none"                 # "none" | "body-url"
 
 # Canonical status -> tracker status. Only the ones the tracker names differently.
@@ -39,12 +31,10 @@ go_policy = "computed"                 # "computed" | "human"
 nits = "shared"                        # "shared" | "per-nit": one nits ticket per release, or one per nit
 record = ".spl-asdlc/qa/{candidate}/"  # where angle reports live
 release_pr_label = "autorelease: pending"
-release_please_authors = ["app/release-app"]
 bookkeeping_paths = [".release-please-manifest.json", "CHANGELOG.md"]
 registry_path = "docs/business-rules.md"
 business_rule_paths = ["docs/business-rules.md", "**/business-rules.md"]
 stagnation_hours = 2
-coordinators = ["coordinator-login"]
 escalation_label = "blocked-by-human"
 auto_candidate = false
 cut_workflow = "release-cut.yml"
@@ -59,8 +49,7 @@ release_please_manifest = ".release-please-manifest.json"
 
 [[release.angles]]
 key = "security"
-assignee = "reviewer-handle"           # participant hint, optional
-notes = ".spl-asdlc/angles/security.md" # optional project notes
+notes = ".spl-asdlc/angles/security.md" # optional project notes; the assignee is in the overlay
 
 [[release.angles]]
 key = "product"
@@ -73,8 +62,6 @@ diff_size_angle = "maintainability"
 human_approval = "never"               # "never" | "sensitive-paths" | "always"
 sensitive_paths = ".github/review-paths.json"  # globs that add the sensitive angle
 sensitive_angle = "security"
-coordinators = ["coordinator-login"]
-human_reviewer = "owner-login"         # optional: asked to look at a green PR stuck on a human
 ticketless_authors = ["dependabot"]    # Apps whose PRs need no ticket: the bridge opens one (spec 04 §9)
 
 [[review.angles]]
@@ -88,6 +75,36 @@ angle = "security"
 poll_minutes = 5
 github_identity = "app"                # "app" | "token"
 sweep_hours = 24
+```
+
+The instance overlay, `spl-asdlc.instance.toml` on the host:
+
+```toml
+schema = 1
+
+[product]
+repository = "example-org/acme"        # <owner>/<repo> on GitHub
+
+[owner]                                # the human of the method: escalations, human GO
+tracker_user = "owner-handle"          # the owner as the tracker knows them
+github_login = "owner-login"           # required when go_policy = "human"
+
+[tracker]
+team = "ABC"                           # team key or workspace id
+service_identity = "spl-asdlc"         # the service account that writes
+team_keys = ["ABC"]                    # identifier prefixes of the team's items
+
+[release]
+release_please_authors = ["app/release-app"]
+coordinators = ["coordinator-login"]
+
+[[release.angles]]
+key = "security"                       # an angle the repository's file declares
+assignee = "reviewer-handle"           # participant hint, optional
+
+[review]
+coordinators = ["coordinator-login"]
+human_reviewer = "owner-login"         # optional: asked to look at a green PR stuck on a human
 
 [[notify]]
 kind = "telegram"
@@ -106,6 +123,32 @@ events = ["release-note", "escalation", "stagnation", "stuck-pr", "blind-pass"]
 6. Unknown keys are errors (a misspelt key is never a silently ignored setting). `config check` lists every problem of a well-formed file; a file that is not valid TOML, carries an unknown key or a value of the wrong type (a string where a number is expected) is reported by its first such error, with its line.
 7. Every default below is what the bridge uses when the key is absent; a present key with an invalid value is an error, never replaced by its default.
 8. A list never names the same entry twice (paths, logins, components, events): a repeated entry is an error, not a harmless duplicate, because it usually hides a typo next to it.
+
+## The instance overlay
+
+The repository's file carries the method's shape (tags, angles, review rules, workflows); a repository that must carry no instance data (a public one, or one that serves several installations) leaves the identities of its installation to an overlay file on the host that runs the bridge. The overlay is optional: a private project may keep everything in `spl-asdlc.toml`.
+
+**Instance keys**, the only keys an overlay may carry:
+
+| Key | Why it is instance data |
+|---|---|
+| `schema` | The overlay's format; `1`, as the repository's file. Required in the overlay. |
+| `product.repository` | Where the product lives. |
+| `owner.tracker_user`, `owner.github_login` | Who the owner is. |
+| `tracker.team`, `tracker.service_identity`, `tracker.team_keys` | Which team, under which account. |
+| `release.coordinators`, `release.release_please_authors` | Logins. |
+| `review.coordinators`, `review.human_reviewer` | Logins. |
+| the `assignee` of a `[[release.angles]]` or `[[review.angles]]` entry | A participant. Given as an entry with `key` and `assignee` only; `key` must name an angle the repository's file declares, never declare one. |
+| `[[notify]]` | Destinations (as references, rule 1). The channels are one key: all in one file. |
+
+Every other key is the method's shape and stays in the repository's file, where it is reviewed: `tracker.kind`, `review.ticketless_authors` and `bridge.github_identity` included.
+
+**Merge.** The bridge reads the repository's file ∪ the overlay, fail-closed:
+1. Each file is first read alone: not valid TOML, an unknown key, a value of the wrong type is an error with its line (rule 6). In the overlay, a key that is not an instance key is an error ("not an instance key"), with its line.
+2. A key set in both files is an error, never an override, whatever the two values are: a silent override would let a file outside review hide a reviewed setting (BR-ASDLC-014). So is an angle's `assignee` set in both, and `[[notify]]` tables in both.
+3. Required keys and every rule above are checked on the merged result; each error names the file its value comes from.
+
+**Where it is found.** Every command that takes `--file` takes `--instance <path>`. Without `--instance`, the overlay is `spl-asdlc.instance.toml` beside the `--file` when there is one, and there is none otherwise. A named `--instance` that does not exist is an error; an absent sibling only means no overlay. `tick`, which takes several `--file`, accepts `--instance` only with a single `--file` and refuses it otherwise: each configuration's overlay is then its sibling. A host that hands the bridge a configuration path (the Livela runner) gets the sibling the same way. `doctor` reports `instance overlay` (the path read, or `none`) and judges the repository's file at the default branch merged with that overlay. The overlay is never committed: this repository's `.gitignore` lists `spl-asdlc.instance.toml`, and a project that keeps an overlay beside a checkout does the same.
 
 ## Keys
 

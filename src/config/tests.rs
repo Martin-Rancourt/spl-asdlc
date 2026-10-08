@@ -1,4 +1,5 @@
 use super::*;
+use spec_example::source;
 
 const MINIMAL: &str = r#"
 schema = 1
@@ -88,23 +89,40 @@ fn a_minimal_file_gets_every_documented_default() {
 }
 
 #[test]
-fn the_example_of_the_specification_is_a_valid_file() {
-    let spec = include_str!("../../docs/spec/08-configuration.md");
-    let start = spec
-        .find("```toml\n")
-        .expect("spec 08 carries a toml block")
-        + "```toml\n".len();
-    let end = start + spec[start..].find("```").expect("the toml block is closed");
-    let c = Config::parse(&spec[start..end]).unwrap_or_else(|e| panic!("spec 08 example: {e}"));
+fn the_example_of_the_specification_is_valid_once_merged() {
+    let c = spec_example::config();
     assert_eq!(c.notify.len(), 1);
+    assert_eq!(c.product.repository, "example-org/acme");
+    assert_eq!(
+        c.release.angles[0].assignee.as_deref(),
+        Some("reviewer-handle")
+    );
+    assert_eq!(
+        c.release.angles[0].notes.as_deref(),
+        Some(".spl-asdlc/angles/security.md")
+    );
+    assert_eq!(c.release.angles[1].assignee, None);
+}
+
+#[test]
+fn the_repository_file_of_the_example_lacks_instance_keys_only() {
+    let errs = match Config::parse(spec_example::repository()) {
+        Ok(_) => panic!("the neutral file names no repository, no owner, no coordinator"),
+        Err(e) => e.0,
+    };
+    assert!(
+        errs.iter().any(|e| e.key == "product.repository"),
+        "{errs:#?}"
+    );
+    for e in &errs {
+        assert!(overlay::is_instance_key(&e.key), "not an instance key: {e}");
+        assert!(e.message.contains("instance overlay"), "{e}");
+    }
 }
 
 #[test]
 fn the_apps_whose_prs_need_no_ticket_are_read() {
-    let spec = include_str!("../../docs/spec/08-configuration.md");
-    let start = spec.find("```toml\n").unwrap() + "```toml\n".len();
-    let end = start + spec[start..].find("```").unwrap();
-    let c = Config::parse(&spec[start..end]).unwrap();
+    let c = spec_example::config();
     assert_eq!(c.review.ticketless_authors, vec!["dependabot".to_string()]);
 }
 
@@ -431,4 +449,243 @@ fn the_nits_grouping_is_shared_or_per_nit_and_nothing_else() {
         &other,
         "release.nits: \"none\" is not one of \"shared\", \"per-nit\"",
     );
+}
+
+// ---- the instance overlay (spec 08, BR-ASDLC-014) ----
+
+/// MINIMAL without its instance keys.
+const NEUTRAL: &str = r#"
+schema = 1
+
+[product]
+name = "acme"
+
+[tracker]
+kind = "linear"
+
+[[release.angles]]
+key = "security"
+
+[review]
+diff_size_angle = "maintainability"
+
+[[review.angles]]
+key = "maintainability"
+"#;
+
+/// The instance keys of MINIMAL.
+const OVERLAY: &str = r#"
+schema = 1
+
+[product]
+repository = "example-org/acme"
+
+[owner]
+tracker_user = "owner-handle"
+
+[tracker]
+team = "ABC"
+service_identity = "spl-asdlc"
+
+[release]
+release_please_authors = ["app/release-app"]
+coordinators = ["coordinator-login"]
+
+[review]
+coordinators = ["coordinator-login"]
+"#;
+
+fn merged(repository: &str, instance: &str) -> Result<Config, Vec<String>> {
+    Config::parse_with(
+        &source(FILE_NAME, repository),
+        Some(&source(INSTANCE_FILE_NAME, instance)),
+    )
+    .map_err(|e| e.0.iter().map(|e| e.to_string()).collect())
+}
+
+fn assert_merge_refused_with(repository: &str, instance: &str, needle: &str) {
+    match merged(repository, instance) {
+        Ok(_) => panic!("expected the merge to be refused ({needle:?})"),
+        Err(errs) => assert!(
+            errs.iter().any(|e| e.contains(needle)),
+            "no error contains {needle:?}; got {errs:#?}"
+        ),
+    }
+}
+
+#[test]
+fn a_neutral_file_and_its_overlay_read_as_the_single_file() {
+    let single = Config::parse(MINIMAL).unwrap();
+    assert_eq!(merged(NEUTRAL, OVERLAY).unwrap(), single);
+    let none = Config::parse_with(&source(FILE_NAME, MINIMAL), None).unwrap();
+    assert_eq!(none, single, "without an overlay the file stands alone");
+}
+
+#[test]
+fn a_key_in_both_files_is_refused_never_overridden() {
+    let both = NEUTRAL.replace(
+        "name = \"acme\"\n",
+        "name = \"acme\"\nrepository = \"example-org/acme\"\n",
+    );
+    assert_merge_refused_with(
+        &both,
+        OVERLAY,
+        "product.repository: is set in both spl-asdlc.toml and spl-asdlc.instance.toml (line 5)",
+    );
+    let other = NEUTRAL.replace(
+        "[review]\n",
+        "[review]\ncoordinators = [\"another-login\"]\n",
+    );
+    assert_merge_refused_with(&other, OVERLAY, "review.coordinators: is set in both");
+}
+
+#[test]
+fn an_angle_assignee_and_the_channels_are_set_in_one_file_only() {
+    let assigned = NEUTRAL.replace(
+        "key = \"security\"\n",
+        "key = \"security\"\nassignee = \"reviewer-handle\"\n",
+    );
+    let overlay = format!(
+        "{OVERLAY}\n[[release.angles]]\nkey = \"security\"\nassignee = \"reviewer-handle\"\n"
+    );
+    assert_merge_refused_with(
+        &assigned,
+        &overlay,
+        "release.angles[0].assignee: is set in both",
+    );
+    let channel = "\n[[notify]]\nkind = \"telegram\"\ntarget = \"env:TO\"\ntoken = \"env:T\"\nevents = [\"escalation\"]\n";
+    assert_merge_refused_with(
+        &format!("{NEUTRAL}{channel}"),
+        &format!("{OVERLAY}{channel}"),
+        "notify: is set in both",
+    );
+    let c = merged(NEUTRAL, &format!("{overlay}{channel}")).unwrap();
+    assert_eq!(
+        c.release.angles[0].assignee.as_deref(),
+        Some("reviewer-handle")
+    );
+    assert_eq!(c.notify.len(), 1);
+}
+
+#[test]
+fn a_key_that_is_not_an_instance_key_is_refused_with_its_line() {
+    let shape = OVERLAY.replace(
+        "repository = \"example-org/acme\"\n",
+        "repository = \"example-org/acme\"\nname = \"other\"\n",
+    );
+    assert_merge_refused_with(
+        NEUTRAL,
+        &shape,
+        "spl-asdlc.instance.toml: product.name: line 6: not an instance key",
+    );
+    let table = format!("{OVERLAY}\n[bridge]\npoll_minutes = 1\n");
+    assert_merge_refused_with(NEUTRAL, &table, "bridge: line 21: not an instance key");
+    let angle = format!("{OVERLAY}\n[[review.angles]]\nkey = \"maintainability\"\ntitle = \"T\"\n");
+    assert_merge_refused_with(
+        NEUTRAL,
+        &angle,
+        "review.angles[0].title: line 23: not an instance key",
+    );
+}
+
+#[test]
+fn an_overlay_value_of_the_wrong_type_is_refused_with_its_line() {
+    let text = OVERLAY.replace("team = \"ABC\"", "team = 5");
+    let errs = merged(NEUTRAL, &text).unwrap_err();
+    assert!(
+        errs[0].starts_with("spl-asdlc.instance.toml: not a valid instance overlay")
+            && errs[0].contains("line 11"),
+        "{errs:#?}"
+    );
+}
+
+#[test]
+fn an_assignee_for_an_angle_the_repository_does_not_declare_is_refused() {
+    let text = format!(
+        "{OVERLAY}\n[[release.angles]]\nkey = \"design\"\nassignee = \"reviewer-handle\"\n"
+    );
+    assert_merge_refused_with(
+        NEUTRAL,
+        &text,
+        "release.angles[0].key: \"design\" is not an angle of spl-asdlc.toml",
+    );
+    let bare = format!("{OVERLAY}\n[[release.angles]]\nkey = \"security\"\n");
+    assert_merge_refused_with(NEUTRAL, &bare, "release.angles[0].assignee: is required");
+}
+
+#[test]
+fn the_overlay_carries_its_schema_version() {
+    assert_merge_refused_with(
+        NEUTRAL,
+        &OVERLAY.replace("schema = 1", ""),
+        "spl-asdlc.instance.toml: schema: is required",
+    );
+    assert_merge_refused_with(
+        NEUTRAL,
+        &OVERLAY.replace("schema = 1", "schema = 2"),
+        "version 2 is not read",
+    );
+}
+
+#[test]
+fn every_rule_is_checked_on_the_merge_and_names_the_file_of_its_value() {
+    let repository = NEUTRAL.replace("kind = \"linear\"", "kind = \"jira\"");
+    let instance = OVERLAY.replace(
+        "[release]\nrelease_please_authors = [\"app/release-app\"]\ncoordinators = [\"coordinator-login\"]",
+        "[release]\nrelease_please_authors = [\"app/release-app\"]\ncoordinators = []",
+    );
+    let errs = merged(&repository, &instance).unwrap_err();
+    assert!(
+        errs.iter()
+            .any(|e| e.starts_with("spl-asdlc.toml: tracker.kind")),
+        "{errs:#?}"
+    );
+    assert!(
+        errs.iter()
+            .any(|e| e.starts_with("spl-asdlc.instance.toml: release.coordinators")),
+        "{errs:#?}"
+    );
+    let missing = OVERLAY.replace("[owner]\ntracker_user = \"owner-handle\"\n", "");
+    assert_merge_refused_with(
+        NEUTRAL,
+        &missing,
+        "spl-asdlc.toml: owner: the [owner] table is required",
+    );
+}
+
+#[test]
+fn the_overlay_is_the_one_named_or_else_the_sibling_when_present() {
+    let dir = std::env::temp_dir().join(format!("spl-asdlc-overlay-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join(FILE_NAME);
+    std::fs::write(&file, NEUTRAL).unwrap();
+    assert_eq!(
+        instance_path(&file, None).unwrap(),
+        None,
+        "no sibling, no overlay"
+    );
+    assert!(
+        Config::load(&file).is_err(),
+        "a neutral file alone is incomplete"
+    );
+    let named = dir.join("elsewhere.toml");
+    assert!(
+        instance_path(&file, Some(&named)).is_err(),
+        "a named overlay that does not exist is an error"
+    );
+    let sibling = dir.join(INSTANCE_FILE_NAME);
+    std::fs::write(&sibling, OVERLAY).unwrap();
+    assert_eq!(instance_path(&file, None).unwrap(), Some(sibling.clone()));
+    assert_eq!(
+        Config::load(&file).unwrap(),
+        Config::parse(MINIMAL).unwrap()
+    );
+    std::fs::write(&named, OVERLAY).unwrap();
+    std::fs::write(&sibling, "schema = 1\n[product]\nname = \"x\"\n").unwrap();
+    let (c, read) =
+        Config::load_with(&file, Some(&named)).expect("the named overlay wins over the sibling");
+    assert_eq!(c.product.repository, "example-org/acme");
+    assert_eq!(read.unwrap().label, named.display().to_string());
+    let _ = std::fs::remove_dir_all(&dir);
 }

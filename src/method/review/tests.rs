@@ -2,15 +2,11 @@
 //! up-to-date) and `tests/test_review_paths.py` (the list's format).
 
 use super::*;
-use crate::config::Config;
 use crate::github::ReviewThread;
 use crate::github::fake::pull_request;
 
 fn review_config() -> config::Review {
-    let text = include_str!("../../../docs/spec/08-configuration.md");
-    let start = text.find("```toml\n").unwrap() + 8;
-    let end = start + text[start..].find("```").unwrap();
-    Config::parse(&text[start..end]).unwrap().review
+    crate::config::spec_example::config().review
 }
 
 fn s(v: &[&str]) -> Vec<String> {

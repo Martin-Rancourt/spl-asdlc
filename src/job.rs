@@ -137,16 +137,20 @@ mod tests {
     use crate::github::fake::FakeGitHub;
     use crate::tracker::fake::FakeTracker;
 
+    /// The example of spec 08 on disk: the repository's file and, beside
+    /// it, its instance overlay, which the pass finds by itself.
     fn spec_config() -> (Config, PathBuf) {
-        let spec = include_str!("../docs/spec/08-configuration.md");
-        let start = spec.find("```toml\n").unwrap() + "```toml\n".len();
-        let end = start + spec[start..].find("```").unwrap();
-        let text = &spec[start..end];
+        use crate::config::spec_example;
         let dir = std::env::temp_dir().join(format!("spl-asdlc-job-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("spl-asdlc.toml");
-        std::fs::write(&path, text).unwrap();
-        (Config::parse(text).unwrap(), path)
+        let path = dir.join(crate::config::FILE_NAME);
+        std::fs::write(&path, spec_example::repository()).unwrap();
+        std::fs::write(
+            dir.join(crate::config::INSTANCE_FILE_NAME),
+            spec_example::instance(),
+        )
+        .unwrap();
+        (spec_example::config(), path)
     }
 
     fn quiet_github() -> FakeGitHub {
@@ -181,6 +185,27 @@ mod tests {
         assert!(out.ok, "{out:?}");
         assert!(!log.exists(), "no heartbeat");
         assert!(tracker.writes().is_empty());
+    }
+
+    /// A host hands the bridge the repository's file only: the overlay
+    /// beside it is merged, so the pass goes as far as the credentials.
+    #[test]
+    fn the_pass_reads_the_instance_overlay_beside_the_configuration() {
+        let (_, path) = spec_config();
+        let tracker = FakeTracker::default();
+        let out = pass(&Host {
+            config_path: &path,
+            tracker: &tracker,
+            budget: None,
+            log_path: None,
+            env: &|_| None,
+        });
+        assert!(!out.ok);
+        assert!(
+            !out.message.contains("invalid configuration") && out.message.contains("SPL_ASDLC_APP"),
+            "{}",
+            out.message
+        );
     }
 
     #[test]
