@@ -1,0 +1,124 @@
+name: release-publish
+
+# Example caller of asdlc-release-publish.yml: copy it to .github/workflows/,
+# replace <owner>, the tag patterns, the App's slug and the `publish` job
+# with the project's own publication and deployment. The workflow is called
+# three times, once per stage, with the project's job between the first two:
+#
+#   verify -> publish (the project's) -> record-deployed -> close
+#
+# The trigger is the GitHub release that release-please creates as the
+# bridge's App. A dispatch either resumes (redeploys the RC tag `resume-from`
+# for the release `release-tag`) or, with `replay` on the release branch,
+# merges the branch back into the default branch and publishes nothing
+# (docs/setup/repository.md, "Release close").
+#
+# Every call gets the same read permissions: a called job holds at most the
+# permissions of the job that calls it, and `verify` reads Actions runs and
+# pull requests. Writes go through the App token, never GITHUB_TOKEN.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release-tag:
+        description: The published release tag to resume; empty on a replay.
+        type: string
+        default: ''
+      resume-from:
+        description: The RC tag to redeploy (a resume); empty otherwise.
+        type: string
+        default: ''
+      replay:
+        description: Merge the release branch back only; dispatch on that branch.
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.replay) }}
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    uses: <owner>/spl-asdlc/.github/workflows/asdlc-release-publish.yml@v1
+    with:
+      stage: verify
+      release-tag: ${{ github.event.release.tag_name || inputs.release-tag }}
+      resume-from: ${{ inputs.resume-from }}
+      candidate-tag: acme-v{version}-rc.{rc}
+      release-tag-pattern: acme-v{version}
+      # As `[release] bookkeeping_paths` in spl-asdlc.toml.
+      bookkeeping-paths: '[".release-please-manifest.json", "CHANGELOG.md"]'
+      # The slug of the bridge's App, which must have merged the release-please PR.
+      go-merger-login: example-app
+
+  # The project's own job: publish and deploy the verified commit. Its
+  # output says which components it put in production, decided from its own
+  # step outcomes: `[]` when nothing went out, empty when unknown.
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    permissions:
+      contents: read
+    outputs:
+      in-production: ${{ steps.deploy.outcome == 'success' && '["acme"]' || '[]' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.deploy-sha }}
+          persist-credentials: false
+      - name: Publish
+        run: make publish
+      - name: Deploy
+        id: deploy
+        run: make deploy
+
+  # The `deployed: production` ledger the bridge reads for a multi-component
+  # product. A single-component product may drop this job and its need.
+  record-deployed:
+    needs: [verify, publish]
+    if: ${{ always() && needs.verify.result == 'success' && needs.publish.result != 'cancelled' }}
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    uses: <owner>/spl-asdlc/.github/workflows/asdlc-release-publish.yml@v1
+    with:
+      stage: record-deployed
+      release-branch: ${{ needs.verify.outputs.release-branch }}
+      resume-from: ${{ inputs.resume-from }}
+      components-in-production: ${{ needs.publish.outputs.in-production }}
+    secrets:
+      SPL_ASDLC_APP_ID: ${{ secrets.SPL_ASDLC_APP_ID }}
+      SPL_ASDLC_APP_PRIVATE_KEY: ${{ secrets.SPL_ASDLC_APP_PRIVATE_KEY }}
+
+  # Always called: its `closing-guard` turns a close that did not run after a
+  # publication into a red run.
+  close:
+    needs: [verify, publish, record-deployed]
+    if: ${{ always() }}
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    uses: <owner>/spl-asdlc/.github/workflows/asdlc-release-publish.yml@v1
+    with:
+      stage: close
+      release-tag: ${{ github.event.release.tag_name || inputs.release-tag }}
+      resume-from: ${{ inputs.resume-from }}
+      replay: ${{ inputs.replay || false }}
+      publish-result: ${{ needs.publish.result }}
+    secrets:
+      SPL_ASDLC_APP_ID: ${{ secrets.SPL_ASDLC_APP_ID }}
+      SPL_ASDLC_APP_PRIVATE_KEY: ${{ secrets.SPL_ASDLC_APP_PRIVATE_KEY }}

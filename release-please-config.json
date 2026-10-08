@@ -1,0 +1,25 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "packages": {
+    ".": {
+      "release-type": "rust",
+      "component": "spl-asdlc",
+      "include-component-in-tag": false,
+      "pull-request-title-pattern": "chore${scope}: release spl-asdlc ${version}",
+      "changelog-path": "CHANGELOG.md",
+      "changelog-sections": [
+        { "type": "feat", "section": "Features" },
+        { "type": "fix", "section": "Bug Fixes" },
+        { "type": "perf", "section": "Performance" },
+        { "type": "revert", "section": "Reverts" },
+        { "type": "docs", "section": "Documentation" },
+        { "type": "style", "section": "Style" },
+        { "type": "chore", "section": "Chores" },
+        { "type": "refactor", "section": "Refactoring" },
+        { "type": "test", "section": "Tests" },
+        { "type": "build", "section": "Build" },
+        { "type": "ci", "section": "Continuous Integration" }
+      ]
+    }
+  }
+}
