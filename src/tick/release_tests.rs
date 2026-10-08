@@ -30,10 +30,7 @@ fn repo() -> RepoSlug {
 }
 
 fn config() -> Config {
-    let spec = include_str!("../../docs/spec/08-configuration.md");
-    let start = spec.find("```toml\n").unwrap() + "```toml\n".len();
-    let end = start + spec[start..].find("```").unwrap();
-    Config::parse(&spec[start..end]).unwrap()
+    crate::config::spec_example::config()
 }
 
 fn tag(name: &str, sha: &str) -> GitRef {
@@ -1325,10 +1322,7 @@ fn a_dry_run_of_the_release_pass_writes_nothing() {
 // ---- multi-component GO (spec 05 §9, REQ-REL-077/078) ----
 
 fn multi_config() -> Config {
-    let spec = include_str!("../../docs/spec/08-configuration.md");
-    let start = spec.find("```toml\n").unwrap() + "```toml\n".len();
-    let end = start + spec[start..].find("```").unwrap();
-    let text = spec[start..end]
+    let text = crate::config::spec_example::repository()
         .replace(
             "# components = [\"app\", \"website\", \"admin\"]",
             "components = [\"app\", \"website\"]",
@@ -1338,7 +1332,7 @@ fn multi_config() -> Config {
             "version_component = \"app\"",
         )
         .replace("# gate_record = ", "gate_record = ");
-    Config::parse(&text).unwrap()
+    crate::config::spec_example::parse(&text)
 }
 
 fn component_pr(w: &World, number: u64, component: &str) -> PullRequest {
@@ -1441,10 +1435,7 @@ fn a_multi_component_go_lands_the_record_then_merges_the_version_component_last(
 #[test]
 fn the_release_please_config_is_read_where_the_product_says_and_never_guessed() {
     let mut w = World::new();
-    let spec = include_str!("../../docs/spec/08-configuration.md");
-    let start = spec.find("```toml\n").unwrap() + "```toml\n".len();
-    let end = start + spec[start..].find("```").unwrap();
-    let text = spec[start..end]
+    let text = crate::config::spec_example::repository()
         .replace(
             "# components = [\"app\", \"website\", \"admin\"]",
             "components = [\"app\", \"website\"]",
@@ -1458,7 +1449,7 @@ fn the_release_please_config_is_read_where_the_product_says_and_never_guessed() 
             "release_please_config = \"release-please-config.json\"",
             "release_please_config = \".release-please-config.json\"",
         );
-    w.config = Config::parse(&text).unwrap();
+    w.config = crate::config::spec_example::parse(&text);
     w.tick();
     all_angles_merged(&w);
     w.github.state.borrow_mut().commits.insert(

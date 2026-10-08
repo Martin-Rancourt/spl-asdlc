@@ -4,7 +4,7 @@
 
 use std::fmt;
 
-use crate::config::Config;
+use crate::config::{Config, Source};
 use crate::github::{GitHub, RepoSlug};
 use crate::method::business_rules;
 use crate::method::review;
@@ -48,9 +48,24 @@ fn check(name: &str, verdict: Verdict, detail: impl Into<String>) -> Check {
     }
 }
 
-/// Every check, in the order of the procedure.
-pub fn run(config: &Config, github: &dyn GitHub, tracker: &dyn Tracker, host: &str) -> Vec<Check> {
-    let mut out = vec![check("bridge-host", Verdict::Ok, host)];
+/// Every check, in the order of the procedure. `instance` is the instance
+/// overlay merged into `config`, if any: the repository's file at the
+/// default branch is judged merged with it, as the bridge reads it.
+pub fn run(
+    config: &Config,
+    instance: Option<&Source>,
+    github: &dyn GitHub,
+    tracker: &dyn Tracker,
+    host: &str,
+) -> Vec<Check> {
+    let mut out = vec![
+        check("bridge-host", Verdict::Ok, host),
+        check(
+            "instance overlay",
+            Verdict::Ok,
+            instance.map_or("none", |i| i.label.as_str()),
+        ),
+    ];
     let Some(repo) = RepoSlug::parse(&config.product.repository) else {
         out.push(check(
             "repository",
@@ -81,7 +96,7 @@ pub fn run(config: &Config, github: &dyn GitHub, tracker: &dyn Tracker, host: &s
             return out;
         }
     };
-    out.extend(files(config, github, &repo, &default));
+    out.extend(files(config, instance, github, &repo, &default));
     out.push(match github.required_checks(&repo, &default) {
         Ok(r) if r.contexts.contains("required-check") => check(
             "ruleset",
@@ -105,11 +120,23 @@ pub fn run(config: &Config, github: &dyn GitHub, tracker: &dyn Tracker, host: &s
     out
 }
 
-fn files(config: &Config, github: &dyn GitHub, repo: &RepoSlug, rev: &str) -> Vec<Check> {
+fn files(
+    config: &Config,
+    instance: Option<&Source>,
+    github: &dyn GitHub,
+    repo: &RepoSlug,
+    rev: &str,
+) -> Vec<Check> {
     let mut out = Vec::new();
     let read = |path: &str| github.file(repo, path, rev);
     out.push(match read(crate::config::FILE_NAME) {
-        Ok(text) => match Config::parse(&text) {
+        Ok(text) => match Config::parse_with(
+            &Source {
+                label: format!("{} at {rev}", crate::config::FILE_NAME),
+                text,
+            },
+            instance,
+        ) {
             Ok(_) => check("spl-asdlc.toml", Verdict::Ok, format!("valid at {rev}")),
             Err(e) => check(
                 "spl-asdlc.toml",
@@ -263,10 +290,7 @@ mod tests {
     use crate::tracker::fake::FakeTracker;
 
     fn config() -> Config {
-        let spec = include_str!("../docs/spec/08-configuration.md");
-        let start = spec.find("```toml\n").unwrap() + "```toml\n".len();
-        let end = start + spec[start..].find("```").unwrap();
-        Config::parse(&spec[start..end]).unwrap()
+        crate::config::spec_example::config()
     }
 
     #[test]
@@ -304,7 +328,7 @@ mod tests {
             id: "u-owner".into(),
             name: "owner-handle".into(),
         });
-        let checks = run(&c, &g, &t, "workstation");
+        let checks = run(&c, None, &g, &t, "workstation");
         let by = |n: &str| {
             checks
                 .iter()
@@ -313,6 +337,12 @@ mod tests {
                 .verdict
         };
         assert_eq!(by("github-app"), Verdict::Ok);
+        assert!(
+            checks
+                .iter()
+                .any(|c| c.to_string() == "instance overlay: ok — none"),
+            "{checks:#?}"
+        );
         assert_eq!(by("spl-asdlc.toml"), Verdict::Missing);
         assert_eq!(by("business-rules"), Verdict::Ok);
         assert_eq!(
@@ -330,5 +360,49 @@ mod tests {
             c.to_string()
                 .starts_with("workflow release-cut.yml: missing")
         }));
+    }
+
+    /// The repository's file at the default branch is neutral: the doctor
+    /// judges it merged with the overlay it was given, as the bridge reads it.
+    #[test]
+    fn the_file_at_the_default_branch_is_judged_with_the_instance_overlay() {
+        use crate::config::{INSTANCE_FILE_NAME, spec_example};
+        let g = FakeGitHub::new();
+        let repo = RepoSlug::parse("example-org/acme").unwrap();
+        {
+            let mut s = g.state.borrow_mut();
+            s.identity = Some(Identity::App {
+                slug: "spl-asdlc".into(),
+                app_id: "1".into(),
+            });
+            s.default_branch.insert(repo.clone(), "main".into());
+            s.files.insert(
+                (repo.clone(), "main".into(), "spl-asdlc.toml".into()),
+                Ok(spec_example::repository().into()),
+            );
+        }
+        let t = FakeTracker::default();
+        let overlay = spec_example::source(INSTANCE_FILE_NAME, spec_example::instance());
+        let verdict = |instance: Option<&Source>| {
+            let checks = run(&config(), instance, &g, &t, "workstation");
+            let line = |n: &str| {
+                checks
+                    .iter()
+                    .find(|c| c.name == n)
+                    .unwrap_or_else(|| panic!("{n}: {checks:#?}"))
+                    .clone()
+            };
+            (line("instance overlay"), line("spl-asdlc.toml"))
+        };
+        let (instance, file) = verdict(Some(&overlay));
+        assert_eq!(
+            instance.to_string(),
+            "instance overlay: ok — spl-asdlc.instance.toml"
+        );
+        assert_eq!(file.verdict, Verdict::Ok, "{file}");
+        let (instance, file) = verdict(None);
+        assert_eq!(instance.to_string(), "instance overlay: ok — none");
+        assert_eq!(file.verdict, Verdict::Invalid, "{file}");
+        assert!(file.detail.contains("product.repository"), "{file}");
     }
 }

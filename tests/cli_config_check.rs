@@ -12,18 +12,54 @@ fn write_temp(name: &str, text: &str) -> PathBuf {
 }
 
 fn check(path: &std::path::Path) -> std::process::Output {
+    check_with(path, &[])
+}
+
+fn check_with(path: &std::path::Path, extra: &[&std::ffi::OsStr]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_spl-asdlc"))
         .args(["config", "check", "--file"])
         .arg(path)
+        .args(extra)
         .output()
         .unwrap()
 }
 
-fn spec_example() -> String {
+/// The `n`-th ```toml block of spec 08: 0 is the repository's file of the
+/// example, 1 its instance overlay.
+fn spec_block(n: usize) -> &'static str {
     let spec = include_str!("../docs/spec/08-configuration.md");
-    let start = spec.find("```toml\n").unwrap() + "```toml\n".len();
+    let mut start = 0;
+    for _ in 0..=n {
+        start += spec[start..].find("```toml\n").unwrap() + "```toml\n".len();
+    }
     let end = start + spec[start..].find("```").unwrap();
-    spec[start..end].to_string()
+    &spec[start..end]
+}
+
+/// The example as one file: the overlay's keys written in the repository's
+/// file, as a private project may keep them.
+fn spec_example() -> String {
+    spec_block(0)
+        .replacen(
+            "name = \"acme\"",
+            "name = \"acme\"\nrepository = \"example-org/acme\"\n\n[owner]\ntracker_user = \"owner-handle\"",
+            1,
+        )
+        .replacen(
+            "kind = \"linear\"",
+            "kind = \"linear\"\nteam = \"ABC\"\nservice_identity = \"spl-asdlc\"",
+            1,
+        )
+        .replacen(
+            "[release]\n",
+            "[release]\nrelease_please_authors = [\"app/release-app\"]\ncoordinators = [\"coordinator-login\"]\n",
+            1,
+        )
+        .replacen(
+            "[review]\n",
+            "[review]\ncoordinators = [\"coordinator-login\"]\n",
+            1,
+        )
 }
 
 #[test]
@@ -68,4 +104,77 @@ fn an_unknown_verb_exits_two() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
+}
+
+/// The neutral file of spec 08 and its overlay beside it, in a directory of
+/// its own.
+fn neutral_pair(dir: &str, with_overlay: bool) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("spl-asdlc-cli-{dir}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("spl-asdlc.toml");
+    std::fs::write(&path, spec_block(0)).unwrap();
+    if with_overlay {
+        std::fs::write(dir.join("spl-asdlc.instance.toml"), spec_block(1)).unwrap();
+    }
+    path
+}
+
+#[test]
+fn the_overlay_beside_the_file_is_merged_and_named() {
+    let path = neutral_pair("sibling", true);
+    let out = check(&path);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("spl-asdlc.instance.toml: valid — product acme (example-org/acme)"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn without_an_overlay_a_neutral_file_is_incomplete() {
+    let path = neutral_pair("no-sibling", false);
+    let out = check(&path);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("product.repository: is required"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn a_named_overlay_is_read_and_one_that_does_not_exist_exits_two() {
+    let path = neutral_pair("named", false);
+    let overlay = write_temp("named-overlay.toml", spec_block(1));
+    let out = check_with(&path, &["--instance".as_ref(), overlay.as_os_str()]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let missing = path.with_file_name("absent-overlay.toml");
+    let out = check_with(&path, &["--instance".as_ref(), missing.as_os_str()]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("the instance overlay named does not exist")
+    );
+}
+
+#[test]
+fn a_key_in_both_files_exits_one_and_names_both() {
+    let path = neutral_pair("both", true);
+    std::fs::write(
+        &path,
+        spec_block(0).replacen(
+            "name = \"acme\"",
+            "name = \"acme\"\nrepository = \"example-org/acme\"",
+            1,
+        ),
+    )
+    .unwrap();
+    let out = check(&path);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("product.repository: is set in both"),
+        "{stderr}"
+    );
 }

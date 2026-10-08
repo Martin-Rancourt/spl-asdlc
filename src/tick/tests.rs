@@ -18,10 +18,7 @@ use crate::tracker::fake::FakeTracker;
 const COMPLETE: &str = "## Goal\nIt works.\n\n## Acceptance criteria\n- [x] it works\n- [ ] it is fast\n\n## Business rules\nNo new rule.\n";
 
 fn config() -> Config {
-    let spec = include_str!("../../docs/spec/08-configuration.md");
-    let start = spec.find("```toml\n").unwrap() + "```toml\n".len();
-    let end = start + spec[start..].find("```").unwrap();
-    Config::parse(&spec[start..end]).unwrap()
+    crate::config::spec_example::config()
 }
 
 struct World {

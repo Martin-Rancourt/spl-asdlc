@@ -36,6 +36,10 @@ enum Command {
         /// A `spl-asdlc.toml`; repeat for several repositories.
         #[arg(long = "file", default_value = config::FILE_NAME)]
         files: Vec<PathBuf>,
+        /// The instance overlay of a single `--file` (default: `spl-asdlc.instance.toml`
+        /// beside each file, when present).
+        #[arg(long)]
+        instance: Option<PathBuf>,
         /// Read for real, write nothing: print what the tick would do.
         #[arg(long)]
         dry_run: bool,
@@ -50,6 +54,9 @@ enum Command {
         /// The configuration of the product.
         #[arg(long, global = true, default_value = config::FILE_NAME)]
         file: PathBuf,
+        /// The instance overlay (default: `spl-asdlc.instance.toml` beside the file, when present).
+        #[arg(long, global = true)]
+        instance: Option<PathBuf>,
         /// The product, checked against the configuration.
         #[arg(long, global = true)]
         product: Option<String>,
@@ -58,6 +65,9 @@ enum Command {
     Doctor {
         #[arg(long, default_value = config::FILE_NAME)]
         file: PathBuf,
+        /// The instance overlay (default: `spl-asdlc.instance.toml` beside the file, when present).
+        #[arg(long)]
+        instance: Option<PathBuf>,
     },
 }
 
@@ -105,6 +115,9 @@ enum TicketCommand {
         /// The configuration naming the tracker.
         #[arg(long, default_value = config::FILE_NAME)]
         file: PathBuf,
+        /// The instance overlay (default: `spl-asdlc.instance.toml` beside the file, when present).
+        #[arg(long)]
+        instance: Option<PathBuf>,
     },
 }
 
@@ -115,6 +128,9 @@ enum ConfigCommand {
         /// The file to check.
         #[arg(long, default_value = config::FILE_NAME)]
         file: PathBuf,
+        /// The instance overlay (default: `spl-asdlc.instance.toml` beside the file, when present).
+        #[arg(long)]
+        instance: Option<PathBuf>,
     },
 }
 
@@ -139,41 +155,73 @@ where
     let mut err = std::io::stderr().lock();
     match cli.command {
         Command::Config {
-            command: ConfigCommand::Check { file },
-        } => config_check(&file, &mut out, &mut err),
+            command: ConfigCommand::Check { file, instance },
+        } => config_check(&file, instance.as_deref(), &mut out, &mut err),
         Command::Ticket {
             command:
                 TicketCommand::Check {
                     item,
                     description,
                     file,
+                    instance,
                 },
-        } => ticket_check(item, description, &file, &mut out, &mut err),
+        } => ticket_check(
+            item,
+            description,
+            &file,
+            instance.as_deref(),
+            &mut out,
+            &mut err,
+        ),
         Command::Tick {
             files,
+            instance,
             dry_run,
             log,
-        } => tick(&files, dry_run, log, &mut out, &mut err),
+        } => tick(
+            &files,
+            instance.as_deref(),
+            dry_run,
+            log,
+            &mut out,
+            &mut err,
+        ),
         Command::Release {
             command,
             file,
+            instance,
             product,
-        } => release(command, &file, product.as_deref(), &mut out, &mut err),
-        Command::Doctor { file } => doctor(&file, &mut out, &mut err),
+        } => release(
+            command,
+            &file,
+            instance.as_deref(),
+            product.as_deref(),
+            &mut out,
+            &mut err,
+        ),
+        Command::Doctor { file, instance } => {
+            doctor(&file, instance.as_deref(), &mut out, &mut err)
+        }
     }
 }
 
 /// What a verb needs: the configuration and the two clients.
 struct Connected {
     config: Config,
+    /// The instance overlay merged into the configuration, if any.
+    instance: Option<config::Source>,
     github: crate::github::RestGitHub,
     tracker: crate::tracker::linear::Linear,
     repo: crate::github::RepoSlug,
     login: String,
 }
 
-fn connect(file: &std::path::Path) -> Result<Connected, String> {
-    let config = Config::load(file).map_err(|errors| {
+/// The configuration of `file`, merged with its instance overlay.
+fn load(
+    file: &std::path::Path,
+    instance: Option<&std::path::Path>,
+) -> Result<(Config, Option<config::Source>), String> {
+    Config::load_with(file, instance).map_err(|errors| {
         format!(
             "{}: invalid configuration\n{}",
             file.display(),
@@ -184,7 +232,14 @@ fn connect(file: &std::path::Path) -> Result<Connected, String> {
                 .collect::<Vec<_>>()
                 .join("\n")
         )
-    })?;
+    })
+}
+
+fn connect(
+    file: &std::path::Path,
+    instance: Option<&std::path::Path>,
+) -> Result<Connected, String> {
+    let (config, instance) = load(file, instance)?;
     let env = crate::host::process_env;
     let github = crate::host::github(&config, &env)?;
     let tracker = crate::host::linear(&config, &env)?;
@@ -195,6 +250,7 @@ fn connect(file: &std::path::Path) -> Result<Connected, String> {
         .login();
     Ok(Connected {
         config,
+        instance,
         github,
         tracker,
         repo,
@@ -204,15 +260,25 @@ fn connect(file: &std::path::Path) -> Result<Connected, String> {
 
 fn tick(
     files: &[PathBuf],
+    instance: Option<&std::path::Path>,
     dry_run: bool,
     log_path: Option<PathBuf>,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> ExitCode {
     use crate::action_log::{self, ActionLog};
+    if instance.is_some() && files.len() > 1 {
+        let _ = writeln!(
+            err,
+            "--instance names the overlay of one configuration: with several --file, each file's overlay is the one beside it ({} beside a {}, <stem>.instance.toml beside any other)",
+            config::INSTANCE_FILE_NAME,
+            config::FILE_NAME
+        );
+        return ExitCode::from(2);
+    }
     let mut code = ExitCode::SUCCESS;
     for file in files {
-        let c = match connect(file) {
+        let c = match connect(file, instance) {
             Ok(c) => c,
             Err(e) => {
                 // One repository that cannot start costs no other.
@@ -311,11 +377,12 @@ fn who() -> String {
 fn release(
     command: ReleaseCommand,
     file: &std::path::Path,
+    instance: Option<&std::path::Path>,
     product: Option<&str>,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> ExitCode {
-    let c = match connect(file) {
+    let c = match connect(file, instance) {
         Ok(c) => c,
         Err(e) => {
             let _ = writeln!(err, "{e}");
@@ -403,15 +470,26 @@ fn release(
     }
 }
 
-fn doctor(file: &std::path::Path, out: &mut dyn Write, err: &mut dyn Write) -> ExitCode {
-    let c = match connect(file) {
+fn doctor(
+    file: &std::path::Path,
+    instance: Option<&std::path::Path>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> ExitCode {
+    let c = match connect(file, instance) {
         Ok(c) => c,
         Err(e) => {
             let _ = writeln!(err, "{e}");
             return ExitCode::from(2);
         }
     };
-    let checks = crate::doctor::run(&c.config, &c.github, &c.tracker, "spl-asdlc binary");
+    let checks = crate::doctor::run(
+        &c.config,
+        c.instance.as_ref(),
+        &c.github,
+        &c.tracker,
+        "spl-asdlc binary",
+    );
     for check in &checks {
         let _ = writeln!(out, "{check}");
     }
@@ -429,6 +507,7 @@ fn ticket_check(
     item: Option<String>,
     description: Option<PathBuf>,
     file: &std::path::Path,
+    instance: Option<&std::path::Path>,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> ExitCode {
@@ -449,13 +528,10 @@ fn ticket_check(
             }
         }
         (Some(key), None) => {
-            let config = match Config::load(file) {
-                Ok(c) => c,
-                Err(errors) => {
-                    let _ = writeln!(err, "{}: invalid configuration", file.display());
-                    for e in &errors.0 {
-                        let _ = writeln!(err, "  {e}");
-                    }
+            let config = match load(file, instance) {
+                Ok((c, _)) => c,
+                Err(e) => {
+                    let _ = writeln!(err, "{e}");
                     return ExitCode::from(2);
                 }
             };
@@ -492,17 +568,32 @@ fn ticket_check(
     }
 }
 
-fn config_check(file: &std::path::Path, out: &mut dyn Write, err: &mut dyn Write) -> ExitCode {
+fn config_check(
+    file: &std::path::Path,
+    instance: Option<&std::path::Path>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> ExitCode {
     if !file.is_file() {
         let _ = writeln!(err, "{} could not be read: no such file", file.display());
         return ExitCode::from(2);
     }
-    match Config::load(file) {
-        Ok(c) => {
+    let overlay = match config::instance_path(file, instance) {
+        Ok(o) => o,
+        Err(errors) => {
+            let _ = writeln!(err, "{errors}");
+            return ExitCode::from(2);
+        }
+    };
+    let name = match &overlay {
+        Some(o) => format!("{} with {}", file.display(), o.display()),
+        None => file.display().to_string(),
+    };
+    match Config::load_with(file, overlay.as_deref()) {
+        Ok((c, _)) => {
             let _ = writeln!(
                 out,
-                "{}: valid — product {} ({}), tracker {} team {}, {} release angle(s), {} review angle(s)",
-                file.display(),
+                "{name}: valid — product {} ({}), tracker {} team {}, {} release angle(s), {} review angle(s)",
                 c.product.name,
                 c.product.repository,
                 c.tracker.kind,
@@ -515,8 +606,7 @@ fn config_check(file: &std::path::Path, out: &mut dyn Write, err: &mut dyn Write
         Err(errors) => {
             let _ = writeln!(
                 err,
-                "{}: invalid — the bridge will not serve this repository",
-                file.display()
+                "{name}: invalid — the bridge will not serve this repository"
             );
             for e in &errors.0 {
                 let _ = writeln!(err, "  {e}");

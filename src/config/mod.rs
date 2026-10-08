@@ -4,7 +4,12 @@
 //! with the full list of what is wrong. Nothing falls back to a default shape
 //! when the file is invalid: an invalid file stops the bridge for that
 //! repository (fail closed).
+//!
+//! The repository's file may leave the identities of an installation to an
+//! instance overlay kept on the host ([`overlay`]); the two are merged before
+//! anything is validated, and a key set in both is an error.
 
+pub mod overlay;
 mod raw;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -12,6 +17,8 @@ use std::fmt;
 use std::path::Path;
 
 use raw::RawConfig;
+
+pub use overlay::{INSTANCE_FILE_NAME, instance_path, sibling_of};
 
 /// The only schema version this build reads.
 pub const SCHEMA_VERSION: i64 = 1;
@@ -262,12 +269,18 @@ pub struct Notify {
 /// One thing wrong with the file, named by its key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigError {
+    /// The file the error comes from, when an instance overlay is merged
+    /// (one file alone is named by whoever read it).
+    pub file: Option<String>,
     pub key: String,
     pub message: String,
 }
 
 impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(file) = &self.file {
+            write!(f, "{file}: ")?;
+        }
         if self.key.is_empty() {
             write!(f, "{}", self.message)
         } else {
@@ -294,22 +307,57 @@ impl fmt::Display for ConfigErrors {
 
 impl std::error::Error for ConfigErrors {}
 
-impl Config {
-    /// Read and validate a file on disk.
-    pub fn load(path: &Path) -> Result<Config, ConfigErrors> {
+/// A configuration file as read: what names it in a message, and its text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Source {
+    pub label: String,
+    pub text: String,
+}
+
+impl Source {
+    pub fn read(path: &Path) -> Result<Source, ConfigErrors> {
         let text = std::fs::read_to_string(path).map_err(|e| {
             ConfigErrors(vec![ConfigError {
+                file: None,
                 key: String::new(),
                 message: format!("{} could not be read: {e}", path.display()),
             }])
         })?;
-        Config::parse(&text)
+        Ok(Source {
+            label: path.display().to_string(),
+            text,
+        })
+    }
+}
+
+impl Config {
+    /// Read and validate a file on disk, merged with its instance overlay
+    /// when one is beside it ([`instance_path`]).
+    pub fn load(path: &Path) -> Result<Config, ConfigErrors> {
+        Config::load_with(path, None).map(|(c, _)| c)
     }
 
-    /// Validate the text of a `spl-asdlc.toml`.
+    /// Read and validate a file on disk with its instance overlay: the one
+    /// named, which must exist, or else the one beside the file, if any.
+    /// Returns the overlay read, for whoever reports it.
+    pub fn load_with(
+        path: &Path,
+        instance: Option<&Path>,
+    ) -> Result<(Config, Option<Source>), ConfigErrors> {
+        let repository = Source::read(path)?;
+        let overlay = match instance_path(path, instance)? {
+            Some(p) => Some(Source::read(&p)?),
+            None => None,
+        };
+        let config = Config::parse_with(&repository, overlay.as_ref())?;
+        Ok((config, overlay))
+    }
+
+    /// Validate the text of a `spl-asdlc.toml` that stands alone.
     pub fn parse(text: &str) -> Result<Config, ConfigErrors> {
         let raw: RawConfig = toml::from_str(text).map_err(|e| {
             ConfigErrors(vec![ConfigError {
+                file: None,
                 key: String::new(),
                 message: format!("not a valid {FILE_NAME}: {}", e.to_string().trim_end()),
             }])
@@ -319,6 +367,56 @@ impl Config {
         match config {
             Some(c) if v.errors.is_empty() => Ok(c),
             _ => Err(ConfigErrors(v.errors)),
+        }
+    }
+
+    /// Validate the repository's file merged with an instance overlay
+    /// (spec 08, "The instance overlay"). Each file is first read for its
+    /// own shape, with its lines; every rule is then checked on the merged
+    /// result, and each error names the file its value comes from.
+    pub fn parse_with(
+        repository: &Source,
+        instance: Option<&Source>,
+    ) -> Result<Config, ConfigErrors> {
+        let Some(instance) = instance else {
+            return Config::parse(&repository.text);
+        };
+        let in_repository = |message: String| {
+            ConfigErrors(vec![ConfigError {
+                file: Some(repository.label.clone()),
+                key: String::new(),
+                message,
+            }])
+        };
+        let not_valid = |e: toml::de::Error| {
+            in_repository(format!(
+                "not a valid {FILE_NAME}: {}",
+                e.to_string().trim_end()
+            ))
+        };
+        toml::from_str::<RawConfig>(&repository.text).map_err(not_valid)?;
+        let mut table: toml::Table = toml::from_str(&repository.text).map_err(not_valid)?;
+        let mut merged = overlay::merge(&mut table, &repository.label, instance)?;
+        let raw: RawConfig = toml::Value::Table(table).try_into().map_err(|e| {
+            in_repository(format!(
+                "the merge with {} is not a valid {FILE_NAME}: {e}",
+                instance.label
+            ))
+        })?;
+        let mut v = Validator::default();
+        let config = v.config(raw);
+        let mut errors = std::mem::take(&mut merged.errors);
+        errors.extend(v.errors.into_iter().map(|mut e| {
+            e.file = Some(if merged.is_from_overlay(&e.key) {
+                instance.label.clone()
+            } else {
+                repository.label.clone()
+            });
+            e
+        }));
+        match config {
+            Some(c) if errors.is_empty() => Ok(c),
+            _ => Err(ConfigErrors(errors)),
         }
     }
 }
@@ -338,9 +436,16 @@ struct Validator {
 
 impl Validator {
     fn err(&mut self, key: &str, message: impl Into<String>) {
+        let mut message = message.into();
+        if message.contains("is required") && overlay::is_instance_key(key) {
+            message.push_str(
+                " (an instance key: the repository's file or its instance overlay carries it)",
+            );
+        }
         self.errors.push(ConfigError {
+            file: None,
             key: key.to_string(),
-            message: message.into(),
+            message,
         });
     }
 
@@ -1157,6 +1262,61 @@ fn default_title(key: &str) -> String {
         })
         .collect();
     format!("{} review", words.join(" "))
+}
+
+/// The example of `docs/spec/08-configuration.md`, as the tests read it:
+/// the repository's file and its instance overlay.
+#[cfg(test)]
+pub(crate) mod spec_example {
+    use super::{Config, FILE_NAME, INSTANCE_FILE_NAME, Source};
+
+    const SPEC: &str = include_str!("../../docs/spec/08-configuration.md");
+
+    /// The `n`-th ```toml block of spec 08, from 0.
+    fn block(n: usize) -> &'static str {
+        let open = "```toml\n";
+        let mut start = 0;
+        for _ in 0..=n {
+            start += SPEC[start..]
+                .find(open)
+                .expect("spec 08 carries the toml blocks of its example")
+                + open.len();
+        }
+        let end = start + SPEC[start..].find("```").expect("the toml block is closed");
+        &SPEC[start..end]
+    }
+
+    /// The repository's file of the example.
+    pub(crate) fn repository() -> &'static str {
+        block(0)
+    }
+
+    /// The instance overlay of the example.
+    pub(crate) fn instance() -> &'static str {
+        block(1)
+    }
+
+    pub(crate) fn source(label: &str, text: &str) -> Source {
+        Source {
+            label: label.to_string(),
+            text: text.to_string(),
+        }
+    }
+
+    /// A repository's file (the example's, edited) merged with the
+    /// example's overlay.
+    pub(crate) fn parse(repository: &str) -> Config {
+        Config::parse_with(
+            &source(FILE_NAME, repository),
+            Some(&source(INSTANCE_FILE_NAME, instance())),
+        )
+        .unwrap_or_else(|e| panic!("spec 08 example: {e}"))
+    }
+
+    /// The example, merged.
+    pub(crate) fn config() -> Config {
+        parse(repository())
+    }
 }
 
 #[cfg(test)]
