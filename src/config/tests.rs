@@ -54,6 +54,7 @@ fn a_minimal_file_gets_every_documented_default() {
     assert_eq!(c.release.max_rc_passes, 2);
     assert_eq!(c.release.later_passes, LaterPasses::Full);
     assert_eq!(c.release.go_policy, GoPolicy::Computed);
+    assert_eq!(c.release.nits, NitsGrouping::Shared);
     assert_eq!(c.release.record, ".spl-asdlc/qa/{candidate}/");
     assert_eq!(c.release.release_pr_label, "autorelease: pending");
     assert_eq!(c.release.registry_path, "docs/business-rules.md");
@@ -410,5 +411,24 @@ fn a_bad_release_value_does_not_hide_the_owner_requirement() {
     assert_refused_with(
         &text,
         "owner.github_login: is required when release.go_policy",
+    );
+}
+
+#[test]
+fn the_nits_grouping_is_shared_or_per_nit_and_nothing_else() {
+    let per_nit = MINIMAL.replace("[release]\n", "[release]\nnits = \"per-nit\"\n");
+    assert_eq!(
+        Config::parse(&per_nit).unwrap().release.nits,
+        NitsGrouping::PerNit
+    );
+    let shared = MINIMAL.replace("[release]\n", "[release]\nnits = \"shared\"\n");
+    assert_eq!(
+        Config::parse(&shared).unwrap().release.nits,
+        NitsGrouping::Shared
+    );
+    let other = MINIMAL.replace("[release]\n", "[release]\nnits = \"none\"\n");
+    assert_refused_with(
+        &other,
+        "release.nits: \"none\" is not one of \"shared\", \"per-nit\"",
     );
 }

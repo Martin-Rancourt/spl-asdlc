@@ -35,7 +35,7 @@ In Review, To Deploy and Post Deploy are **validation** states: the item is stil
 |---|---|
 | `blocker` | The release must not ship with it. Fixed in the angle branch, or becomes a blocker ticket. |
 | `should-fix` | Real, not blocking; becomes a finding ticket. |
-| `nit` | Cosmetic; listed in the report, one nits ticket per release. |
+| `nit` | Cosmetic; listed in the report, documented rather than solved; a box of the release's nits ticket, or a ticket of its own (`release.nits`), to triage: kept or dropped. |
 
 | Verdict | Meaning |
 |---|---|

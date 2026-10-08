@@ -625,7 +625,11 @@ fn an_approved_angle_pr_with_a_valid_report_is_merged_and_its_findings_filed_onc
         .iter()
         .find(|i| i.title == "Nits — acme v1.2.0")
         .expect("nits");
-    assert!(nits.description.contains("src/a.rs:1: Finding security-3"));
+    assert!(
+        nits.description
+            .contains("Finding security-3 — where: `src/a.rs:1` — context: e")
+    );
+    assert!(crate::method::contract::has_contract(&nits.description));
     let before = w.tracker.writes().len();
     w.tick();
     assert_eq!(
@@ -1114,6 +1118,169 @@ fn two_nits_of_one_report_share_one_nits_ticket() {
         nits[0].description.contains("Finding security-1")
             && nits[0].description.contains("Finding security-2")
     );
+}
+
+/// The nits of one merged report, under `release.nits`.
+fn nits_world(grouping: crate::config::NitsGrouping) -> World {
+    let mut w = World::new();
+    w.config.release.nits = grouping;
+    w.tick();
+    let findings = [finding("security-1", "nit"), finding("security-2", "nit")].join(",");
+    let pr = w.angle_pr(30, "security", &report_json("security", &findings));
+    w.open_on_branch(vec![pr]);
+    w
+}
+
+#[test]
+fn the_shared_nits_ticket_is_a_full_contract_that_asks_to_triage() {
+    let w = nits_world(crate::config::NitsGrouping::Shared);
+    w.tick();
+    w.tick();
+    let nits = w
+        .tracker
+        .list_by_label(LABEL)
+        .unwrap()
+        .into_iter()
+        .find(|i| i.title == "Nits — acme v1.2.0")
+        .expect("nits");
+    let d = &nits.description;
+    // What `ticket check` judges, and nothing exempts it by marker.
+    assert!(
+        crate::method::contract::missing_from_contract(d).is_empty(),
+        "{d}"
+    );
+    assert_eq!(crate::method::business_rules::new_rule_statement(d), None);
+    assert!(texts::bridge_item(d, None).is_none(), "{d}");
+    assert!(d.contains("## Business rules\nNo new rule."), "{d}");
+    assert!(
+        d.contains("classify each box below as **kept** or **dropped**"),
+        "{d}"
+    );
+    let boxes = crate::method::markdown::checkboxes_in_sections(
+        d,
+        crate::method::contract::is_acceptance_heading,
+    );
+    assert_eq!(boxes.len(), 2, "{d}");
+    assert!(
+        boxes[0]
+            .line
+            .contains(&format!("`{CAND}/security/security-1`"))
+    );
+    assert!(
+        boxes[1]
+            .line
+            .contains(&format!("`{CAND}/security/security-2`"))
+    );
+    assert_eq!(nits.state.status, Some(Status::Triage));
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(writes.is_empty(), "{writes:?}");
+}
+
+#[test]
+fn a_nits_ticket_of_the_older_format_is_left_alone_and_said() {
+    let w = nits_world(crate::config::NitsGrouping::Shared);
+    let older = "- [ ] src/b.rs:2: an older nit\n";
+    w.tracker.seed(
+        "ABC-77",
+        "Nits — acme v1.2.0",
+        older,
+        Status::Triage,
+        &[LABEL],
+    );
+    w.tick();
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(writes.iter().all(|x| !x.contains("ABC-77")), "{writes:?}");
+    assert_eq!(w.tracker.item("ABC-77").description, older);
+    assert!(
+        r.failures
+            .iter()
+            .any(|f| f.starts_with("ABC-77: the nits ticket carries no contract")),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn per_nit_grouping_files_one_contract_ticket_per_nit_in_triage_once() {
+    let w = nits_world(crate::config::NitsGrouping::PerNit);
+    w.tick();
+    w.tick();
+    let labelled = w.tracker.list_by_label(LABEL).unwrap();
+    assert!(labelled.iter().all(|i| !i.title.starts_with("Nits")));
+    let nits: Vec<_> = labelled
+        .iter()
+        .filter(|i| i.title.ends_with("(nit — security)"))
+        .collect();
+    assert_eq!(nits.len(), 2, "{labelled:?}");
+    for n in &nits {
+        assert!(
+            crate::method::contract::has_contract(&n.description),
+            "{}",
+            n.description
+        );
+        assert!(n.description.contains("## Goal\nTriage the nit"));
+        assert_eq!(n.state.status, Some(Status::Triage));
+        assert!(!n.labels.contains(&"qa-finding".to_string()));
+        assert!(crate::method::release::findings::parse_finding_marker(&n.description).is_some());
+    }
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(writes.is_empty(), "{writes:?}");
+}
+
+#[test]
+fn a_dry_run_writes_no_nit_in_either_grouping() {
+    for grouping in [
+        crate::config::NitsGrouping::Shared,
+        crate::config::NitsGrouping::PerNit,
+    ] {
+        let w = nits_world(grouping);
+        // The angle PR already merged: the dry tick reads its report.
+        {
+            let mut s = w.github.state.borrow_mut();
+            let mut pr = match s.open_pulls.insert(repo(), Ok(Vec::new())) {
+                Some(Ok(mut list)) => list.remove(0),
+                _ => unreachable!(),
+            };
+            pr.state = PrState::Merged;
+            pr.merge_commit_sha = Some("merge-of-30".into());
+            s.merged_pulls.insert(repo(), Ok(vec![pr]));
+        }
+        let before = w.tracker.writes().len();
+        let intents = crate::dry::Intents::default();
+        let gh = crate::dry::DryGitHub {
+            inner: &w.github,
+            intents: &intents,
+        };
+        let tr = crate::dry::DryTracker {
+            inner: &w.tracker,
+            intents: &intents,
+        };
+        let sig = crate::dry::DrySignal { intents: &intents };
+        let t = Tick {
+            config: &w.config,
+            repo: repo(),
+            github: &gh,
+            tracker: &tr,
+            signal: &sig,
+            github_login: bot("spl-asdlc"),
+            now: Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
+            deadline: None,
+            dry_run: true,
+        };
+        let mut log = ActionLog::in_memory();
+        let r = run(&t, &mut log);
+        assert!(r.failures.is_empty(), "{grouping:?}: {r:?}");
+        assert_eq!(w.tracker.writes().len(), before, "{grouping:?}");
+        assert!(
+            intents
+                .lines()
+                .iter()
+                .any(|l| l.contains("Nits — acme") || l.contains("Finding security-1 (nit")),
+            "{grouping:?}: {:?}",
+            intents.lines()
+        );
+    }
 }
 
 #[test]

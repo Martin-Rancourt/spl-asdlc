@@ -1,6 +1,7 @@
 //! Findings turned into tickets (`docs/spec/06-qa-report.md` rules 4-6,
-//! REQ-REL-052..061, 096): their markers, identity keys, bodies, the shared
-//! nits ticket, the `blocks` cycle check, and the requalification plan.
+//! REQ-REL-052..061, 096): their markers, identity keys, bodies, the nits
+//! tickets (shared or one per nit, each a contract), the `blocks` cycle
+//! check, and the requalification plan.
 
 use std::collections::{BTreeSet, VecDeque};
 use std::sync::LazyLock;
@@ -159,7 +160,7 @@ pub fn finding_ticket(
     (title, body)
 }
 
-/// The title of a release's single shared nits ticket (REQ-REL-061).
+/// The title of a release's shared nits ticket (REQ-REL-061).
 pub fn nits_title(product: &str, version: &str) -> String {
     format!(
         "Nits — {product} {}",
@@ -167,35 +168,145 @@ pub fn nits_title(product: &str, version: &str) -> String {
     )
 }
 
-/// One nit as one checkbox line: anchor and text each collapsed to a line.
-pub fn nit_line(anchor: &str, text: &str) -> String {
-    let one = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
-    format!("- [ ] {}: {}", one(anchor), one(text))
+/// Who judges a nit (spec 05 §6): the QA documented it, it did not decide it.
+const NIT_JUDGEMENT: &str = "Kept or dropped is the judgement of the agent who takes this ticket up at \
+     refinement: the QA that reported the nit documented it, it did not decide it.";
+
+/// The key a nit's box starts with: candidate, angle and finding id (spec 06
+/// rule 5; report ids restart with every candidate). It is the box's
+/// identity, so that a reason written after it does not make it a new nit.
+pub fn nit_key(candidate: &str, angle: &str, finding_id: &str) -> String {
+    let v = |s: &str| -> String {
+        s.chars()
+            .map(|c| {
+                if c.is_whitespace() || c == '`' {
+                    '_'
+                } else {
+                    c
+                }
+            })
+            .collect()
+    };
+    format!("`{}/{}/{}`", v(candidate), v(angle), v(finding_id))
+}
+
+/// One nit as one acceptance box, carrying what the report says of it: what
+/// was observed, where, and in what context. Each part is the report's text
+/// made inert and collapsed to one line.
+pub fn nit_line(candidate: &str, angle: &str, finding: &Finding) -> String {
+    use crate::method::texts::inert;
+    let context = if finding.evidence.trim().is_empty() {
+        "(none given)".to_string()
+    } else {
+        inert(&finding.evidence)
+    };
+    format!(
+        "- [ ] {key} {what} — where: `{anchor}` — context: {context}",
+        key = nit_key(candidate, angle, &finding.id),
+        what = inert(&finding.summary),
+        anchor = inert(&finding.anchor).replace('`', "'"),
+    )
+}
+
+/// The release's shared nits ticket (`release.nits = "shared"`): a complete
+/// contract whose acceptance boxes are the nits, one per line.
+pub fn nits_ticket(release: &str, product: &str, version: &str, lines: &[String]) -> String {
+    format!(
+        "## Goal\nTriage the nits the QA of {product} {version} reported: classify each box below as **kept** or \
+         **dropped**; never presume a nit fixed. A dropped nit is closed with its reason: write the reason after its \
+         line and tick its box. A kept nit becomes real work: its box stays open as a criterion of this ticket until \
+         the nit no longer reproduces, or its line names the ticket the work moved to and its box is ticked here. \
+         {NIT_JUDGEMENT}\n\n\
+         ## Non-goals\n- Fixing a nit before judging whether to keep it.\n- Anything the boxes below do not name.\n\n\
+         ## Acceptance criteria\n{lines}\n\n\
+         ## Business rules\n{ABSENCE_DECLARATION}\n\n\
+         ## Context\n- Release: {release}\n- Each box starts with its key, `<candidate>/<angle>/<finding id>`, then \
+         says what was observed, where, and in what context, as the angle report gives it. The bridge adds the box of \
+         each nit of a later merged report at the end of `## Acceptance criteria`, finds a box again by its key, and \
+         never edits one.\n",
+        version = crate::method::vocabulary::normalise_version(version),
+        lines = lines.join("\n"),
+    )
+}
+
+/// The ticket of one nit (`release.nits = "per-nit"`): a complete contract
+/// whose one box is the nit, found again by its finding marker like any
+/// finding ticket.
+pub fn nit_ticket(
+    release: &str,
+    candidate: &str,
+    angle: &str,
+    finding: &Finding,
+    angle_pr_url: &str,
+    report_path: &str,
+) -> (String, String) {
+    use crate::method::texts::inert;
+    let code = |s: &str| inert(s).replace('`', "'");
+    let title = format!("{} (nit — {angle})", inert(&finding.summary));
+    let body = format!(
+        "## Goal\nTriage the nit `{id}` of the {angle} review of `{candidate}`: classify it as **kept** or \
+         **dropped**; never presume it fixed. Dropped, it is closed with its reason: give the reason in a comment and \
+         cancel this ticket. Kept, it becomes real work: refine this ticket like any other, and tick its box once the \
+         nit no longer reproduces. {NIT_JUDGEMENT}\n\n\
+         ## Non-goals\n- Fixing the nit before judging whether to keep it.\n- Anything the nit does not name.\n\n\
+         ## Acceptance criteria\n{line}\n\n\
+         ## Business rules\n{ABSENCE_DECLARATION}\n\n\
+         ## Context\n- Release: {release}\n- Angle PR: {angle_pr_url}\n- Report: `{report_path}`, finding `{id}`\n\n{marker}",
+        id = code(&finding.id),
+        line = nit_line(candidate, angle, finding),
+        marker = finding_marker(release, candidate, angle, &finding.id),
+    );
+    (title, body)
 }
 
 fn nit_text(line: &str) -> Option<String> {
     NIT_LINE.captures(line).map(|c| c[1].trim().to_string())
 }
 
-/// Append a nit to the shared ticket's description, unless a line with the
-/// same text is there, ticked or not. Content this did not write survives.
-pub fn append_nit(description: &str, line: &str) -> Option<String> {
-    let text = nit_text(line)?;
-    if description
-        .lines()
-        .any(|l| nit_text(l).as_deref() == Some(text.as_str()))
-    {
-        return None;
+/// Add a nit's box at the end of the shared ticket's `## Acceptance
+/// criteria`, unless a box starting with its key is there, ticked or not
+/// (`Ok(None)`: nothing to write). Content this did not write survives.
+/// A ticket that carries no contract (the older format of checkbox lines
+/// only, or a contract broken by hand) is refused, fail-closed: the bridge
+/// never writes a nit into it, so that what it serves keeps a contract.
+pub fn append_nit(description: &str, key: &str, line: &str) -> Result<Option<String>, String> {
+    use crate::method::{contract, markdown};
+    let missing = contract::missing_from_contract(description);
+    if !missing.is_empty() {
+        return Err(format!(
+            "carries no contract ({}): no nit is written into it until it has one",
+            missing.join("; ")
+        ));
     }
-    let base = description.trim_end_matches('\n');
-    Some(if base.is_empty() {
-        format!("{line}\n")
-    } else {
-        format!("{base}\n{line}\n")
-    })
+    let fenced = markdown::without_fences(description);
+    if fenced
+        .iter()
+        .any(|l| nit_text(l).is_some_and(|t| t.starts_with(key)))
+    {
+        return Ok(None);
+    }
+    let Some(section) = markdown::sections_of(&fenced, contract::is_acceptance_heading)
+        .into_iter()
+        .next()
+    else {
+        return Err("has no `## Acceptance criteria` section".into());
+    };
+    let lines: Vec<&str> = description.lines().collect();
+    let at = (section.start..section.end)
+        .rev()
+        .find(|&i| !lines[i].trim().is_empty())
+        .map_or(section.start, |i| i + 1);
+    let mut out = lines[..at].to_vec();
+    out.push(line);
+    out.extend_from_slice(&lines[at..]);
+    let mut text = out.join("\n");
+    if description.ends_with('\n') {
+        text.push('\n');
+    }
+    Ok(Some(text))
 }
 
-/// Unchecked nit lines of the shared ticket (the status count).
+/// Unchecked boxes of the nits ticket (the status count).
 pub fn open_nits(description: &str) -> usize {
     crate::method::markdown::checklist(description).1.len()
 }
