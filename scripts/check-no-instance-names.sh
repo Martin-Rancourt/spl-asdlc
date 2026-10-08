@@ -8,6 +8,13 @@
 # or a local untracked file sourced into the variable) so that the list itself
 # never enters the tree.
 #
+# The rule allows this product's repository slug (`<owner>/spl-asdlc`), whose
+# owner part may be a forbidden word: the slug is read from GITHUB_REPOSITORY
+# or, failing that, from the GitHub URL of the `origin` remote, and removed
+# from a hit line before the word is looked for again. Only the exact slug is
+# allowed; the owner name on its own is still a hit. No slug found, nothing is
+# removed.
+#
 # Exit 0 when nothing is found, 1 otherwise. No baseline, no exemption list.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -38,11 +45,24 @@ for p in "${patterns[@]}"; do
 done
 
 # 2. Forbidden words (names of products, agents, people, installations).
+slug=${GITHUB_REPOSITORY:-}
+if [ -z "$slug" ]; then
+  url=$(git remote get-url origin 2>/dev/null || true)
+  slug=$(printf '%s\n' "$url" | sed -nE 's#^(https://([^@/]+@)?github\.com/|git@github\.com:|ssh://git@github\.com/)([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)$#\3#p' | sed 's/\.git$//')
+fi
+case "$slug" in */spl-asdlc) ;; *) slug= ;; esac
 if [ -n "${SPL_ASDLC_FORBIDDEN_WORDS:-}" ]; then
   IFS=',' read -r -a words <<< "$SPL_ASDLC_FORBIDDEN_WORDS"
   for w in "${words[@]}"; do
     w=$(printf '%s' "$w" | sed 's/^ *//;s/ *$//'); [ -z "$w" ] && continue
     hits=$(printf '%s\n' "$files" | xargs -r grep -niwF -- "$w" 2>/dev/null || true)
+    if [ -n "$hits" ] && [ -n "$slug" ]; then
+      # Keep a line only if the word is still there once the slug is gone.
+      hits=$(printf '%s\n' "$hits" | while IFS= read -r line; do
+        rest=$(printf '%s\n' "$line" | awk -v s="$slug" '{ while ((i = index($0, s)) > 0) $0 = substr($0, 1, i - 1) substr($0, i + length(s)); print }')
+        if printf '%s\n' "$rest" | grep -iwF -- "$w" >/dev/null; then printf '%s\n' "$line"; fi
+      done)
+    fi
     [ -n "$hits" ] && report "$hits"
   done
 else
