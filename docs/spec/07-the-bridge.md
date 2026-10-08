@@ -52,5 +52,5 @@ Merges (REST, pinned to a head SHA), branch deletions, labels, comments on PRs (
 | `release close --product <p> --version <v>` | Force the closure of a cycle the facts say is over (human waiver, logged) |
 | `release requalify <ticket> --severity <s> --reason <r>` | Human requalification of a finding |
 | `ticket check <item>` | Contract judgement |
-| `config check` | Validate `spl-asdlc.toml` |
-| `doctor` | Verify the setup of a repository (App, secrets, rulesets, tracker identity, config) |
+| `config check` | Validate `spl-asdlc.toml`, merged with its instance overlay (spec 08) |
+| `doctor` | Verify the setup of a repository (App, secrets, rulesets, tracker identity, config and its instance overlay) |

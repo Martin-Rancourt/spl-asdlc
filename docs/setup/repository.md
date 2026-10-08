@@ -14,7 +14,8 @@
 **Release close**: the publication workflow merges the release branch back into `main` as a merge commit, through the App, which must stay on the `main` bypass list (the merge still waits for `required-check`). When the merge back is DIRTY (a real conflict), resolve it off the release branch, never by bringing `main` into `release/**`: cut `chore/merge-back-<stamp>` from the release branch, merge `main` into that branch and resolve there, open its PR into `main` and merge it as a merge commit, then dispatch the publication workflow on the release branch with `replay: true`, which deletes the branch and publishes nothing. Any other block (`required-check` not green, the App refused by the ruleset) is fixed where it is, then replayed the same way.
 
 **Files**:
-- `spl-asdlc.toml` at the root (`docs/spec/08-configuration.md`); `spl-asdlc config check` must pass.
+- `spl-asdlc.toml` at the root (`docs/spec/08-configuration.md`); `spl-asdlc config check` must pass. A repository that carries no instance data (a public one) commits a neutral file, the method's shape, and leaves the instance keys (the repository, the owner, the team, the logins, the angles' assignees, the channels) to the instance overlay on the bridge's host (`bridge.md`); `config check` then passes with the overlay beside the file or named by `--instance`. A key in both files is an error, never an override (BR-ASDLC-014).
+- `.gitignore` lists `spl-asdlc.instance.toml`, so that an overlay kept beside a checkout is never committed.
 - `docs/business-rules.md` with the registry format (`docs/spec/02-business-rules.md`), even if empty of rows.
 - `.github/review-paths.json`: the sensitive paths and their documented exceptions; the file lists itself.
 - `release-please-config.json` and its manifest (release-please computes versions and changelogs; the method reads them).
