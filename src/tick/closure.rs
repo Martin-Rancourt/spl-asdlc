@@ -238,7 +238,14 @@ fn judge_member(
             log,
             report,
             &m.key,
-            &format!("status {status} (closure)"),
+            &format!(
+                "status {status}{} (closure)",
+                if matches!(assignee, Some(None)) {
+                    ", unassigned"
+                } else {
+                    ""
+                }
+            ),
             json!({}),
             || {
                 t.tracker
@@ -309,19 +316,11 @@ fn judge_member(
                     }
                 }
                 Judgement::Reopen => {
-                    // The implementer to hand it back to is the owner's to
-                    // settle (`docs/open-points.md` #9); the current assignee keeps it.
-                    let who = m.assignee.as_ref().map(|u| u.name.clone());
-                    let body = for_tracker(
-                        t,
-                        &done_gate::reopen_comment(
-                            &m.key,
-                            &gate,
-                            who.as_deref()
-                                .ok_or("nobody is assigned: assign the implementer by hand"),
-                        ),
-                    );
-                    if set(Status::InProgress, None, log, report) {
+                    // Back In Progress and unassigned, in one write: rework is
+                    // distributed by being pickable, never to someone named
+                    // (BR-ASDLC-009).
+                    let body = for_tracker(t, &done_gate::reopen_comment(&m.key, &gate));
+                    if set(Status::InProgress, Some(None), log, report) {
                         result.incomplete.push(m.key.clone());
                         t.act(log, report, &m.key, "comment reopened", json!({}), || {
                             t.tracker
@@ -340,7 +339,8 @@ fn judge_member(
                             &t.config.product.name,
                         ),
                     );
-                    if set(Status::InProgress, None, log, report) {
+                    // Sent back like any other reopening: unassigned (BR-ASDLC-009).
+                    if set(Status::InProgress, Some(None), log, report) {
                         result.incomplete.push(m.key.clone());
                         t.act(
                             log,

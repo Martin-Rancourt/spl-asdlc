@@ -307,6 +307,24 @@ fn reads_and_unchanged_writes_leave_no_fact() {
 }
 
 #[test]
+fn a_status_write_can_unassign_and_a_replay_leaves_no_fact() {
+    let t = Livela::new(MemStore::default(), StatusTable::identity());
+    let me = t.identity().unwrap();
+    let mut item = new_item("a", Status::ToDeploy);
+    item.assignee = Some(me);
+    let a = t.create_item(&item).unwrap();
+    t.set_status(&a.key, Status::InProgress, Some(None))
+        .unwrap();
+    let back = t.get(&a.key).unwrap();
+    assert_eq!(back.state.status, Some(Status::InProgress));
+    assert_eq!(back.assignee, None);
+    let before = t.store.borrow().facts.len();
+    t.set_status(&a.key, Status::InProgress, Some(None))
+        .unwrap();
+    assert_eq!(t.store.borrow().facts.len(), before);
+}
+
+#[test]
 fn a_creation_in_an_unknown_status_writes_nothing() {
     let mut map = std::collections::BTreeMap::new();
     map.insert("Ready".to_string(), "Prete".to_string());
