@@ -55,13 +55,11 @@ How the daemon runs the job:
 - `livela-runner jobs` runs one pass by hand.
 - The job may call `store.set_author(id_spl_asdlc)`; the previous author is restored afterwards.
 
-On the `spl-asdlc` side: implement `BridgeJob: livela_core::DaemonJob` (and later `GithubSyncJob`, point 5). Livela registers it in one line in `registered()` of `crates/livela-runner/src/jobs.rs` once the crate is public.
-
-**Open (for the owner): where `spl-asdlc` gets `livela-core` from.**
-- The Livela repository is private, and the crate's license is `UNLICENSED`.
-- A Git dependency would also name an account in `Cargo.lock` (BR-ASDLC-001).
-- It would give the runner two copies of the crate unless the runner patches one onto the other. With two copies, `BridgeJob` would implement a trait the runner does not know.
-- Until this is settled, `spl-asdlc` exposes the pass and the adapter, and the `BridgeJob` wrapper lives with the glue (`docs/setup/tracker-livela.md`).
+**Decided by the owner (2026-10-07): the dependency arrow goes from Livela to ASDLC** (BR-ASDLC-010).
+- `spl-asdlc` does not depend on `livela-core`. It names no private account, puts nothing of Livela in its `Cargo.lock`, and carries no second copy of the `DaemonJob` trait.
+- The runner depends on the public `spl-asdlc` crate by version, from crates.io, and writes the wrapper on its side. `BridgeJob: livela_core::DaemonJob` lives in the runner's code, next to its other jobs, registered in one line in `registered()` of `crates/livela-runner/src/jobs.rs`. So does the store glue (`LivelaStore` for its `Store`), and later `GithubSyncJob` (point 5).
+- What `spl-asdlc` offers the wrapper: the pass (`spl_asdlc::job::pass`), the adapter (`spl_asdlc::tracker::livela::Livela`) and the slice of the store the adapter needs (`LivelaStore`). `docs/setup/tracker-livela.md` says what the wrapper does, so that another runtime can write its own.
+- Why not a dependency on the core: the Livela repository is private and the crate's license is `UNLICENSED`; a Git dependency would name an account in `Cargo.lock` (BR-ASDLC-001); and it would give the runner two copies of the crate, so that `BridgeJob` would implement a trait the runner does not know.
 
 ## 4. The core API the adapter uses (delivered)
 
@@ -90,7 +88,11 @@ On the `spl-asdlc` side: implement `BridgeJob: livela_core::DaemonJob` (and late
 
 - A lock is a fresh token per lock, discreetly visible in the item's activity (a 4-character short code) with the session's name. It lasts 30 minutes for an agent and until the end of the day for a human.
 - An MCP session is named after its client at connection, or with the `name_session` tool. A session releases its own locks; another client may release one with the token.
-- Locks are advisory: the core's writes do not check them. The bridge is the only writer of state transitions and writes them whoever holds the lock. This reading is pending the owner's confirmation.
+- Locks are advisory: the core's writes do not check them.
+- **Decided by the owner (2026-10-07): the bridge writes its transitions whoever holds the lock** (BR-ASDLC-011).
+  - It is the only writer of state transitions.
+  - A lock protects an agent's work on the item's **content**, never its **status**.
+  - The bridge neither waits for a lock to be released nor notifies its holder of a transition; the adapter does not read locks.
 
 ## Conformance
 
