@@ -1,0 +1,111 @@
+# spl-asdlc.toml: the configuration of one repository (docs/spec/08-configuration.md).
+#
+# Copy this file to the root of the repository, then replace every placeholder:
+# `acme` (the product), `example-org/acme` (the repository), `ABC` (the tracker
+# team) and the `*-handle` / `*-login` / `app/example-app` identities. The file
+# is valid as written (the crate's test suite parses it), so `spl-asdlc config
+# check --file spl-asdlc.toml` tells you what you broke while editing, never
+# what you forgot to replace: read it through once.
+#
+# Keys commented out show their default; uncomment one only to change it. An
+# unknown key, a wrong type or a repeated list entry makes the file invalid:
+# nothing falls back to a default shape. No secret ever goes here: a channel's
+# credentials are `env:<VARIABLE>` references resolved on the bridge's host.
+
+schema = 1
+
+[product]
+name = "acme"                          # lower-case letters, digits, hyphens; used in tags, labels, release issue titles
+repository = "example-org/acme"        # <owner>/<repo> on GitHub
+
+[owner]                                # the human of the method: escalations, human GO
+tracker_user = "owner-handle"          # the owner as the tracker knows them
+# github_login = "owner-login"         # required when release.go_policy = "human"
+
+[tracker]
+kind = "linear"                        # "linear" | "livela"
+team = "ABC"                           # team key (Linear) or workspace id (Livela)
+service_identity = "spl-asdlc"         # the service account the bridge writes as
+team_keys = ["ABC"]                    # identifier prefixes of the team's items; [] asks the tracker
+# link_fallback = "none"               # "none" | "body-url"
+
+# Canonical status -> tracker status, only for the ones the tracker names
+# differently (docs/setup/tracker-linear.md, tracker-livela.md).
+# [tracker.statuses]
+# "To Deploy" = "To deploy"
+# "Post Deploy" = "Post deploy"
+
+[release]
+# Tag patterns: {version} once; {rc} once in the candidate, never in the release.
+# The callers under .github/workflows/ pass the same patterns as inputs.
+candidate_tag = "acme-v{version}-rc.{rc}"
+release_tag = "acme-v{version}"
+# branch_prefix = "release/"
+# max_rc_passes = 2
+# later_passes = "full"                # "full" | "gate-and-coordinator"
+# go_policy = "computed"               # "computed" | "human" (adds the owner's /go, never replaces the computed GO)
+# nits = "shared"                      # "shared" | "per-nit"
+# record = ".spl-asdlc/qa/{candidate}/"
+# release_pr_label = "autorelease: pending"
+release_please_authors = ["app/example-app"]   # the App that runs release-please (`app/<slug>`)
+bookkeeping_paths = [".release-please-manifest.json", "CHANGELOG.md"]  # add the version files release-please writes
+# registry_path = "docs/business-rules.md"
+# business_rule_paths = ["docs/business-rules.md", "**/business-rules.md"]
+# stagnation_hours = 2
+coordinators = ["coordinator-login"]   # GitHub logins whose approval at the head SHA merges an angle PR
+# escalation_label = "blocked-by-human"
+# auto_candidate = false
+# cut_workflow = "release-cut.yml"
+# gate_workflow = "release-gate.yml"
+# release_please_workflow = "release-please.yml"
+# release_please_config = "release-please-config.json"
+# release_please_manifest = ".release-please-manifest.json"
+#
+# Multi-component products only: all three together.
+# components = ["app", "website"]
+# version_component = "app"
+# gate_record = "docs/releases/v{version}.md"
+
+# The angles of a release QA: at least one. `assignee` (a participant hint)
+# and `notes` (the project's notes for the angle) are optional.
+[[release.angles]]
+key = "security"
+# notes = ".spl-asdlc/angles/security.md"
+
+[[release.angles]]
+key = "product"
+
+[review]
+# merge_method = "squash"              # "squash" | "merge"
+# require_up_to_date = true
+# diff_size_extra_angle = 1500         # changed lines above which diff_size_angle is added; 0 disables it
+diff_size_angle = "maintainability"    # required while diff_size_extra_angle is above 0
+# human_approval = "never"             # "never" | "sensitive-paths" | "always"
+# Declared: the file must exist and be valid at each PR's base, or every PR
+# waits (spec 08 rule 5). Remove the key only to have no sensitive path at all.
+sensitive_paths = ".github/review-paths.json"
+# sensitive_angle = "security"
+coordinators = ["coordinator-login"]   # GitHub logins whose approval at the head SHA merges a PR
+# human_reviewer = "owner-login"       # asked to look at a green PR stuck on a human
+# ticketless_authors = []              # Apps whose PRs need no ticket, e.g. ["dependabot"]
+
+# The base angles of every PR review: at least one.
+[[review.angles]]
+key = "maintainability"
+
+# Paths that add an angle (`*` crosses `/`).
+# [[review.path_angles]]
+# paths = ["**/auth/**", "**/migrations/**"]
+# angle = "security"
+
+# [bridge]
+# poll_minutes = 5
+# github_identity = "app"              # "app" | "token"
+# sweep_hours = 24
+
+# Notification channels (optional). References only, never values.
+# [[notify]]
+# kind = "telegram"
+# target = "env:SPL_ASDLC_TELEGRAM_CHAT"
+# token = "env:SPL_ASDLC_TELEGRAM_TOKEN"
+# events = ["release-note", "escalation", "stagnation", "stuck-pr", "blind-pass"]

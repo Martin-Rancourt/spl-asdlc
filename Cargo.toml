@@ -6,6 +6,9 @@ rust-version = "1.85"
 description = "The bridge of SPL-ASDLC: turns GitHub facts into tracker state and tracker state into GitHub actions."
 license = "Apache-2.0"
 readme = "README.md"
+repository = "https://github.com/Martin-Rancourt/spl-asdlc"
+keywords = ["sdlc", "release", "github", "linear", "agents"]
+categories = ["command-line-utilities", "development-tools"]
 publish = false
 
 [lib]
