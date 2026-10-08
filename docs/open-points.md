@@ -12,7 +12,7 @@ Points the specification leaves open, raised to the owner. Until each is decided
 | 6 | Writing a finding's ticket id back into the merged report (spec 06 §4 against spec 09). | No write-back: the finding marker on the ticket carries the mapping. |
 | 7 | Whether `ticket check` moves a complete Triage or Backlog ticket to Ready (spec 03). | `ticket check` writes nothing. |
 | 8 | The format of "one more pass" (`max_rc_passes` raised for a cycle, spec 09). | Only the configured `max_rc_passes` counts. |
-| 9 | The implementer a reopened ticket goes back to at closure (REQ-REL-089). | Its current assignee; unassigned is said in the comment. |
+| 9 | The implementer a reopened ticket goes back to at closure (REQ-REL-089). **Decided by the owner (2026-10-07)**: nobody; a ticket the closure returns to In Progress is always unassigned, and the agent system resumes it by role (spec 05 §11; BR-ASDLC-009). | Decided: implemented as specified. |
 | 10 | A rewritten tracking row on trackers that can edit comments (REQ-MERGE-069). | No row on any tracker: informational facts stay in the action log. |
 | 11 | Where the public crate gets `livela-core` from, so that `BridgeJob` implements the runner's trait (`docs/livela-contract.md` §3). | The wrapper lives with the glue in `docs/setup/tracker-livela.md`. |
 | 12 | Whether the bridge may write a transition on an item an agent holds locked (Livela locks are advisory). | It writes: the bridge is the only writer of transitions. |
