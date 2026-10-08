@@ -3,7 +3,7 @@
 - **Service participant**: an `agent` participant named `spl-asdlc` (`docs/livela-contract.md`, point 4).
 - **Statuses**: `in_review`, `to_deploy` and `post_deploy` are the `validation` group: open, still blocking, never served by "what's next" (contract, point 1). `set_status` accepts the English names, so the mapping in `spl-asdlc.toml` is the identity.
 - **Hosting**: the bridge is a `DaemonJob` of the Livela runner (contract, point 3).
-  - The daemon calls it every pass with `LIVELA_SPL_ASDLC_CONFIG` (the path of `spl-asdlc.toml`) and `LIVELA_JOB_BUDGET_SECONDS` (60 by default).
+  - The daemon calls it every pass with `LIVELA_SPL_ASDLC_CONFIG` (the path of `spl-asdlc.toml`; its instance overlay is the `spl-asdlc.instance.toml` beside it, when there is one) and `LIVELA_JOB_BUDGET_SECONDS` (60 by default).
   - The App's key and the tracker identity come from the environment the runner starts with.
   - It writes directly in the local store, and the facts propagate through Livela's own sync.
   - A pass that changes nothing writes nothing; only a failed pass is recorded, under `job:spl-asdlc`.

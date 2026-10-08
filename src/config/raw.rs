@@ -137,3 +137,60 @@ pub(super) struct RawNotify {
     pub token: Option<String>,
     pub events: Option<Vec<String>>,
 }
+
+/// The instance overlay as written (spec 08, "The instance overlay"): only
+/// the instance keys, so that a wrong type is refused with its line. Which
+/// keys are instance keys is checked before, in `super::overlay`, so that a
+/// key of the method's shape is named as such rather than as unknown.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawOverlay {
+    pub schema: Option<i64>,
+    pub product: Option<RawOverlayProduct>,
+    pub owner: Option<RawOwner>,
+    pub tracker: Option<RawOverlayTracker>,
+    pub release: Option<RawOverlayRelease>,
+    pub review: Option<RawOverlayReview>,
+    #[serde(default)]
+    pub notify: Vec<RawNotify>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawOverlayProduct {
+    pub repository: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawOverlayTracker {
+    pub team: Option<String>,
+    pub service_identity: Option<String>,
+    pub team_keys: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawOverlayRelease {
+    pub coordinators: Option<Vec<String>>,
+    pub release_please_authors: Option<Vec<String>>,
+    #[serde(default)]
+    pub angles: Vec<RawOverlayAngle>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawOverlayReview {
+    pub coordinators: Option<Vec<String>>,
+    pub human_reviewer: Option<String>,
+    #[serde(default)]
+    pub angles: Vec<RawOverlayAngle>,
+}
+
+/// An angle of the repository's file, named by its key, given its assignee.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawOverlayAngle {
+    pub key: Option<String>,
+    pub assignee: Option<String>,
+}

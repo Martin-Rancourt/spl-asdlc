@@ -50,7 +50,7 @@ pub struct JobOutcome { pub ok: bool, pub message: String }  // JobOutcome::ok(.
 How the daemon runs the job:
 - `livela-runner daemon` passes every N seconds (300 by default) and calls each job after the code tasks.
 - The budget is `LIVELA_JOB_BUDGET_SECONDS` (60 s by default); exceeding it is a failure.
-- `LIVELA_SPL_ASDLC_CONFIG` holds the path of `spl-asdlc.toml`.
+- `LIVELA_SPL_ASDLC_CONFIG` holds the path of `spl-asdlc.toml`; the bridge merges the instance overlay beside it, `spl-asdlc.instance.toml`, when there is one (spec 08).
 - Secrets are read by the job itself, never stored in the facts.
 - `livela-runner jobs` runs one pass by hand.
 - The job may call `store.set_author(id_spl_asdlc)`; the previous author is restored afterwards.

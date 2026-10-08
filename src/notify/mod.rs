@@ -259,10 +259,7 @@ mod tests {
 
     #[test]
     fn a_channel_whose_secret_is_not_on_the_host_is_named() {
-        let text = include_str!("../../docs/spec/08-configuration.md");
-        let start = text.find("```toml\n").unwrap() + 8;
-        let end = start + text[start..].find("```").unwrap();
-        let config = crate::config::Config::parse(&text[start..end]).unwrap();
+        let config = crate::config::spec_example::config();
         let err = Channels::from_config(&config.notify, &|_| None)
             .err()
             .unwrap();
