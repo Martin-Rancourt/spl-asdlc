@@ -1,0 +1,15 @@
+{
+  "_doc": "The sensitive paths of this repository (docs/spec/08-configuration.md rule 5; the format is documented in docs/setup/templates/review-paths.json). A changed path is sensitive when it matches a glob (`*` and `**` also cross `/`) or lies under the directory a glob names. The bridge reads it at each PR's base, release-cut at the candidate. Every key other than `paths` is documentation.",
+  "_doc_paths": "What runs in CI or releases (the workflows, the composite actions, the scripts they call), how the bridge authenticates as the GitHub App, what the build depends on, and this file.",
+  "paths": [
+    ".github/review-paths.json",
+    ".github/workflows/**",
+    "actions/**",
+    "scripts/**",
+    "src/github/auth.rs",
+    "Cargo.toml",
+    "Cargo.lock"
+  ],
+  "_doc_exceptions": "A path that looks sensitive but is deliberately left out of `paths`, each as {\"path\": \"...\", \"reason\": \"...\"}.",
+  "exceptions": []
+}

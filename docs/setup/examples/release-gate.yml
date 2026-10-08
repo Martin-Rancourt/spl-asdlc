@@ -1,0 +1,66 @@
+name: release-gate
+
+# Example caller of asdlc-release-gate.yml: copy it to .github/workflows/
+# under this name (`[release] gate_workflow`), replace <owner>, the tag
+# patterns and the `make` commands. The push of an RC tag is the trigger; the
+# bridge reads this workflow's run on the tag, and only its conclusion
+# `success` is green. A dispatch is for diagnostics only: it certifies
+# nothing. release-gate-auto-rerun.yml reruns a red run once when it is a
+# runner abort or a known flake.
+#
+# Each suite is {"id", "run", ...} (see the header of asdlc-release-gate.yml);
+# it runs under `bash -e -o pipefail` with EVIDENCE_DIR, LAST_TAG, CANDIDATE,
+# RELEASE_CLASS and HEAD_SHA set, and every file it names is relative to
+# EVIDENCE_DIR.
+
+on:
+  push:
+    tags: ['acme-v*-rc.*']
+  workflow_dispatch:
+    inputs:
+      release_class:
+        description: Diagnostics only; empty reads the class from the tag.
+        type: choice
+        options: ['', routine, sensible]
+        default: ''
+
+concurrency:
+  group: release-gate
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # The project's own build on the exact commit; the gate runs no suite
+  # unless it succeeded.
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Build
+        run: make build
+
+  gate:
+    needs: preflight
+    if: always()
+    permissions:
+      contents: read
+      statuses: write
+    uses: <owner>/spl-asdlc/.github/workflows/asdlc-release-gate.yml@v1
+    with:
+      candidate-tag: acme-v{version}-rc.{rc}
+      release-tag: acme-v{version}
+      upstream-result: ${{ needs.preflight.result }}
+      dispatch-class: ${{ inputs.release_class }}
+      suites: >-
+        [{"id": "tests", "run": "make test 2>&1 | tee \"$EVIDENCE_DIR/tests.log\"",
+          "expect-nonempty": "tests.log"}]
+      # The same list as pr.yml's guards.
+      guard-commands: '[{"name": "lint", "run": "make lint"}]'
