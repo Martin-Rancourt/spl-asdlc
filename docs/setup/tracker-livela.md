@@ -8,12 +8,17 @@
   - It writes directly in the local store, and the facts propagate through Livela's own sync.
   - A pass that changes nothing writes nothing; only a failed pass is recorded, under `job:spl-asdlc`.
   - `livela-runner jobs` runs one pass by hand.
-  - How the runner links the crate is open (contract, point 3).
+  - The runner depends on the `spl-asdlc` crate by version, from crates.io; `spl-asdlc` depends on nothing of Livela (contract, point 3; BR-ASDLC-010).
+- **Locks**: the bridge writes its transitions whoever holds the item's lock; a lock protects an agent's work on the content, not the status (contract, point 6; BR-ASDLC-011).
 - **Links**: the bridge adds the PR URL as a web link on the item and finds items by that URL (contract, point 4).
 
 **Verify**: `spl-asdlc doctor` run from the runner's environment reports `tracker: ok` and `bridge-host: livela-runner`.
 
-## The glue in the runner
+## What the runner writes on its side
+
+The operator copies nothing: the glue and the daemon job live in the runner's code, in the Livela repository, next to its other jobs, and depend on `spl-asdlc` by version (contract, point 3). This crate depends on no `livela-core`, so it could not hold them. The listings below are illustrative sketches of what each consumer writes on its side, kept so that another runtime can write its own; the runner's code is the reference.
+
+### The store glue
 
 The adapter (`spl_asdlc::tracker::livela::Livela`) is written against `LivelaStore`, the slice of the core's `Store` the contract promises. The runner implements it for its `Store`.
 
@@ -194,9 +199,16 @@ Wire it as `Livela::new(Glue(&mut store), StatusTable::from_config(&config.track
 
 The adapter reads before every write and skips a write that changes nothing. It signs each write as `spl-asdlc` through `swap_author` and gives the store back its previous author.
 
-## The daemon job
+### The daemon job
 
-The wrapper below is the runner's `BridgeJob` (`docs/livela-contract.md` §3). It is one line in `registered()` of `crates/livela-runner/src/jobs.rs`.
+The runner's `BridgeJob` (`docs/livela-contract.md` §3) is a wrapper of about twenty lines, registered in one line in `registered()` of `crates/livela-runner/src/jobs.rs`. What it does:
+
+- its name is `spl-asdlc`, so a failed pass is recorded under `job:spl-asdlc`;
+- it fails, saying why, when `LIVELA_SPL_ASDLC_CONFIG` is not set or the configuration does not load;
+- it builds the adapter on the runner's store, with the status table of the configuration;
+- it runs one pass (`spl_asdlc::job::pass`) with 80% of the job's budget, and turns the pass's outcome into the runner's `JobOutcome`.
+
+A sketch:
 
 ```rust
 use std::path::Path;
@@ -205,7 +217,6 @@ use livela_core::{DaemonJob, JobContext, JobOutcome, Store};
 use spl_asdlc::config::Config;
 use spl_asdlc::tracker::StatusTable;
 use spl_asdlc::tracker::livela::Livela;
-
 
 /// The bridge as a job of the runner's daemon (`docs/livela-contract.md` §3).
 pub struct BridgeJob;
@@ -245,4 +256,4 @@ Checked against `livela-core` with `run_jobs`:
 
 A pass that works leaves only its writes on the items; a pass with nothing to do leaves nothing. The tick stops taking decisions at 80% of `LIVELA_JOB_BUDGET_SECONDS`, because the runner fails a pass that overruns its budget.
 
-Where the runner gets the `spl-asdlc` crate is open (contract, point 3).
+The runner takes the `spl-asdlc` crate by version, from crates.io; the arrow never points the other way (BR-ASDLC-010).
