@@ -142,6 +142,85 @@ fn the_required_checks_are_read_for_the_branch_asked() {
     );
 }
 
+// ---- rulesets (spl-asdlc doctor) ----
+
+const RULESETS: &str = "/repos/example-org/acme/rulesets?includes_parents=true&per_page=100";
+
+#[test]
+fn each_ruleset_is_read_by_id_with_its_conditions_and_rules() {
+    let (gh, t) = client();
+    t.on(
+        "GET",
+        &url(RULESETS),
+        200,
+        r#"[{"id":11,"name":"release","target":"branch","enforcement":"active"},{"id":12,"name":"tags","target":"tag","enforcement":"evaluate"}]"#,
+    );
+    t.on(
+        "GET",
+        &url("/repos/example-org/acme/rulesets/11?"),
+        200,
+        r#"{"id":11,"name":"release","target":"branch","enforcement":"active","conditions":{"ref_name":{"include":["refs/heads/release/**"],"exclude":[]}},"rules":[{"type":"pull_request","parameters":{}},{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true,"required_status_checks":[{"context":"required-check"}]}}],"bypass_actors":[]}"#,
+    );
+    t.on(
+        "GET",
+        &url("/repos/example-org/acme/rulesets/12?"),
+        200,
+        r#"{"id":12,"name":"tags","target":"tag","enforcement":"evaluate","conditions":{"ref_name":{"include":["refs/tags/*-rc.*"],"exclude":["refs/tags/v1"]}},"rules":[{"type":"update"},{"type":"deletion"}]}"#,
+    );
+    let r = gh.rulesets(&repo()).unwrap();
+    assert_eq!(r.len(), 2);
+    assert_eq!(r[0].include, vec!["refs/heads/release/**"]);
+    assert!(r[0].is_active());
+    assert_eq!(
+        r[0].rules.iter().cloned().collect::<Vec<_>>(),
+        vec!["pull_request", "required_status_checks"]
+    );
+    assert_eq!(
+        r[0].required_checks.iter().cloned().collect::<Vec<_>>(),
+        vec!["required-check"]
+    );
+    assert_eq!(r[1].target, "tag");
+    assert!(!r[1].is_active());
+    assert_eq!(r[1].exclude, vec!["refs/tags/v1"]);
+    assert!(r[1].rules.contains("update") && r[1].rules.contains("deletion"));
+}
+
+#[test]
+fn rulesets_that_cannot_be_read_whole_are_unreadable() {
+    // The list itself.
+    for status in [404, 403, 500] {
+        let (gh, t) = client();
+        t.on("GET", &url(RULESETS), status, "{}");
+        let err = gh.rulesets(&repo()).unwrap_err();
+        assert!(matches!(err, ReadError::Unreadable { .. }), "{err:?}");
+    }
+    // One ruleset of the list.
+    let listed = r#"[{"id":11,"name":"main","target":"branch","enforcement":"active"}]"#;
+    let one = url("/repos/example-org/acme/rulesets/11?");
+    for (status, body) in [
+        (404, "{}"),
+        (500, "{}"),
+        (200, r#"{"id":11,"name":"main","target":"branch"}"#),
+        (
+            200,
+            r#"{"id":11,"name":"main","target":"branch","enforcement":"active","rules":[{"parameters":{}}]}"#,
+        ),
+        (
+            200,
+            r#"{"id":11,"name":"main","target":"branch","enforcement":"active","conditions":{"ref_name":{"include":[7]}}}"#,
+        ),
+    ] {
+        let (gh, t) = client();
+        t.on("GET", &url(RULESETS), 200, listed);
+        t.on("GET", &one, status, body);
+        let err = gh.rulesets(&repo()).unwrap_err();
+        assert!(
+            matches!(err, ReadError::Unreadable { .. }),
+            "{body}: {err:?}"
+        );
+    }
+}
+
 // ---- files at a ref (REQ-MERGE-040) ----
 
 #[test]

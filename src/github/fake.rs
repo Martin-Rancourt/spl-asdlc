@@ -32,6 +32,7 @@ pub struct FakeState {
     pub pull_files: HashMap<(RepoSlug, u64), Read<Vec<String>>>,
     pub commit_pulls: HashMap<(RepoSlug, String), Read<Vec<CommitPull>>>,
     pub required_checks: HashMap<(RepoSlug, String), Read<RequiredChecks>>,
+    pub rulesets: BTreeMap<RepoSlug, Read<Vec<Ruleset>>>,
     pub comments: HashMap<(RepoSlug, u64), Read<Vec<Comment>>>,
     /// A missing entry is `NotFound` (the release does not exist).
     pub releases: HashMap<(RepoSlug, String), Read<Release>>,
@@ -308,6 +309,13 @@ impl GitHub for FakeGitHub {
         {
             Some(r) => r.clone(),
             None => not_scripted(format!("required checks of {branch}")),
+        }
+    }
+
+    fn rulesets(&self, repo: &RepoSlug) -> Read<Vec<Ruleset>> {
+        match self.state.borrow().rulesets.get(repo) {
+            Some(r) => r.clone(),
+            None => not_scripted(format!("rulesets of {repo}")),
         }
     }
 

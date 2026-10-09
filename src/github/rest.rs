@@ -1,6 +1,8 @@
 //! The GitHub client: REST for refs, files, runs and writes; GraphQL for
 //! pull requests (one query carries checks, reviews and threads).
 
+use std::collections::BTreeSet;
+
 use base64::Engine;
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -657,6 +659,48 @@ fn all<T>(what: &str, items: &[Value], f: impl Fn(&Value) -> Option<T>) -> Read<
         .collect()
 }
 
+/// A ruleset's own page; `None` when a field the judgement needs is absent
+/// or of the wrong type (a rule without a type, a pattern that is no text).
+fn ruleset_of(v: &Value) -> Option<Ruleset> {
+    let patterns = |key: &str| -> Option<Vec<String>> {
+        match v["conditions"]["ref_name"].get(key) {
+            None | Some(Value::Null) => Some(Vec::new()),
+            Some(Value::Array(a)) => a.iter().map(|p| p.as_str().map(str::to_string)).collect(),
+            Some(_) => None,
+        }
+    };
+    let mut rules = BTreeSet::new();
+    let mut required_checks = BTreeSet::new();
+    let listed = match v.get("rules") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(a)) => a.clone(),
+        Some(_) => return None,
+    };
+    for rule in &listed {
+        let kind = rule["type"].as_str()?;
+        if kind == "required_status_checks" {
+            for c in rule["parameters"]["required_status_checks"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                required_checks.insert(c["context"].as_str()?.to_string());
+            }
+        }
+        rules.insert(kind.to_string());
+    }
+    Some(Ruleset {
+        id: v["id"].as_u64()?,
+        name: v["name"].as_str()?.to_string(),
+        target: v["target"].as_str()?.to_string(),
+        enforcement: v["enforcement"].as_str()?.to_string(),
+        include: patterns("include")?,
+        exclude: patterns("exclude")?,
+        rules,
+        required_checks,
+    })
+}
+
 fn matching_refs(repo: &RepoSlug, kind: &str, prefix: &str) -> String {
     if prefix.is_empty() {
         format!("/repos/{repo}/git/matching-refs/{kind}?per_page=100")
@@ -1113,6 +1157,42 @@ impl GitHub for RestGitHub {
                     out.contexts.insert(c.to_string());
                 }
             }
+        }
+        Ok(out)
+    }
+
+    fn rulesets(&self, repo: &RepoSlug) -> Read<Vec<Ruleset>> {
+        let what = format!("rulesets of {repo}");
+        // The list names each ruleset; only its own page carries the
+        // conditions and the rules. A 404 is no answer about rulesets.
+        let not_found = |e: ReadError, of: &str| match e {
+            ReadError::NotFound { .. } => ReadError::unreadable(&what, format!("{of}: not found")),
+            e => e,
+        };
+        let listed = self
+            .get_pages(
+                repo,
+                &what,
+                &format!("/repos/{repo}/rulesets?includes_parents=true&per_page=100"),
+                None,
+                1000,
+            )
+            .map_err(|e| not_found(e, "the list"))?;
+        let mut out = Vec::new();
+        for entry in &listed {
+            let id = entry["id"]
+                .as_u64()
+                .ok_or_else(|| ReadError::unreadable(&what, "a ruleset without an id"))?;
+            let (v, _) = self
+                .get_json(
+                    repo,
+                    &what,
+                    &format!("/repos/{repo}/rulesets/{id}?includes_parents=true"),
+                )
+                .map_err(|e| not_found(e, &format!("ruleset {id}")))?;
+            out.push(ruleset_of(&v).ok_or_else(|| {
+                ReadError::unreadable(&what, format!("ruleset {id}: a malformed answer"))
+            })?);
         }
         Ok(out)
     }
