@@ -4,8 +4,9 @@
 //! URL, create the bridge's items. Nothing else. Every text is English.
 //!
 //! Reads distinguish "not found" from "could not read"; writes say whether
-//! the tracker refused. The method speaks canonical statuses; the adapter
-//! maps them through the project's status table.
+//! the tracker refused. The method speaks canonical statuses. A tracker names
+//! them exactly so; an adapter that uses backend-specific IDs maps those IDs
+//! internally.
 
 pub mod conformance;
 pub mod fake;
