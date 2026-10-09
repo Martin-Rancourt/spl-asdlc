@@ -2043,3 +2043,284 @@ fn a_dry_run_of_the_closure_prints_the_unassign() {
         intents.lines()
     );
 }
+
+// ---- archiving at the closure (BR-ASDLC-019) ----
+
+/// A PR review round of `ticket` (an angle sub-item and its consolidation
+/// item), seeded under it in `status`.
+fn review_round(w: &World, ticket: &str, keys: [&str; 2], status: Status) {
+    let (title, body) = texts::review_angle_item(ticket, PR5, "aaaaaaa1", "security", &[]);
+    w.tracker.seed(keys[0], &title, &body, status, &[]);
+    let scope = texts::round_scope(PR5, "aaaaaaa1");
+    let (title, body) = texts::consolidation_item(&scope, ticket, "docs/agents/consolidate.md");
+    w.tracker.seed(keys[1], &title, &body, status, &[]);
+    let mut s = w.tracker.state.borrow_mut();
+    s.set_parent(keys[0], ticket);
+    s.set_parent(keys[1], ticket);
+}
+
+fn nits_title(w: &World) -> String {
+    crate::method::release::findings::nits_title(&w.config.product.name, "1.2.0")
+}
+
+fn consolidation_of_release(w: &World) -> crate::tracker::Item {
+    let release = w.release_item();
+    w.tracker
+        .children(&release.key)
+        .unwrap()
+        .into_iter()
+        .find(|c| {
+            matches!(
+                texts::bridge_item(&c.description, c.parent.as_deref()),
+                Some(BridgeItem::Consolidation { .. })
+            )
+        })
+        .expect("the consolidation item")
+}
+
+fn archives(w: &World) -> Vec<String> {
+    w.tracker
+        .writes()
+        .into_iter()
+        .filter(|l| l.starts_with("archive "))
+        .collect()
+}
+
+/// A cycle opened over every kind of item the closure meets: the shipped
+/// ticket `ABC-5` with a resolved review round (`ABC-21`, `ABC-22`); a
+/// ticket that goes to Post Deploy (`ABC-31`); one sent back In Progress
+/// (`ABC-32`) with a resolved round (`ABC-33`, `ABC-34`); a finding left in
+/// Triage (`ABC-30`); a gate-fix child of the release item (`ABC-40`) in
+/// `gate_fix`; the nits ticket (`ABC-41`) in `nits`.
+fn every_kind(gate_fix: Status, nits: Status) -> World {
+    let w = World::new();
+    w.tick();
+    let release = w.release_item();
+    review_round(&w, "ABC-5", ["ABC-21", "ABC-22"], Status::Done);
+    w.tracker.seed(
+        "ABC-30",
+        "Finding product-1",
+        "A finding.",
+        Status::Triage,
+        &[LABEL],
+    );
+    w.tracker
+        .seed("ABC-31", "Post deploy", POST, Status::ToDeploy, &[LABEL]);
+    w.tracker.seed(
+        "ABC-32",
+        "Incomplete",
+        INCOMPLETE,
+        Status::ToDeploy,
+        &[LABEL],
+    );
+    review_round(&w, "ABC-32", ["ABC-33", "ABC-34"], Status::Canceled);
+    w.tracker
+        .seed("ABC-40", "Fix the gate", "A gate fix.", gate_fix, &[]);
+    w.tracker
+        .state
+        .borrow_mut()
+        .set_parent("ABC-40", &release.key);
+    w.tracker
+        .seed("ABC-41", &nits_title(&w), "Nits.", nits, &[LABEL]);
+    publish(&w);
+    w
+}
+
+#[test]
+fn the_closure_archives_what_the_cycle_resolved_once_and_never_an_open_item() {
+    let w = every_kind(Status::Done, Status::Done);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let release = w.release_item();
+    assert_eq!(release.state.status, Some(Status::Done));
+    let consolidation = consolidation_of_release(&w).key;
+    let security = w.sub_item("security").key;
+    let product = w.sub_item("product").key;
+    // The release item, its resolved children (angle sub-items,
+    // consolidation item, gate fix), the nits ticket, the review rounds of
+    // the embarked tickets, the ticket the closure moved to Done.
+    let resolved = [
+        release.key.as_str(),
+        &security,
+        &product,
+        &consolidation,
+        "ABC-40",
+        "ABC-41",
+        "ABC-21",
+        "ABC-22",
+        "ABC-33",
+        "ABC-34",
+        "ABC-5",
+    ];
+    for key in resolved {
+        assert!(w.tracker.item(key).archived, "{key} is archived");
+    }
+    // Never an open item: Post Deploy and its validation sub-task, In
+    // Progress, a finding in Triage.
+    let task = validation_tasks(&w, "ABC-31");
+    assert_eq!(task.len(), 1);
+    for key in ["ABC-30", "ABC-31", "ABC-32", task[0].key.as_str()] {
+        assert!(!w.tracker.item(key).archived, "{key} is open: kept");
+    }
+    let done = archives(&w);
+    assert_eq!(done.len(), resolved.len(), "each once: {done:?}");
+    assert_eq!(
+        done.last(),
+        Some(&format!("archive {}", release.key)),
+        "the release item last"
+    );
+    // A second tick writes nothing.
+    let before = w.tracker.writes().len();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.tracker.writes().len(),
+        before,
+        "{:?}",
+        &w.tracker.writes()[before..]
+    );
+}
+
+#[test]
+fn an_open_nits_ticket_stays_and_an_open_child_keeps_the_release_item() {
+    let w = every_kind(Status::Ready, Status::Triage);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let release = w.release_item();
+    assert_eq!(release.state.status, Some(Status::Done), "the cycle closes");
+    assert!(
+        !w.tracker.item("ABC-41").archived,
+        "an open nits ticket stays"
+    );
+    assert!(!w.tracker.item("ABC-40").archived, "an open child stays");
+    assert!(
+        !release.archived,
+        "nor is the release item archived over an open child"
+    );
+    assert!(w.tracker.item("ABC-5").archived, "the rest is archived");
+    assert!(w.sub_item("security").archived);
+    let before = w.tracker.writes().len();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(w.tracker.writes().len(), before, "a replay writes nothing");
+    // The child resolved, the next tick archives it and the release item.
+    w.tracker.set_status("ABC-40", Status::Done, None).unwrap();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(w.tracker.item("ABC-40").archived);
+    assert!(w.tracker.item(&release.key).archived);
+    assert!(!w.tracker.item("ABC-41").archived, "still open, still kept");
+}
+
+#[test]
+fn a_failed_archive_never_undoes_the_closure_and_is_retried() {
+    let w = every_kind(Status::Done, Status::Done);
+    w.tracker.fail_writes_starting_with("archive ABC-21");
+    let r = w.tick();
+    assert!(!r.ok(), "the failure is reported");
+    assert!(
+        r.failures.iter().any(|f| f.contains("archive")),
+        "{:?}",
+        r.failures
+    );
+    let release = w.release_item();
+    assert_eq!(
+        release.state.status,
+        Some(Status::Done),
+        "the closure stands"
+    );
+    assert!(!w.tracker.item("ABC-21").archived);
+    assert!(!release.archived, "the release item waits for the retry");
+    assert!(w.tracker.item("ABC-5").archived, "the others went through");
+    assert_eq!(w.signal.sent.borrow().len(), 1, "the note was sent once");
+    w.tracker.state.borrow_mut().failing_writes.clear();
+    let before = w.tracker.writes().len();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.tracker.writes()[before..],
+        [
+            "archive ABC-21".to_string(),
+            format!("archive {}", release.key)
+        ],
+        "only what was left"
+    );
+    let before = w.tracker.writes().len();
+    w.tick();
+    assert_eq!(w.tracker.writes().len(), before, "then nothing");
+    assert_eq!(w.signal.sent.borrow().len(), 1, "never sent again");
+}
+
+#[test]
+fn a_tracker_without_an_open_item_limit_archives_nothing() {
+    let mut w = every_kind(Status::Done, Status::Done);
+    w.tracker.archiving = false;
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.tracker.item(&w.release_item().key).state.status,
+        Some(Status::Done)
+    );
+    assert!(archives(&w).is_empty(), "{:?}", w.tracker.writes());
+    let before = w.tracker.writes().len();
+    w.tick();
+    assert_eq!(w.tracker.writes().len(), before, "a replay writes nothing");
+}
+
+#[test]
+fn a_release_item_closed_by_hand_is_not_archived_from() {
+    let w = World::new();
+    w.tick();
+    let release = w.release_item();
+    w.tracker
+        .set_status(&release.key, Status::Done, None)
+        .unwrap();
+    publish(&w);
+    let before = w.tracker.writes().len();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.tracker.writes().len(),
+        before,
+        "no closure ran: nothing archived"
+    );
+}
+
+#[test]
+fn a_dry_run_of_the_closure_prints_the_archives() {
+    let w = every_kind(Status::Done, Status::Done);
+    let release = w.release_item();
+    let before = w.tracker.writes().len();
+    let intents = crate::dry::Intents::default();
+    let tr = crate::dry::DryTracker {
+        inner: &w.tracker,
+        intents: &intents,
+    };
+    let sig = crate::dry::DrySignal { intents: &intents };
+    let t = Tick {
+        tracker: &tr,
+        signal: &sig,
+        dry_run: true,
+        ..w.tick_ctx()
+    };
+    let mut log = ActionLog::in_memory();
+    run(&t, &mut log);
+    assert_eq!(
+        w.tracker.writes().len(),
+        before,
+        "the real tracker saw no write"
+    );
+    let lines = intents.lines();
+    for key in ["ABC-5", "ABC-21", "ABC-40", release.key.as_str()] {
+        assert!(
+            lines.contains(&format!("tracker: archive {key}")),
+            "{key}: {lines:?}"
+        );
+    }
+    for key in ["ABC-30", "ABC-31", "ABC-32"] {
+        assert!(
+            !lines.contains(&format!("tracker: archive {key}")),
+            "{key}: {lines:?}"
+        );
+    }
+}

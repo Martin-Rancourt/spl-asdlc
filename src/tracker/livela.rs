@@ -541,6 +541,16 @@ impl<S: LivelaStore> Tracker for Livela<S> {
         })
     }
 
+    // Livela counts no open items against a limit: nothing to archive
+    // (`docs/livela-contract.md` §7).
+    fn archives(&self) -> bool {
+        false
+    }
+
+    fn archive(&self, _key: &str) -> TResult<()> {
+        Ok(())
+    }
+
     fn keeps_html_comments(&self) -> bool {
         // The description and comments are stored as written.
         true

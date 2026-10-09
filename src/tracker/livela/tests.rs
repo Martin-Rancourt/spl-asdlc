@@ -435,3 +435,14 @@ fn an_unknown_short_id_is_not_found_and_a_comment_edit_is_refused() {
         TrackerError::Refused { .. }
     ));
 }
+
+#[test]
+fn livela_has_no_open_item_limit_and_archives_nothing() {
+    let t = Livela::new(MemStore::default(), StatusTable::identity());
+    let a = t.create_item(&new_item("a", Status::Done)).unwrap();
+    let before = t.store.borrow().facts.len();
+    assert!(!t.archives(), "the bridge asks Livela for no archive");
+    t.archive(&a.key).unwrap();
+    assert_eq!(t.store.borrow().facts.len(), before, "no fact recorded");
+    assert!(!t.get(&a.key).unwrap().archived);
+}

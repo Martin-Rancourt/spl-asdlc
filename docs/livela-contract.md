@@ -94,6 +94,13 @@ How the daemon runs the job:
   - A lock protects an agent's work on the item's **content**, never its **status**.
   - The bridge neither waits for a lock to be released nor notifies its holder of a transition; the adapter does not read locks.
 
+## 7. No open-item limit: nothing is archived
+
+- At the closure of a cycle the bridge archives what the cycle resolved, on a tracker that counts its open items against a limit (BR-ASDLC-019, spec 05 §11).
+- Livela has no such limit. The adapter says so: `archives` is false, and `archive` is a no-op that writes nothing.
+- The bridge therefore asks Livela for no archive, and a closed cycle leaves no fact on Livela beyond its transitions and comments.
+- The core needs no archive API for the method. An item Livela reports deleted reads as archived, and the bridge never writes to it.
+
 ## Conformance
 
 The adapter's suite (`spl_asdlc::tracker::conformance::run_with`) runs the following steps:

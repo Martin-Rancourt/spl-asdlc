@@ -1,7 +1,8 @@
 //! The tracker behind an interface (`docs/spec/00-overview.md` invariant 8,
 //! `07-the-bridge.md`, REQ-REL-098): read an item and its contract, set a
 //! status by canonical name, comment, label, relate, link a PR, find by PR
-//! URL, create the bridge's items. Nothing else. Every text is English.
+//! URL, create the bridge's items, archive what a closed cycle resolved.
+//! Nothing else. Every text is English.
 //!
 //! Reads distinguish "not found" from "could not read"; writes say whether
 //! the tracker refused. The method speaks canonical statuses; the adapter
@@ -75,6 +76,8 @@ pub struct Item {
     pub assignee: Option<User>,
     /// Identifier of the parent item.
     pub parent: Option<String>,
+    /// Out of the tracker's open items, still readable: never written to
+    /// again by the bridge.
     pub archived: bool,
 }
 
@@ -187,6 +190,19 @@ pub trait Tracker {
     /// Attach the PR to the item; a link already there is a no-op. `key` is
     /// the item's key as the tracker reads it back ([`Item::key`]).
     fn link_pr(&self, key: &str, pr_url: &str, title: &str) -> TResult<()>;
+
+    /// Whether the tracker archives items: one that counts its open items
+    /// against a limit (Linear's free plan) archives what a closed cycle
+    /// resolved (BR-ASDLC-019); one without a limit does not, and the bridge
+    /// then asks it for nothing.
+    fn archives(&self) -> bool {
+        false
+    }
+    /// Archive a resolved item: it leaves the open count and stays readable,
+    /// searchable and restorable ([`Item::archived`]). An item already
+    /// archived records nothing. A tracker that does not archive answers `Ok`
+    /// and writes nothing. The caller never archives an open item.
+    fn archive(&self, key: &str) -> TResult<()>;
 
     /// Whether HTML comments survive a write: when they do not, the bridge
     /// writes its markers visible (as inline code).

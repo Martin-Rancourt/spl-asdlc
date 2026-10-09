@@ -4,7 +4,10 @@
 //! back. Then each member of the release is judged; the release note is sent;
 //! the release item moves to Done only once every ticket that cites a rule
 //! was judged and the note went out (a failed send is a failed closure step,
-//! retried, never dropped).
+//! retried, never dropped). Once the release item is Done, the items the
+//! cycle resolved are archived, the release item last (BR-ASDLC-019); an
+//! archive that fails is retried at the next tick and never undoes the
+//! closure.
 
 use serde_json::json;
 
@@ -12,12 +15,13 @@ use crate::action_log::ActionLog;
 use crate::github::{CompareStatus, Release};
 use crate::method::business_rules::{self, Registry};
 use crate::method::done_gate::{self, DuplicateNode};
-use crate::method::release::closure::{self, Action, CloseResult, Judgement, Member};
+use crate::method::release::closure::{self, Action, CloseResult, Judgement, Member, Resolved};
+use crate::method::release::findings;
 use crate::method::release::note::{self, TicketEntry};
 use crate::method::release::prs;
 use crate::method::release::shape::Shape;
-use crate::method::texts;
-use crate::method::vocabulary::{self, Status};
+use crate::method::texts::{self, BridgeItem};
+use crate::method::vocabulary::{self, ItemState, Status};
 use crate::tracker::{Item, TResult};
 
 use super::merge::{for_tracker, tracker_said};
@@ -101,17 +105,166 @@ pub fn close(
     }
     let note_sent = release_note(t, log, report, shape, c, item, published);
     if result.complete() && note_sent {
+        let closed = t
+            .act(
+                log,
+                report,
+                &object,
+                "status Done (closure)",
+                json!({"tag": published.tag}),
+                || {
+                    t.tracker
+                        .set_status(&item.key, Status::Done, None)
+                        .map_err(|e| e.to_string())
+                },
+            )
+            .is_some();
+        if closed {
+            // The members as this tick left them: what it moved to Done is
+            // Done, even in a dry run that wrote nothing.
+            let done: Vec<&String> = result
+                .closed
+                .iter()
+                .chain(&result.children_closed)
+                .collect();
+            let members: Vec<Item> = members
+                .into_iter()
+                .map(|mut m| {
+                    if done.contains(&&m.key) {
+                        m.state = ItemState::of(Status::Done);
+                    }
+                    m
+                })
+                .collect();
+            archive_resolved(t, log, report, c, item, &members);
+        }
+    }
+}
+
+/// The archiving of a cycle already closed, at a later tick: what a failed
+/// archive or the time budget left (BR-ASDLC-019). Only a release item the
+/// closure itself moved to Done (its closure comment is there) is archived
+/// from; one closed by hand, or canceled, is not this step's.
+pub fn archive_closed(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    shape: &Shape,
+    c: &Candidate,
+    item: &Item,
+    published: &Release,
+) {
+    if !t.tracker.archives() || item.archived || item.state.status != Some(Status::Done) {
+        return;
+    }
+    let marker = texts::marker("closure", &[("tag", &published.tag)]);
+    match tracker_said(t, &item.key, &marker) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(e) => {
+            t.unreadable(report, &item.key, e);
+            return;
+        }
+    }
+    let label = vocabulary::release_label(&shape.product, &c.version.to_string());
+    match members(t, item, &label) {
+        Ok(m) => archive_resolved(t, log, report, c, item, &m),
+        Err(e) => t.unreadable(report, &item.key, format!("the release's members: {e}")),
+    }
+}
+
+/// Archive what the closed cycle resolved (spec 05 §11, BR-ASDLC-019): the
+/// review round items of its tickets first, then its resolved members, the
+/// release item last and only once every other archive went through, so
+/// that a failure keeps the cycle in view and the next tick retries it. An
+/// open item is never archived, nor an item with an open child (Linear
+/// itself archives no issue whose sub-issues are not all closed). An item
+/// already archived is skipped: a second tick writes nothing.
+fn archive_resolved(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    c: &Candidate,
+    release: &Item,
+    members: &[Item],
+) {
+    if !t.tracker.archives() || release.archived {
+        return;
+    }
+    let nits = findings::nits_title(&t.config.product.name, &c.version.to_string());
+    let open = |i: &Item| !i.archived && !i.state.status.is_some_and(Status::is_resolved);
+    let mut rounds: Vec<String> = Vec::new();
+    let mut resolved: Vec<String> = Vec::new();
+    // Whether every item of the cycle could be read and none holds the
+    // release item open.
+    let mut whole = true;
+    for m in members.iter().filter(|m| m.key != release.key) {
+        let kind = if m.parent.as_deref() == Some(release.key.as_str()) {
+            Resolved::ReleaseChild
+        } else if m.title == nits {
+            Resolved::Nits
+        } else {
+            Resolved::Embarked
+        };
+        if kind == Resolved::ReleaseChild && open(m) {
+            whole = false;
+        }
+        let children = match t.tracker.children(&m.key) {
+            Ok(ch) => ch,
+            Err(e) => {
+                t.unreadable(report, &m.key, format!("its sub-items: {e}"));
+                whole = false;
+                continue;
+            }
+        };
+        if kind != Resolved::ReleaseChild {
+            for ch in &children {
+                let round = matches!(
+                    texts::bridge_item(&ch.description, ch.parent.as_deref()),
+                    Some(BridgeItem::Angle { .. } | BridgeItem::Consolidation { .. })
+                );
+                if round
+                    && closure::archivable(Resolved::ReviewRound, &ch.state, ch.archived)
+                    && !rounds.contains(&ch.key)
+                {
+                    rounds.push(ch.key.clone());
+                }
+            }
+        }
+        // The resolved rounds of an open ticket are archived; a resolved
+        // ticket is not while a sub-item of its own is open.
+        if closure::archivable(kind, &m.state, m.archived)
+            && !children.iter().any(open)
+            && !resolved.contains(&m.key)
+        {
+            resolved.push(m.key.clone());
+        }
+    }
+    for key in rounds.iter().chain(&resolved) {
+        if !t.in_time() {
+            report.out_of_time = true;
+            return;
+        }
+        let done = t.act(
+            log,
+            report,
+            key,
+            "archive (closure)",
+            json!({"release": release.key}),
+            || t.tracker.archive(key).map_err(|e| e.to_string()),
+        );
+        if done.is_none() {
+            whole = false;
+        }
+    }
+    if whole {
         t.act(
             log,
             report,
-            &object,
-            "status Done (closure)",
-            json!({"tag": published.tag}),
-            || {
-                t.tracker
-                    .set_status(&item.key, Status::Done, None)
-                    .map_err(|e| e.to_string())
-            },
+            &release.key,
+            "archive (closure)",
+            json!({"release": release.key}),
+            || t.tracker.archive(&release.key).map_err(|e| e.to_string()),
         );
     }
 }

@@ -834,6 +834,30 @@ impl Tracker for Linear {
         .map(|_| ())
     }
 
+    fn archives(&self) -> bool {
+        true
+    }
+
+    fn archive(&self, key: &str) -> TResult<()> {
+        // `issueArchive` without `trash`: the issue leaves the open count
+        // and stays searchable and restorable; it is never deleted.
+        let r = self.write(
+            &format!("archive of {key}"),
+            "mutation($id: String!) { issueArchive(id: $id) { success } }",
+            json!({"id": key}),
+            "issueArchive",
+        );
+        match r {
+            Ok(_) => Ok(()),
+            // Archived meanwhile, or the answer was lost: the issue says.
+            Err(e @ TrackerError::Refused { .. }) => match self.get(key) {
+                Ok(i) if i.archived => Ok(()),
+                _ => Err(e),
+            },
+            Err(e) => Err(e),
+        }
+    }
+
     fn keys_in_text(&self, text: &str) -> Vec<String> {
         static URL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
             regex::Regex::new(r"https://linear\.app/[A-Za-z0-9_-]+/issue/([A-Z][A-Z0-9]*-[0-9]+)")
