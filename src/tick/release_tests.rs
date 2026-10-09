@@ -2613,8 +2613,7 @@ fn the_validation_sub_task_is_created_urgent_and_a_dry_run_says_so() {
 /// A PR review round of `ticket` (an angle sub-item and its consolidation
 /// item), seeded under it in `status`.
 fn review_round(w: &World, ticket: &str, keys: [&str; 2], status: Status) {
-    let (title, body) =
-        texts::review_angle_item(ticket, PR5, "aaaaaaa1", "security", None, &[]);
+    let (title, body) = texts::review_angle_item(ticket, PR5, "aaaaaaa1", "security", None, &[]);
     w.tracker.seed(keys[0], &title, &body, status, &[]);
     let scope = texts::round_scope(PR5, "aaaaaaa1");
     let (title, body) =
