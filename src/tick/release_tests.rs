@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::config::Config;
-use crate::github::fake::{FakeGitHub, pull_request};
+use crate::github::fake::{pull_request, FakeGitHub};
 use crate::github::{
     Actor, Artifact, CheckEntry, CheckKind, Commit, CommitPull, CommitSummary, CompareStatus,
     Comparison, GitRef, Identity, ObjectType, PrState, PullRequest, Release, RepoSlug,
@@ -18,8 +18,8 @@ use crate::method::vocabulary::Status;
 
 const POST_DEPLOY_LABEL: &str = "post-deploy-validation/acme";
 use crate::notify::Recorder;
-use crate::tracker::Tracker;
 use crate::tracker::fake::FakeTracker;
+use crate::tracker::Tracker;
 
 const BRANCH: &str = "release/2026-10-05-14-03-utc";
 const CAND: &str = "acme-v1.2.0-rc.1";
@@ -301,11 +301,9 @@ fn the_first_tick_after_the_cut_opens_the_cycle_and_the_second_writes_nothing() 
         assert_eq!(w.sub_item(angle).state.status, Some(Status::Ready));
     }
     let comments = w.tracker.comments(&item.key).unwrap();
-    assert!(
-        comments
-            .iter()
-            .any(|c| c.body.starts_with(&format!("### Candidate `{CAND}`")))
-    );
+    assert!(comments
+        .iter()
+        .any(|c| c.body.starts_with(&format!("### Candidate `{CAND}`"))));
     assert!(comments.iter().any(|c| c.body.contains("Release brief")));
     assert!(
         w.tracker.item("ABC-5").labels.contains(&LABEL.to_string()),
@@ -463,13 +461,12 @@ fn a_red_gate_opens_the_release_item_but_no_angle_nor_brief() {
     assert!(r.ok(), "{r:?}");
     let item = w.release_item();
     assert!(item.description.contains(&format!("`{CAND}`")));
-    assert!(
-        w.tracker
-            .comments(&item.key)
-            .unwrap()
-            .iter()
-            .any(|c| c.body.starts_with(&format!("### Candidate `{CAND}`")))
-    );
+    assert!(w
+        .tracker
+        .comments(&item.key)
+        .unwrap()
+        .iter()
+        .any(|c| c.body.starts_with(&format!("### Candidate `{CAND}`"))));
     assert!(w.tracker.item("ABC-5").labels.contains(&LABEL.to_string()));
     assert!(w.round(CAND).is_empty(), "no angle starts on a red gate");
     assert!(w.briefs(CAND).is_empty());
@@ -531,13 +528,12 @@ fn a_later_candidate_with_a_red_gate_waits_again() {
     assert!(r.ok(), "{r:?}");
     let item = w.release_item();
     assert!(item.description.contains(&format!("`{CAND2}`")));
-    assert!(
-        w.tracker
-            .comments(&item.key)
-            .unwrap()
-            .iter()
-            .any(|c| c.body.starts_with(&format!("### Candidate `{CAND2}`")))
-    );
+    assert!(w
+        .tracker
+        .comments(&item.key)
+        .unwrap()
+        .iter()
+        .any(|c| c.body.starts_with(&format!("### Candidate `{CAND2}`"))));
     assert!(w.round(CAND2).is_empty(), "rc.2 waits for its own gate");
     assert!(w.briefs(CAND2).is_empty());
     let (r, writes) = w.writes_of_a_tick();
@@ -656,28 +652,24 @@ fn an_approved_angle_pr_with_a_valid_report_is_merged_and_its_findings_filed_onc
         .iter()
         .find(|i| i.title.starts_with("Finding security-1"))
         .expect("blocker");
-    assert!(
-        w.tracker
-            .relations(&release.key)
-            .unwrap()
-            .blocked_by
-            .iter()
-            .any(|b| b.other == blocker.key)
-    );
-    assert!(
-        labelled
-            .iter()
-            .any(|i| i.title.starts_with("Finding security-2")
-                && i.labels.contains(&"qa-finding".to_string()))
-    );
+    assert!(w
+        .tracker
+        .relations(&release.key)
+        .unwrap()
+        .blocked_by
+        .iter()
+        .any(|b| b.other == blocker.key));
+    assert!(labelled
+        .iter()
+        .any(|i| i.title.starts_with("Finding security-2")
+            && i.labels.contains(&"qa-finding".to_string())));
     let nits = labelled
         .iter()
         .find(|i| i.title == "Nits — acme v1.2.0")
         .expect("nits");
-    assert!(
-        nits.description
-            .contains("Finding security-3 — where: `src/a.rs:1` — context: e")
-    );
+    assert!(nits
+        .description
+        .contains("Finding security-3 — where: `src/a.rs:1` — context: e"));
     assert!(crate::method::contract::has_contract(&nits.description));
     let before = w.tracker.writes().len();
     w.tick();
@@ -889,12 +881,11 @@ fn release_cut_dispatches_the_next_candidate_or_refuses_a_second_cycle() {
     let mut log = ActionLog::in_memory();
     let line = crate::verbs::cut(&t, &mut log, false).unwrap();
     assert!(line.contains("action candidate"), "{line}");
-    assert!(
-        w.github
-            .writes()
-            .iter()
-            .any(|l| l.contains("release-cut.yml") && l.contains(BRANCH))
-    );
+    assert!(w
+        .github
+        .writes()
+        .iter()
+        .any(|l| l.contains("release-cut.yml") && l.contains(BRANCH)));
     let refused = crate::verbs::cut(&t, &mut log, true).unwrap_err();
     assert!(refused.contains("a cycle is in flight"), "{refused}");
 }
@@ -949,24 +940,22 @@ fn a_blocker_requalified_as_should_fix_stops_blocking() {
         "me",
     )
     .unwrap();
-    assert!(
-        w.tracker
-            .relations(&release.key)
-            .unwrap()
-            .blocked_by
-            .is_empty()
-    );
+    assert!(w
+        .tracker
+        .relations(&release.key)
+        .unwrap()
+        .blocked_by
+        .is_empty());
     let item = w.tracker.item(&blocker);
     assert!(crate::method::release::findings::parse_blocker_marker(&item.description).is_none());
     assert!(item.labels.contains(&"qa-finding".to_string()));
     assert_eq!(item.state.status, Some(Status::Triage));
-    assert!(
-        w.tracker
-            .comments(&release.key)
-            .unwrap()
-            .iter()
-            .any(|c| c.body.starts_with("Requalified by me"))
-    );
+    assert!(w
+        .tracker
+        .comments(&release.key)
+        .unwrap()
+        .iter()
+        .any(|c| c.body.starts_with("Requalified by me")));
 }
 
 #[test]
@@ -1210,16 +1199,12 @@ fn the_shared_nits_ticket_is_a_full_contract_that_asks_to_triage() {
         crate::method::contract::is_acceptance_heading,
     );
     assert_eq!(boxes.len(), 2, "{d}");
-    assert!(
-        boxes[0]
-            .line
-            .contains(&format!("`{CAND}/security/security-1`"))
-    );
-    assert!(
-        boxes[1]
-            .line
-            .contains(&format!("`{CAND}/security/security-2`"))
-    );
+    assert!(boxes[0]
+        .line
+        .contains(&format!("`{CAND}/security/security-1`")));
+    assert!(boxes[1]
+        .line
+        .contains(&format!("`{CAND}/security/security-2`")));
     assert_eq!(nits.state.status, Some(Status::Triage));
     let (r, writes) = w.writes_of_a_tick();
     assert!(r.ok(), "{r:?}");
@@ -2613,8 +2598,7 @@ fn the_validation_sub_task_is_created_urgent_and_a_dry_run_says_so() {
 /// A PR review round of `ticket` (an angle sub-item and its consolidation
 /// item), seeded under it in `status`.
 fn review_round(w: &World, ticket: &str, keys: [&str; 2], status: Status) {
-    let (title, body) =
-        texts::review_angle_item(ticket, PR5, "aaaaaaa1", "security", None, &[]);
+    let (title, body) = texts::review_angle_item(ticket, PR5, "aaaaaaa1", "security", None, &[]);
     w.tracker.seed(keys[0], &title, &body, status, &[]);
     let scope = texts::round_scope(PR5, "aaaaaaa1");
     let (title, body) =
