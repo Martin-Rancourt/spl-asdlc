@@ -107,7 +107,8 @@ mod tests {
         let t = FakeTracker::default();
         let pr = pull_request(7);
         t.seed("ABC-1", "a", "", Status::InReview, &[]);
-        let (_, body) = texts::review_angle_item("ABC-1", &pr.url, &pr.head_sha, "security", &[]);
+        let (_, body) =
+            texts::review_angle_item("ABC-1", &pr.url, &pr.head_sha, "security", None, &[]);
         t.seed("ABC-2", "Security review", &body, Status::Ready, &[]);
         t.state.borrow_mut().set_parent("ABC-2", "ABC-1");
         t.link("ABC-1", &pr.url);

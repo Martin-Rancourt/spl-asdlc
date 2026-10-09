@@ -16,11 +16,6 @@ name = "acme"                          # used in tags, labels and release issue 
 kind = "linear"                        # "linear" | "livela"
 link_fallback = "none"                 # "none" | "body-url"
 
-# Canonical status -> tracker status. Only the ones the tracker names differently.
-[tracker.statuses]
-"To Deploy" = "To deploy"
-"Post Deploy" = "Post deploy"
-
 [release]
 candidate_tag = "acme-v{version}-rc.{rc}"
 release_tag = "acme-v{version}"
@@ -117,7 +112,7 @@ events = ["release-note", "escalation", "stagnation", "stuck-pr", "blind-pass"]
 
 1. Secrets are never in the file. A channel's `target` and `token` are references `env:<VARIABLE>` (`VARIABLE`: capital letters, digits and `_`, not starting with a digit) resolved from the environment of the host that runs the bridge; a literal value there is an error. Identities (`service_identity`, logins, `github_identity`) are names, never credentials: the credentials themselves come from the host (`docs/setup/bridge.md`).
 2. Tag patterns must contain `{version}` exactly once and `{rc}` exactly once for the candidate; the release tag contains `{version}` exactly once and no `{rc}`; `record` contains `{candidate}` exactly once and `gate_record` `{version}` exactly once; no other placeholder is accepted. A multi-component product must name its components, its version component and its gate record; a version component without components is an error.
-3. Angle keys name branches (`qa/<candidate>/<angle>`) and files (`<angle>.json`): lower-case letters, digits and hyphens, not starting with a hyphen, unique per list. Product and component names follow the same shape (they appear in tags and labels). The protocol files are looked up by key under `docs/agents/angles/` of this product, then under the project's notes.
+3. Angle keys name branches (`qa/<candidate>/<angle>`) and files (`<angle>.json`): lower-case letters, digits and hyphens, not starting with a hyphen, unique per list. Product and component names follow the same shape (they appear in tags and labels). The bridge embeds in each angle sub-item the method's file of that key under `docs/agents/angles/` of this product, compiled into its binary, or a line saying the method has no notes for an angle of the project's own; the project's notes (`notes`) are linked from the item, never embedded (BR-ASDLC-015).
 4. `go_policy = "human"` adds the owner's approval on the release issue to the computed conditions; it never replaces them.
 5. The sensitive-path file follows the format of `.github/review-paths.json`: a list of globs and a list of documented exceptions; it is read at the PR's base ref, so a PR cannot weaken the list that judges it. When `sensitive_paths` is declared, the file must exist and be valid at the base: absent or unreadable, the PR waits, one human notice says "configuration invalid for this repository", and `doctor` reports it — never "no sensitive path". Only when the key is not declared at all are there no sensitive paths.
 6. Unknown keys are errors (a misspelt key is never a silently ignored setting). `config check` lists every problem of a well-formed file; a file that is not valid TOML, carries an unknown key or a value of the wrong type (a string where a number is expected) is reported by its first such error, with its line.
@@ -178,7 +173,8 @@ Every other key is the method's shape and stays in the repository's file, where 
 | `tracker.service_identity` | required | Name of the service account the bridge writes as; printed by the binary. | A token for another identity: `doctor` reports the mismatch. |
 | `tracker.team_keys` | `[]` (ask the tracker) | Identifier prefixes (`ABC`; capital letters and digits, starting with a letter) of the team's items; only those count as embarked tickets of a release. | Empty and the tracker cannot say: the embarked list is unreadable, the brief is not posted. |
 | `tracker.link_fallback` | `"none"` | How a PR names its ticket when the tracker holds no link for the PR: `none` (only the tracker's own link), `body-url` (the tracker item URL in the PR body). Titles, branch names and bare identifiers are never read. | No link: the PR is not reviewed nor merged; a green PR raises one human notice. |
-| `tracker.statuses` | identity for every canonical status | Canonical status → tracker status, for the ones named differently. | A non-canonical key, or two canonical statuses mapped to one tracker status: file invalid. A mapped status the team lacks: the write fails and is retried; `doctor` reports it. |
+
+The configuration maps no status: the tracker names each canonical status (`03-vocabulary.md`) exactly so, and the bridge reads and writes them by that name. A `[tracker.statuses]` table is an unknown key (rule 6). A canonical status the team lacks: the write fails and is retried; `doctor` names it. An adapter whose tracker keys statuses by its own ids maps them in its code.
 
 ### `[release]`
 
@@ -225,7 +221,7 @@ Every other key is the method's shape and stays in the repository's file, where 
 | `review.coordinators` | required | GitHub logins whose approval at the head SHA lets the bridge merge a PR. A later `COMMENTED` review never cancels an approval; a standing `CHANGES_REQUESTED` from any configured login blocks. | No approval at the head SHA: not merged. |
 | `review.ticketless_authors` | `[]` | Apps whose PRs need no ticket (`<slug>`, `<slug>[bot]` or `app/<slug>`): for such a PR linked to no ticket, the bridge opens one labelled `ticketless-pr` with a complete contract, and the PR takes the usual path (spec 04 §9). | A human account whose login matches never qualifies; any other PR without a ticket waits. |
 | `review.human_reviewer` | none | GitHub login asked to look at a green PR stuck on something only a human can lift. | Absent: the notice says that a reviewer must be assigned by hand. |
-| `[[review.angles]]` | at least one required | Base angles of every PR review: `key` (required), `assignee`. | No angle: file invalid. |
+| `[[review.angles]]` | at least one required | Base angles of every PR review: `key` (required), `assignee`, `notes` (path, linked from the angle's sub-items). | No angle: file invalid. |
 | `[[review.path_angles]]` | none | `paths` (globs, `*` crosses `/`) and the `angle` they add. | — |
 
 ### `[bridge]`

@@ -35,7 +35,7 @@ pub fn linear(config: &Config, env: &dyn Fn(&str) -> Option<String>) -> Result<L
             Ok(Linear::new(
                 &token,
                 &config.tracker.team,
-                StatusTable::from_config(&config.tracker.statuses),
+                StatusTable::identity(),
             ))
         }
         TrackerKind::Livela => Err(
