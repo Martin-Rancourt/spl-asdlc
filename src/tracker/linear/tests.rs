@@ -624,6 +624,13 @@ fn an_item_is_archived_never_trashed() {
     t.on_body(
         "POST",
         URL,
+        "issue(id: $id) { id identifier",
+        200,
+        &format!(r#"{{"data":{{"issue":{}}}}}"#, issue("ABC-2", "Done", "completed")),
+    );
+    t.on_body(
+        "POST",
+        URL,
         "issueArchive",
         200,
         r#"{"data":{"issueArchive":{"success":true}}}"#,
@@ -635,7 +642,8 @@ fn an_item_is_archived_never_trashed() {
         .into_iter()
         .find(|b| b.contains("issueArchive"))
         .unwrap();
-    assert!(body.contains(r#""id":"ABC-2""#), "{body}");
+    assert!(body.contains(r#""id":"id-ABC-2""#), "{body}");
+    assert!(!body.contains(r#""id":"ABC-2""#), "{body}");
     assert!(!body.contains("trash"), "an archive never deletes: {body}");
 }
 
@@ -648,6 +656,13 @@ fn an_archive_whose_answer_is_lost_is_read_back() {
         )
     };
     let (l, t) = linear();
+    t.on_body(
+        "POST",
+        URL,
+        "issue(id: $id) { id identifier",
+        200,
+        &read(r#""archivedAt":null"#),
+    );
     t.on_body("POST", URL, "issueArchive", 502, "upstream timeout");
     t.on_body(
         "POST",
@@ -659,6 +674,13 @@ fn an_archive_whose_answer_is_lost_is_read_back() {
     l.archive("ABC-2").unwrap();
     // Not archived after all: the refusal stands, the next tick retries.
     let (l, t) = linear();
+    t.on_body(
+        "POST",
+        URL,
+        "issue(id: $id) { id identifier",
+        200,
+        &read(r#""archivedAt":null"#),
+    );
     t.on_body("POST", URL, "issueArchive", 502, "upstream timeout");
     t.on_body(
         "POST",

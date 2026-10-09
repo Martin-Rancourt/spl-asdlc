@@ -841,10 +841,11 @@ impl Tracker for Linear {
     fn archive(&self, key: &str) -> TResult<()> {
         // `issueArchive` without `trash`: the issue leaves the open count
         // and stays searchable and restorable; it is never deleted.
+        let id = self.issue_id(key)?;
         let r = self.write(
             &format!("archive of {key}"),
             "mutation($id: String!) { issueArchive(id: $id) { success } }",
-            json!({"id": key}),
+            json!({"id": id}),
             "issueArchive",
         );
         match r {
