@@ -2366,3 +2366,64 @@ fn a_dry_run_prints_the_angle_items_flow_and_the_relations() {
         "{lines:?}"
     );
 }
+
+// ---- spec 05 §3: the coordinator receives the consolidation item ----
+
+fn release_coordinator() -> crate::tracker::User {
+    crate::tracker::User {
+        id: "u-coordinator".into(),
+        name: "coordinator-handle".into(),
+    }
+}
+
+#[test]
+fn a_candidates_consolidation_item_goes_to_its_coordinator_once() {
+    let w = World::new();
+    assert_eq!(
+        w.config.release.coordinator_assignee.as_deref(),
+        Some("coordinator-handle")
+    );
+    w.tracker
+        .state
+        .borrow_mut()
+        .users
+        .push(release_coordinator());
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(w.consolidation(CAND).assignee, Some(release_coordinator()));
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(writes.is_empty(), "{writes:?}");
+}
+
+#[test]
+fn without_a_release_coordinator_assignee_the_consolidation_item_is_unassigned() {
+    let mut w = World::new();
+    w.config.release.coordinator_assignee = None;
+    w.tracker
+        .state
+        .borrow_mut()
+        .users
+        .push(release_coordinator());
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(w.consolidation(CAND).assignee, None);
+}
+
+#[test]
+fn an_unknown_release_coordinator_leaves_the_item_unassigned_and_never_reassigns_it() {
+    let w = World::new();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let item = w.consolidation(CAND);
+    assert_eq!(item.assignee, None, "the tracker does not know the name");
+    w.tracker
+        .state
+        .borrow_mut()
+        .users
+        .push(release_coordinator());
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(writes.is_empty(), "never reassigned: {writes:?}");
+    assert_eq!(w.tracker.item(&item.key).assignee, None);
+}
