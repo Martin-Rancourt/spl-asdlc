@@ -2105,10 +2105,11 @@ fn a_dry_run_of_the_closure_prints_the_unassign() {
 /// A PR review round of `ticket` (an angle sub-item and its consolidation
 /// item), seeded under it in `status`.
 fn review_round(w: &World, ticket: &str, keys: [&str; 2], status: Status) {
-    let (title, body) = texts::review_angle_item(ticket, PR5, "aaaaaaa1", "security", &[]);
+    let (title, body) = texts::review_angle_item(ticket, PR5, "aaaaaaa1", "security", None, &[]);
     w.tracker.seed(keys[0], &title, &body, status, &[]);
     let scope = texts::round_scope(PR5, "aaaaaaa1");
-    let (title, body) = texts::consolidation_item(&scope, ticket, "docs/agents/consolidate.md");
+    let (title, body) =
+        texts::consolidation_item(&scope, ticket, texts::Consolidating::PullRequest);
     w.tracker.seed(keys[1], &title, &body, status, &[]);
     let mut s = w.tracker.state.borrow_mut();
     s.set_parent(keys[0], ticket);
