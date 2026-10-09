@@ -753,7 +753,7 @@ fn open_round(
         let (title, body) = texts::consolidation_item(
             &c.tag,
             &format!("{product} {v} (rc.{})", c.rc),
-            "docs/agents/consolidate.md",
+            texts::Consolidating::Candidate,
         );
         let assignee = t
             .config

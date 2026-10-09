@@ -4,8 +4,6 @@
 //! shape TOML may take, so that a misspelt key is an error rather than a
 //! silently ignored setting.
 
-use std::collections::BTreeMap;
-
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -44,7 +42,6 @@ pub(super) struct RawTracker {
     pub service_identity: Option<String>,
     pub team_keys: Option<Vec<String>>,
     pub link_fallback: Option<String>,
-    pub statuses: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize)]
