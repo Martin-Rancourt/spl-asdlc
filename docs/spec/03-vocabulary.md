@@ -24,7 +24,7 @@ In Review, To Deploy and Post Deploy are **validation** states: the item is stil
 |---|---|---|
 | **Release issue** | none | One per cycle: title names the product and the version; carries the brief and the GO decision. |
 | **Angle sub-item** | the release issue, or the PR's ticket | One per configured angle; served to a reviewer; its PR (release) or its findings (PR review) are its output. A PR review's sub-items belong to their PR's round: they close when that PR resolves, whatever becomes of the ticket. |
-| **Consolidation item** | same parent | Served to the coordinator once every angle has reported; closes with its round. |
+| **Consolidation item** | same parent | Served to the coordinator once every angle has reported; at a PR review it is blocked by every angle sub-item of its round until each is resolved (BR-ASDLC-018); closes with its round. |
 | **Validation sub-task** | a ticket the closure moved to Post Deploy | One per ticket, unassigned, in Ready, with a complete contract: an agent verifies the parent's `## Post deploy` boxes in production and checks the ones it can verify, then closes it; a check that needs a human, or is beyond the agent, is named in a comment and the sub-task is reassigned to the owner (`owner.tracker_user`). |
 | **Finding ticket** | none, related to the release issue | A non-blocking finding to fix later; labelled `qa-finding`. |
 | **Blocker** | none, `blocks` the release issue | A blocking finding that an angle could not fix in its branch. |
