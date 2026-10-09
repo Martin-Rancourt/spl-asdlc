@@ -663,27 +663,21 @@ fn all<T>(what: &str, items: &[Value], f: impl Fn(&Value) -> Option<T>) -> Read<
 /// or of the wrong type (a rule without a type, a pattern that is no text).
 fn ruleset_of(v: &Value) -> Option<Ruleset> {
     let patterns = |key: &str| -> Option<Vec<String>> {
-        match v["conditions"]["ref_name"].get(key) {
-            None | Some(Value::Null) => Some(Vec::new()),
-            Some(Value::Array(a)) => a.iter().map(|p| p.as_str().map(str::to_string)).collect(),
-            Some(_) => None,
-        }
+        v.get("conditions")?
+            .get("ref_name")?
+            .get(key)?
+            .as_array()?
+            .iter()
+            .map(|p| p.as_str().map(str::to_string))
+            .collect()
     };
     let mut rules = BTreeSet::new();
     let mut required_checks = BTreeSet::new();
-    let listed = match v.get("rules") {
-        None | Some(Value::Null) => Vec::new(),
-        Some(Value::Array(a)) => a.clone(),
-        Some(_) => return None,
-    };
-    for rule in &listed {
+    let listed = v.get("rules")?.as_array()?;
+    for rule in listed {
         let kind = rule["type"].as_str()?;
         if kind == "required_status_checks" {
-            for c in rule["parameters"]["required_status_checks"]
-                .as_array()
-                .into_iter()
-                .flatten()
-            {
+            for c in rule.get("parameters")?.get("required_status_checks")?.as_array()? {
                 required_checks.insert(c["context"].as_str()?.to_string());
             }
         }

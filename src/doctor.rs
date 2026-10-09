@@ -7,7 +7,7 @@ use std::fmt;
 use crate::config::{Config, Source};
 use crate::github::{GitHub, Read, RepoSlug, Ruleset};
 use crate::method::business_rules;
-use crate::method::release::shape::{Shape, Version};
+use crate::method::release::shape::Shape;
 use crate::method::review;
 use crate::tracker::{StatusTable, Tracker};
 
@@ -136,36 +136,28 @@ struct Required {
     name: String,
     target: &'static str,
     refs: Vec<String>,
+    /// Tag templates which must be covered as whole languages, not merely by
+    /// a few example tag names. Empty for branch rulesets.
+    tag_templates: Vec<String>,
     needs: Vec<Need>,
 }
 
 /// One line per ruleset the procedure asks for: the default branch, the
 /// release branches and the release and candidate tags. Rulesets are read by
 /// id, so that a release branch or a tag that does not exist yet is judged
-/// against the patterns the configuration would make it match. Only an
+/// against the configured shape. Only an
 /// `active` ruleset counts; one that covers a ref but is `evaluate` or
 /// `disabled` makes the line `invalid`. The bypass list is not judged: an
 /// App's token reads it empty.
 fn ruleset_checks(config: &Config, default: &str, rulesets: &Read<Vec<Ruleset>>) -> Vec<Check> {
     let shape = Shape::of(&config.product.name, &config.release);
     let prefix = &config.release.branch_prefix;
-    // Versions and RC numbers of one and two digits, so that a pattern that
-    // only covers some versions is not taken for one that covers them all.
-    let versions = [
-        (Version::parse("0.1.0"), 1),
-        (Version::parse("12.34.56"), 12),
-    ];
-    let mut tags = Vec::new();
-    for (v, rc) in versions {
-        let v = v.expect("a literal version parses");
-        tags.push(format!("refs/tags/{}", shape.release_tag(v)));
-        tags.push(format!("refs/tags/{}", shape.candidate_tag(v, rc)));
-    }
     let required = [
         Required {
             name: format!("ruleset {default}"),
             target: "branch",
             refs: vec![format!("refs/heads/{default}")],
+            tag_templates: Vec::new(),
             needs: vec![Need::Check("required-check")],
         },
         Required {
@@ -175,12 +167,17 @@ fn ruleset_checks(config: &Config, default: &str, rulesets: &Read<Vec<Ruleset>>)
                 .iter()
                 .map(|stamp| format!("refs/heads/{prefix}{stamp}"))
                 .collect(),
+            tag_templates: Vec::new(),
             needs: vec![Need::Check("required-check")],
         },
         Required {
             name: "ruleset tags".to_string(),
             target: "tag",
-            refs: tags,
+            refs: Vec::new(),
+            tag_templates: vec![
+                format!("refs/tags/{}", shape.release_template),
+                format!("refs/tags/{}", shape.candidate_template),
+            ],
             needs: vec![
                 Need::Rule("update", "updates restricted"),
                 Need::Rule("deletion", "deletions restricted"),
@@ -207,10 +204,22 @@ fn judge(req: &Required, all: &[Ruleset], default_ref: &str) -> Check {
     let mut used: Vec<&Ruleset> = Vec::new();
     let mut problems = Vec::new();
     let mut inactive_seen = false;
-    for git_ref in &req.refs {
+    let subjects = if req.tag_templates.is_empty() {
+        req.refs.clone()
+    } else {
+        req.tag_templates.clone()
+    };
+    for git_ref in &subjects {
         let covering: Vec<&Ruleset> = all
             .iter()
-            .filter(|r| r.target == req.target && covers(r, git_ref, default_ref))
+            .filter(|r| {
+                r.target == req.target
+                    && if req.tag_templates.is_empty() {
+                        covers(r, git_ref, default_ref)
+                    } else {
+                        covers_tag_template(r, git_ref)
+                    }
+            })
             .collect();
         let (active, inactive): (Vec<&Ruleset>, Vec<&Ruleset>) =
             covering.iter().partition(|r| r.is_active());
@@ -266,6 +275,33 @@ fn judge(req: &Required, all: &[Ruleset], default_ref: &str) -> Check {
         },
         problems.join("; "),
     )
+}
+
+/// Whether a ruleset demonstrably covers every tag made by a configured
+/// template. GitHub ruleset patterns are globs, whereas a template contains
+/// unbounded decimal fields; testing representative versions cannot establish
+/// containment. We therefore accept only forms whose containment is obvious:
+/// `~ALL`, the template's own wildcard form, or its literal prefix followed by
+/// one terminal `*`. Exclusions are conservatively not accepted, because an
+/// arbitrary glob exclusion can remove a future version.
+fn covers_tag_template(r: &Ruleset, template: &str) -> bool {
+    if !r.exclude.is_empty() {
+        return false;
+    }
+    let wildcard = template
+        .replace("{version}", "*")
+        .replace("{rc}", "*");
+    let literal_prefix = wildcard.split('*').next().unwrap_or_default();
+    r.include.iter().any(|pattern| {
+        pattern == "~ALL"
+            || pattern == &wildcard
+            // This documented ruleset shape covers any candidate tag: all
+            // configured candidate templates end in `-rc.{rc}`.
+            || (pattern == "refs/tags/*-rc.*" && template.ends_with("-rc.{rc}"))
+            || pattern
+                .strip_suffix('*')
+                .is_some_and(|prefix| !prefix.contains('*') && literal_prefix.starts_with(prefix))
+    })
 }
 
 /// Whether a ruleset's `ref_name` condition takes in `git_ref` (GitHub's
@@ -737,7 +773,7 @@ mod tests {
         assert!(
             lines[2]
                 .detail
-                .contains("refs/tags/acme-v0.1.0-rc.1: no tag ruleset covers it"),
+                .contains("refs/tags/acme-v{version}-rc.{rc}: no tag ruleset covers it"),
             "{}",
             lines[2]
         );
@@ -773,7 +809,7 @@ mod tests {
         assert!(
             lines[2]
                 .detail
-                .contains("refs/tags/acme-v12.34.56: lacks updates restricted"),
+                .contains("refs/tags/acme-v{version}: lacks updates restricted"),
             "{}",
             lines[2]
         );
@@ -812,6 +848,16 @@ mod tests {
 
     #[test]
     fn the_tag_ruleset_must_cover_every_tag_the_configuration_creates() {
+        // Exact sample refs prove nothing about future versions.
+        let mut r = procedure_rulesets();
+        r[2].include = vec![
+            "refs/tags/acme-v0.1.0".into(),
+            "refs/tags/acme-v0.1.0-rc.1".into(),
+            "refs/tags/acme-v12.34.56".into(),
+            "refs/tags/acme-v12.34.56-rc.12".into(),
+        ];
+        assert_eq!(ruleset_lines(Ok(r))[2].verdict, Verdict::Missing);
+
         // The procedure's `*-rc.*` alone leaves the release tags open.
         let mut r = procedure_rulesets();
         r[2].include = vec!["refs/tags/*-rc.*".into()];
@@ -819,17 +865,17 @@ mod tests {
         assert_eq!(line.verdict, Verdict::Missing, "{line}");
         assert!(
             line.detail
-                .contains("refs/tags/acme-v0.1.0: no tag ruleset covers it"),
+                .contains("refs/tags/acme-v{version}: no tag ruleset covers it"),
             "{line}"
         );
-        assert!(!line.detail.contains("rc.1:"), "{line}");
+        assert!(!line.detail.contains("{rc}:"), "{line}");
 
         // A pattern that only covers some versions.
         let mut r = procedure_rulesets();
         r[2].include = vec!["refs/tags/acme-v0.*".into()];
         let line = ruleset_lines(Ok(r)).remove(2);
         assert_eq!(line.verdict, Verdict::Missing, "{line}");
-        assert!(line.detail.contains("acme-v12.34.56"), "{line}");
+        assert!(line.detail.contains("acme-v{version}"), "{line}");
 
         // Another product's tags, or a branch ruleset on the tag patterns.
         let mut r = procedure_rulesets();
@@ -854,7 +900,7 @@ mod tests {
         assert_eq!(line.verdict, Verdict::Missing, "{line}");
         assert!(
             line.detail
-                .contains("refs/tags/acme-v12.34.56: no tag ruleset covers it"),
+                .contains("refs/tags/acme-v{version}: no tag ruleset covers it"),
             "{line}"
         );
     }

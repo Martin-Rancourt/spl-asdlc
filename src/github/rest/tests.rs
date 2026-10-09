@@ -209,6 +209,14 @@ fn rulesets_that_cannot_be_read_whole_are_unreadable() {
             200,
             r#"{"id":11,"name":"main","target":"branch","enforcement":"active","conditions":{"ref_name":{"include":[7]}}}"#,
         ),
+        (
+            200,
+            r#"{"id":11,"name":"main","target":"branch","enforcement":"active","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":null}},"rules":[]}"#,
+        ),
+        (
+            200,
+            r#"{"id":11,"name":"main","target":"branch","enforcement":"active","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}},"rules":null}"#,
+        ),
     ] {
         let (gh, t) = client();
         t.on("GET", &url(RULESETS), 200, listed);
