@@ -92,6 +92,7 @@ team_keys = ["ABC"]                    # identifier prefixes of the team's items
 [release]
 release_please_authors = ["app/release-app"]
 coordinators = ["coordinator-login"]
+coordinator_assignee = "coordinator-handle" # optional: receives each candidate's consolidation item
 
 [[release.angles]]
 key = "security"                       # an angle the repository's file declares
@@ -99,6 +100,7 @@ assignee = "reviewer-handle"           # participant hint, optional
 
 [review]
 coordinators = ["coordinator-login"]
+coordinator_assignee = "coordinator-handle" # optional: receives each PR round's consolidation item
 human_reviewer = "owner-login"         # optional: asked to look at a green PR stuck on a human
 
 [[notify]]
@@ -133,6 +135,7 @@ The repository's file carries the method's shape (tags, angles, review rules, wo
 | `tracker.team`, `tracker.service_identity`, `tracker.team_keys` | Which team, under which account. |
 | `release.coordinators`, `release.release_please_authors` | Logins. |
 | `review.coordinators`, `review.human_reviewer` | Logins. |
+| `release.coordinator_assignee`, `review.coordinator_assignee` | Participants. |
 | the `assignee` of a `[[release.angles]]` or `[[review.angles]]` entry | A participant. Given as an entry with `key` and `assignee` only; `key` must name an angle the repository's file declares, never declare one. |
 | `[[notify]]` | Destinations (as references, rule 1). The channels are one key: all in one file. |
 
@@ -198,6 +201,7 @@ The configuration maps no status: the tracker names each canonical status (`03-v
 | `release.business_rule_paths` | `["docs/business-rules.md", "**/business-rules.md"]` | Paths whose change the brief singles out as "business rules touched". | — |
 | `release.stagnation_hours` | `2` | A GO false for longer than this is reported once. | Not a positive integer: file invalid. |
 | `release.coordinators` | required | GitHub logins whose approval at the head SHA lets the bridge merge an angle PR. | No approval by one of them: the angle PR is not merged. |
+| `release.coordinator_assignee` | none | The tracker participant (an agent the tracker serves, like an angle's `assignee`) who receives the consolidation item of each candidate, assigned when the bridge creates it (`05-release-cycle.md` §3); an existing consolidation item is never reassigned. | Absent, or unknown to the tracker: the item is created unassigned; `doctor` reports an unknown participant. |
 | `release.escalation_label` | `blocked-by-human` | Label added to the release issue when it waits for the owner. | — |
 | `release.auto_candidate` | `false` | When true the bridge dispatches the next RC itself once a pass is merged; otherwise the coordinator does. | — |
 | `release.cut_workflow` | `release-cut.yml` | Workflow the bridge dispatches for `release cut`. | Not a file name: file invalid; absent on GitHub: the dispatch fails and says so. |
@@ -205,7 +209,7 @@ The configuration maps no status: the tracker names each canonical status (`03-v
 | `release.release_please_workflow` | `release-please.yml` | Workflow redispatched once when release-please's PR is stale. | — |
 | `release.release_please_config` | `release-please-config.json` | release-please's configuration (its `config-file`), read at the release PR's head for each component's changelog path. | Unreadable for a multi-component product: a note gap, the GO is false. |
 | `release.release_please_manifest` | `.release-please-manifest.json` | release-please's manifest (its `manifest-file`). | — |
-| `[[release.angles]]` | at least one required | `key` (required), `title` (default `<Key> review`), `assignee` (participant hint), `notes` (path). | No angle: file invalid — a release with no angle would compute its GO from nobody. |
+| `[[release.angles]]` | at least one required | `key` (required), `title` (default `<Key> review`), `assignee` (participant hint), `notes` (path). | No angle: file invalid — a release with no angle would compute its GO from nobody. An `assignee` unknown to the tracker: the angle item is created unassigned; `doctor` reports it. |
 
 ### `[review]`
 
@@ -219,9 +223,10 @@ The configuration maps no status: the tracker names each canonical status (`03-v
 | `review.sensitive_paths` | not declared | Path of the sensitive-path list read at the PR's base (rule 5). | Declared and absent or unreadable: the PR waits, one human notice. |
 | `review.sensitive_angle` | `security` | The angle a sensitive path adds. | — |
 | `review.coordinators` | required | GitHub logins whose approval at the head SHA lets the bridge merge a PR. A later `COMMENTED` review never cancels an approval; a standing `CHANGES_REQUESTED` from any configured login blocks. | No approval at the head SHA: not merged. |
+| `review.coordinator_assignee` | none | The tracker participant (an agent the tracker serves, like an angle's `assignee`) who receives the consolidation item of each PR round, assigned when the bridge creates it (`04-pr-review.md` §3); an existing consolidation item is never reassigned. | Absent, or unknown to the tracker: the item is created unassigned; `doctor` reports an unknown participant. |
 | `review.ticketless_authors` | `[]` | Apps whose PRs need no ticket (`<slug>`, `<slug>[bot]` or `app/<slug>`): for such a PR linked to no ticket, the bridge opens one labelled `ticketless-pr` with a complete contract, and the PR takes the usual path (spec 04 §9). | A human account whose login matches never qualifies; any other PR without a ticket waits. |
 | `review.human_reviewer` | none | GitHub login asked to look at a green PR stuck on something only a human can lift. | Absent: the notice says that a reviewer must be assigned by hand. |
-| `[[review.angles]]` | at least one required | Base angles of every PR review: `key` (required), `assignee`, `notes` (path, linked from the angle's sub-items). | No angle: file invalid. |
+| `[[review.angles]]` | at least one required | Base angles of every PR review: `key` (required), `assignee` (participant hint), `notes` (path, linked from the angle's sub-items). | No angle: file invalid. An `assignee` unknown to the tracker: the angle item is created unassigned; `doctor` reports it. |
 | `[[review.path_angles]]` | none | `paths` (globs, `*` crosses `/`) and the `angle` they add. | — |
 
 ### `[bridge]`

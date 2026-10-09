@@ -470,9 +470,8 @@ fn one_merge_per_repository_per_tick() {
     for n in [7, 8] {
         prs.push(in_review(&w, n));
     }
-    for mut pr in prs {
-        pr.reviews = vec![review("coordinator-login", "APPROVED", &pr.head_sha, "ok")];
-        w.open(pr);
+    for pr in prs {
+        w.open(approved(&w, pr));
     }
     w.tick(false);
     let merges: Vec<String> = w
@@ -599,10 +598,9 @@ fn bot(slug: &str) -> String {
 #[test]
 fn a_status_write_that_fails_after_the_merge_is_retried_by_the_sweep() {
     let w = World::new();
-    let mut pr = in_review(&w, 7);
+    let pr = in_review(&w, 7);
     check_every_box(&w, "ABC-7");
-    pr.reviews = vec![review("coordinator-login", "APPROVED", &pr.head_sha, "ok")];
-    w.open(pr);
+    w.open(approved(&w, pr));
     w.tracker
         .fail_writes_starting_with("status ABC-7 To Deploy");
     let (report, _) = w.tick(false);
@@ -621,9 +619,8 @@ fn a_refused_merge_does_not_starve_the_next_candidate() {
     for n in [7, 8] {
         prs.push(in_review(&w, n));
     }
-    for mut pr in prs {
-        pr.reviews = vec![review("coordinator-login", "APPROVED", &pr.head_sha, "ok")];
-        w.open(pr);
+    for pr in prs {
+        w.open(approved(&w, pr));
     }
     w.github
         .fail_writes_starting_with("merge example-org/acme#7", Some(409), "ruleset");
@@ -639,8 +636,7 @@ fn a_fork_branch_is_never_deleted_in_the_base_repository() {
     let w = World::new();
     let mut pr = in_review(&w, 7);
     pr.cross_repository = true;
-    pr.reviews = vec![review("coordinator-login", "APPROVED", &pr.head_sha, "ok")];
-    w.open(pr);
+    w.open(approved(&w, pr));
     w.tick(false);
     assert!(w.github_writes().iter().any(|l| l.starts_with("merge")));
     assert!(
@@ -853,9 +849,36 @@ fn two_open_tickets_for_one_ticketless_pr_open_none_and_say_so() {
 
 // ---- spec 04 §10: a ticket and its PRs (BR-ASDLC-007, BR-ASDLC-008) ----
 
-fn approved(mut pr: PullRequest) -> PullRequest {
-    pr.reviews = vec![review("coordinator-login", "APPROVED", &pr.head_sha, "ok")];
+/// Every angle of the PR's round has submitted its review, then the
+/// coordinator approves at the head (BR-ASDLC-018).
+fn approved(w: &World, mut pr: PullRequest) -> PullRequest {
+    pr.reviews = angle_reviews(w, &pr);
+    pr.reviews
+        .push(review("coordinator-login", "APPROVED", &pr.head_sha, "ok"));
     pr
+}
+
+/// A submitted review naming each angle sub-item linked to the PR.
+fn angle_reviews(w: &World, pr: &PullRequest) -> Vec<Review> {
+    crate::tracker::Tracker::items_linked_to_pr(&w.tracker, &pr.url)
+        .unwrap()
+        .into_iter()
+        .filter(|k| {
+            let item = w.tracker.item(k);
+            matches!(
+                texts::bridge_item(&item.description, item.parent.as_deref()),
+                Some(BridgeItem::Angle { .. })
+            )
+        })
+        .map(|k| {
+            review(
+                "angle-agent",
+                "COMMENTED",
+                &pr.head_sha,
+                &format!("Reviewed for {k}."),
+            )
+        })
+        .collect()
 }
 
 /// The items of the review rounds of a PR, on its ticket.
@@ -909,7 +932,7 @@ fn close_unmerged(w: &World, pr: &PullRequest) {
 fn a_merge_that_leaves_a_box_open_sends_the_ticket_back_to_work() {
     let w = World::new();
     let pr = in_review(&w, 7);
-    w.open(approved(pr.clone()));
+    w.open(approved(&w, pr.clone()));
     let (report, _) = w.tick(false);
     assert!(report.ok(), "{report:?}");
     assert!(w.github_writes().iter().any(|l| l.starts_with("merge")));
@@ -932,7 +955,7 @@ fn a_merge_with_every_box_checked_goes_to_deploy_once() {
     let w = World::new();
     let pr = in_review(&w, 7);
     check_every_box(&w, "ABC-7");
-    w.open(approved(pr.clone()));
+    w.open(approved(&w, pr.clone()));
     w.tick(false);
     assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::ToDeploy));
     assert!(merge_comment(&w, "ABC-7", &pr).contains("state: To Deploy"));
@@ -944,7 +967,7 @@ fn a_rounds_items_close_when_its_pr_merges_while_the_ticket_stays_open() {
     let w = World::new();
     let pr = in_review(&w, 7);
     assert!(all_in(&round(&w, "ABC-7", &pr), Status::Ready));
-    w.open(approved(pr.clone()));
+    w.open(approved(&w, pr.clone()));
     w.tick(false);
     assert_eq!(
         w.tracker.item("ABC-7").state.status,
@@ -1003,7 +1026,7 @@ fn a_second_pr_on_a_ticket_past_the_merge_brings_it_back_to_review() {
     assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::InReview));
     quiet(&w);
 
-    w.open(approved(pr.clone()));
+    w.open(approved(&w, pr.clone()));
     w.tick(false);
     assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::ToDeploy));
     quiet(&w);
@@ -1029,7 +1052,7 @@ fn two_in_review(w: &World) -> (PullRequest, PullRequest) {
 fn while_another_pr_is_in_review_the_ticket_stays_in_review() {
     let w = World::new();
     let (a, b) = two_in_review(&w);
-    w.open(approved(a.clone()));
+    w.open(approved(&w, a.clone()));
     w.tick(false);
     assert!(
         w.github_writes()
@@ -1049,7 +1072,7 @@ fn while_another_pr_is_in_review_the_ticket_stays_in_review() {
     quiet(&w);
 
     // The last PR merges: the completeness rule decides.
-    w.open(approved(b.clone()));
+    w.open(approved(&w, b.clone()));
     w.tick(false);
     assert_eq!(
         w.tracker.item("ABC-7").state.status,
@@ -1078,7 +1101,7 @@ fn changes_requested_on_one_pr_wait_while_another_is_in_review() {
     );
     quiet(&w);
     // PR #7 merges: PR #8, sent back, is its implementer's.
-    w.open(approved(a));
+    w.open(approved(&w, a));
     w.tick(false);
     assert_eq!(
         w.tracker.item("ABC-7").state.status,
@@ -1131,7 +1154,7 @@ fn an_unreadable_ticket_of_another_pr_holds_the_state_after_a_merge() {
     w.tracker.link("ABC-9", &other.url);
     w.open(other);
     w.tracker.make_unreadable("ABC-9");
-    w.open(approved(pr.clone()));
+    w.open(approved(&w, pr.clone()));
     let (report, _) = w.tick(false);
     assert!(
         w.github_writes()
@@ -1151,4 +1174,238 @@ fn an_unreadable_ticket_of_another_pr_holds_the_state_after_a_merge() {
         w.tracker.item("ABC-7").state.status,
         Some(Status::InProgress)
     );
+}
+
+// ---- BR-ASDLC-018: the consolidation starts only after its angles ----
+
+/// The round's consolidation item and its angle sub-items, by key.
+fn round_keys(w: &World, ticket: &str, pr: &PullRequest) -> (String, Vec<String>) {
+    let mut consolidation = None;
+    let mut angles = Vec::new();
+    for c in round(w, ticket, pr) {
+        match texts::bridge_item(&c.description, c.parent.as_deref()) {
+            Some(BridgeItem::Consolidation { .. }) => consolidation = Some(c.key),
+            Some(BridgeItem::Angle { .. }) => angles.push(c.key),
+            _ => {}
+        }
+    }
+    assert!(!angles.is_empty());
+    (consolidation.expect("a consolidation item"), angles)
+}
+
+fn blockers(w: &World, key: &str) -> Vec<String> {
+    let mut b: Vec<String> = crate::tracker::Tracker::relations(&w.tracker, key)
+        .unwrap()
+        .blocked_by
+        .into_iter()
+        .map(|r| r.other)
+        .collect();
+    b.sort();
+    b
+}
+
+#[test]
+fn the_consolidation_item_is_blocked_by_every_angle_of_its_round_once() {
+    let w = World::new();
+    let pr = in_review(&w, 7);
+    let (consolidation, mut angles) = round_keys(&w, "ABC-7", &pr);
+    angles.sort();
+    assert_eq!(blockers(&w, &consolidation), angles);
+    let relations: Vec<String> = w
+        .tracker
+        .writes()
+        .into_iter()
+        .filter(|l| l.starts_with("relate"))
+        .collect();
+    assert_eq!(relations.len(), angles.len(), "{relations:?}");
+    let writes = w.tracker.writes();
+    let last_relate = writes
+        .iter()
+        .rposition(|l| l.starts_with("relate"))
+        .unwrap();
+    let round_comment = writes
+        .iter()
+        .position(|l| l.starts_with("comment ABC-7"))
+        .unwrap();
+    assert!(
+        last_relate < round_comment,
+        "the relations before the round comment: {writes:?}"
+    );
+    quiet(&w);
+}
+
+#[test]
+fn a_round_missing_its_relations_gets_them_at_the_next_tick() {
+    let w = World::new();
+    let pr = in_review(&w, 7);
+    let (consolidation, mut angles) = round_keys(&w, "ABC-7", &pr);
+    angles.sort();
+    // A round opened before the relations existed, or one lost by hand.
+    for r in crate::tracker::Tracker::relations(&w.tracker, &consolidation)
+        .unwrap()
+        .blocked_by
+    {
+        crate::tracker::Tracker::unrelate(&w.tracker, &r.id).unwrap();
+    }
+    assert!(blockers(&w, &consolidation).is_empty());
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(blockers(&w, &consolidation), angles);
+    quiet(&w);
+}
+
+#[test]
+fn a_relation_that_cannot_be_written_holds_the_round_and_is_retried() {
+    let w = World::new();
+    let pr = green(pull_request(7));
+    w.ticket("ABC-7", Status::InProgress, &pr);
+    w.open(pr.clone());
+    w.tracker.fail_writes_starting_with("relate");
+    let (report, _) = w.tick(false);
+    assert!(!report.ok(), "the failure is reported");
+    assert_eq!(
+        w.tracker.item("ABC-7").state.status,
+        Some(Status::InProgress),
+        "the round does not open without its relations"
+    );
+    w.tracker.state.borrow_mut().failing_writes.clear();
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    let (consolidation, mut angles) = round_keys(&w, "ABC-7", &pr);
+    angles.sort();
+    assert_eq!(blockers(&w, &consolidation), angles);
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::InReview));
+    quiet(&w);
+}
+
+#[test]
+fn an_approval_while_an_angle_is_open_does_not_merge_and_says_why_once() {
+    let w = World::new();
+    let pr = in_review(&w, 7);
+    check_every_box(&w, "ABC-7");
+    let (_, angles) = round_keys(&w, "ABC-7", &pr);
+    // The coordinator approved before any angle reviewer submitted.
+    let mut early = pr.clone();
+    early.reviews = vec![review("coordinator-login", "APPROVED", &pr.head_sha, "ok")];
+    w.open(early);
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    let writes = w.github_writes();
+    assert!(!writes.iter().any(|l| l.starts_with("merge")), "{writes:?}");
+    let said: Vec<&String> = writes
+        .iter()
+        .filter(|l| l.contains("Waiting for the angle reviews"))
+        .collect();
+    assert_eq!(said.len(), 1, "{writes:?}");
+    assert!(angles.iter().all(|a| said[0].contains(a.as_str())));
+    quiet(&w);
+
+    // The angles report: the same approval now counts.
+    w.open(approved(&w, pr));
+    w.tick(false);
+    assert!(w.github_writes().iter().any(|l| l.starts_with("merge")));
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::ToDeploy));
+}
+
+#[test]
+fn a_dry_run_says_the_relations_it_would_write() {
+    let w = World::new();
+    let pr = green(pull_request(7));
+    w.ticket("ABC-1", Status::InProgress, &pr);
+    w.open(pr);
+    let intents = crate::dry::Intents::default();
+    let gh = crate::dry::DryGitHub {
+        inner: &w.github,
+        intents: &intents,
+    };
+    let tr = crate::dry::DryTracker {
+        inner: &w.tracker,
+        intents: &intents,
+    };
+    let sig = crate::dry::DrySignal { intents: &intents };
+    let t = Tick {
+        config: &w.config,
+        repo: repo(),
+        github: &gh,
+        tracker: &tr,
+        signal: &sig,
+        github_login: bot("spl-asdlc"),
+        now: crate::github::Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
+        deadline: None,
+        dry_run: true,
+    };
+    let mut log = ActionLog::in_memory();
+    run(&t, &mut log);
+    assert!(w.tracker.writes().is_empty());
+    let lines = intents.lines();
+    let relations: Vec<&String> = lines
+        .iter()
+        .filter(|l| l.contains(" Blocks ") && l.contains("Consolidation"))
+        .collect();
+    assert!(!relations.is_empty(), "{lines:?}");
+}
+
+// ---- spec 04 §3: the coordinator receives the consolidation item ----
+
+fn coordinator() -> crate::tracker::User {
+    crate::tracker::User {
+        id: "u-coordinator".into(),
+        name: "coordinator-handle".into(),
+    }
+}
+
+fn consolidation(w: &World, ticket: &str, pr: &PullRequest) -> crate::tracker::Item {
+    let (key, _) = round_keys(w, ticket, pr);
+    w.tracker.item(&key)
+}
+
+#[test]
+fn a_pr_rounds_consolidation_item_goes_to_its_coordinator_once() {
+    let w = World::new();
+    assert_eq!(
+        w.config.review.coordinator_assignee.as_deref(),
+        Some("coordinator-handle")
+    );
+    w.tracker.state.borrow_mut().users.push(coordinator());
+    let pr = in_review(&w, 7);
+    assert_eq!(
+        consolidation(&w, "ABC-7", &pr).assignee,
+        Some(coordinator())
+    );
+    let (_, angles) = round_keys(&w, "ABC-7", &pr);
+    for a in angles {
+        assert_eq!(w.tracker.item(&a).assignee, None, "an angle has its own");
+    }
+    quiet(&w);
+}
+
+#[test]
+fn without_a_coordinator_assignee_the_consolidation_item_is_unassigned() {
+    let mut w = World::new();
+    w.config.review.coordinator_assignee = None;
+    w.tracker.state.borrow_mut().users.push(coordinator());
+    let pr = in_review(&w, 7);
+    assert_eq!(consolidation(&w, "ABC-7", &pr).assignee, None);
+    quiet(&w);
+}
+
+#[test]
+fn an_unknown_coordinator_leaves_the_item_unassigned_and_it_is_never_reassigned() {
+    let w = World::new();
+    let pr = in_review(&w, 7);
+    let item = consolidation(&w, "ABC-7", &pr);
+    assert_eq!(item.assignee, None, "the tracker does not know the name");
+    quiet(&w);
+    // The participant now exists: the existing item stays as it is.
+    w.tracker.state.borrow_mut().users.push(coordinator());
+    quiet(&w);
+    assert_eq!(w.tracker.item(&item.key).assignee, None);
+    // Someone takes it: the bridge leaves it with them.
+    let taker = crate::tracker::User {
+        id: "u-taker".into(),
+        name: "taker-handle".into(),
+    };
+    crate::tracker::Tracker::assign(&w.tracker, &item.key, Some(&taker)).unwrap();
+    quiet(&w);
+    assert_eq!(w.tracker.item(&item.key).assignee, Some(taker));
 }
