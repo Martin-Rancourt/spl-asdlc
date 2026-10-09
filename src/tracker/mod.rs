@@ -120,16 +120,55 @@ pub struct Comment {
     pub body: String,
 }
 
+/// The canonical priority of an item the bridge creates; the adapter maps
+/// it to the tracker's own scale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Priority {
+    Urgent,
+    High,
+    Normal,
+    Low,
+}
+
+impl Priority {
+    /// The level on the common 1 (urgent) … 4 (low) scale, Linear's and
+    /// Livela's.
+    pub fn level(self) -> u8 {
+        match self {
+            Priority::Urgent => 1,
+            Priority::High => 2,
+            Priority::Normal => 3,
+            Priority::Low => 4,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Priority::Urgent => "urgent",
+            Priority::High => "high",
+            Priority::Normal => "normal",
+            Priority::Low => "low",
+        }
+    }
+}
+
+impl fmt::Display for Priority {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
 /// What the bridge creates: a release item, an angle sub-item, a
-/// consolidation item, a finding ticket, the nits ticket.
+/// consolidation item, a finding ticket, the nits ticket, a gate-fix
+/// ticket, a validation sub-task.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewItem {
     pub title: String,
     pub description: String,
     pub labels: Vec<String>,
     pub status: Status,
-    /// 1 urgent … 4 low; `None` for none.
-    pub priority: Option<u8>,
+    /// Set at creation; `None` leaves the tracker's default.
+    pub priority: Option<Priority>,
     pub assignee: Option<User>,
     /// Identifier of the parent.
     pub parent: Option<String>,

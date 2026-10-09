@@ -5,7 +5,9 @@
 //! 2. the candidate's record (comment and `## Candidates` line), the
 //!    embarked tickets labelled; once the candidate's gate is green, and
 //!    never before, the angle sub-items and the consolidation item of the
-//!    candidate, then the brief (BR-ASDLC-004);
+//!    candidate, then the brief (BR-ASDLC-004); a red gate whose automatic
+//!    rerun settled gets its urgent gate-fix ticket, which a later green
+//!    gate closes (BR-ASDLC-016);
 //! 3. the angle PRs: merged into the release branch when approved, green and
 //!    carrying a valid report; the findings of a merged report filed;
 //! 4. the GO, and on GO the release-please PR merged;
@@ -32,7 +34,7 @@ use crate::method::release::shape::{Shape, Version};
 use crate::method::review::{self, Approval, BranchState};
 use crate::method::texts::{self, AngleLine, BridgeItem};
 use crate::method::vocabulary::{self, Severity, Status};
-use crate::tracker::{Item, NewItem, RelationKind};
+use crate::tracker::{Item, NewItem, Priority, RelationKind};
 
 use super::merge::{for_tracker, tracker_said};
 use super::{Report, Tick, closure};
@@ -139,6 +141,19 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
             return false;
         }
     };
+    // A red gate is never a silence (BR-ASDLC-016): its gate-fix ticket,
+    // once the automatic rerun settled; a green one closes those it made moot.
+    gate_fix(
+        t,
+        log,
+        report,
+        &shape,
+        &item,
+        &candidate,
+        &branch,
+        &label,
+        gate.as_ref(),
+    );
     // The round opens on a green gate only (BR-ASDLC-004); until then the
     // children are read, never created.
     let round = qa_round(
@@ -411,7 +426,7 @@ fn release_item(
                     description: description.clone(),
                     labels: vec![label.clone()],
                     status: Status::Ready,
-                    priority: Some(1),
+                    priority: Some(Priority::Urgent),
                     assignee: None,
                     parent: None,
                 })
@@ -799,7 +814,7 @@ fn create_child(
                     description: body.clone(),
                     labels: vec![label.to_string()],
                     status: Status::Ready,
-                    priority: Some(1),
+                    priority: Some(Priority::Urgent),
                     assignee: assignee.clone(),
                     parent: Some(parent.to_string()),
                 })
@@ -940,6 +955,265 @@ fn gate_run(t: &Tick, c: &Candidate) -> Result<Option<crate::github::WorkflowRun
         )
         .map_err(|e| e.to_string())?;
     Ok(gate::gate_run(&runs, &c.sha, &c.tag).cloned())
+}
+
+/// The gate-fix work of the candidate (spec 05 §3, BR-ASDLC-016). A red
+/// gate whose automatic rerun settled, or for which no rerun showed up
+/// within `gate_rerun_wait_minutes` of its completion, gets one gate-fix
+/// ticket: a child of the release item, unassigned, in Ready, urgent, with
+/// a complete contract, found again by its marker whatever its state (one
+/// per candidate, ever). A green gate closes the gate-fix tickets it made
+/// moot. A pending gate, or a red one whose rerun may still come, writes
+/// nothing.
+#[allow(clippy::too_many_arguments)]
+fn gate_fix(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    shape: &Shape,
+    item: &Item,
+    c: &Candidate,
+    branch: &str,
+    label: &str,
+    gate: Option<&crate::github::WorkflowRun>,
+) {
+    let Some(first) = gate else {
+        return;
+    };
+    if gate::is_green(Some(first)) {
+        close_gate_fixes(t, log, report, shape, item, c, first);
+        return;
+    }
+    let wait = gate::RerunWait {
+        now: t.now,
+        bound: time::Duration::minutes(i64::from(t.config.release.gate_rerun_wait_minutes)),
+    };
+    if gate::red_gate(first, &[], &wait) == gate::RedGate::NotRed {
+        return;
+    }
+    let children = match t.tracker.children(&item.key) {
+        Ok(ch) => ch,
+        Err(e) => {
+            t.unreadable(report, &item.key, format!("children: {e}"));
+            return;
+        }
+    };
+    let marker = texts::gate_fix_marker(&c.tag);
+    let opened: Vec<&Item> = children
+        .iter()
+        .filter(|ch| texts::has_marker(&ch.description, &marker))
+        .collect();
+    match opened.len() {
+        0 => {}
+        1 => return,
+        _ => {
+            let keys: Vec<&str> = opened.iter().map(|i| i.key.as_str()).collect();
+            t.unreadable(
+                report,
+                &item.key,
+                format!(
+                    "several gate-fix tickets for {}: {}",
+                    c.tag,
+                    keys.join(", ")
+                ),
+            );
+            return;
+        }
+    }
+    // The rerun workflow first, the gate again after it: a rerun its
+    // completed run made is then seen on the gate run.
+    let rerun_workflow = &t.config.release.gate_rerun_workflow;
+    let reruns = match t.github.workflow_runs(
+        &t.repo,
+        rerun_workflow,
+        None,
+        Some(&c.sha),
+        Some("workflow_run"),
+    ) {
+        Ok(r) => r,
+        // An absent rerun workflow makes no rerun: said, and the bounded
+        // wait decides as for one that never runs.
+        Err(e) if e.is_not_found() => {
+            t.unreadable(
+                report,
+                &item.key,
+                format!(
+                    "the automatic rerun of the gate of {}: {e}; the gate-fix ticket opens {} minutes after the gate run completed",
+                    c.tag, t.config.release.gate_rerun_wait_minutes
+                ),
+            );
+            Vec::new()
+        }
+        Err(e) => {
+            t.unreadable(
+                report,
+                &item.key,
+                format!("the automatic rerun of the gate of {}: {e}", c.tag),
+            );
+            return;
+        }
+    };
+    let run = match gate_run(t, c) {
+        Ok(Some(r)) => r,
+        Ok(None) => return,
+        Err(e) => {
+            t.unreadable(report, &item.key, format!("the gate of {}: {e}", c.tag));
+            return;
+        }
+    };
+    let red = gate::red_gate(&run, &reruns, &wait);
+    if !red.is_final() {
+        return;
+    }
+    let unseen = match &red {
+        gate::RedGate::Unseen(why) => Some(why.as_str()),
+        _ => None,
+    };
+    let facts = texts::RedGateFacts {
+        release: &item.key,
+        candidate: &c.tag,
+        sha: &c.sha,
+        branch,
+        conclusion: run.conclusion.as_deref().unwrap_or_default(),
+        run_url: &run.url,
+        suites: failed_suites_of(t, c, &run),
+        rerun_unseen: unseen,
+    };
+    let (title, body) = texts::gate_fix_ticket(&facts);
+    let body = for_tracker(t, &body);
+    t.act(
+        log,
+        report,
+        &item.key,
+        "create gate-fix ticket",
+        json!({"candidate": c.tag, "run": run.url, "attempt": run.attempt, "priority": "urgent", "rerun_seen": unseen.is_none()}),
+        || {
+            t.tracker
+                .create_item(&NewItem {
+                    title: title.clone(),
+                    description: body.clone(),
+                    labels: vec![label.to_string()],
+                    status: Status::Ready,
+                    priority: Some(Priority::Urgent),
+                    assignee: None,
+                    parent: Some(item.key.clone()),
+                })
+                .map_err(|e| e.to_string())
+        },
+    );
+}
+
+/// The failed suites of a red gate run, read from `results/suites.json` of
+/// its evidence pack, or why they could not be (the ticket then says so).
+fn failed_suites_of(
+    t: &Tick,
+    c: &Candidate,
+    run: &crate::github::WorkflowRun,
+) -> Result<Vec<String>, String> {
+    let name = gate::evidence_artifact(&c.sha);
+    let artifacts = t
+        .github
+        .run_artifacts(&t.repo, run.id)
+        .map_err(|e| format!("the artifacts of {}: {e}", run.url))?;
+    let pack = match artifacts.iter().find(|a| a.name == name) {
+        Some(a) if !a.expired => a,
+        Some(_) => return Err(format!("the evidence pack `{name}` expired")),
+        None => return Err(format!("the run carries no evidence pack `{name}`")),
+    };
+    let text = t
+        .github
+        .artifact_file(&t.repo, pack.id, gate::SUITES_FILE)
+        .map_err(|e| {
+            if e.is_not_found() {
+                format!("`{name}` holds no `{}`", gate::SUITES_FILE)
+            } else {
+                e.to_string()
+            }
+        })?;
+    gate::failed_suites(&text)
+}
+
+/// The gate of the newest candidate is green: every gate-fix ticket of this
+/// release opened for it or an earlier candidate that never reached a
+/// merge, still waiting for an implementer or in their hands (a rerun made
+/// the gate green, say), is closed Done with a comment naming the green
+/// candidate. Any other is left alone: in review (a PR of it is being
+/// judged), past the merge (it follows the flow of any ticket, To Deploy at
+/// its fix's merge, Done at the closure) or resolved, and so is one whose
+/// state or candidate cannot be read as such (fail-closed).
+fn close_gate_fixes(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    shape: &Shape,
+    item: &Item,
+    c: &Candidate,
+    run: &crate::github::WorkflowRun,
+) {
+    let children = match t.tracker.children(&item.key) {
+        Ok(ch) => ch,
+        Err(e) => {
+            t.unreadable(report, &item.key, format!("children: {e}"));
+            return;
+        }
+    };
+    for ch in &children {
+        let Some(cand) = texts::gate_fix_candidate(&ch.description) else {
+            continue;
+        };
+        let open = matches!(
+            ch.state.status,
+            Some(Status::Triage | Status::Backlog | Status::Ready | Status::InProgress)
+        );
+        let earlier = shape
+            .parse_candidate(&cand)
+            .is_some_and(|(v, rc)| v == c.version && rc <= c.rc);
+        if ch.archived || !open || !earlier {
+            continue;
+        }
+        let marker = texts::marker(
+            "gate-fix-closed",
+            &[("candidate", &cand), ("green", &c.tag)],
+        );
+        match tracker_said(t, &ch.key, &marker) {
+            Ok(true) => {}
+            Ok(false) => {
+                let body = for_tracker(t, &texts::gate_fix_closed_comment(&cand, &c.tag, &run.url));
+                let said = t.act(
+                    log,
+                    report,
+                    &ch.key,
+                    "comment gate green",
+                    json!({"candidate": cand, "green": c.tag}),
+                    || {
+                        t.tracker
+                            .comment(&ch.key, &body)
+                            .map(|_| ())
+                            .map_err(|e| e.to_string())
+                    },
+                );
+                if said.is_none() {
+                    continue;
+                }
+            }
+            Err(e) => {
+                t.unreadable(report, &ch.key, format!("comments: {e}"));
+                continue;
+            }
+        }
+        t.act(
+            log,
+            report,
+            &ch.key,
+            "status Done (gate green)",
+            json!({"candidate": cand, "green": c.tag}),
+            || {
+                t.tracker
+                    .set_status(&ch.key, Status::Done, None)
+                    .map_err(|e| e.to_string())
+            },
+        );
+    }
 }
 
 /// One angle PR of the candidate: its state for the GO, merged into the
@@ -1317,7 +1591,7 @@ fn file_findings(
                                 } else {
                                     Status::Triage
                                 },
-                                priority: blocker.then_some(1),
+                                priority: blocker.then_some(Priority::Urgent),
                                 assignee: None,
                                 parent: None,
                             })

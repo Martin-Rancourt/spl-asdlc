@@ -38,6 +38,8 @@ pub struct FakeState {
     pub runs: HashMap<(RepoSlug, String), Read<Vec<WorkflowRun>>>,
     pub jobs: HashMap<(RepoSlug, u64), Read<Vec<Job>>>,
     pub artifacts: HashMap<(RepoSlug, u64), Read<Vec<Artifact>>>,
+    /// `(repo, artifact id, path)`: a file inside an artifact's zip.
+    pub artifact_files: HashMap<(RepoSlug, u64, String), Read<String>>,
     /// Every write, as one line (`merge acme#12 at <sha> squash`, …).
     pub writes: Vec<String>,
     /// Writes whose line starts with a key here fail with that error.
@@ -369,6 +371,18 @@ impl GitHub for FakeGitHub {
         match self.state.borrow().artifacts.get(&(repo.clone(), run_id)) {
             Some(a) => a.clone(),
             None => not_scripted(format!("artifacts of run {run_id}")),
+        }
+    }
+
+    fn artifact_file(&self, repo: &RepoSlug, artifact_id: u64, path: &str) -> Read<String> {
+        match self
+            .state
+            .borrow()
+            .artifact_files
+            .get(&(repo.clone(), artifact_id, path.to_string()))
+        {
+            Some(f) => f.clone(),
+            None => not_scripted(format!("{path} in artifact {artifact_id}")),
         }
     }
 

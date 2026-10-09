@@ -163,6 +163,13 @@ pub struct Release {
     pub auto_candidate: bool,
     pub cut_workflow: String,
     pub gate_workflow: String,
+    /// The workflow whose `workflow_run` of a red gate reruns it once when
+    /// it is a runner abort or a known flake: a red gate's work waits for it.
+    pub gate_rerun_workflow: String,
+    /// How long after a red gate run completed the bridge waits for a run of
+    /// `gate_rerun_workflow` to show up before it opens the gate-fix ticket
+    /// anyway (the rerun workflow may be absent or broken).
+    pub gate_rerun_wait_minutes: u32,
     pub release_please_workflow: String,
     /// release-please's configuration and manifest, at the repository root
     /// unless the product names them otherwise.
@@ -898,6 +905,16 @@ impl Validator {
             raw.gate_workflow,
             "release-gate.yml",
         );
+        let gate_rerun_workflow = self.workflow(
+            "release.gate_rerun_workflow",
+            raw.gate_rerun_workflow,
+            "release-gate-auto-rerun.yml",
+        );
+        let gate_rerun_wait_minutes = self.positive(
+            "release.gate_rerun_wait_minutes",
+            raw.gate_rerun_wait_minutes,
+            30,
+        );
         let release_please_workflow = self.workflow(
             "release.release_please_workflow",
             raw.release_please_workflow,
@@ -943,6 +960,8 @@ impl Validator {
             auto_candidate,
             cut_workflow,
             gate_workflow,
+            gate_rerun_workflow,
+            gate_rerun_wait_minutes,
             release_please_workflow,
             release_please_config,
             release_please_manifest,

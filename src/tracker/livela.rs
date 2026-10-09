@@ -371,7 +371,7 @@ impl<S: LivelaStore> Tracker for Livela<S> {
                 &new.labels,
                 new.assignee.as_ref().map(|u| u.id.as_str()),
                 parent.as_deref(),
-                new.priority,
+                new.priority.map(Priority::level),
                 &status,
             )
         })?;
