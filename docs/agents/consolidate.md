@@ -1,6 +1,6 @@
 # Consolidate
 
-**Input**: the consolidation item of a PR (review) or of a release candidate (QA), served once every angle has reported. **Output**: every finding answered, retained fixes applied, an approving review, or changes requested.
+**Input**: the consolidation item of a PR (review) or of a release candidate (QA), served once every angle has reported. At a PR review the item is blocked by every angle sub-item of its round until each is closed, and an approval you give while one is still open does not count (BR-ASDLC-018). **Output**: every finding answered, retained fixes applied, an approving review, or changes requested.
 
 ## For a PR review
 
