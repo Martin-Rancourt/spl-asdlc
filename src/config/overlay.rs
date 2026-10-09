@@ -27,8 +27,18 @@ pub const INSTANCE_KEYS: [(&str, &[&str]); 5] = [
     ("product", &["repository"]),
     ("owner", &["tracker_user", "github_login"]),
     ("tracker", &["team", "service_identity", "team_keys"]),
-    ("release", &["coordinators", "release_please_authors"]),
-    ("review", &["coordinators", "human_reviewer"]),
+    (
+        "release",
+        &[
+            "coordinators",
+            "coordinator_assignee",
+            "release_please_authors",
+        ],
+    ),
+    (
+        "review",
+        &["coordinators", "coordinator_assignee", "human_reviewer"],
+    ),
 ];
 
 /// The tables whose angles may receive an assignee from the overlay.
@@ -158,6 +168,11 @@ pub(super) fn merge(
         m.put("release", "coordinators", r.coordinators.map(Value::from));
         m.put(
             "release",
+            "coordinator_assignee",
+            r.coordinator_assignee.map(Value::from),
+        );
+        m.put(
+            "release",
             "release_please_authors",
             r.release_please_authors.map(Value::from),
         );
@@ -165,6 +180,11 @@ pub(super) fn merge(
     }
     if let Some(r) = raw.review {
         m.put("review", "coordinators", r.coordinators.map(Value::from));
+        m.put(
+            "review",
+            "coordinator_assignee",
+            r.coordinator_assignee.map(Value::from),
+        );
         m.put(
             "review",
             "human_reviewer",
