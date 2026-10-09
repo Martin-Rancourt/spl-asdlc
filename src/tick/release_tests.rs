@@ -2043,3 +2043,300 @@ fn a_dry_run_of_the_closure_prints_the_unassign() {
         intents.lines()
     );
 }
+
+// ---- BR-ASDLC-020: the angle items in the normal flow, the consolidation
+// as the overall review ----
+
+impl World {
+    /// The consolidation item of `candidate`.
+    fn consolidation(&self, candidate: &str) -> crate::tracker::Item {
+        self.round(candidate)
+            .into_iter()
+            .find(|i| {
+                matches!(
+                    texts::bridge_item(&i.description, i.parent.as_deref()),
+                    Some(BridgeItem::Consolidation { .. })
+                )
+            })
+            .expect("a consolidation item")
+    }
+
+    /// The angle sub-items of `candidate`, sorted.
+    fn angle_keys(&self, candidate: &str) -> Vec<String> {
+        let mut keys: Vec<String> = self
+            .round(candidate)
+            .into_iter()
+            .filter(|i| {
+                matches!(
+                    texts::bridge_item(&i.description, i.parent.as_deref()),
+                    Some(BridgeItem::Angle { .. })
+                )
+            })
+            .map(|i| i.key)
+            .collect();
+        keys.sort();
+        keys
+    }
+
+    /// What blocks `key`, sorted.
+    fn blockers(&self, key: &str) -> Vec<String> {
+        let mut b: Vec<String> = self
+            .tracker
+            .relations(key)
+            .unwrap()
+            .blocked_by
+            .into_iter()
+            .map(|r| r.other)
+            .collect();
+        b.sort();
+        b
+    }
+
+    /// One more tick writes nothing, on either side.
+    fn quiet(&self) {
+        let github = self.github.writes().len();
+        let (r, writes) = self.writes_of_a_tick();
+        assert!(r.ok(), "{r:?}");
+        assert!(writes.is_empty(), "{writes:?}");
+        assert_eq!(
+            self.github.writes().len(),
+            github,
+            "{:?}",
+            self.github.writes()
+        );
+    }
+}
+
+fn coordinator(state: &str, head: &str) -> Review {
+    Review {
+        author: Some("coordinator-login".into()),
+        body: "consolidated".into(),
+        state: state.into(),
+        commit_sha: Some(head.into()),
+        submitted_at: None,
+    }
+}
+
+#[test]
+fn a_release_angle_item_follows_its_pr_to_review_back_to_work_and_done_at_the_merge() {
+    let w = World::new();
+    w.tick();
+    let sub = w.sub_item("security").key;
+    let mut pr = w.angle_pr(30, "security", &report_json("security", ""));
+    pr.reviews.clear();
+
+    // The PR appears as a draft: the angle's work started.
+    pr.draft = true;
+    w.open_on_branch(vec![pr.clone()]);
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(writes, vec![format!("status {sub} In Progress")]);
+    w.quiet();
+
+    // Ready, its required checks green: In Review, for the coordinator.
+    pr.draft = false;
+    w.open_on_branch(vec![pr.clone()]);
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(writes, vec![format!("status {sub} In Review")]);
+    w.quiet();
+
+    // The coordinator requests changes at the head: back to its angle.
+    pr.reviews = vec![coordinator("CHANGES_REQUESTED", &pr.head_sha)];
+    w.open_on_branch(vec![pr.clone()]);
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(writes, vec![format!("status {sub} In Progress")]);
+    w.quiet();
+
+    // The angle pushes its fix; the coordinator approves the new head: In
+    // Review, merged, Done (never To Deploy).
+    let path = format!(".spl-asdlc/qa/{CAND}/security.json");
+    pr.head_sha = "fixedhead0000001".into();
+    w.github.state.borrow_mut().files.insert(
+        (repo(), pr.head_sha.clone(), path),
+        Ok(report_json("security", "")),
+    );
+    pr.reviews.push(coordinator("APPROVED", &pr.head_sha));
+    w.open_on_branch(vec![pr.clone()]);
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        writes,
+        vec![
+            format!("status {sub} In Review"),
+            format!("status {sub} Done")
+        ]
+    );
+    assert!(w.github.writes().contains(&format!(
+        "merge example-org/acme#30 at {} merge",
+        pr.head_sha
+    )));
+    assert_eq!(w.sub_item("security").state.status, Some(Status::Done));
+    w.quiet();
+}
+
+#[test]
+fn an_angle_pr_that_does_not_name_its_sub_item_drives_nothing() {
+    let w = World::new();
+    w.tick();
+    let mut pr = w.angle_pr(30, "security", &report_json("security", ""));
+    pr.body = "Angle security".into();
+    pr.reviews.clear();
+    w.open_on_branch(vec![pr]);
+    w.quiet();
+    assert_eq!(w.sub_item("security").state.status, Some(Status::Ready));
+}
+
+#[test]
+fn the_release_consolidation_item_is_blocked_by_every_angle_of_its_candidate_once() {
+    let w = World::new();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let consolidation = w.consolidation(CAND);
+    let angles = w.angle_keys(CAND);
+    assert_eq!(angles.len(), 2);
+    assert_eq!(w.blockers(&consolidation.key), angles);
+    assert!(
+        consolidation
+            .description
+            .contains("once every angle PR of the candidate is merged"),
+        "the overall review: {}",
+        consolidation.description
+    );
+    w.quiet();
+
+    // A relation lost (or a round opened before them): repaired once.
+    for rel in w.tracker.relations(&consolidation.key).unwrap().blocked_by {
+        if rel.other == angles[0] {
+            w.tracker.unrelate(&rel.id).unwrap();
+        }
+    }
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        writes,
+        vec![format!("relate {} Blocks {}", angles[0], consolidation.key)]
+    );
+    assert_eq!(w.blockers(&consolidation.key), angles);
+    w.quiet();
+}
+
+#[test]
+fn a_release_relation_that_cannot_be_written_is_reported_and_retried() {
+    let w = World::new();
+    w.tracker.fail_writes_starting_with("relate");
+    let r = w.tick();
+    assert!(!r.ok(), "the failure is reported");
+    assert_eq!(w.round(CAND).len(), 3, "the items are created");
+    let consolidation = w.consolidation(CAND);
+    assert!(w.blockers(&consolidation.key).is_empty());
+    w.tracker.state.borrow_mut().failing_writes.clear();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(w.blockers(&consolidation.key), w.angle_keys(CAND));
+    assert_eq!(w.briefs(CAND).len(), 1, "the brief, once");
+    w.quiet();
+}
+
+#[test]
+fn a_newer_candidate_tagged_closes_the_older_consolidation_once() {
+    let w = World::new();
+    w.tick();
+    let older = w.consolidation(CAND).key;
+    w.cut_rc2();
+    // Tagged, its gate not green yet: the older overall review is over all
+    // the same.
+    w.gate(vec![
+        gate_run(2, CAND2, "c2", None),
+        gate_run(1, CAND, "c1", Some("success")),
+    ]);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(w.tracker.item(&older).state.status, Some(Status::Done));
+    for angle in w.angle_keys(CAND) {
+        assert_eq!(
+            w.tracker.item(&angle).state.status,
+            Some(Status::Ready),
+            "only the consolidation is ended by the newer candidate"
+        );
+    }
+    w.quiet();
+
+    // rc.2's own round, once its gate is green: its consolidation open,
+    // blocked by its own angles.
+    w.gate(vec![
+        gate_run(2, CAND2, "c2", Some("success")),
+        gate_run(1, CAND, "c1", Some("success")),
+    ]);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let newer = w.consolidation(CAND2);
+    assert_eq!(newer.state.status, Some(Status::Ready));
+    assert_eq!(w.blockers(&newer.key), w.angle_keys(CAND2));
+    w.quiet();
+}
+
+#[test]
+fn the_release_published_closes_the_consolidation_before_the_closure() {
+    let w = World::new();
+    w.tick();
+    let consolidation = w.consolidation(CAND).key;
+    publish(&w);
+    // The closure waits (the branch still holds the candidate): the
+    // consolidation is Done all the same.
+    w.github
+        .state
+        .borrow_mut()
+        .branches
+        .insert(repo(), vec![tag(BRANCH, "c1")]);
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(writes, vec![format!("status {consolidation} Done")]);
+    assert_ne!(w.release_item().state.status, Some(Status::Done));
+    w.quiet();
+}
+
+#[test]
+fn a_dry_run_prints_the_angle_items_flow_and_the_relations() {
+    let w = World::new();
+    w.tick();
+    let sub = w.sub_item("security").key;
+    let consolidation = w.consolidation(CAND).key;
+    for rel in w.tracker.relations(&consolidation).unwrap().blocked_by {
+        w.tracker.unrelate(&rel.id).unwrap();
+    }
+    let mut pr = w.angle_pr(30, "security", &report_json("security", ""));
+    pr.reviews.clear();
+    pr.draft = true;
+    w.open_on_branch(vec![pr]);
+    let before = w.tracker.writes().len();
+    let intents = crate::dry::Intents::default();
+    let tr = crate::dry::DryTracker {
+        inner: &w.tracker,
+        intents: &intents,
+    };
+    let sig = crate::dry::DrySignal { intents: &intents };
+    let t = Tick {
+        tracker: &tr,
+        signal: &sig,
+        dry_run: true,
+        ..w.tick_ctx()
+    };
+    let mut log = ActionLog::in_memory();
+    run(&t, &mut log);
+    assert_eq!(
+        w.tracker.writes().len(),
+        before,
+        "nothing written but the relations removed above"
+    );
+    let lines = intents.lines();
+    assert!(
+        lines.contains(&format!("tracker: {sub} → In Progress")),
+        "{lines:?}"
+    );
+    assert!(
+        lines.contains(&format!("tracker: {sub} Blocks {consolidation}")),
+        "{lines:?}"
+    );
+}

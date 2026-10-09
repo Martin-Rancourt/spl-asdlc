@@ -9,7 +9,7 @@ use regex::Regex;
 use super::shape::{Shape, Version};
 use crate::github::PullRequest;
 use crate::method::review::is_release_please_shaped;
-use crate::method::vocabulary::DEPLOYED_LABEL;
+use crate::method::vocabulary::{DEPLOYED_LABEL, Status};
 
 /// `<slug>[bot]`, `app/<slug>` and `<slug>` name the same App.
 pub(crate) fn author_key(login: &str) -> String {
@@ -95,6 +95,36 @@ pub fn names_sub_item(pr: &PullRequest, sub_item: &str) -> bool {
             .any(|w| w.eq_ignore_ascii_case(sub_item))
     };
     token(&pr.title) || token(&pr.body)
+}
+
+/// What the bridge reads of an open angle PR to set its sub-item's status
+/// (BR-ASDLC-020).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AnglePrFacts {
+    pub draft: bool,
+    /// Its required checks are green at its head.
+    pub green: bool,
+    /// A configured coordinator's request for changes stands at its head.
+    pub sent_back: bool,
+}
+
+/// The status a release angle sub-item goes to for its open angle PR, as a
+/// PR-review ticket's goes (spec 03, `04-pr-review.md` §5): the work starts
+/// when the PR appears (Ready → In Progress); the PR ready (not draft) with
+/// its required checks green and not sent back is In Review; a coordinator's
+/// request for changes at its head sends it back In Progress. `None` when it
+/// stays: a status the flow does not drive (Triage, Backlog, a resolved
+/// item) is never touched, and Done comes only from the merge.
+pub fn angle_item_status(current: Option<Status>, pr: AnglePrFacts) -> Option<Status> {
+    let ready = !pr.draft && pr.green && !pr.sent_back;
+    let to = match current? {
+        Status::Ready if ready => Status::InReview,
+        Status::Ready => Status::InProgress,
+        Status::InProgress if ready => Status::InReview,
+        Status::InReview if pr.sent_back => Status::InProgress,
+        _ => return None,
+    };
+    Some(to)
 }
 
 static COMPONENT_TITLE: LazyLock<Regex> = LazyLock::new(|| {

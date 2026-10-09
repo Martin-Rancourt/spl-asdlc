@@ -860,7 +860,7 @@ fn read_registry(t: &Tick, head: &str) -> Registry {
 
 /// A standing request for changes from a coordinator on the current head:
 /// the ticket stays with its implementer until the head moves.
-fn changes_requested_at_head(pr: &PullRequest, coordinators: &[String]) -> bool {
+pub fn changes_requested_at_head(pr: &PullRequest, coordinators: &[String]) -> bool {
     let mut latest: BTreeMap<String, &crate::github::Review> = BTreeMap::new();
     for r in &pr.reviews {
         let Some(login) = r.author.as_deref() else {
@@ -1218,7 +1218,7 @@ fn hint(t: &Tick, angles: &[crate::config::Angle], angle: &str) -> Option<crate:
 }
 
 /// The consolidation item of a round is blocked by every angle sub-item of
-/// the round (BR-ASDLC-018), through the tracker's own `blocks` relation,
+/// the round (BR-ASDLC-018; a release candidate's too, BR-ASDLC-020), through the tracker's own `blocks` relation,
 /// which dispatchers respect; it stops blocking when the angle item is
 /// resolved. A relation already there is not written again. `false` when a
 /// relation could not be read or written: reported, retried at the next tick.

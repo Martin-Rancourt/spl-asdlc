@@ -91,6 +91,23 @@ fn review_items_are_contracts_marked_as_the_bridges() {
 }
 
 #[test]
+fn the_release_consolidation_item_is_the_overall_review_after_every_angle() {
+    // BR-ASDLC-020.
+    let (title, body) = release_consolidation_item("acme-v1.2.0-rc.1", "acme v1.2.0 (rc.1)");
+    assert_eq!(title, "Consolidation — acme v1.2.0 (rc.1)");
+    assert!(crate::method::contract::missing_from_contract(&body).is_empty());
+    assert_eq!(
+        bridge_item(&body, Some("ABC-1")),
+        Some(BridgeItem::Consolidation {
+            scope: "acme-v1.2.0-rc.1".into()
+        })
+    );
+    assert!(body.contains("once every angle PR of the candidate is merged"));
+    assert!(body.contains("the coordinator reviews each one as it comes"));
+    assert!(body.contains("tag the next candidate"));
+}
+
+#[test]
 fn the_post_deploy_validation_sub_task_is_a_contract_marked_as_the_bridges() {
     let (title, body) = post_deploy_validation_item(
         "ABC-5",

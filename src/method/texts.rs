@@ -240,7 +240,10 @@ pub fn release_angle_item(
          - [ ] The report `{report_path}` is committed (mandatory, even when nothing was found).\n\
          - [ ] A PR from `qa/{candidate}/{key}` to `{branch}` names this item.\n\n\
          ## Business rules\n{absence}\n\n\
-         ## Context\n- Candidate: `{candidate}`\n- Release label: `{label}`\n- Project notes: {notes}\n- The brief is on the release item.",
+         ## Context\n- Candidate: `{candidate}`\n- Release label: `{label}`\n- Project notes: {notes}\n- The brief is on the release item.\n\
+         - This item follows your PR: `In Progress` once it appears, `In Review` once it is ready with its checks green, \
+         back `In Progress` when the coordinator requests changes, `Done` when the bridge merges it after the coordinator's \
+         approval.",
         marker = marker("angle", &[("scope", candidate), ("angle", &angle.key)]),
         key = angle.key,
         absence = crate::method::business_rules::ABSENCE_DECLARATION,
@@ -354,7 +357,8 @@ pub fn post_deploy_validation_item(
     (title, body)
 }
 
-/// The consolidation item of a PR review or of a release candidate.
+/// The consolidation item of a PR review (a release candidate's is
+/// `release_consolidation_item`).
 pub fn consolidation_item(scope: &str, title_of: &str, protocol: &str) -> (String, String) {
     let title = format!("Consolidation — {title_of}");
     let body = format!(
@@ -365,6 +369,30 @@ pub fn consolidation_item(scope: &str, title_of: &str, protocol: &str) -> (Strin
          - [ ] The retained fixes are commits of the branch.\n- [ ] The approval is submitted at the head.\n\n\
          ## Business rules\n{absence}",
         marker = marker("consolidation", &[("scope", scope)]),
+        absence = crate::method::business_rules::ABSENCE_DECLARATION,
+    );
+    (title, body)
+}
+
+/// The consolidation item of a release candidate (BR-ASDLC-020): the
+/// overall review, served once every angle PR of the candidate is merged
+/// (its item is blocked by every angle sub-item). The coordinator reviewed
+/// each angle PR as it came; this item reads them together.
+pub fn release_consolidation_item(candidate: &str, title_of: &str) -> (String, String) {
+    let title = format!("Consolidation — {title_of}");
+    let body = format!(
+        "{marker}\n\n## Goal\nThe overall review of candidate `{candidate}`, as `docs/agents/consolidate.md` (release \
+         candidate) describes it, once every angle PR of the candidate is merged: read every merged report together, \
+         confirm or reject each non-blocking finding in a comment on its ticket, with a reason for every rejection, \
+         check that nothing falls between the angles, then tag the next candidate (the cut workflow, action `candidate`) unless the project automates it.\n\n\
+         ## Non-goals\n- Reviewing an angle PR: the coordinator reviews each one as it comes, before the bridge merges it.\n\
+         - Filing tickets: the bridge creates them from the merged reports.\n- Declaring the GO: the bridge computes it.\n\n\
+         ## Acceptance criteria\n- [ ] Every merged report of the candidate is read, with the others.\n\
+         - [ ] Every non-blocking finding is confirmed or rejected on its ticket, with a reason for every rejection.\n\
+         - [ ] What falls between the angles is checked, and said on the release item.\n\
+         - [ ] The next candidate is tagged, or the project's automation tags it.\n\n\
+         ## Business rules\n{absence}",
+        marker = marker("consolidation", &[("scope", candidate)]),
         absence = crate::method::business_rules::ABSENCE_DECLARATION,
     );
     (title, body)

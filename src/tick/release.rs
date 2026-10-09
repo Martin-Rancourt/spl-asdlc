@@ -5,13 +5,18 @@
 //! 2. the candidate's record (comment and `## Candidates` line), the
 //!    embarked tickets labelled; once the candidate's gate is green, and
 //!    never before, the angle sub-items and the consolidation item of the
-//!    candidate, then the brief (BR-ASDLC-004);
-//! 3. the angle PRs: merged into the release branch when approved, green and
-//!    carrying a valid report; the findings of a merged report filed;
+//!    candidate, the consolidation item blocked by every angle sub-item,
+//!    then the brief (BR-ASDLC-004, BR-ASDLC-020); the consolidation item of
+//!    an older candidate Done;
+//! 3. the angle PRs: each sub-item follows its PR (In Progress, In Review,
+//!    back In Progress on changes requested); merged into the release
+//!    branch when approved, green and carrying a valid report, the sub-item
+//!    Done; the findings of a merged report filed;
 //! 4. the GO, and on GO the release-please PR merged;
 //! 5. otherwise the HOLD said once, the escalation when the passes are
 //!    spent, the stagnation notice;
-//! 6. once the release is published: the closure (`closure.rs`).
+//! 6. once the release is published: the consolidation items Done, then the
+//!    closure (`closure.rs`).
 //!
 //! Points the specification leaves open are not settled here; each waits,
 //! as `docs/open-points.md` lists them (the human GO, a raised `max_rc_passes`).
@@ -93,6 +98,12 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
         return false;
     }
     if let Some(published) = published {
+        // The release published ends every overall review of the cycle
+        // (BR-ASDLC-020); the closure stays the fallback.
+        match t.tracker.children(&item.key) {
+            Ok(children) => end_consolidations(t, log, report, &children, None),
+            Err(e) => t.unreadable(report, &item.key, format!("children: {e}")),
+        }
         closure::close(t, log, report, &shape, &candidate, &item, &published);
         return false;
     }
@@ -157,7 +168,9 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
         Round::Open => open_round(t, log, report, &item, &candidate, &branch, &label, &offered)
             .unwrap_or_default(),
         Round::Brief(b) => {
-            // The round first, the brief last (REQ-REL-046).
+            // The round first, its relations, the brief last (REQ-REL-046).
+            // A relation not written is reported and retried at the next
+            // tick; it does not hold the brief, which the angles need.
             let opened = open_round(t, log, report, &item, &candidate, &branch, &label, &offered);
             if opened.is_some() {
                 post_brief(t, log, report, &item, &candidate, &b);
@@ -165,6 +178,8 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
             opened.unwrap_or_default()
         }
     };
+    // A newer candidate tagged ends the overall review of the older ones.
+    end_consolidations(t, log, report, &children, Some(&candidate.tag));
 
     let mut merged = false;
     let angle_prs = match t.github.open_pulls(&t.repo, Some(&branch)) {
@@ -687,8 +702,11 @@ fn qa_round(
 }
 
 /// The angle sub-items and the consolidation item of the candidate,
-/// created when missing (spec 05 §3, §4). Returns the release item's
-/// children after the creations, or `None` when they could not be read.
+/// created when missing (spec 05 §3, §4), the consolidation item blocked by
+/// every angle sub-item of the candidate (BR-ASDLC-020; written right after
+/// the items, repaired at every later tick; one that fails is reported and
+/// retried). Returns the release item's children after the creations, or
+/// `None` when they could not be read.
 #[allow(clippy::too_many_arguments)]
 fn open_round(
     t: &Tick,
@@ -750,16 +768,82 @@ fn open_round(
             })
     });
     if !offered.is_empty() && !consolidated {
-        let (title, body) = texts::consolidation_item(
-            &c.tag,
-            &format!("{product} {v} (rc.{})", c.rc),
-            "docs/agents/consolidate.md",
-        );
+        let (title, body) =
+            texts::release_consolidation_item(&c.tag, &format!("{product} {v} (rc.{})", c.rc));
         if let Some(created) = create_child(t, log, report, &item.key, &title, &body, label, None) {
             children.push(created);
         }
     }
+    block_consolidation(t, log, report, &children, &c.tag);
     Some(children)
+}
+
+/// The candidate's consolidation item, while open, is blocked by every
+/// angle sub-item of the candidate (BR-ASDLC-020), through the same
+/// relation as a PR round's (BR-ASDLC-018): it is served only once every
+/// angle PR is merged. A relation already there is not written again; one
+/// that could not be read or written is reported and retried next tick.
+fn block_consolidation(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    children: &[Item],
+    candidate: &str,
+) {
+    let want = Some(BridgeItem::Consolidation {
+        scope: candidate.to_string(),
+    });
+    let Some(consolidation) = children.iter().find(|ch| {
+        !ch.state.is_resolved() && texts::bridge_item(&ch.description, ch.parent.as_deref()) == want
+    }) else {
+        return;
+    };
+    let angles: Vec<String> = children
+        .iter()
+        .filter(|ch| angle_of(ch, candidate).is_some())
+        .map(|ch| ch.key.clone())
+        .collect();
+    super::merge::block_consolidation(t, log, report, &consolidation.key, &angles);
+}
+
+/// The consolidation items of the release item ended by a later fact
+/// (BR-ASDLC-020): every one but the `current` candidate's goes Done, since
+/// a newer candidate was tagged (the overall review cut it); with no
+/// `current`, the release is published and every one goes Done. The
+/// cycle's closure still closes what is left (spec 05 §11).
+fn end_consolidations(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    children: &[Item],
+    current: Option<&str>,
+) {
+    for ch in children {
+        let Some(BridgeItem::Consolidation { scope }) =
+            texts::bridge_item(&ch.description, ch.parent.as_deref())
+        else {
+            continue;
+        };
+        if ch.state.is_resolved() || Some(scope.as_str()) == current {
+            continue;
+        }
+        let why = match current {
+            Some(newer) => format!("status Done (newer candidate {newer})"),
+            None => "status Done (release published)".to_string(),
+        };
+        t.act(
+            log,
+            report,
+            &ch.key,
+            &why,
+            json!({"candidate": scope}),
+            || {
+                t.tracker
+                    .set_status(&ch.key, Status::Done, None)
+                    .map_err(|e| e.to_string())
+            },
+        );
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -951,6 +1035,15 @@ fn angle_pr(
     else {
         return AngleState::InReview;
     };
+    let required = match t.github.required_checks(&t.repo, branch) {
+        Ok(r) => r,
+        Err(e) => {
+            t.unreadable(report, &object, e);
+            return AngleState::InReview;
+        }
+    };
+    let green = checks::pr_state(pr, &required.contexts) == CheckState::Green;
+    follow_angle_pr(t, log, report, pr, sub, green);
     let path = report::report_path(&t.config.release.record, &c.tag, angle);
     let valid = match t.github.file(&t.repo, &path, &pr.head_sha) {
         Ok(text) => report::validate(&text, &c.tag, angle).map_err(|e| e.join("; ")),
@@ -996,14 +1089,7 @@ fn angle_pr(
     let Approval::Qualified { by } = review::pr_approval(pr, &t.config.release.coordinators) else {
         return AngleState::InReview;
     };
-    let required = match t.github.required_checks(&t.repo, branch) {
-        Ok(r) => r,
-        Err(e) => {
-            t.unreadable(report, &object, e);
-            return AngleState::InReview;
-        }
-    };
-    if checks::pr_state(pr, &required.contexts) != CheckState::Green {
+    if !green {
         return AngleState::InReview;
     }
     match review::branch_state(pr) {
@@ -1060,6 +1146,45 @@ fn angle_pr(
         },
     );
     AngleState::Merged
+}
+
+/// A release angle sub-item follows its open angle PR as a ticket follows
+/// its PR (BR-ASDLC-020): In Progress when the PR appears, In Review once it
+/// is ready with its required checks green, back In Progress when a
+/// configured coordinator requests changes at its head; Done comes from the
+/// merge. Only a PR that names its sub-item drives it (the link the merge
+/// reads too); a status already right is not written again.
+fn follow_angle_pr(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    pr: &PullRequest,
+    sub: &Item,
+    green: bool,
+) {
+    if !prs::names_sub_item(pr, &sub.key) {
+        return;
+    }
+    let facts = prs::AnglePrFacts {
+        draft: pr.draft,
+        green,
+        sent_back: super::merge::changes_requested_at_head(pr, &t.config.release.coordinators),
+    };
+    let Some(to) = prs::angle_item_status(sub.state.status, facts) else {
+        return;
+    };
+    t.act(
+        log,
+        report,
+        &sub.key,
+        &format!("status {to} (angle PR)"),
+        json!({"pr": pr.url, "head": pr.head_sha}),
+        || {
+            t.tracker
+                .set_status(&sub.key, to, None)
+                .map_err(|e| e.to_string())
+        },
+    );
 }
 
 /// The findings of every angle PR of the candidate merged into the release
