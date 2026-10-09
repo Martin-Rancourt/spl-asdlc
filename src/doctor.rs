@@ -288,9 +288,7 @@ fn covers_tag_template(r: &Ruleset, template: &str) -> bool {
     if !r.exclude.is_empty() {
         return false;
     }
-    let wildcard = template
-        .replace("{version}", "*")
-        .replace("{rc}", "*");
+    let wildcard = template.replace("{version}", "*").replace("{rc}", "*");
     let literal_prefix = wildcard.split('*').next().unwrap_or_default();
     r.include.iter().any(|pattern| {
         pattern == "~ALL"

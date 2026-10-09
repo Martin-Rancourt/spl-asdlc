@@ -677,7 +677,11 @@ fn ruleset_of(v: &Value) -> Option<Ruleset> {
     for rule in listed {
         let kind = rule["type"].as_str()?;
         if kind == "required_status_checks" {
-            for c in rule.get("parameters")?.get("required_status_checks")?.as_array()? {
+            for c in rule
+                .get("parameters")?
+                .get("required_status_checks")?
+                .as_array()?
+            {
                 required_checks.insert(c["context"].as_str()?.to_string());
             }
         }
