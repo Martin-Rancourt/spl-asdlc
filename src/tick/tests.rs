@@ -835,32 +835,6 @@ fn a_merge_that_leaves_a_box_open_sends_the_ticket_back_to_work() {
 }
 
 #[test]
-fn a_merge_that_leaves_only_the_bridge_verified_box_open_goes_to_deploy() {
-    let w = World::new();
-    let pr = in_review(&w, 7);
-    // A gate-fix ticket: the implementer's box ticked, the next gate's box
-    // the bridge's to tick once it sees that gate green (BR-ASDLC-016).
-    let gate_fix = COMPLETE.replace(
-        "- [ ] it is fast",
-        &format!(
-            "- [ ] the gate of the next candidate is green. {}",
-            crate::method::texts::next_gate_box_marker()
-        ),
-    );
-    crate::tracker::Tracker::update_description(&w.tracker, "ABC-7", &gate_fix).unwrap();
-    w.open(approved(pr.clone()));
-    let (report, _) = w.tick(false);
-    assert!(report.ok(), "{report:?}");
-    assert_eq!(
-        w.tracker.item("ABC-7").state.status,
-        Some(Status::ToDeploy),
-        "not back In Progress for the box only the bridge ticks"
-    );
-    assert!(merge_comment(&w, "ABC-7", &pr).contains("state: To Deploy"));
-    quiet(&w);
-}
-
-#[test]
 fn a_merge_with_every_box_checked_goes_to_deploy_once() {
     let w = World::new();
     let pr = in_review(&w, 7);

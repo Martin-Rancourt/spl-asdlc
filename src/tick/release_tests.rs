@@ -2350,7 +2350,12 @@ fn a_red_gate_whose_evidence_cannot_be_read_still_opens_its_ticket() {
         "{d}"
     );
     assert!(d.contains("HTTP 502"), "{d}");
-    assert!(d.contains(&format!("read in the gate run {RUN1}")), "{d}");
+    assert!(
+        d.contains(&format!(
+            "- [ ] The suites that failed in the gate run {RUN1} (unknown here"
+        )),
+        "{d}"
+    );
     assert!(crate::method::contract::has_contract(d));
     assert_eq!(
         w.tracker.priority(&fixes[0].key),
@@ -2384,8 +2389,8 @@ fn a_newer_green_candidate_closes_the_gate_fix_ticket_once() {
     w.red_settled(1, CAND, "c1", r#""tests""#);
     w.tick();
     let fix = w.gate_fixes().remove(0);
-    // The implementer took it and merged a fix; the box of the next gate
-    // keeps it open.
+    // The implementer took it, no PR of it merged yet: the green gate of
+    // rc.2 (a rerun made it green, say) makes it moot.
     w.tracker
         .set_status(&fix.key, Status::InProgress, None)
         .unwrap();
@@ -2394,44 +2399,13 @@ fn a_newer_green_candidate_closes_the_gate_fix_ticket_once() {
         gate_run(2, CAND2, "c2", Some("success")),
         gate_run(1, CAND, "c1", Some("failure")),
     ]);
-    let before = w.tracker.writes().len();
     let r = w.tick();
     assert!(r.ok(), "{r:?}");
     assert_eq!(w.tracker.item(&fix.key).state.status, Some(Status::Done));
-    // The box the bridge verified is ticked first, then the comment, then Done.
-    let mine: Vec<String> = w.tracker.writes()[before..]
-        .iter()
-        .filter(|l| l.contains(&format!(" {} ", fix.key)) || l.ends_with(&format!(" {}", fix.key)))
-        .cloned()
-        .collect();
-    assert_eq!(mine.len(), 3, "{mine:?}");
-    assert_eq!(mine[0], format!("describe {}", fix.key));
-    assert!(
-        mine[1].starts_with(&format!("comment {} Done:", fix.key)),
-        "{mine:?}"
-    );
-    assert_eq!(mine[2], format!("status {} Done", fix.key));
-    let d = w.tracker.item(&fix.key).description;
-    assert!(
-        d.contains(&format!(
-            "- [x] The gate of the next candidate cut from `{BRANCH}` is green."
-        )),
-        "{d}"
-    );
-    assert!(
-        d.contains(&format!(
-            "- [ ] Each failing suite passes on `{BRANCH}`: `tests`."
-        )),
-        "no other box is ticked: {d}"
-    );
     assert_eq!(
-        d.replacen(
-            "- [x] The gate of the next",
-            "- [ ] The gate of the next",
-            1
-        ),
+        w.tracker.item(&fix.key).description,
         fix.description,
-        "nothing else of the description changes"
+        "the bridge ticks no box of it"
     );
     let said: Vec<String> = w
         .tracker
@@ -2450,41 +2424,14 @@ fn a_newer_green_candidate_closes_the_gate_fix_ticket_once() {
 }
 
 #[test]
-fn a_box_already_ticked_is_not_written_again_and_a_refused_tick_holds_the_close() {
-    let w = World::new();
-    w.red_settled(1, CAND, "c1", r#""tests""#);
-    w.tick();
-    let fix = w.gate_fixes().remove(0);
-    w.cut_rc2();
-    w.gate(vec![
-        gate_run(2, CAND2, "c2", Some("success")),
-        gate_run(1, CAND, "c1", Some("failure")),
-    ]);
-    // The tick of the box is refused: no comment, no Done, retried.
-    w.tracker
-        .fail_writes_starting_with(&format!("describe {}", fix.key));
-    let r = w.tick();
-    assert!(!r.ok(), "the refused write is said: {r:?}");
-    assert_eq!(w.tracker.item(&fix.key).state.status, Some(Status::Ready));
-    assert!(w.tracker.comments(&fix.key).unwrap().is_empty());
-    // Someone ticked it meanwhile: the bridge only comments and closes.
-    let ticked = texts::tick_next_gate_box(&fix.description).unwrap();
-    w.tracker.state.borrow_mut().failing_writes.clear();
-    w.tracker.update_description(&fix.key, &ticked).unwrap();
-    let before = w.tracker.writes().len();
-    let r = w.tick();
-    assert!(r.ok(), "{r:?}");
-    let writes = w.tracker.writes()[before..].to_vec();
-    assert!(
-        !writes.iter().any(|l| l == &format!("describe {}", fix.key)),
-        "{writes:?}"
-    );
-    assert_eq!(w.tracker.item(&fix.key).state.status, Some(Status::Done));
-}
-
-#[test]
 fn a_gate_fix_ticket_resolved_in_review_or_to_deploy_is_left_alone_on_a_green_gate() {
-    for status in [Status::InReview, Status::ToDeploy, Status::Canceled] {
+    for status in [
+        Status::InReview,
+        Status::ToDeploy,
+        Status::PostDeploy,
+        Status::Done,
+        Status::Canceled,
+    ] {
         let w = World::new();
         w.red_settled(1, CAND, "c1", r#""tests""#);
         w.tick();
@@ -2497,23 +2444,63 @@ fn a_gate_fix_ticket_resolved_in_review_or_to_deploy_is_left_alone_on_a_green_ga
         ]);
         let r = w.tick();
         assert!(r.ok(), "{r:?}");
+        // Past the merge it follows the flow of any ticket: To Deploy at
+        // its fix's merge, Done at the closure, never closed by the bridge.
         assert_eq!(w.tracker.item(&fix.key).state.status, Some(status));
         assert!(w.tracker.comments(&fix.key).unwrap().is_empty(), "{status}");
-        // The box the bridge verified is ticked all the same, so that the
-        // closure finds it ticked; a resolved ticket is not touched.
-        let ticked = w
-            .tracker
-            .item(&fix.key)
-            .description
-            .contains("- [x] The gate of the next candidate");
-        assert_eq!(ticked, status != Status::Canceled, "{status}");
-        let (r, writes) = w.writes_of_a_tick();
-        assert!(r.ok(), "{r:?}");
-        assert!(
-            writes.is_empty(),
-            "a second tick writes nothing: {writes:?}"
+        assert_eq!(
+            w.tracker.item(&fix.key).description,
+            fix.description,
+            "{status}: no box ticked by the bridge"
         );
     }
+}
+
+#[test]
+fn a_still_red_next_gate_opens_a_new_gate_fix_ticket_for_its_candidate() {
+    let w = World::new();
+    w.red_settled(1, CAND, "c1", r#""tests""#);
+    w.tick();
+    let first = w.gate_fixes().remove(0);
+    // Its fix merged: To Deploy, as any ticket.
+    w.tracker
+        .set_status(&first.key, Status::ToDeploy, None)
+        .unwrap();
+    // The gate of rc.2 is the verification, and it is still red.
+    w.cut_rc2();
+    w.gate(vec![
+        gate_run(2, CAND2, "c2", Some("failure")),
+        gate_run(1, CAND, "c1", Some("failure")),
+    ]);
+    w.reruns(vec![
+        rerun_run(91, "c1", "completed"),
+        rerun_run(92, "c2", "completed"),
+    ]);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let fixes = w.gate_fixes();
+    assert_eq!(fixes.len(), 2, "{:?}", w.tracker.writes());
+    let second = fixes
+        .iter()
+        .find(|f| f.key != first.key)
+        .expect("a new ticket");
+    assert_eq!(
+        texts::gate_fix_candidate(&second.description).as_deref(),
+        Some(CAND2)
+    );
+    assert_eq!(second.state.status, Some(Status::Ready));
+    assert_eq!(
+        w.tracker.priority(&second.key),
+        Some(crate::tracker::Priority::Urgent)
+    );
+    let old = w.tracker.item(&first.key);
+    assert_eq!(old.state.status, Some(Status::ToDeploy), "left to its flow");
+    assert_eq!(old.description, first.description);
+    assert!(w.tracker.comments(&first.key).unwrap().is_empty());
+
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(writes.is_empty(), "never opened twice: {writes:?}");
 }
 
 #[test]

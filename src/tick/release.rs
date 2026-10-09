@@ -1122,14 +1122,13 @@ fn failed_suites_of(
 }
 
 /// The gate of the newest candidate is green: every gate-fix ticket of this
-/// release opened for it or an earlier candidate first has its box "the
-/// gate of the next candidate is green" ticked, the only box the bridge
-/// verifies and ever ticks (once: a ticked box writes nothing). One still
-/// waiting for an implementer or in their hands is then closed Done with a
-/// comment naming the green candidate. One in review (a PR of it is being
-/// judged) or past the merge (the closure judges it) gets the box only, one
-/// already resolved nothing, and so does one whose state or candidate
-/// cannot be read as such (fail-closed).
+/// release opened for it or an earlier candidate that never reached a
+/// merge, still waiting for an implementer or in their hands (a rerun made
+/// the gate green, say), is closed Done with a comment naming the green
+/// candidate. Any other is left alone: in review (a PR of it is being
+/// judged), past the merge (it follows the flow of any ticket, To Deploy at
+/// its fix's merge, Done at the closure) or resolved, and so is one whose
+/// state or candidate cannot be read as such (fail-closed).
 fn close_gate_fixes(
     t: &Tick,
     log: &mut ActionLog,
@@ -1154,22 +1153,10 @@ fn close_gate_fixes(
             ch.state.status,
             Some(Status::Triage | Status::Backlog | Status::Ready | Status::InProgress)
         );
-        let judged = matches!(
-            ch.state.status,
-            Some(Status::InReview | Status::ToDeploy | Status::PostDeploy)
-        );
         let earlier = shape
             .parse_candidate(&cand)
             .is_some_and(|(v, rc)| v == c.version && rc <= c.rc);
-        if ch.archived || !(open || judged) || !earlier {
-            continue;
-        }
-        if texts::tick_next_gate_box(&ch.description).is_some()
-            && !tick_next_gate_box(t, log, report, &ch.key, &cand, c)
-        {
-            continue;
-        }
-        if !open {
+        if ch.archived || !open || !earlier {
             continue;
         }
         let marker = texts::marker(
@@ -1215,42 +1202,6 @@ fn close_gate_fixes(
             },
         );
     }
-}
-
-/// Ticks the next-gate box of the gate-fix ticket `key`, read again just
-/// before the write so that nothing written meanwhile is lost. Whether the
-/// box is ticked now (already, or by this write).
-fn tick_next_gate_box(
-    t: &Tick,
-    log: &mut ActionLog,
-    report: &mut Report,
-    key: &str,
-    cand: &str,
-    c: &Candidate,
-) -> bool {
-    let current = match t.tracker.get(key) {
-        Ok(i) => i.description,
-        Err(e) => {
-            t.unreadable(report, key, e);
-            return false;
-        }
-    };
-    let Some(next) = texts::tick_next_gate_box(&current) else {
-        return true;
-    };
-    t.act(
-        log,
-        report,
-        key,
-        "tick next-gate box",
-        json!({"candidate": cand, "green": c.tag}),
-        || {
-            t.tracker
-                .update_description(key, &next)
-                .map_err(|e| e.to_string())
-        },
-    )
-    .is_some()
 }
 
 /// One angle PR of the candidate: its state for the GO, merged into the

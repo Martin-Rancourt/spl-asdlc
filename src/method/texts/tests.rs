@@ -119,7 +119,8 @@ fn the_gate_fix_ticket_is_a_contract_in_every_case_and_a_ticket_not_a_bridge_ite
             "{suites:?}: {body}"
         );
         assert!(
-            body.contains("- [ ] The gate of the next candidate cut from `release/x` is green.")
+            !body.contains("The gate of the next candidate cut from"),
+            "the next gate is the verification, not a box: {body}"
         );
         assert!(body.contains("No new rule."));
         assert!(has_marker(&body, &gate_fix_marker("acme-v1.2.0-rc.1")));
@@ -144,44 +145,33 @@ fn the_gate_fix_ticket_is_a_contract_in_every_case_and_a_ticket_not_a_bridge_ite
 }
 
 #[test]
-fn the_bridge_ticks_the_next_gate_box_only_and_once() {
-    let (_, body) = red_gate(Ok(vec!["tests".to_string()]));
-    // The implementer ticked the suite's box; the next gate's box is the bridge's.
-    let body = body.replacen("- [ ] Each failing suite", "- [x] Each failing suite", 1);
-    assert!(crate::method::contract::open_before_deploy(&body).is_some_and(|o| o.is_empty()));
-    let ticked = tick_next_gate_box(&body).expect("its box is open");
-    assert!(
-        ticked.contains("- [x] The gate of the next candidate cut from `release/x` is green."),
-        "{ticked}"
-    );
-    let changed: Vec<(&str, &str)> = body
-        .lines()
-        .zip(ticked.lines())
-        .filter(|(a, b)| a != b)
-        .collect();
-    assert_eq!(changed.len(), 1, "no other box, no other line: {changed:?}");
-    assert_eq!(ticked.len(), body.len());
-    assert_eq!(
-        tick_next_gate_box(&ticked),
-        None,
-        "a second tick writes nothing"
-    );
-    // A box the implementer left open stays open; a visible marker is read too.
-    let (_, open) = red_gate(Ok(vec!["tests".to_string()]));
-    let ticked = tick_next_gate_box(&visible_markers(&open)).unwrap();
-    assert!(
-        ticked.contains("- [ ] Each failing suite passes"),
-        "{ticked}"
-    );
-    assert!(
-        ticked.contains("- [x] The gate of the next candidate"),
-        "{ticked}"
-    );
-    // A box without the marker is never ticked.
-    assert_eq!(
-        tick_next_gate_box("- [ ] The gate of the next candidate is green.\n"),
-        None
-    );
+fn the_gate_fix_criterion_is_an_ordinary_box_the_implementer_ticks() {
+    for (suites, criterion) in [
+        (
+            Ok(vec!["tests".to_string()]),
+            "- [ ] Each failing suite passes on `release/x`: `tests`.",
+        ),
+        (
+            Err("HTTP 502".to_string()),
+            "- [ ] The suites that failed in the gate run https://github.com/example-org/acme/actions/runs/1 (unknown here: the evidence pack could not be read) pass on `release/x`.",
+        ),
+    ] {
+        let (_, body) = red_gate(suites);
+        // One box, the failing suites on the release branch, and no marker
+        // that would set it apart: the completeness rule reads it as any box.
+        assert_eq!(
+            crate::method::contract::open_before_deploy(&body),
+            Some(vec![criterion.to_string()]),
+            "{body}"
+        );
+        assert!(!body.contains("bridge-verified"), "{body}");
+        let ticked = body.replacen("- [ ] ", "- [x] ", 1);
+        assert_eq!(
+            crate::method::contract::open_before_deploy(&ticked),
+            Some(Vec::new()),
+            "ticked by the implementer, the ticket is complete"
+        );
+    }
 }
 
 #[test]
