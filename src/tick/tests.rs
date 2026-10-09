@@ -1215,7 +1215,10 @@ fn merges_on(configured: &str, author: &str) -> Result<(), Report> {
     let mut w = World::new();
     w.config.review.coordinators = vec![configured.to_string()];
     let mut pr = in_review(&w, 7);
-    pr.reviews = vec![review(author, "APPROVED", &pr.head_sha, "ok")];
+    // Every angle reported (BR-ASDLC-018): only the approval is in question.
+    pr.reviews = angle_reviews(&w, &pr);
+    pr.reviews
+        .push(review(author, "APPROVED", &pr.head_sha, "ok"));
     w.open(pr);
     let (report, _) = w.tick(false);
     if w.github_writes()
@@ -1391,7 +1394,7 @@ fn a_ready_pr_left_for_the_next_tick_says_so() {
     let w = World::new();
     let prs: Vec<PullRequest> = [7, 8].into_iter().map(|n| in_review(&w, n)).collect();
     for pr in prs {
-        w.open(approved(pr));
+        w.open(approved(&w, pr));
     }
     let (report, _) = w.tick(false);
     assert_eq!(
