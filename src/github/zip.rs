@@ -55,6 +55,7 @@ pub fn extract(archive: &[u8], name: &str, limit: u64) -> Result<Vec<u8>, ZipErr
         let field = |o: usize| u16_at(archive, at + o).ok_or_else(|| bad("truncated"));
         let flags = field(8)?;
         let method = field(10)?;
+        let crc = u32_at(archive, at + 16).ok_or_else(|| bad("truncated"))?;
         let compressed = u32_at(archive, at + 20).ok_or_else(|| bad("truncated"))?;
         let size = u32_at(archive, at + 24).ok_or_else(|| bad("truncated"))?;
         let (name_len, extra_len, comment_len) = (field(28)?, field(30)?, field(32)?);
@@ -99,6 +100,9 @@ pub fn extract(archive: &[u8], name: &str, limit: u64) -> Result<Vec<u8>, ZipErr
         if out.len() as u64 != u64::from(size) {
             return Err(bad("the file's size does not match its entry"));
         }
+        if crc32fast::hash(&out) != crc {
+            return Err(bad("the file's CRC does not match its entry"));
+        }
         return Ok(out);
     }
     Err(ZipError::Absent)
@@ -114,6 +118,7 @@ pub(crate) mod tests {
         let mut out = Vec::new();
         let mut central = Vec::new();
         for (name, content) in files {
+            let crc = crc32fast::hash(content);
             let data = if deflate {
                 let mut e =
                     flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
@@ -127,7 +132,8 @@ pub(crate) mod tests {
             out.extend_from_slice(&LOCAL.to_le_bytes());
             out.extend_from_slice(&[20, 0, 0, 0]);
             out.extend_from_slice(&method.to_le_bytes());
-            out.extend_from_slice(&[0; 8]); // time, date, crc
+            out.extend_from_slice(&[0; 4]); // time, date
+            out.extend_from_slice(&crc.to_le_bytes());
             out.extend_from_slice(&(data.len() as u32).to_le_bytes());
             out.extend_from_slice(&(content.len() as u32).to_le_bytes());
             out.extend_from_slice(&(name.len() as u16).to_le_bytes());
@@ -137,7 +143,8 @@ pub(crate) mod tests {
             central.extend_from_slice(&CENTRAL.to_le_bytes());
             central.extend_from_slice(&[20, 0, 20, 0, 0, 0]);
             central.extend_from_slice(&method.to_le_bytes());
-            central.extend_from_slice(&[0; 8]);
+            central.extend_from_slice(&[0; 4]); // time, date
+            central.extend_from_slice(&crc.to_le_bytes());
             central.extend_from_slice(&(data.len() as u32).to_le_bytes());
             central.extend_from_slice(&(content.len() as u32).to_le_bytes());
             central.extend_from_slice(&(name.len() as u16).to_le_bytes());
@@ -191,6 +198,17 @@ pub(crate) mod tests {
         assert!(matches!(
             extract(cut, "a", 64),
             Err(ZipError::Unreadable(_))
+        ));
+    }
+
+    #[test]
+    fn a_same_length_corruption_is_refused() {
+        let mut zip = archive(&[("a", b"content")], false);
+        let data = 30 + "a".len();
+        zip[data] ^= 1;
+        assert!(matches!(
+            extract(&zip, "a", 64),
+            Err(ZipError::Unreadable(message)) if message.contains("CRC")
         ));
     }
 }
