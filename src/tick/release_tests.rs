@@ -2380,3 +2380,54 @@ fn a_dry_run_prints_the_urgent_gate_fix_ticket_it_would_open() {
     );
     assert!(intents.lines().contains(&want), "{:?}", intents.lines());
 }
+
+#[test]
+fn the_validation_sub_task_is_created_urgent_and_a_dry_run_says_so() {
+    let w = closed_with_post_deploy();
+    let tasks = validation_tasks(&w, "ABC-5");
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(
+        w.tracker.priority(&tasks[0].key),
+        Some(crate::tracker::Priority::Urgent),
+        "production is waiting on it"
+    );
+    let before = w.tracker.writes().len();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.tracker.writes().len(),
+        before,
+        "a second tick writes nothing"
+    );
+
+    let w = World::new();
+    w.tick();
+    w.tracker.seed(
+        "ABC-9",
+        "Waiting",
+        POST,
+        Status::PostDeploy,
+        &[POST_DEPLOY_LABEL],
+    );
+    let intents = crate::dry::Intents::default();
+    let tr = crate::dry::DryTracker {
+        inner: &w.tracker,
+        intents: &intents,
+    };
+    let t = Tick {
+        tracker: &tr,
+        dry_run: true,
+        ..w.tick_ctx()
+    };
+    let mut log = ActionLog::in_memory();
+    let mut report = Report::default();
+    post_deploy::pass(&t, &mut log, &mut report);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(
+        intents.lines(),
+        vec![
+            "tracker: create \"Post-deploy validation — ABC-9: Waiting\" [Ready] priority urgent under ABC-9"
+                .to_string()
+        ]
+    );
+}
