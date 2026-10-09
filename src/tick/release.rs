@@ -1153,7 +1153,8 @@ fn angle_pr(
 /// is ready with its required checks green, back In Progress when a
 /// configured coordinator requests changes at its head; Done comes from the
 /// merge. Only a PR that names its sub-item drives it (the link the merge
-/// reads too); a status already right is not written again.
+/// reads too), and one that does not is told once per head which key to
+/// name; a status already right is not written again.
 fn follow_angle_pr(
     t: &Tick,
     log: &mut ActionLog,
@@ -1163,6 +1164,20 @@ fn follow_angle_pr(
     green: bool,
 ) {
     if !prs::names_sub_item(pr, &sub.key) {
+        // Neither driven nor merged until it does: said once per head.
+        super::merge::say_once(
+            t,
+            log,
+            report,
+            pr,
+            "angle-unnamed",
+            &[("pr", &pr.url), ("head", texts::short(&pr.head_sha))],
+            &format!(
+                "This angle PR names no sub-item, so the bridge neither follows nor merges it: name \
+                 `{}` in its title or description (`docs/agents/review-release.md`, step 5).",
+                sub.key
+            ),
+        );
         return;
     }
     let facts = prs::AnglePrFacts {

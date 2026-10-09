@@ -2177,15 +2177,41 @@ fn a_release_angle_item_follows_its_pr_to_review_back_to_work_and_done_at_the_me
 }
 
 #[test]
-fn an_angle_pr_that_does_not_name_its_sub_item_drives_nothing() {
+fn an_angle_pr_that_does_not_name_its_sub_item_drives_nothing_and_is_told_once_per_head() {
     let w = World::new();
     w.tick();
+    let sub = w.sub_item("security").key;
     let mut pr = w.angle_pr(30, "security", &report_json("security", ""));
     pr.body = "Angle security".into();
-    pr.reviews.clear();
-    w.open_on_branch(vec![pr]);
-    w.quiet();
+    w.github
+        .state
+        .borrow_mut()
+        .comments
+        .insert((repo(), 30), Ok(Vec::new()));
+    w.open_on_branch(vec![pr.clone()]);
+    let github = w.github.writes().len();
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(writes.is_empty(), "no status: {writes:?}");
+    let said: Vec<String> = w.github.writes()[github..].to_vec();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0].starts_with("comment example-org/acme#30 "),
+        "{said:?}"
+    );
+    assert!(said[0].contains(&format!("name `{sub}`")), "{said:?}");
     assert_eq!(w.sub_item("security").state.status, Some(Status::Ready));
+    w.quiet();
+
+    // A new head that still names nothing is told again, once.
+    pr.head_sha = "otherhead0000001".into();
+    w.open_on_branch(vec![pr]);
+    let github = w.github.writes().len();
+    w.tick();
+    let said = w.github.writes()[github..].to_vec();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(!said[0].starts_with("merge"), "{said:?}");
+    w.quiet();
 }
 
 #[test]
