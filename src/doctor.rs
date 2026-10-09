@@ -247,18 +247,22 @@ fn tracker_checks(config: &Config, tracker: &dyn Tracker) -> Vec<Check> {
         )),
         Err(e) => out.push(check("tracker", Verdict::Missing, e.to_string())),
     }
-    let table = StatusTable::from_config(&config.tracker.statuses);
+    let table = StatusTable::identity();
     out.push(match tracker.status_names() {
         Ok(names) => {
             let missing = table.missing(&names);
             if missing.is_empty() {
-                check("statuses", Verdict::Ok, "every canonical status is mapped")
+                check(
+                    "statuses",
+                    Verdict::Ok,
+                    "the tracker names every canonical status",
+                )
             } else {
                 check(
                     "statuses",
                     Verdict::Missing,
                     format!(
-                        "the tracker lacks: {}",
+                        "the tracker lacks {}: it must name each canonical status exactly so",
                         missing
                             .iter()
                             .map(|s| table.tracker_name(*s))
@@ -278,6 +282,50 @@ fn tracker_checks(config: &Config, tracker: &dyn Tracker) -> Vec<Check> {
         ),
         Err(e) => check("owner", Verdict::Missing, e.to_string()),
     });
+    // The participants the bridge assigns items to: an unknown one leaves
+    // its items unassigned, so it is reported here rather than at a tick.
+    for (key, name) in participants(config) {
+        out.push(match tracker.user(name) {
+            Ok(u) => check(
+                &key,
+                Verdict::Ok,
+                format!("{} is known to the tracker", u.name),
+            ),
+            Err(e) => check(
+                &key,
+                Verdict::Missing,
+                format!("{e}: its items are created unassigned"),
+            ),
+        });
+    }
+    out
+}
+
+/// The configured assignees, named by their key: each angle's `assignee`
+/// and each round's `coordinator_assignee`.
+fn participants(config: &Config) -> Vec<(String, &str)> {
+    let mut out = Vec::new();
+    for (table, angles, coordinator) in [
+        (
+            "release",
+            &config.release.angles,
+            &config.release.coordinator_assignee,
+        ),
+        (
+            "review",
+            &config.review.angles,
+            &config.review.coordinator_assignee,
+        ),
+    ] {
+        for a in angles {
+            if let Some(name) = &a.assignee {
+                out.push((format!("{table}.angles.{}.assignee", a.key), name.as_str()));
+            }
+        }
+        if let Some(name) = coordinator {
+            out.push((format!("{table}.coordinator_assignee"), name.as_str()));
+        }
+    }
     out
 }
 
@@ -295,7 +343,7 @@ mod tests {
 
     #[test]
     fn each_point_of_the_procedure_is_ok_missing_or_invalid() {
-        let c = config();
+        let mut c = config();
         let g = FakeGitHub::new();
         let repo = RepoSlug::parse("example-org/acme").unwrap();
         {
@@ -328,6 +376,11 @@ mod tests {
             id: "u-owner".into(),
             name: "owner-handle".into(),
         });
+        t.state.borrow_mut().users.push(User {
+            id: "u-coordinator".into(),
+            name: "coordinator-handle".into(),
+        });
+        c.release.coordinator_assignee = Some("nobody-known".into());
         let checks = run(&c, None, &g, &t, "workstation");
         let by = |n: &str| {
             checks
@@ -356,10 +409,33 @@ mod tests {
         assert_eq!(by("tracker"), Verdict::Ok);
         assert_eq!(by("statuses"), Verdict::Ok);
         assert_eq!(by("owner"), Verdict::Ok);
+        assert_eq!(by("review.coordinator_assignee"), Verdict::Ok);
+        let unknown = checks
+            .iter()
+            .find(|c| c.name == "release.coordinator_assignee")
+            .unwrap_or_else(|| panic!("{checks:#?}"));
+        assert_eq!(unknown.verdict, Verdict::Missing, "{unknown}");
+        assert!(unknown.detail.contains("unassigned"), "{unknown}");
+        assert_eq!(by("release.angles.security.assignee"), Verdict::Missing);
         assert!(checks.iter().any(|c| {
             c.to_string()
                 .starts_with("workflow release-cut.yml: missing")
         }));
+    }
+
+    #[test]
+    fn a_canonical_status_the_team_lacks_is_reported_by_its_exact_name() {
+        let c = config();
+        let mut t = FakeTracker::default();
+        t.status_names.retain(|n| n != "To Deploy");
+        t.status_names.push("To deploy".into());
+        let checks = tracker_checks(&c, &t);
+        let statuses = checks.iter().find(|c| c.name == "statuses").unwrap();
+        assert_eq!(statuses.verdict, Verdict::Missing);
+        assert_eq!(
+            statuses.to_string(),
+            "statuses: missing — the tracker lacks To Deploy: it must name each canonical status exactly so"
+        );
     }
 
     /// The repository's file at the default branch is neutral: the doctor

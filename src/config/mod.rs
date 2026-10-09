@@ -12,7 +12,7 @@
 pub mod overlay;
 mod raw;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fmt;
 use std::path::Path;
 
@@ -105,8 +105,6 @@ pub struct Tracker {
     /// Identifier prefixes of the team's items; empty means "ask the tracker".
     pub team_keys: Vec<String>,
     pub link_fallback: LinkFallback,
-    /// Canonical status -> tracker status, for every canonical status.
-    pub statuses: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,6 +156,9 @@ pub struct Release {
     pub business_rule_paths: Vec<String>,
     pub stagnation_hours: u32,
     pub coordinators: Vec<String>,
+    /// The tracker participant who receives the consolidation item of a
+    /// candidate; `None` leaves it unassigned.
+    pub coordinator_assignee: Option<String>,
     pub escalation_label: String,
     pub auto_candidate: bool,
     pub cut_workflow: String,
@@ -217,6 +218,9 @@ pub struct Review {
     pub sensitive_paths: Option<String>,
     pub sensitive_angle: String,
     pub coordinators: Vec<String>,
+    /// The tracker participant who receives the consolidation item of a PR
+    /// round; `None` leaves it unassigned.
+    pub coordinator_assignee: Option<String>,
     pub human_reviewer: Option<String>,
     /// Apps whose PRs need no ticket: the bridge opens one for each.
     pub ticketless_authors: Vec<String>,
@@ -699,44 +703,12 @@ impl Validator {
                 ("body-url", LinkFallback::BodyUrl),
             ],
         );
-        let mut statuses: BTreeMap<String, String> = CANONICAL_STATUSES
-            .iter()
-            .map(|s| (s.to_string(), s.to_string()))
-            .collect();
-        for (canonical, name) in raw.statuses.unwrap_or_default() {
-            let key = format!("tracker.statuses.\"{canonical}\"");
-            if !CANONICAL_STATUSES.contains(&canonical.as_str()) {
-                self.err(
-                    &key,
-                    format!(
-                        "\"{canonical}\" is not a canonical status (one of {})",
-                        CANONICAL_STATUSES.join(", ")
-                    ),
-                );
-            } else if name.trim().is_empty() {
-                self.err(&key, "must name the tracker's status");
-            } else {
-                statuses.insert(canonical, name.trim().to_string());
-            }
-        }
-        let mut seen: BTreeMap<&str, &str> = BTreeMap::new();
-        for (canonical, name) in &statuses {
-            if let Some(other) = seen.insert(name.as_str(), canonical.as_str()) {
-                self.err(
-                    "tracker.statuses",
-                    format!(
-                        "\"{other}\" and \"{canonical}\" both map to the tracker status \"{name}\": the bridge could not tell them apart"
-                    ),
-                );
-            }
-        }
         Some(Tracker {
             kind: kind?,
             team: team?,
             service_identity: service_identity?,
             team_keys,
             link_fallback: link_fallback?,
-            statuses,
         })
     }
 
@@ -913,6 +885,8 @@ impl Validator {
         );
         let stagnation_hours = self.positive("release.stagnation_hours", raw.stagnation_hours, 2);
         let coordinators = self.list("release.coordinators", raw.coordinators, Vec::new(), true);
+        let coordinator_assignee =
+            self.optional("release.coordinator_assignee", raw.coordinator_assignee);
         let escalation_label = self
             .optional("release.escalation_label", raw.escalation_label)
             .unwrap_or_else(|| "blocked-by-human".to_string());
@@ -964,6 +938,7 @@ impl Validator {
             business_rule_paths,
             stagnation_hours,
             coordinators,
+            coordinator_assignee,
             escalation_label,
             auto_candidate,
             cut_workflow,
@@ -1038,6 +1013,8 @@ impl Validator {
             }
         }
         let coordinators = self.list("review.coordinators", raw.coordinators, Vec::new(), true);
+        let coordinator_assignee =
+            self.optional("review.coordinator_assignee", raw.coordinator_assignee);
         let human_reviewer = self.optional("review.human_reviewer", raw.human_reviewer);
         let ticketless_authors = self.list(
             "review.ticketless_authors",
@@ -1078,6 +1055,7 @@ impl Validator {
             sensitive_paths,
             sensitive_angle,
             coordinators,
+            coordinator_assignee,
             human_reviewer,
             ticketless_authors,
             angles,

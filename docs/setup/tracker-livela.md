@@ -1,7 +1,7 @@
 # 3b. Tracker: Livela
 
 - **Service participant**: an `agent` participant named `spl-asdlc` (`docs/livela-contract.md`, point 4).
-- **Statuses**: `in_review`, `to_deploy` and `post_deploy` are the `validation` group: open, still blocking, never served by "what's next" (contract, point 1). `set_status` accepts the English names, so the mapping in `spl-asdlc.toml` is the identity.
+- **Statuses**: `in_review`, `to_deploy` and `post_deploy` are the `validation` group: open, still blocking, never served by "what's next" (contract, point 1). `set_status` accepts the English names, so the canonical names are the tracker's (the configuration maps no status).
 - **Hosting**: the bridge is a `DaemonJob` of the Livela runner (contract, point 3).
   - The daemon calls it every pass with `LIVELA_SPL_ASDLC_CONFIG` (the path of `spl-asdlc.toml`; its instance overlay is the `spl-asdlc.instance.toml` beside it, when there is one) and `LIVELA_JOB_BUDGET_SECONDS` (60 by default).
   - The App's key and the tracker identity come from the environment the runner starts with.
@@ -195,7 +195,7 @@ impl LivelaStore for Glue<'_> {
 }
 ```
 
-Wire it as `Livela::new(Glue(&mut store), StatusTable::from_config(&config.tracker.statuses))`.
+Wire it as `Livela::new(Glue(&mut store), StatusTable::identity())`.
 
 The adapter reads before every write and skips a write that changes nothing. It signs each write as `spl-asdlc` through `swap_author` and gives the store back its previous author.
 
@@ -214,7 +214,6 @@ A sketch:
 use std::path::Path;
 
 use livela_core::{DaemonJob, JobContext, JobOutcome, Store};
-use spl_asdlc::config::Config;
 use spl_asdlc::tracker::StatusTable;
 use spl_asdlc::tracker::livela::Livela;
 
@@ -230,11 +229,7 @@ impl DaemonJob for BridgeJob {
         let Some(path) = ctx.config.as_deref() else {
             return JobOutcome::failed("LIVELA_SPL_ASDLC_CONFIG is not set");
         };
-        let statuses = match Config::load(path) {
-            Ok(c) => StatusTable::from_config(&c.tracker.statuses),
-            Err(e) => return JobOutcome::failed(format!("{}: {}", path.display(), e.0.len())),
-        };
-        let tracker = Livela::new(Glue(store), statuses);
+        let tracker = Livela::new(Glue(store), StatusTable::identity());
         let out = spl_asdlc::job::pass(&spl_asdlc::job::Host {
             config_path: Path::new(path),
             tracker: &tracker,

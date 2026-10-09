@@ -7,7 +7,7 @@ SPL-ASDLC is agnostic to the agent runtime (AgentForge, a Claude Code session, C
 ## The three layers
 
 1. **The method** — `docs/spec/`. What a ticket must contain before anyone takes it, how a PR is reviewed and merged, how a release is cut, reviewed, gated and closed, and the vocabulary everything else uses.
-2. **Agent protocols** — `docs/agents/`. Runtime-agnostic Markdown that any agent can load as a skill: review a PR, review a release on an angle branch, consolidate findings, refine a ticket.
+2. **Agent protocols** — `docs/agents/`. Runtime-agnostic Markdown that any agent can load as a skill: review a PR, review a release on an angle branch, consolidate findings, refine a ticket. The bridge embeds the protocol of each review and consolidation item in the item it serves (BR-ASDLC-015).
 3. **The tooling** — the Rust crate `spl-asdlc` (library and `spl-asdlc` binary) and the reusable GitHub Actions workflows `.github/workflows/asdlc-*.yml` with the composite action `actions/required-check`, which a project calls from its own workflows (`docs/setup/examples/`). The crate is "the bridge": one deterministic process that runs in the user's environment, polls GitHub, writes state transitions to the tracker, computes the GO and merges what must be merged. CI workflows only publish GitHub facts; they never write to a tracker. Agents never change a status; the bridge does.
 
 ## Status

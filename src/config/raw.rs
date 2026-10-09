@@ -4,8 +4,6 @@
 //! shape TOML may take, so that a misspelt key is an error rather than a
 //! silently ignored setting.
 
-use std::collections::BTreeMap;
-
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -44,7 +42,6 @@ pub(super) struct RawTracker {
     pub service_identity: Option<String>,
     pub team_keys: Option<Vec<String>>,
     pub link_fallback: Option<String>,
-    pub statuses: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,6 +65,7 @@ pub(super) struct RawRelease {
     pub business_rule_paths: Option<Vec<String>>,
     pub stagnation_hours: Option<i64>,
     pub coordinators: Option<Vec<String>>,
+    pub coordinator_assignee: Option<String>,
     pub escalation_label: Option<String>,
     pub auto_candidate: Option<bool>,
     pub cut_workflow: Option<String>,
@@ -99,6 +97,7 @@ pub(super) struct RawReview {
     pub sensitive_paths: Option<String>,
     pub sensitive_angle: Option<String>,
     pub coordinators: Option<Vec<String>>,
+    pub coordinator_assignee: Option<String>,
     pub human_reviewer: Option<String>,
     pub ticketless_authors: Option<Vec<String>>,
     #[serde(default)]
@@ -173,6 +172,7 @@ pub(super) struct RawOverlayTracker {
 #[serde(deny_unknown_fields)]
 pub(super) struct RawOverlayRelease {
     pub coordinators: Option<Vec<String>>,
+    pub coordinator_assignee: Option<String>,
     pub release_please_authors: Option<Vec<String>>,
     #[serde(default)]
     pub angles: Vec<RawOverlayAngle>,
@@ -182,6 +182,7 @@ pub(super) struct RawOverlayRelease {
 #[serde(deny_unknown_fields)]
 pub(super) struct RawOverlayReview {
     pub coordinators: Option<Vec<String>>,
+    pub coordinator_assignee: Option<String>,
     pub human_reviewer: Option<String>,
     #[serde(default)]
     pub angles: Vec<RawOverlayAngle>,

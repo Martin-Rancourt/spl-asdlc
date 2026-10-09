@@ -1,6 +1,6 @@
 # Consolidate
 
-**Input**: the consolidation item of a PR (review) or of a release candidate (QA), served once every angle has reported. **Output**: every finding answered, retained fixes applied, an approving review, or changes requested.
+**Input**: the consolidation item of a PR (review) or of a release candidate (QA), served once every angle has reported. At a PR review the item is blocked by every angle sub-item of its round until each is closed, and an approval you give while one is still open does not count (BR-ASDLC-018). **Output**: every finding answered, retained fixes applied, an approving review, or changes requested.
 
 ## For a PR review
 
@@ -13,7 +13,7 @@
 ## For a release candidate
 
 1. For each angle PR (`qa/<candidate>/<angle>` → release branch): read the report file and the diff of the fixes. Confirm or reject each finding in a review thread of that PR, with reasons; confirm or change severities.
-2. Check the report is valid (schema, `checked` non-empty, verdict consistent with the findings). An invalid report is a change request to its angle.
+2. Check the report is valid (the schema and rules of `docs/spec/06-qa-report.md`, which your consolidation item embeds after this protocol: `checked` non-empty, verdict consistent with the findings). An invalid report is a change request to its angle.
    For each `nit`, you document, you do not solve (BR-ASDLC-013): check that the report captures it as faithfully as it can, `summary` what was observed, `anchor` where, `evidence` in what context (how it was met, what it looks like), since the bridge copies those three into the nit's box and whoever triages it later has nothing else. A vague nit is a change request to its angle. Never hunt for a fix; you may note one already obvious at the end of `evidence`. Whether the nit is kept or dropped is not yours to decide either: the agent who takes the nits ticket up at refinement classifies it.
 3. Resolve conflicts between angle branches on the angle branch itself (rebase or merge the release branch into it), never on the release branch directly.
 4. Approve each angle PR when its fixes are right and its report is valid. The bridge merges them into the release branch and creates the tickets from the reports.

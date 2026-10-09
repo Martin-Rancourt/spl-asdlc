@@ -28,12 +28,8 @@ team = "ABC"                           # team key (Linear) or workspace id (Live
 service_identity = "spl-asdlc"         # the service account the bridge writes as
 team_keys = ["ABC"]                    # identifier prefixes of the team's items; [] asks the tracker
 # link_fallback = "none"               # "none" | "body-url"
-
-# Canonical status -> tracker status, only for the ones the tracker names
-# differently (docs/setup/tracker-linear.md, tracker-livela.md).
-# [tracker.statuses]
-# "To Deploy" = "To deploy"
-# "Post Deploy" = "Post deploy"
+# No status mapping: the tracker names each canonical status exactly so
+# (docs/spec/03-vocabulary.md, docs/setup/tracker-linear.md).
 
 [release]
 # Tag patterns: {version} once; {rc} once in the candidate, never in the release.
@@ -53,6 +49,7 @@ bookkeeping_paths = [".release-please-manifest.json", "CHANGELOG.md"]  # add the
 # business_rule_paths = ["docs/business-rules.md", "**/business-rules.md"]
 # stagnation_hours = 2
 coordinators = ["coordinator-login"]   # GitHub logins whose approval at the head SHA merges an angle PR
+# coordinator_assignee = "coordinator-handle" # tracker participant who receives each candidate's consolidation item
 # escalation_label = "blocked-by-human"
 # auto_candidate = false
 # cut_workflow = "release-cut.yml"
@@ -86,6 +83,7 @@ diff_size_angle = "maintainability"    # required while diff_size_extra_angle is
 sensitive_paths = ".github/review-paths.json"
 # sensitive_angle = "security"
 coordinators = ["coordinator-login"]   # GitHub logins whose approval at the head SHA merges a PR
+# coordinator_assignee = "coordinator-handle" # tracker participant who receives each PR round's consolidation item
 # human_reviewer = "owner-login"       # asked to look at a green PR stuck on a human
 # ticketless_authors = []              # Apps whose PRs need no ticket, e.g. ["dependabot"]
 
