@@ -626,7 +626,10 @@ fn an_item_is_archived_never_trashed() {
         URL,
         "issue(id: $id) { id identifier",
         200,
-        &format!(r#"{{"data":{{"issue":{}}}}}"#, issue("ABC-2", "Done", "completed")),
+        &format!(
+            r#"{{"data":{{"issue":{}}}}}"#,
+            issue("ABC-2", "Done", "completed")
+        ),
     );
     t.on_body(
         "POST",
