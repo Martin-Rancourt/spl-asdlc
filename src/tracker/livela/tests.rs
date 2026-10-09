@@ -26,6 +26,8 @@ struct MemStore {
     author: String,
     /// `(author, write)`, as the core's fact log signs them.
     facts: Vec<(String, String)>,
+    /// The priority each ticket was created with.
+    priorities: BTreeMap<String, Option<u8>>,
     /// A status the ticket type lacks, for the refusal tests.
     lacks: Option<&'static str>,
 }
@@ -38,6 +40,7 @@ impl Default for MemStore {
             next: 0,
             author: "runner".into(),
             facts: Vec::new(),
+            priorities: BTreeMap::new(),
             lacks: None,
         }
     }
@@ -139,7 +142,7 @@ impl LivelaStore for MemStore {
         tags: &[String],
         assignee: Option<&str>,
         parent: Option<&str>,
-        _priority: Option<u8>,
+        priority: Option<u8>,
         status: &str,
     ) -> Result<String, String> {
         if !STATUSES.contains(&status) {
@@ -147,6 +150,7 @@ impl LivelaStore for MemStore {
         }
         let id = self.id();
         self.fact(format!("create {id}"));
+        self.priorities.insert(id.clone(), priority);
         let item = LivelaItem {
             id: id.clone(),
             short_id: format!("TD-{}", &id[4..]),
@@ -296,6 +300,20 @@ fn every_write_is_signed_by_the_bridge_and_the_runner_keeps_its_author() {
         .filter(|(by, what)| *by != me && !what.starts_with("participant"))
         .collect();
     assert!(unsigned.is_empty(), "{unsigned:?}");
+}
+
+#[test]
+fn an_urgent_item_is_created_at_the_stores_priority_one() {
+    let t = Livela::new(MemStore::default(), StatusTable::identity());
+    let urgent = NewItem {
+        priority: Some(Priority::Urgent),
+        ..new_item("a", Status::Ready)
+    };
+    let a = t.create_item(&urgent).unwrap();
+    let b = t.create_item(&new_item("b", Status::Ready)).unwrap();
+    let store = t.into_store();
+    assert_eq!(store.priorities[&a.id], Some(1));
+    assert_eq!(store.priorities[&b.id], None, "the store's default");
 }
 
 #[test]

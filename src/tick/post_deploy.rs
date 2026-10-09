@@ -1,9 +1,9 @@
 //! Post-deploy validation (`docs/spec/05-release-cycle.md` §11,
 //! BR-ASDLC-002/003). When the closure moves a ticket to Post Deploy it
 //! labels it `post-deploy-validation` and creates one validation sub-task,
-//! unassigned in Ready, that an agent takes: verify the ticket's
-//! `## Post deploy` boxes in production and check them, or hand the sub-task
-//! to the owner. At each tick the bridge reads the labelled tickets and moves
+//! unassigned in Ready and urgent (BR-ASDLC-017: production is waiting on
+//! it), that an agent takes: verify the ticket's `## Post deploy` boxes in
+//! production and check them, or hand the sub-task to the owner. At each tick the bridge reads the labelled tickets and moves
 //! to Done each one whose boxes are all checked. No verb: the boxes are the
 //! gesture. The ticket itself is never served: Post Deploy stays a
 //! validation state.
@@ -19,7 +19,7 @@ use serde_json::json;
 use crate::action_log::ActionLog;
 use crate::method::texts;
 use crate::method::vocabulary::{Status, post_deploy_label};
-use crate::tracker::{Item, NewItem};
+use crate::tracker::{Item, NewItem, Priority};
 
 use super::closure::contract_gate;
 use super::merge::for_tracker;
@@ -154,7 +154,8 @@ fn unwatch(t: &Tick, log: &mut ActionLog, report: &mut Report, item: &Item) {
 }
 
 /// The validation sub-task of a ticket in Post Deploy, created once
-/// (BR-ASDLC-003): unassigned, in Ready, under the ticket. One the ticket
+/// (BR-ASDLC-003): unassigned, in Ready, urgent (BR-ASDLC-017), under the
+/// ticket. One the ticket
 /// already has, in any state, is never created again: a sub-task closed while
 /// boxes remain leaves the ticket waiting in Post Deploy for a human.
 pub fn ensure_sub_task(t: &Tick, log: &mut ActionLog, report: &mut Report, parent: &Item) {
@@ -192,7 +193,8 @@ pub fn ensure_sub_task(t: &Tick, log: &mut ActionLog, report: &mut Report, paren
                     description: description.clone(),
                     labels: Vec::new(),
                     status: Status::Ready,
-                    priority: None,
+                    // Production is waiting on it (BR-ASDLC-017).
+                    priority: Some(Priority::Urgent),
                     assignee: None,
                     parent: Some(parent.key.clone()),
                 })

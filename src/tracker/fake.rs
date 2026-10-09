@@ -13,6 +13,8 @@ struct Stored {
     item: Item,
     comments: Vec<Comment>,
     links: Vec<String>,
+    /// The priority it was created with.
+    priority: Option<Priority>,
 }
 
 #[derive(Default)]
@@ -83,12 +85,18 @@ impl FakeTracker {
                 item,
                 comments: Vec::new(),
                 links: Vec::new(),
+                priority: None,
             },
         );
     }
 
     pub fn item(&self, key: &str) -> Item {
         self.state.borrow().items[key].item.clone()
+    }
+
+    /// The priority the item was created with (`None` for a seeded item).
+    pub fn priority(&self, key: &str) -> Option<Priority> {
+        self.state.borrow().items[key].priority
     }
 
     pub fn writes(&self) -> Vec<String> {
@@ -282,6 +290,7 @@ impl Tracker for FakeTracker {
             st.item.labels = new.labels.clone();
             st.item.assignee = new.assignee.clone();
             st.item.parent = new.parent.clone();
+            st.priority = new.priority;
         })?;
         Ok(self.item(&key))
     }
