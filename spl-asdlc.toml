@@ -11,10 +11,6 @@ name = "spl-asdlc"
 [tracker]
 kind = "linear"
 
-[tracker.statuses]
-"To Deploy" = "To deploy"
-"Post Deploy" = "Post deploy"
-
 [release]
 candidate_tag = "v{version}-rc.{rc}"
 release_tag = "v{version}"

@@ -201,55 +201,32 @@ pub trait Tracker {
     }
 }
 
-/// The status table of a project: canonical name -> tracker name, and back.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StatusTable {
-    pairs: Vec<(Status, String)>,
-}
+/// The status table of a project: the identity. A tracker names its
+/// statuses exactly as the canonical ones (`docs/spec/03-vocabulary.md`);
+/// the configuration maps none (`docs/spec/08-configuration.md`). An adapter
+/// whose tracker keys statuses by its own ids maps them in its code.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StatusTable;
 
 impl StatusTable {
-    pub fn from_config(statuses: &std::collections::BTreeMap<String, String>) -> StatusTable {
-        StatusTable {
-            pairs: Status::ALL
-                .iter()
-                .map(|s| {
-                    (
-                        *s,
-                        statuses
-                            .get(s.name())
-                            .cloned()
-                            .unwrap_or_else(|| s.name().to_string()),
-                    )
-                })
-                .collect(),
-        }
-    }
-
     pub fn identity() -> StatusTable {
-        StatusTable::from_config(&Default::default())
+        StatusTable
     }
 
-    pub fn tracker_name(&self, status: Status) -> &str {
-        self.pairs
-            .iter()
-            .find(|(s, _)| *s == status)
-            .map(|(_, n)| n.as_str())
-            .unwrap_or_else(|| status.name())
+    pub fn tracker_name(&self, status: Status) -> &'static str {
+        status.name()
     }
 
+    /// The canonical status a tracker status names, by its exact name.
     pub fn canonical(&self, tracker_name: &str) -> Option<Status> {
-        self.pairs
-            .iter()
-            .find(|(_, n)| n.eq_ignore_ascii_case(tracker_name))
-            .map(|(s, _)| *s)
+        Status::from_name(tracker_name)
     }
 
-    /// Canonical statuses whose tracker name the team lacks.
+    /// Canonical statuses the team lacks, by their exact name.
     pub fn missing(&self, names: &[String]) -> Vec<Status> {
-        self.pairs
-            .iter()
-            .filter(|(_, n)| !names.iter().any(|x| x.eq_ignore_ascii_case(n)))
-            .map(|(s, _)| *s)
+        Status::ALL
+            .into_iter()
+            .filter(|s| !names.iter().any(|n| n == s.name()))
             .collect()
     }
 }
@@ -259,16 +236,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_status_table_maps_both_ways() {
-        let mut map = std::collections::BTreeMap::new();
-        map.insert("To Deploy".to_string(), "To deploy".to_string());
-        let t = StatusTable::from_config(&map);
-        assert_eq!(t.tracker_name(Status::ToDeploy), "To deploy");
-        assert_eq!(t.tracker_name(Status::Done), "Done");
-        assert_eq!(t.canonical("to deploy"), Some(Status::ToDeploy));
+    fn the_status_table_is_the_identity_by_exact_name() {
+        let t = StatusTable::identity();
+        assert_eq!(t.tracker_name(Status::ToDeploy), "To Deploy");
+        assert_eq!(t.canonical("To Deploy"), Some(Status::ToDeploy));
+        assert_eq!(t.canonical("To deploy"), None);
         assert_eq!(t.canonical("Shipped"), None);
         let missing = t.missing(&["Done".into(), "To deploy".into()]);
         assert!(missing.contains(&Status::Triage));
-        assert!(!missing.contains(&Status::ToDeploy));
+        assert!(missing.contains(&Status::ToDeploy));
+        assert!(!missing.contains(&Status::Done));
     }
 }
