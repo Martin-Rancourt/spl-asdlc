@@ -16,11 +16,6 @@ name = "acme"                          # used in tags, labels and release issue 
 kind = "linear"                        # "linear" | "livela"
 link_fallback = "none"                 # "none" | "body-url"
 
-# Canonical status -> tracker status. Only the ones the tracker names differently.
-[tracker.statuses]
-"To Deploy" = "To deploy"
-"Post Deploy" = "Post deploy"
-
 [release]
 candidate_tag = "acme-v{version}-rc.{rc}"
 release_tag = "acme-v{version}"
@@ -178,7 +173,8 @@ Every other key is the method's shape and stays in the repository's file, where 
 | `tracker.service_identity` | required | Name of the service account the bridge writes as; printed by the binary. | A token for another identity: `doctor` reports the mismatch. |
 | `tracker.team_keys` | `[]` (ask the tracker) | Identifier prefixes (`ABC`; capital letters and digits, starting with a letter) of the team's items; only those count as embarked tickets of a release. | Empty and the tracker cannot say: the embarked list is unreadable, the brief is not posted. |
 | `tracker.link_fallback` | `"none"` | How a PR names its ticket when the tracker holds no link for the PR: `none` (only the tracker's own link), `body-url` (the tracker item URL in the PR body). Titles, branch names and bare identifiers are never read. | No link: the PR is not reviewed nor merged; a green PR raises one human notice. |
-| `tracker.statuses` | identity for every canonical status | Canonical status → tracker status, for the ones named differently. | A non-canonical key, or two canonical statuses mapped to one tracker status: file invalid. A mapped status the team lacks: the write fails and is retried; `doctor` reports it. |
+
+The configuration maps no status: the tracker names each canonical status (`03-vocabulary.md`) exactly so, and the bridge reads and writes them by that name. A `[tracker.statuses]` table is an unknown key (rule 6). A canonical status the team lacks: the write fails and is retried; `doctor` names it. An adapter whose tracker keys statuses by its own ids maps them in its code.
 
 ### `[release]`
 
