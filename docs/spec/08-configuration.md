@@ -97,7 +97,7 @@ team_keys = ["ABC"]                    # identifier prefixes of the team's items
 [release]
 release_please_authors = ["app/release-app"]
 coordinators = ["coordinator-login"]
-coordinator_assignee = "coordinator-handle" # optional: receives each candidate's consolidation item
+coordinator_assignee = "coordinator-handle" # optional: receives each candidate's consolidation item, and each angle item In Review
 
 [[release.angles]]
 key = "security"                       # an angle the repository's file declares
@@ -205,7 +205,7 @@ Every other key is the method's shape and stays in the repository's file, where 
 | `release.business_rule_paths` | `["docs/business-rules.md", "**/business-rules.md"]` | Paths whose change the brief singles out as "business rules touched". | — |
 | `release.stagnation_hours` | `2` | A GO false for longer than this is reported once. | Not a positive integer: file invalid. |
 | `release.coordinators` | required | GitHub logins whose approval at the head SHA lets the bridge merge an angle PR. | No approval by one of them: the angle PR is not merged. |
-| `release.coordinator_assignee` | none | The tracker participant (an agent the tracker serves, like an angle's `assignee`) who receives the consolidation item of each candidate, assigned when the bridge creates it (`05-release-cycle.md` §3); an existing consolidation item is never reassigned. | Absent, or unknown to the tracker: the item is created unassigned; `doctor` reports an unknown participant. |
+| `release.coordinator_assignee` | none | The tracker participant (an agent the tracker serves, like an angle's `assignee`) who receives the consolidation item of each candidate, assigned when the bridge creates it (`05-release-cycle.md` §3), and each angle sub-item when it goes In Review, in the same write, to review its angle PR (§4, BR-ASDLC-020); an existing consolidation item is never reassigned. | Absent, or unknown to the tracker: the consolidation item is created unassigned, and an angle sub-item goes In Review with its assignee left as it is; `doctor` reports an unknown participant. |
 | `release.escalation_label` | `blocked-by-human` | Label added to the release issue when it waits for the owner. | — |
 | `release.auto_candidate` | `false` | When true the bridge dispatches the next RC itself once a pass is merged; otherwise the coordinator does. | — |
 | `release.cut_workflow` | `release-cut.yml` | Workflow the bridge dispatches for `release cut`. | Not a file name: file invalid; absent on GitHub: the dispatch fails and says so. |
@@ -213,7 +213,7 @@ Every other key is the method's shape and stays in the repository's file, where 
 | `release.release_please_workflow` | `release-please.yml` | Workflow redispatched once when release-please's PR is stale. | — |
 | `release.release_please_config` | `release-please-config.json` | release-please's configuration (its `config-file`), read at the release PR's head for each component's changelog path. | Unreadable for a multi-component product: a note gap, the GO is false. |
 | `release.release_please_manifest` | `.release-please-manifest.json` | release-please's manifest (its `manifest-file`). | — |
-| `[[release.angles]]` | at least one required | `key` (required), `title` (default `<Key> review`), `assignee` (participant hint), `notes` (path). | No angle: file invalid — a release with no angle would compute its GO from nobody. An `assignee` unknown to the tracker: the angle item is created unassigned; `doctor` reports it. |
+| `[[release.angles]]` | at least one required | `key` (required), `title` (default `<Key> review`), `assignee` (participant hint: the angle item is created assigned to it, and is assigned to it again when a coordinator sends its angle PR back, `05-release-cycle.md` §4), `notes` (path). | No angle: file invalid — a release with no angle would compute its GO from nobody. An `assignee` unknown to the tracker: the angle item is created unassigned, and unassigned when sent back; `doctor` reports it. |
 
 ### `[review]`
 

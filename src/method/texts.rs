@@ -241,9 +241,9 @@ pub fn release_angle_item(
          - [ ] A PR from `qa/{candidate}/{key}` to `{branch}` names this item.\n\n\
          ## Business rules\n{absence}\n\n\
          ## Context\n- Candidate: `{candidate}`\n- Release label: `{label}`\n- Project notes: {notes}\n- The brief is on the release item.\n\
-         - This item follows your PR: `In Progress` once it appears, `In Review` once it is ready with its checks green, \
-         back `In Progress` when the coordinator requests changes, `Done` when the bridge merges it after the coordinator's \
-         approval.",
+         - This item follows your PR: `In Progress` once it appears; `In Review` once it is ready with its checks green, \
+         assigned to the coordinator who reviews it; back `In Progress` when the coordinator requests changes, assigned to \
+         this angle's assignee again (or to nobody); `Done` when the bridge merges it after the coordinator's approval.",
         marker = marker("angle", &[("scope", candidate), ("angle", &angle.key)]),
         key = angle.key,
         absence = crate::method::business_rules::ABSENCE_DECLARATION,

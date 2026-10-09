@@ -1226,9 +1226,9 @@ fn hint(t: &Tick, angles: &[crate::config::Angle], angle: &str) -> Option<crate:
 }
 
 /// The consolidation item of a round is blocked by every angle sub-item of
-/// the round (BR-ASDLC-018; a release candidate's too, BR-ASDLC-020), through the tracker's own `blocks` relation,
-/// which dispatchers respect; it stops blocking when the angle item is
-/// resolved. A relation already there is not written again. `false` when a
+/// the round (BR-ASDLC-018; a release candidate's too, BR-ASDLC-020),
+/// through the tracker's own `blocks` relation, which dispatchers respect;
+/// it stops blocking when the angle item is resolved. A relation already there is not written again. `false` when a
 /// relation could not be read or written: reported, retried at the next tick.
 pub fn block_consolidation(
     t: &Tick,

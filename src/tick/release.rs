@@ -770,12 +770,7 @@ fn open_round(
     if !offered.is_empty() && !consolidated {
         let (title, body) =
             texts::release_consolidation_item(&c.tag, &format!("{product} {v} (rc.{})", c.rc));
-        let assignee = t
-            .config
-            .release
-            .coordinator_assignee
-            .as_ref()
-            .and_then(|a| t.tracker.user(a).ok());
+        let assignee = coordinator(t);
         if let Some(created) =
             create_child(t, log, report, &item.key, &title, &body, label, assignee)
         {
@@ -1051,7 +1046,7 @@ fn angle_pr(
         }
     };
     let green = checks::pr_state(pr, &required.contexts) == CheckState::Green;
-    follow_angle_pr(t, log, report, pr, sub, green);
+    follow_angle_pr(t, log, report, pr, sub, angle, green);
     let path = report::report_path(&t.config.release.record, &c.tag, angle);
     let valid = match t.github.file(&t.repo, &path, &pr.head_sha) {
         Ok(text) => report::validate(&text, &c.tag, angle).map_err(|e| e.join("; ")),
@@ -1160,15 +1155,20 @@ fn angle_pr(
 /// its PR (BR-ASDLC-020): In Progress when the PR appears, In Review once it
 /// is ready with its required checks green, back In Progress when a
 /// configured coordinator requests changes at its head; Done comes from the
-/// merge. Only a PR that names its sub-item drives it (the link the merge
-/// reads too), and one that does not is told once per head which key to
-/// name; a status already right is not written again.
+/// merge. In Review assigns `release.coordinator_assignee`, who is then
+/// served the PR's review; sent back, the item goes to its angle's
+/// `assignee`, or to nobody (taken by role); both in the status's own write,
+/// an unset or unknown coordinator leaving the assignee as it is. Only a PR
+/// that names its sub-item drives it (the link the merge reads too), and
+/// one that does not is told once per head which key to name; a status
+/// already right is not written again.
 fn follow_angle_pr(
     t: &Tick,
     log: &mut ActionLog,
     report: &mut Report,
     pr: &PullRequest,
     sub: &Item,
+    angle: &str,
     green: bool,
 ) {
     if !prs::names_sub_item(pr, &sub.key) {
@@ -1196,18 +1196,51 @@ fn follow_angle_pr(
     let Some(to) = prs::angle_item_status(sub.state.status, facts) else {
         return;
     };
+    // Who is served, in the same write as the status: the coordinator to
+    // review the PR; its angle again when the coordinator sent it back
+    // (nobody named: taken by role); untouched when the work starts.
+    let assignee: Option<Option<crate::tracker::User>> = match to {
+        Status::InReview => coordinator(t).map(Some),
+        Status::InProgress if facts.sent_back => Some(angle_assignee(t, angle)),
+        _ => None,
+    };
+    let who = match &assignee {
+        None => String::new(),
+        Some(None) => ", unassigned".to_string(),
+        Some(Some(u)) => format!(", assigned to {}", u.name),
+    };
     t.act(
         log,
         report,
         &sub.key,
-        &format!("status {to} (angle PR)"),
+        &format!("status {to}{who} (angle PR)"),
         json!({"pr": pr.url, "head": pr.head_sha}),
         || {
             t.tracker
-                .set_status(&sub.key, to, None)
+                .set_status(&sub.key, to, assignee.as_ref().map(Option::as_ref))
                 .map_err(|e| e.to_string())
         },
     );
+}
+
+/// The participant `release.coordinator_assignee` names, when the tracker
+/// knows it (`doctor` reports one it does not).
+fn coordinator(t: &Tick) -> Option<crate::tracker::User> {
+    let name = t.config.release.coordinator_assignee.as_ref()?;
+    t.tracker.user(name).ok()
+}
+
+/// The configured assignee of a release angle, when the tracker knows it.
+fn angle_assignee(t: &Tick, angle: &str) -> Option<crate::tracker::User> {
+    let name = t
+        .config
+        .release
+        .angles
+        .iter()
+        .find(|a| a.key == angle)?
+        .assignee
+        .as_ref()?;
+    t.tracker.user(name).ok()
 }
 
 /// The findings of every angle PR of the candidate merged into the release

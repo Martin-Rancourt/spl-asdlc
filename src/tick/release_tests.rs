@@ -2427,3 +2427,172 @@ fn an_unknown_release_coordinator_leaves_the_item_unassigned_and_never_reassigns
     assert!(writes.is_empty(), "never reassigned: {writes:?}");
     assert_eq!(w.tracker.item(&item.key).assignee, None);
 }
+
+// ---- BR-ASDLC-020: the coordinator is served the angle item In Review ----
+
+fn angle_reviewer() -> crate::tracker::User {
+    crate::tracker::User {
+        id: "u-reviewer".into(),
+        name: "reviewer-handle".into(),
+    }
+}
+
+impl World {
+    fn knows(&self, users: &[crate::tracker::User]) {
+        self.tracker
+            .state
+            .borrow_mut()
+            .users
+            .extend(users.iter().cloned());
+    }
+
+    /// The security angle PR, ready and green, not reviewed yet.
+    fn ready_angle_pr(&self) -> PullRequest {
+        let mut pr = self.angle_pr(30, "security", &report_json("security", ""));
+        pr.reviews.clear();
+        self.open_on_branch(vec![pr.clone()]);
+        pr
+    }
+}
+
+#[test]
+fn in_review_serves_the_coordinator_and_changes_requested_serve_the_angle_again() {
+    let w = World::new();
+    assert_eq!(
+        w.config
+            .release
+            .angles
+            .iter()
+            .find(|a| a.key == "security")
+            .and_then(|a| a.assignee.as_deref()),
+        Some("reviewer-handle")
+    );
+    w.knows(&[release_coordinator(), angle_reviewer()]);
+    w.tick();
+    let sub = w.sub_item("security").key;
+    assert_eq!(w.tracker.item(&sub).assignee, Some(angle_reviewer()));
+
+    let mut pr = w.ready_angle_pr();
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        writes,
+        vec![format!(
+            "status {sub} In Review (assigned coordinator-handle)"
+        )]
+    );
+    w.quiet();
+
+    pr.reviews = vec![coordinator("CHANGES_REQUESTED", &pr.head_sha)];
+    w.open_on_branch(vec![pr.clone()]);
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        writes,
+        vec![format!(
+            "status {sub} In Progress (assigned reviewer-handle)"
+        )]
+    );
+    w.quiet();
+
+    // Fixed and approved: In Review for the coordinator, then Done at the
+    // merge, the assignee left as it is.
+    pr.head_sha = "fixedhead0000001".into();
+    w.github.state.borrow_mut().files.insert(
+        (
+            repo(),
+            pr.head_sha.clone(),
+            format!(".spl-asdlc/qa/{CAND}/security.json"),
+        ),
+        Ok(report_json("security", "")),
+    );
+    pr.reviews.push(coordinator("APPROVED", &pr.head_sha));
+    w.open_on_branch(vec![pr]);
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        writes,
+        vec![
+            format!("status {sub} In Review (assigned coordinator-handle)"),
+            format!("status {sub} Done"),
+        ]
+    );
+    assert_eq!(w.tracker.item(&sub).assignee, Some(release_coordinator()));
+    w.quiet();
+}
+
+#[test]
+fn sent_back_with_no_angle_assignee_the_item_is_unassigned() {
+    let mut w = World::new();
+    for a in &mut w.config.release.angles {
+        a.assignee = None;
+    }
+    w.knows(&[release_coordinator(), angle_reviewer()]);
+    w.tick();
+    let sub = w.sub_item("security").key;
+    let mut pr = w.ready_angle_pr();
+    w.tick();
+    assert_eq!(w.tracker.item(&sub).assignee, Some(release_coordinator()));
+    pr.reviews = vec![coordinator("CHANGES_REQUESTED", &pr.head_sha)];
+    w.open_on_branch(vec![pr]);
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        writes,
+        vec![format!("status {sub} In Progress (unassigned)")],
+        "taken by role"
+    );
+    w.quiet();
+}
+
+#[test]
+fn an_unset_or_unknown_coordinator_leaves_the_angle_items_assignee() {
+    for unset in [true, false] {
+        let mut w = World::new();
+        if unset {
+            w.config.release.coordinator_assignee = None;
+        }
+        // Unknown: the tracker knows the angle's reviewer, not the coordinator.
+        w.knows(&[angle_reviewer()]);
+        w.tick();
+        let sub = w.sub_item("security").key;
+        w.ready_angle_pr();
+        let (r, writes) = w.writes_of_a_tick();
+        assert!(r.ok(), "{r:?}");
+        assert_eq!(writes, vec![format!("status {sub} In Review")], "{unset}");
+        assert_eq!(w.tracker.item(&sub).assignee, Some(angle_reviewer()));
+        w.quiet();
+    }
+}
+
+#[test]
+fn a_dry_run_prints_the_coordinator_served_in_review() {
+    let w = World::new();
+    w.knows(&[release_coordinator()]);
+    w.tick();
+    let sub = w.sub_item("security").key;
+    w.ready_angle_pr();
+    let before = w.tracker.writes().len();
+    let intents = crate::dry::Intents::default();
+    let tr = crate::dry::DryTracker {
+        inner: &w.tracker,
+        intents: &intents,
+    };
+    let sig = crate::dry::DrySignal { intents: &intents };
+    let t = Tick {
+        tracker: &tr,
+        signal: &sig,
+        dry_run: true,
+        ..w.tick_ctx()
+    };
+    let mut log = ActionLog::in_memory();
+    run(&t, &mut log);
+    assert_eq!(w.tracker.writes().len(), before, "nothing written");
+    let lines = intents.lines();
+    assert!(
+        lines.contains(&format!(
+            "tracker: {sub} → In Review, assigned to coordinator-handle"
+        )),
+        "{lines:?}"
+    );
+}
