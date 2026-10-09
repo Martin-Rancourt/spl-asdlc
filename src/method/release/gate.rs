@@ -58,6 +58,80 @@ pub fn colour(conclusion: Option<&str>) -> Colour {
     }
 }
 
+/// Where a red gate stands with its one automatic rerun (REQ-REL-037: a red
+/// first attempt that is a runner abort or a known flake is rerun once, by
+/// the rerun workflow on the gate run's completion).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RedGate {
+    /// Not a red gate: green, pending, or a conclusion nobody listed.
+    NotRed,
+    /// Red, but a rerun may still come: the work of a red gate waits.
+    Awaiting(String),
+    /// Red, and no automatic rerun is left to come.
+    Settled,
+}
+
+/// Whether the gate run's red is final (the owner's decision, 2026-10-08):
+/// the bridge cannot read the rerun decision, so it waits for what it can
+/// see, fail-closed. A rerun attempt that completed red is final (one rerun
+/// at most). A first attempt is final only once the rerun workflow ran for
+/// it and every such run completed: `reruns` are that workflow's
+/// `workflow_run` runs on the candidate's commit; until one exists, the
+/// rerun may still come. The caller reads them before it reads the gate run
+/// again, so that a rerun they made is seen.
+pub fn red_gate(run: &WorkflowRun, reruns: &[WorkflowRun]) -> RedGate {
+    if run.status != "completed" || colour(run.conclusion.as_deref()) != Colour::Red {
+        return RedGate::NotRed;
+    }
+    if run.attempt > 1 {
+        return RedGate::Settled;
+    }
+    let mine: Vec<&WorkflowRun> = reruns
+        .iter()
+        .filter(|r| r.event == "workflow_run" && r.head_sha == run.head_sha)
+        // A rerun workflow run older than the gate run is another run's.
+        .filter(|r| match (&r.created_at, &run.created_at) {
+            (Some(a), Some(b)) => a.0 >= b.0,
+            _ => true,
+        })
+        .collect();
+    if mine.is_empty() {
+        return RedGate::Awaiting(format!(
+            "the automatic rerun of {} has not run yet",
+            run.url
+        ));
+    }
+    match mine.iter().find(|r| r.status != "completed") {
+        Some(r) => RedGate::Awaiting(format!(
+            "the automatic rerun of {} is still running ({})",
+            run.url, r.url
+        )),
+        None => RedGate::Settled,
+    }
+}
+
+/// The path of the gate's summary inside its evidence pack (REQ-REL-037).
+pub const SUITES_FILE: &str = "results/suites.json";
+
+/// The failed suites a `results/suites.json` names (its `failed` list), or
+/// why it cannot be read: never an empty list for an unreadable file.
+pub fn failed_suites(json: &str) -> Result<Vec<String>, String> {
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("{SUITES_FILE} is not JSON: {e}"))?;
+    let failed = v
+        .get("failed")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| format!("{SUITES_FILE} has no `failed` list"))?;
+    failed
+        .iter()
+        .map(|f| {
+            f.as_str()
+                .map(str::to_string)
+                .ok_or_else(|| format!("{SUITES_FILE} names a failed suite that is not a string"))
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Class {
     Routine,
@@ -139,6 +213,7 @@ mod tests {
             event: event.into(),
             status: "completed".into(),
             conclusion: conclusion.map(str::to_string),
+            attempt: 1,
             url: "https://github.com/example-org/acme/actions/runs/1".into(),
             created_at: None,
         }
@@ -203,6 +278,71 @@ mod tests {
         ] {
             assert_eq!(colour(other), Colour::Orange, "{other:?}");
         }
+    }
+
+    fn rerun(sha: &str, status: &str, at: &str) -> WorkflowRun {
+        WorkflowRun {
+            id: 9,
+            head_sha: sha.into(),
+            head_branch: TAG.into(),
+            event: "workflow_run".into(),
+            status: status.into(),
+            conclusion: (status == "completed").then(|| "success".to_string()),
+            attempt: 1,
+            url: "https://github.com/example-org/acme/actions/runs/9".into(),
+            created_at: crate::github::Timestamp::parse(at),
+        }
+    }
+
+    fn red(attempt: u64) -> WorkflowRun {
+        WorkflowRun {
+            attempt,
+            created_at: crate::github::Timestamp::parse("2026-10-05T11:00:00Z"),
+            ..run("s", TAG, "push", Some("failure"))
+        }
+    }
+
+    #[test]
+    fn a_red_first_attempt_waits_for_its_automatic_rerun_to_complete() {
+        assert!(matches!(red_gate(&red(1), &[]), RedGate::Awaiting(_)));
+        let running = [rerun("s", "in_progress", "2026-10-05T11:20:00Z")];
+        assert!(matches!(red_gate(&red(1), &running), RedGate::Awaiting(_)));
+        let done = [rerun("s", "completed", "2026-10-05T11:20:00Z")];
+        assert_eq!(red_gate(&red(1), &done), RedGate::Settled);
+        // Another commit's, or an older run's, is not this gate run's rerun.
+        let other = [
+            rerun("t", "completed", "2026-10-05T11:20:00Z"),
+            rerun("s", "completed", "2026-10-05T10:00:00Z"),
+        ];
+        assert!(matches!(red_gate(&red(1), &other), RedGate::Awaiting(_)));
+    }
+
+    #[test]
+    fn a_red_rerun_attempt_is_final_and_a_pending_or_green_gate_is_not_red() {
+        assert_eq!(red_gate(&red(2), &[]), RedGate::Settled);
+        let pending = WorkflowRun {
+            status: "in_progress".into(),
+            conclusion: None,
+            ..red(2)
+        };
+        assert_eq!(red_gate(&pending, &[]), RedGate::NotRed);
+        let green = run("s", TAG, "push", Some("success"));
+        assert_eq!(red_gate(&green, &[]), RedGate::NotRed);
+    }
+
+    #[test]
+    fn the_failed_suites_are_read_from_the_summary_or_refused() {
+        assert_eq!(
+            failed_suites(r#"{"failed":["tests","lint"],"suites":[]}"#).unwrap(),
+            vec!["tests".to_string(), "lint".to_string()]
+        );
+        assert_eq!(
+            failed_suites(r#"{"failed":[]}"#).unwrap(),
+            Vec::<String>::new()
+        );
+        assert!(failed_suites("{").is_err());
+        assert!(failed_suites(r#"{"suites":[]}"#).is_err());
+        assert!(failed_suites(r#"{"failed":[1]}"#).is_err());
     }
 
     #[test]

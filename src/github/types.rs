@@ -350,6 +350,9 @@ pub struct WorkflowRun {
     pub status: String,
     /// `None` while the run has not concluded.
     pub conclusion: Option<String>,
+    /// The attempt the status and conclusion are of (`run_attempt`): 1, or
+    /// more once the run was rerun.
+    pub attempt: u64,
     pub url: String,
     pub created_at: Option<Timestamp>,
 }

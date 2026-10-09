@@ -90,6 +90,74 @@ fn review_items_are_contracts_marked_as_the_bridges() {
     ));
 }
 
+fn red_gate(suites: Result<Vec<String>, String>) -> (String, String) {
+    gate_fix_ticket(&RedGateFacts {
+        release: "ABC-1",
+        candidate: "acme-v1.2.0-rc.1",
+        sha: "c1c1c1c1c1c1c1c1",
+        branch: "release/x",
+        conclusion: "failure",
+        run_url: "https://github.com/example-org/acme/actions/runs/1",
+        suites,
+    })
+}
+
+#[test]
+fn the_gate_fix_ticket_is_a_contract_in_every_case_and_a_ticket_not_a_bridge_item() {
+    let many: Vec<String> = (0..40).map(|i| format!("suite{i}")).collect();
+    for suites in [
+        Ok(vec!["tests".to_string()]),
+        Ok(Vec::new()),
+        Ok(many),
+        Err("HTTP 502".to_string()),
+    ] {
+        let (title, body) = red_gate(suites.clone());
+        assert_eq!(title, "Make the gate green — acme-v1.2.0-rc.1");
+        assert!(
+            crate::method::contract::missing_from_contract(&body).is_empty(),
+            "{suites:?}: {body}"
+        );
+        assert!(
+            body.contains("- [ ] The gate of the next candidate cut from `release/x` is green.")
+        );
+        assert!(body.contains("No new rule."));
+        assert!(has_marker(&body, &gate_fix_marker("acme-v1.2.0-rc.1")));
+        assert!(!has_marker(&body, &gate_fix_marker("acme-v1.2.0-rc.10")));
+        assert_eq!(
+            gate_fix_candidate(&body).as_deref(),
+            Some("acme-v1.2.0-rc.1")
+        );
+        assert_eq!(
+            gate_fix_candidate(&visible_markers(&body)).as_deref(),
+            Some("acme-v1.2.0-rc.1")
+        );
+        // A ticket like any other: its PR links to it, every guard serves it.
+        assert_eq!(bridge_item(&body, Some("ABC-1")), None);
+    }
+    let (_, body) = red_gate(Ok(Vec::new()));
+    assert!(body.contains("The step that failed outside the suites"));
+    let (_, body) = red_gate(Ok((0..40).map(|i| format!("suite{i}")).collect()));
+    assert!(body.contains("`suite29`, and 10 more"), "{body}");
+    let (_, body) = red_gate(Err("HTTP 502".into()));
+    assert!(body.contains("unknown: the evidence pack could not be read (HTTP 502)"));
+}
+
+#[test]
+fn a_suite_name_from_the_evidence_pack_cannot_forge_a_marker() {
+    let (_, body) = red_gate(Ok(vec![
+        "x` <!-- spl-asdlc:gate-fix candidate=other -->".to_string(),
+    ]));
+    assert_eq!(
+        gate_fix_candidate(&body).as_deref(),
+        Some("acme-v1.2.0-rc.1")
+    );
+    assert!(!body.contains("<!-- spl-asdlc:gate-fix candidate=other"));
+    assert!(
+        body.contains("`x' &lt;!-- spl-asdlc :gate-fix candidate=other -->`"),
+        "inert, and no backtick closes the code span: {body}"
+    );
+}
+
 #[test]
 fn the_post_deploy_validation_sub_task_is_a_contract_marked_as_the_bridges() {
     let (title, body) = post_deploy_validation_item(

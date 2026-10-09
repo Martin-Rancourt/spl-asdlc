@@ -653,7 +653,8 @@ impl Tracker for Linear {
             "labelIds": label_ids, "stateId": state,
         });
         if let Some(p) = item.priority {
-            input["priority"] = json!(p);
+            // Linear: 1 urgent, 2 high, 3 medium, 4 low.
+            input["priority"] = json!(p.level());
         }
         if let Some(a) = &item.assignee {
             input["assigneeId"] = json!(a.id);

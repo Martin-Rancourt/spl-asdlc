@@ -304,7 +304,7 @@ fn items_are_found_by_the_url_of_their_pr() {
 }
 
 #[test]
-fn an_item_is_created_with_its_state_labels_and_parent() {
+fn an_item_is_created_with_its_state_labels_parent_and_priority() {
     let (l, t) = linear();
     team(&t);
     t.on_body("POST", URL, "issueLabels(filter", 200, r#"{"data":{"issueLabels":{"nodes":[{"id":"l-1","name":"release/acme-v1.2.3","team":{"id":"team-1"}}],"pageInfo":{"hasNextPage":false}}}}"#);
@@ -334,7 +334,7 @@ fn an_item_is_created_with_its_state_labels_and_parent() {
             description: "d".into(),
             labels: vec!["release/acme-v1.2.3".into()],
             status: Status::Ready,
-            priority: Some(1),
+            priority: Some(Priority::Urgent),
             assignee: None,
             parent: Some("ABC-1".into()),
         })

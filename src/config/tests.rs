@@ -72,6 +72,7 @@ fn a_minimal_file_gets_every_documented_default() {
     assert!(!c.release.auto_candidate);
     assert!(c.release.bookkeeping_paths.is_empty());
     assert_eq!(c.release.gate_workflow, "release-gate.yml");
+    assert_eq!(c.release.gate_rerun_workflow, "release-gate-auto-rerun.yml");
     assert_eq!(c.release.angles[0].title, "Security review");
     assert_eq!(c.review.merge_method, MergeMethod::Squash);
     assert!(c.review.require_up_to_date);

@@ -26,6 +26,7 @@ bookkeeping_paths = [".release-please-manifest.json", "CHANGELOG.md", "Cargo.tom
 registry_path = "docs/business-rules.md"
 cut_workflow = "release-cut.yml"
 gate_workflow = "release-gate.yml"
+gate_rerun_workflow = "release-gate-auto-rerun.yml"
 release_please_workflow = "release-please.yml"
 release_please_config = "release-please-config.json"
 release_please_manifest = ".release-please-manifest.json"

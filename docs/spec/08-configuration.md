@@ -39,6 +39,7 @@ escalation_label = "blocked-by-human"
 auto_candidate = false
 cut_workflow = "release-cut.yml"
 gate_workflow = "release-gate.yml"
+gate_rerun_workflow = "release-gate-auto-rerun.yml"
 release_please_workflow = "release-please.yml"
 release_please_config = "release-please-config.json"
 release_please_manifest = ".release-please-manifest.json"
@@ -206,6 +207,7 @@ Every other key is the method's shape and stays in the repository's file, where 
 | `release.auto_candidate` | `false` | When true the bridge dispatches the next RC itself once a pass is merged; otherwise the coordinator does. | — |
 | `release.cut_workflow` | `release-cut.yml` | Workflow the bridge dispatches for `release cut`. | Not a file name: file invalid; absent on GitHub: the dispatch fails and says so. |
 | `release.gate_workflow` | `release-gate.yml` | Workflow whose run on the RC tag is the gate. | No run on the tag: the gate is not green. |
+| `release.gate_rerun_workflow` | `release-gate-auto-rerun.yml` | Workflow whose `workflow_run` of a red gate reruns it once (a runner abort, known flakes); the bridge opens a red gate's gate-fix ticket only once this run of the gate's first attempt completed (`05-release-cycle.md` §3). | Not a file name: file invalid; its runs unreadable or absent on GitHub: no gate-fix ticket yet, said at each tick; never run for the gate run: the ticket waits, and the stagnation notice says the release is stuck. |
 | `release.release_please_workflow` | `release-please.yml` | Workflow redispatched once when release-please's PR is stale. | — |
 | `release.release_please_config` | `release-please-config.json` | release-please's configuration (its `config-file`), read at the release PR's head for each component's changelog path. | Unreadable for a multi-component product: a note gap, the GO is false. |
 | `release.release_please_manifest` | `.release-please-manifest.json` | release-please's manifest (its `manifest-file`). | — |

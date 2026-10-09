@@ -72,6 +72,7 @@ pub(super) struct RawRelease {
     pub auto_candidate: Option<bool>,
     pub cut_workflow: Option<String>,
     pub gate_workflow: Option<String>,
+    pub gate_rerun_workflow: Option<String>,
     pub release_please_workflow: Option<String>,
     pub release_please_config: Option<String>,
     pub release_please_manifest: Option<String>,

@@ -990,3 +990,87 @@ fn the_app_identity_is_read_with_the_jwt() {
         }
     );
 }
+
+// ---- workflow runs and the evidence pack (spec 05 §3, BR-ASDLC-016) ----
+
+#[test]
+fn a_run_says_its_attempt_and_an_absent_attempt_reads_as_the_first() {
+    let (gh, t) = client();
+    t.on(
+        "GET",
+        &url("/repos/example-org/acme/actions/workflows/release-gate.yml/runs"),
+        200,
+        r#"{"workflow_runs":[
+            {"id":2,"head_sha":"s","head_branch":"t","event":"push","status":"completed","conclusion":"failure","run_attempt":2,"html_url":"u2"},
+            {"id":1,"head_sha":"s","head_branch":"t","event":"push","status":"completed","conclusion":"failure","html_url":"u1"}]}"#,
+    );
+    let runs = gh
+        .workflow_runs(&repo(), "release-gate.yml", None, Some("s"), None)
+        .unwrap();
+    assert_eq!(runs.iter().map(|r| r.attempt).collect::<Vec<_>>(), [2, 1]);
+}
+
+#[test]
+fn a_file_is_read_out_of_an_artifact_zip_without_sending_the_token_to_its_host() {
+    let (gh, t) = client();
+    let zip = crate::github::zip::tests::archive(
+        &[("results/suites.json", br#"{"failed":["tests"]}"#)],
+        true,
+    );
+    t.on_with_headers(
+        "GET",
+        &url("/repos/example-org/acme/actions/artifacts/7/zip"),
+        302,
+        "",
+        &[("Location", "https://blob.test/pack.zip?sig=x")],
+    );
+    t.on_bytes("GET", "https://blob.test/pack.zip", 200, &zip);
+    assert_eq!(
+        gh.artifact_file(&repo(), 7, "results/suites.json").unwrap(),
+        r#"{"failed":["tests"]}"#
+    );
+    let log = t.log.lock().unwrap();
+    let blob = log
+        .iter()
+        .find(|r| r.url.starts_with("https://blob.test/"))
+        .expect("the redirect was followed");
+    assert!(
+        !blob
+            .headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("authorization")),
+        "the token goes to the API host only"
+    );
+    drop(log);
+    assert!(
+        gh.artifact_file(&repo(), 7, "results/other.json")
+            .unwrap_err()
+            .is_not_found()
+    );
+}
+
+#[test]
+fn an_artifact_that_cannot_be_downloaded_or_read_is_unreadable() {
+    let (gh, t) = client();
+    t.on(
+        "GET",
+        &url("/repos/example-org/acme/actions/artifacts/7/zip"),
+        410,
+        r#"{"message":"Artifact has expired"}"#,
+    );
+    let e = gh
+        .artifact_file(&repo(), 7, "results/suites.json")
+        .unwrap_err();
+    assert!(!e.is_not_found(), "{e}");
+    let (gh, t) = client();
+    t.on_bytes(
+        "GET",
+        &url("/repos/example-org/acme/actions/artifacts/8/zip"),
+        200,
+        b"not a zip",
+    );
+    let e = gh
+        .artifact_file(&repo(), 8, "results/suites.json")
+        .unwrap_err();
+    assert!(!e.is_not_found(), "{e}");
+}
