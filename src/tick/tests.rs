@@ -1088,83 +1088,103 @@ fn an_unreadable_ticket_of_another_pr_holds_the_state_after_a_merge() {
     );
 }
 
-// ---- SID-1008: an App's login however it is spelt; why a PR waits ----
+// ---- SID-1008: an App's login, never a person's; why a PR waits ----
+//
+// Authors are as the bridge reads them: an App in the REST spelling
+// (`bot()`), a person bare.
 
-/// (configured, as GitHub reported the author): GraphQL names an App by
-/// its slug, REST and the UI by its `[bot]` login.
-fn spellings(slug: &str) -> Vec<(String, String)> {
-    vec![
-        (bot(slug), slug.to_string()),
-        (slug.to_string(), bot(slug)),
-        (bot(&slug.to_ascii_uppercase()), slug.to_string()),
-    ]
-}
-
-#[test]
-fn a_coordinator_apps_approval_merges_however_its_login_is_spelt() {
-    for (configured, author) in spellings("coord-app") {
-        let mut w = World::new();
-        w.config.review.coordinators = vec![configured.clone()];
-        let mut pr = in_review(&w, 7);
-        pr.reviews = vec![review(&author, "APPROVED", &pr.head_sha, "ok")];
-        w.open(pr);
-        let (report, _) = w.tick(false);
-        assert!(report.ok(), "{report:?}");
-        assert!(
-            w.github_writes()
-                .contains(&"merge example-org/acme#7 at head-7 squash".to_string()),
-            "configured {configured}, approved by {author}: {:?}",
-            report.waiting
-        );
+/// Whether the PR merges on one approval by `author` with `configured` as
+/// the only coordinator; the report when it does not.
+fn merges_on(configured: &str, author: &str) -> Result<(), Report> {
+    let mut w = World::new();
+    w.config.review.coordinators = vec![configured.to_string()];
+    let mut pr = in_review(&w, 7);
+    pr.reviews = vec![review(author, "APPROVED", &pr.head_sha, "ok")];
+    w.open(pr);
+    let (report, _) = w.tick(false);
+    if w.github_writes()
+        .contains(&"merge example-org/acme#7 at head-7 squash".to_string())
+    {
+        Ok(())
+    } else {
+        Err(report)
     }
 }
 
 #[test]
-fn a_coordinator_apps_request_for_changes_stands_however_its_login_is_spelt() {
-    for (configured, author) in spellings("coord-app") {
+fn a_coordinator_apps_approval_merges_and_a_person_of_its_name_does_not() {
+    for configured in [
+        bot("coord-app"),
+        bot("COORD-APP"),
+        "app/Coord-App".to_string(),
+    ] {
+        assert_eq!(
+            merges_on(&configured, &bot("coord-app")),
+            Ok(()),
+            "{configured}"
+        );
+        let held = merges_on(&configured, "coord-app").expect_err("a person is not the App");
+        assert_eq!(
+            held.waiting_lines(),
+            vec!["waiting: pr#7 no coordinator approval at head-7 (approvals from: coord-app)"]
+        );
+    }
+    assert_eq!(merges_on("coord", "Coord"), Ok(()), "a person, case folded");
+    assert!(
+        merges_on("coord-app", &bot("coord-app")).is_err(),
+        "a bare login is a person, never the App"
+    );
+}
+
+#[test]
+fn only_the_coordinator_apps_own_request_for_changes_sends_the_ticket_back() {
+    for (author, sent_back) in [(bot("Coord-App"), true), ("coord-app".to_string(), false)] {
         let mut w = World::new();
-        w.config.review.coordinators = vec![configured.clone()];
+        w.config.review.coordinators = vec![bot("coord-app")];
         let mut pr = in_review(&w, 7);
         pr.reviews = vec![review(&author, "CHANGES_REQUESTED", &pr.head_sha, "redo")];
         w.open(pr);
         w.tick(false);
-        assert_eq!(
-            w.tracker.item("ABC-7").state.status,
-            Some(Status::InProgress),
-            "configured {configured}, reviewed by {author}"
-        );
-        let (_, _) = w.tick(false);
         let (report, _) = w.tick(false);
-        assert_eq!(
-            w.tracker.item("ABC-7").state.status,
-            Some(Status::InProgress),
-            "no new round while the request stands at this head"
-        );
-        assert_eq!(
-            report.waiting_lines(),
-            vec![format!(
-                "waiting: pr#7 {author} requested changes at head-7: the implementer's turn"
-            )]
-        );
+        if sent_back {
+            assert_eq!(
+                w.tracker.item("ABC-7").state.status,
+                Some(Status::InProgress),
+                "{author}"
+            );
+            assert_eq!(
+                report.waiting_lines(),
+                vec![format!(
+                    "waiting: pr#7 {author} requested changes at head-7: the implementer's turn"
+                )]
+            );
+        } else {
+            assert_eq!(
+                w.tracker.item("ABC-7").state.status,
+                Some(Status::InReview),
+                "a person of the App's name sends nothing back"
+            );
+            assert_eq!(
+                report.waiting_lines(),
+                vec!["waiting: pr#7 no coordinator approval at head-7 (no approval at this head)"]
+            );
+        }
     }
 }
 
 #[test]
-fn a_ticketless_app_is_recognised_however_its_login_is_spelt() {
-    for (configured, author) in spellings("dependabot") {
+fn a_ticketless_app_is_recognised_however_the_configuration_spells_it() {
+    for configured in [
+        "dependabot".to_string(),
+        bot("Dependabot"),
+        "app/dependabot".to_string(),
+    ] {
         let mut w = World::new();
         w.config.review.ticketless_authors = vec![configured.clone()];
-        let mut pr = app_pr(7, "dependabot");
-        pr.author = Some(Actor {
-            login: author.clone(),
-            is_bot: true,
-        });
+        let pr = app_pr(7, "dependabot");
         w.open(pr.clone());
         w.tick(false);
-        assert!(
-            pr_ticket(&w, &pr).is_some(),
-            "configured {configured}, authored by {author}"
-        );
+        assert!(pr_ticket(&w, &pr).is_some(), "configured {configured}");
     }
 }
 

@@ -281,8 +281,9 @@ pub fn pr_approval(pr: &PullRequest, approvers: &[String]) -> Approval {
 /// decided it): per login, only the latest `APPROVED` or `CHANGES_REQUESTED`
 /// counts — a `COMMENTED` review never cancels an approval; a standing
 /// `CHANGES_REQUESTED` of any approver blocks; an approval qualifies only on
-/// the current head. Logins compare as [`same_login`] does (case folded, an
-/// App's `[bot]` set apart); reviews are oldest first.
+/// the current head. Logins compare as [`same_login`] does (exact but for
+/// case: a configured App never matches a person of its name, a bare login
+/// never an App); reviews are oldest first.
 pub fn approval(reviews: &[Review], approvers: &[String], head_sha: &str) -> Approval {
     let approver = |login: &str| approvers.iter().any(|a| same_login(a, login));
     let mut stale = None;
@@ -308,9 +309,9 @@ pub fn approval(reviews: &[Review], approvers: &[String], head_sha: &str) -> App
     }
 }
 
-/// The latest `APPROVED` or `CHANGES_REQUESTED` review of each login (an
-/// App counted once however GitHub spelt it), in the order the logins first
-/// reviewed. Reviews are oldest first.
+/// The latest `APPROVED` or `CHANGES_REQUESTED` review of each login (case
+/// folded; an App and a person of its name are two reviewers), in the order
+/// the logins first reviewed. Reviews are oldest first.
 pub fn latest_stateful(reviews: &[Review]) -> Vec<&Review> {
     let mut latest: Vec<(String, &Review)> = Vec::new();
     for r in reviews {

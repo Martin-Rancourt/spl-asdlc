@@ -77,15 +77,16 @@ fn bot_login(slug: &str) -> String {
 }
 
 #[test]
-fn a_configured_app_is_trusted_however_either_side_spells_it() {
-    // (configured, as GitHub reported the PR's author)
-    let spellings = [
-        (bot_login("release-app"), "release-app".to_string()),
-        ("release-app".to_string(), bot_login("release-app")),
-        ("app/Release-App".to_string(), "release-app".to_string()),
-        (bot_login("RELEASE-APP"), bot_login("release-app")),
-    ];
-    for (configured, author) in spellings {
+fn a_configured_app_is_trusted_however_the_configuration_spells_it() {
+    // The author as read: an App in the REST spelling. A list of Apps reads
+    // a bare slug as the App too.
+    let author = bot_login("release-app");
+    for configured in [
+        bot_login("release-app"),
+        bot_login("RELEASE-APP"),
+        "app/Release-App".to_string(),
+        "release-app".to_string(),
+    ] {
         let mut pr = release_pr(1);
         pr.author = bot(&author);
         assert!(
@@ -94,7 +95,7 @@ fn a_configured_app_is_trusted_however_either_side_spells_it() {
         );
         // `review.ticketless_authors` is matched the same way.
         pr.author = Some(Actor {
-            login: author.clone(),
+            login: "release-app".into(),
             is_bot: false,
         });
         assert!(

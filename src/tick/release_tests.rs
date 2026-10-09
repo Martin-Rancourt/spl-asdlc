@@ -579,11 +579,13 @@ fn a_green_gate_whose_evidence_cannot_be_read_opens_nothing() {
 }
 
 #[test]
-fn a_release_coordinator_app_approves_however_github_spells_it() {
-    // (configured, as GitHub reported the review's author)
-    for (configured, author) in [
-        (bot("coord-app"), "coord-app".to_string()),
-        ("Coord-App".to_string(), bot("coord-app")),
+fn a_release_coordinator_app_approves_and_a_person_of_its_name_does_not() {
+    // (configured, the review's author as read, merged)
+    for (configured, author, merged) in [
+        (bot("coord-app"), bot("Coord-App"), true),
+        ("app/coord-app".to_string(), bot("coord-app"), true),
+        (bot("coord-app"), "coord-app".to_string(), false),
+        ("coord-app".to_string(), bot("coord-app"), false),
     ] {
         let mut w = World::new();
         w.config.release.coordinators = vec![configured.clone()];
@@ -592,11 +594,12 @@ fn a_release_coordinator_app_approves_however_github_spells_it() {
         pr.reviews[0].author = Some(author.clone());
         w.open_on_branch(vec![pr.clone()]);
         w.tick();
-        assert!(
+        assert_eq!(
             w.github.writes().contains(&format!(
                 "merge example-org/acme#30 at {} merge",
                 pr.head_sha
             )),
+            merged,
             "configured {configured}, reviewed by {author}: {:?}",
             w.github.writes()
         );

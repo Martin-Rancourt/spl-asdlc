@@ -150,21 +150,43 @@ pub struct Actor {
     pub is_bot: bool,
 }
 
-/// What a login is compared by: case folded, with an App's spelling set
-/// apart. GraphQL names an App by its slug, REST and the UI by
-/// `<slug>[bot]`, the `gh` CLI by `app/<slug>`: all three are one App.
+/// What a login is compared by: trimmed, case folded, and in the REST
+/// spelling, the one the bridge reads every author in (an App is
+/// `<slug>[bot]`; GraphQL's bare slug is normalised at read time). The one
+/// alias is the `gh` CLI's `app/<slug>`, which is `<slug>[bot]`. A bare
+/// login stays bare: it names a person (or a user account), never an App.
 pub fn login_key(login: &str) -> String {
     let l = login.trim().to_ascii_lowercase();
-    let l = l.strip_prefix("app/").unwrap_or(&l);
-    l.strip_suffix("[bot]").unwrap_or(l).to_string()
+    match l.strip_prefix("app/") {
+        Some(slug) if slug.ends_with("[bot]") => slug.to_string(),
+        Some(slug) if !slug.is_empty() => format!("{slug}[bot]"),
+        _ => l,
+    }
 }
 
-/// Whether two logins name the same account, however an App is spelt on
-/// either side (configuration or API). Every match of a review or PR author
-/// against a configured list goes through here.
-pub fn same_login(a: &str, b: &str) -> bool {
-    let (a, b) = (login_key(a), login_key(b));
+/// Whether a configured login and an author (as read, in the REST
+/// spelling) are the same account: exact once both are in [`login_key`]
+/// form, so `<slug>[bot]` or `app/<slug>` matches only the App and a bare
+/// login only the account of that name, never an App (fail closed: a
+/// person who registers an App's slug is not that App). Every match of a
+/// review author against a configured list goes through here.
+pub fn same_login(configured: &str, author: &str) -> bool {
+    let (a, b) = (login_key(configured), login_key(author));
     !a.is_empty() && a == b
+}
+
+/// [`same_login`] for a list that can only name Apps
+/// (`release.release_please_authors`, `review.ticketless_authors`): there a
+/// bare `<slug>` cannot mean a person, so it is the App `<slug>[bot]`. The
+/// caller still refuses an author who is not an App.
+pub fn same_app(configured: &str, author: &str) -> bool {
+    let c = login_key(configured);
+    let c = if c.is_empty() || c.ends_with("[bot]") {
+        c
+    } else {
+        format!("{c}[bot]")
+    };
+    same_login(&c, author)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -417,28 +439,58 @@ mod tests {
         format!("{slug}[bot]")
     }
 
+    // Authors are compared as read: an App in the REST spelling (`bot()`),
+    // a person bare.
+
     #[test]
-    fn an_app_is_one_login_however_it_is_spelt() {
-        let spellings = [
-            "coord-app".to_string(),
+    fn a_configured_app_matches_the_app_and_never_a_person_of_its_name() {
+        for configured in [
             bot("coord-app"),
             bot("Coord-App"),
-            "COORD-APP".to_string(),
             "app/coord-app".to_string(),
+            "APP/Coord-App".to_string(),
+            format!("app/{}", bot("coord-app")),
             format!(" {} ", bot("coord-app")),
-        ];
-        for a in &spellings {
-            for b in &spellings {
-                assert!(same_login(a, b), "{a} and {b}");
-            }
+        ] {
+            assert!(same_login(&configured, &bot("coord-app")), "{configured}");
+            assert!(same_login(&configured, &bot("COORD-APP")), "{configured}");
+            assert!(
+                !same_login(&configured, "coord-app"),
+                "{configured}: a person who took the App's slug is not the App"
+            );
         }
     }
 
     #[test]
+    fn a_bare_login_is_a_person_and_never_an_app() {
+        assert!(same_login("coord", "coord"));
+        assert!(same_login("Coord", "COORD"), "logins fold case");
+        assert!(
+            !same_login("coord", &bot("coord")),
+            "a bare login never matches an App"
+        );
+    }
+
+    #[test]
     fn other_logins_stay_other() {
-        assert!(!same_login(&bot("coord-app"), "coord-app-2"));
-        assert!(!same_login("coord", &bot("coord-app")));
-        assert!(!same_login("", &bot("")), "an empty login names nobody");
-        assert_eq!(login_key(&bot("Coord-App")), "coord-app");
+        assert!(!same_login(&bot("coord-app"), &bot("coord-app-2")));
+        assert!(!same_login("coord", "coord-2"));
+        assert!(!same_login("", ""), "an empty login names nobody");
+        assert!(!same_login("app/", &bot("")));
+        assert_eq!(login_key("app/Coord-App"), bot("coord-app"));
+        assert_eq!(login_key(" Coord "), "coord");
+    }
+
+    #[test]
+    fn a_list_of_apps_reads_a_bare_slug_as_the_app() {
+        for configured in [
+            "dependabot".to_string(),
+            bot("Dependabot"),
+            "app/dependabot".to_string(),
+        ] {
+            assert!(same_app(&configured, &bot("dependabot")), "{configured}");
+            assert!(!same_app(&configured, "dependabot"), "{configured}");
+        }
+        assert!(!same_app("", &bot("")));
     }
 }

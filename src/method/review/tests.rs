@@ -431,79 +431,95 @@ fn human_approval_follows_the_policy() {
     assert!(!needs_human_approval(&config, &plan_clean));
 }
 
-// ---- an App's login, however it is spelt (SID-1008) ----
+// ---- an App's login against a person's (SID-1008) ----
+//
+// Authors are compared as read: an App in the REST spelling (`bot()`,
+// GraphQL's bare slug normalised at read time), a person bare.
 
 /// The login REST and the UI show for an App.
 fn bot(slug: &str) -> String {
     format!("{slug}[bot]")
 }
 
+fn approved_by(configured: &str, author: &str) -> bool {
+    let reviews = [review(author, "APPROVED", "h1")];
+    matches!(
+        approval(&reviews, &[configured.to_string()], "h1"),
+        Approval::Qualified { .. }
+    )
+}
+
 #[test]
-fn an_app_approval_qualifies_however_either_side_spells_it() {
-    // (configured, as GitHub reported the review's author)
-    let spellings = [
-        (bot("coord-app"), "coord-app".to_string()),
-        ("coord-app".to_string(), bot("coord-app")),
-        (bot("Coord-App"), "coord-app".to_string()),
-        ("coord-app".to_string(), bot("COORD-APP")),
-        (bot("coord-app"), bot("coord-app")),
-    ];
-    for (configured, author) in spellings {
-        let reviews = [review(&author, "APPROVED", "h1")];
-        assert_eq!(
-            approval(&reviews, std::slice::from_ref(&configured), "h1"),
-            Approval::Qualified { by: author.clone() },
-            "configured {configured}, reviewed by {author}"
+fn a_coordinator_app_approves_and_a_person_of_its_name_does_not() {
+    for configured in [
+        bot("coord-app"),
+        bot("Coord-App"),
+        "app/coord-app".to_string(),
+        "APP/Coord-App".to_string(),
+    ] {
+        assert!(approved_by(&configured, &bot("coord-app")), "{configured}");
+        assert!(approved_by(&configured, &bot("COORD-APP")), "{configured}");
+        assert!(
+            !approved_by(&configured, "coord-app"),
+            "{configured}: a person who took the App's slug is not the App"
         );
     }
-    let other = [review(&bot("coord-app-2"), "APPROVED", "h1")];
-    assert_eq!(
-        approval(&other, &[bot("coord-app")], "h1"),
-        Approval::Missing,
-        "a longer slug is another App"
+    assert!(!approved_by(&bot("coord-app"), &bot("coord-app-2")));
+}
+
+#[test]
+fn a_bare_coordinator_is_a_person_and_never_an_app() {
+    assert!(approved_by("coord", "coord"));
+    assert!(approved_by("Coord", "COORD"));
+    assert!(
+        !approved_by("coord-app", &bot("coord-app")),
+        "a bare login never matches an App"
     );
 }
 
 #[test]
-fn an_app_spelt_two_ways_is_one_reviewer() {
-    // The approval under one spelling, the request for changes under the
-    // other: the later one stands.
+fn an_app_and_a_person_of_its_name_are_two_reviewers() {
+    // The person's request for changes is not the App's: the App's
+    // approval stands.
     let reviews = [
         review(&bot("coord-app"), "APPROVED", "h1"),
         review("coord-app", "CHANGES_REQUESTED", "h1"),
     ];
     assert_eq!(
         approval(&reviews, &[bot("coord-app")], "h1"),
-        Approval::ChangesRequested {
-            by: "coord-app".into()
+        Approval::Qualified {
+            by: bot("coord-app")
         }
     );
 }
 
 #[test]
-fn a_standing_request_for_changes_is_found_however_the_app_is_spelt() {
+fn a_standing_request_for_changes_is_the_configured_accounts_only() {
     let mut pr = pull_request(1);
     let head = pr.head_sha.clone();
-    for (configured, author) in [
-        (bot("coord-app"), "Coord-App".to_string()),
-        ("coord-app".to_string(), bot("coord-app")),
+    for (configured, author, standing) in [
+        (bot("coord-app"), bot("Coord-App"), true),
+        ("app/coord-app".to_string(), bot("coord-app"), true),
+        (bot("coord-app"), "coord-app".to_string(), false),
+        ("coord".to_string(), "Coord".to_string(), true),
+        ("coord".to_string(), bot("coord"), false),
     ] {
         pr.reviews = vec![review(&author, "CHANGES_REQUESTED", &head)];
         assert_eq!(
             changes_requested_at_head(&pr, std::slice::from_ref(&configured)),
-            Some(author.clone()),
+            standing.then(|| author.clone()),
             "configured {configured}, reviewed by {author}"
         );
     }
-    pr.reviews = vec![review("coord-app", "CHANGES_REQUESTED", "older")];
+    pr.reviews = vec![review(&bot("coord-app"), "CHANGES_REQUESTED", "older")];
     assert_eq!(
         changes_requested_at_head(&pr, &[bot("coord-app")]),
         None,
         "a request on an older head is not standing at this one"
     );
     pr.reviews = vec![
-        review("coord-app", "CHANGES_REQUESTED", &head),
-        review(&bot("coord-app"), "APPROVED", &head),
+        review(&bot("coord-app"), "CHANGES_REQUESTED", &head),
+        review(&bot("Coord-App"), "APPROVED", &head),
     ];
     assert_eq!(changes_requested_at_head(&pr, &[bot("coord-app")]), None);
 }

@@ -7,16 +7,16 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use super::shape::{Shape, Version};
-use crate::github::{PullRequest, same_login};
+use crate::github::{PullRequest, same_app};
 use crate::method::review::is_release_please_shaped;
 use crate::method::vocabulary::DEPLOYED_LABEL;
 
-/// Authored by a configured App (`<slug>[bot]`, `app/<slug>` and `<slug>`
-/// name the same one, [`same_login`]), and not a human account whose login
-/// merely resembles it.
+/// Authored by a configured App (a list of Apps: `<slug>[bot]`,
+/// `app/<slug>` and `<slug>` name the same one, [`same_app`]), and not a
+/// human account whose login merely resembles it.
 pub fn trusted_author(pr: &PullRequest, authors: &[String]) -> bool {
     match &pr.author {
-        Some(a) => a.is_bot && authors.iter().any(|x| same_login(x, &a.login)),
+        Some(a) => a.is_bot && authors.iter().any(|x| same_app(x, &a.login)),
         None => false,
     }
 }
