@@ -6,10 +6,7 @@
 //!   cargo test --test live_linear_conformance -- --ignored --nocapture
 //! ```
 //!
-//! `SPL_ASDLC_CONFORMANCE_STATUSES` may map canonical statuses to the team's
-//! names, as `To Deploy=To deploy;Post Deploy=Post deploy`.
-
-use std::collections::BTreeMap;
+//! The team names its statuses exactly as the canonical ones.
 
 use spl_asdlc::tracker::linear::{ENV_TOKEN, Linear};
 use spl_asdlc::tracker::{StatusTable, conformance};
@@ -24,17 +21,8 @@ fn linear_passes_the_conformance_suite() {
         // Run on purpose (`--ignored`): a missing setting is a failure, never a pass.
         panic!("{ENV_TOKEN} and SPL_ASDLC_CONFORMANCE_TEAM must be set");
     };
-    let mut map = BTreeMap::new();
-    for pair in std::env::var("SPL_ASDLC_CONFORMANCE_STATUSES")
-        .unwrap_or_default()
-        .split(';')
-    {
-        if let Some((k, v)) = pair.split_once('=') {
-            map.insert(k.trim().to_string(), v.trim().to_string());
-        }
-    }
-    let statuses = StatusTable::from_config(&map);
-    let linear = Linear::new(&token, &team, statuses.clone());
+    let statuses = StatusTable::identity();
+    let linear = Linear::new(&token, &team, statuses);
     let run_id = time::OffsetDateTime::now_utc().unix_timestamp().to_string();
     match conformance::run(&linear, &statuses, &run_id) {
         Ok(report) => {

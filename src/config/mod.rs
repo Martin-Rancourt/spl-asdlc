@@ -12,7 +12,7 @@
 pub mod overlay;
 mod raw;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fmt;
 use std::path::Path;
 
@@ -105,8 +105,6 @@ pub struct Tracker {
     /// Identifier prefixes of the team's items; empty means "ask the tracker".
     pub team_keys: Vec<String>,
     pub link_fallback: LinkFallback,
-    /// Canonical status -> tracker status, for every canonical status.
-    pub statuses: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -699,44 +697,12 @@ impl Validator {
                 ("body-url", LinkFallback::BodyUrl),
             ],
         );
-        let mut statuses: BTreeMap<String, String> = CANONICAL_STATUSES
-            .iter()
-            .map(|s| (s.to_string(), s.to_string()))
-            .collect();
-        for (canonical, name) in raw.statuses.unwrap_or_default() {
-            let key = format!("tracker.statuses.\"{canonical}\"");
-            if !CANONICAL_STATUSES.contains(&canonical.as_str()) {
-                self.err(
-                    &key,
-                    format!(
-                        "\"{canonical}\" is not a canonical status (one of {})",
-                        CANONICAL_STATUSES.join(", ")
-                    ),
-                );
-            } else if name.trim().is_empty() {
-                self.err(&key, "must name the tracker's status");
-            } else {
-                statuses.insert(canonical, name.trim().to_string());
-            }
-        }
-        let mut seen: BTreeMap<&str, &str> = BTreeMap::new();
-        for (canonical, name) in &statuses {
-            if let Some(other) = seen.insert(name.as_str(), canonical.as_str()) {
-                self.err(
-                    "tracker.statuses",
-                    format!(
-                        "\"{other}\" and \"{canonical}\" both map to the tracker status \"{name}\": the bridge could not tell them apart"
-                    ),
-                );
-            }
-        }
         Some(Tracker {
             kind: kind?,
             team: team?,
             service_identity: service_identity?,
             team_keys,
             link_fallback: link_fallback?,
-            statuses,
         })
     }
 
