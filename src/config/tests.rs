@@ -559,6 +559,47 @@ fn an_angle_assignee_and_the_channels_are_set_in_one_file_only() {
 }
 
 #[test]
+fn the_coordinator_assignees_are_instance_keys_set_in_one_file_only() {
+    let overlay = OVERLAY
+        .replace(
+            "[release]\n",
+            "[release]\ncoordinator_assignee = \"coordinator-handle\"\n",
+        )
+        .replace(
+            "[review]\n",
+            "[review]\ncoordinator_assignee = \"coordinator-handle\"\n",
+        );
+    let c = merged(NEUTRAL, &overlay).unwrap();
+    assert_eq!(
+        c.release.coordinator_assignee.as_deref(),
+        Some("coordinator-handle")
+    );
+    assert_eq!(
+        c.review.coordinator_assignee.as_deref(),
+        Some("coordinator-handle")
+    );
+    let single = MINIMAL.replace(
+        "[review]\n",
+        "[review]\ncoordinator_assignee = \"coordinator-handle\"\n",
+    );
+    let c = Config::parse(&single).unwrap();
+    assert_eq!(
+        c.review.coordinator_assignee.as_deref(),
+        Some("coordinator-handle")
+    );
+    assert_eq!(c.release.coordinator_assignee, None, "none by default");
+    let both = NEUTRAL.replace(
+        "[review]\n",
+        "[review]\ncoordinator_assignee = \"another-handle\"\n",
+    );
+    assert_merge_refused_with(
+        &both,
+        &overlay,
+        "review.coordinator_assignee: is set in both",
+    );
+}
+
+#[test]
 fn a_key_that_is_not_an_instance_key_is_refused_with_its_line() {
     let shape = OVERLAY.replace(
         "repository = \"example-org/acme\"\n",

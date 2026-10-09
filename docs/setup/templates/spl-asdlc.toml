@@ -49,6 +49,7 @@ bookkeeping_paths = [".release-please-manifest.json", "CHANGELOG.md"]  # add the
 # business_rule_paths = ["docs/business-rules.md", "**/business-rules.md"]
 # stagnation_hours = 2
 coordinators = ["coordinator-login"]   # GitHub logins whose approval at the head SHA merges an angle PR
+# coordinator_assignee = "coordinator-handle" # tracker participant who receives each candidate's consolidation item
 # escalation_label = "blocked-by-human"
 # auto_candidate = false
 # cut_workflow = "release-cut.yml"
@@ -82,6 +83,7 @@ diff_size_angle = "maintainability"    # required while diff_size_extra_angle is
 sensitive_paths = ".github/review-paths.json"
 # sensitive_angle = "security"
 coordinators = ["coordinator-login"]   # GitHub logins whose approval at the head SHA merges a PR
+# coordinator_assignee = "coordinator-handle" # tracker participant who receives each PR round's consolidation item
 # human_reviewer = "owner-login"       # asked to look at a green PR stuck on a human
 # ticketless_authors = []              # Apps whose PRs need no ticket, e.g. ["dependabot"]
 
