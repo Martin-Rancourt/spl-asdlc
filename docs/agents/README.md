@@ -1,6 +1,6 @@
 # Agent protocols
 
-Runtime-agnostic instructions an agent loads before doing one of the method's jobs. They assume nothing about how the agent is run, which model it is, or which tracker serves it: a tracker item says what to do and links to the PR or the candidate; the protocol says how. Each protocol ends with what the agent must leave behind (a PR, a report file, review threads) so that the bridge can continue without reading free text.
+Runtime-agnostic instructions an agent loads before doing one of the method's jobs. They assume nothing about how the agent is run, which model it is, or which tracker serves it: a tracker item says what to do and links to the PR or the candidate; the protocol says how. The bridge embeds the protocol an item needs in the item itself when it creates it (BR-ASDLC-015): an angle sub-item carries `review-pr.md` or `review-release.md` and the angle's file (`angles/<angle>.md`, or a line saying the method has none for a project's own angle), a consolidation item carries `consolidate.md`, and the items of a release candidate also carry the report schema and rules of `docs/spec/06-qa-report.md`. The texts are compiled into the bridge, so an item carries the protocol of the version that created it and keeps it while open; the project's own angle notes stay in the project's repository and the item links them. Each protocol ends with what the agent must leave behind (a PR, a report file, review threads) so that the bridge can continue without reading free text.
 
 | File | Job |
 |---|---|

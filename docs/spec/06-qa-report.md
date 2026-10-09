@@ -44,4 +44,4 @@ The coordinator reviews each angle PR as it comes, as its reviewer: that review 
 
 ## Prompts
 
-The angle protocols are documentation (`docs/agents/review-release.md`, one base plus one short file per angle: security, design, product, maintainability). A project may add angle notes in `.spl-asdlc/angles/<angle>.md`. The report schema above is what every protocol ends with.
+The angle protocols are documentation (`docs/agents/review-release.md`, one base plus one short file per angle: security, design, product, maintainability). A project may add angle notes in `.spl-asdlc/angles/<angle>.md`. The report schema above is what every protocol ends with. The bridge embeds the base protocol, the angle's file and the schema and rules above in each angle sub-item and consolidation item of a candidate, and links the project's notes (BR-ASDLC-015, `05-release-cycle.md` §3).

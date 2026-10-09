@@ -1,6 +1,6 @@
 # 03 — Vocabulary
 
-Canonical names. A tracker adapter maps them to the tracker's own names; configuration may rename the display, never the meaning.
+Canonical names. A tracker names its statuses exactly so; the configuration maps none (`08-configuration.md`). An adapter whose tracker keys statuses by its own ids maps them in its code.
 
 ## Statuses of a work item (ticket, bug)
 

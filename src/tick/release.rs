@@ -768,8 +768,11 @@ fn open_round(
             })
     });
     if !offered.is_empty() && !consolidated {
-        let (title, body) =
-            texts::release_consolidation_item(&c.tag, &format!("{product} {v} (rc.{})", c.rc));
+        let (title, body) = texts::consolidation_item(
+            &c.tag,
+            &format!("{product} {v} (rc.{})", c.rc),
+            texts::Consolidating::Candidate,
+        );
         let assignee = coordinator(t);
         if let Some(created) =
             create_child(t, log, report, &item.key, &title, &body, label, assignee)

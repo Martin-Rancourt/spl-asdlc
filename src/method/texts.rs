@@ -15,6 +15,8 @@ use regex::Regex;
 use crate::method::contract::is_acceptance_heading;
 use crate::method::markdown;
 
+pub mod protocol;
+
 // ---- markers ----
 
 /// A hidden marker: `<!-- spl-asdlc:<kind> k=v … -->`. Values carry no
@@ -215,7 +217,8 @@ pub fn append_candidate(description: &str, line: &str) -> String {
 }
 
 /// An angle sub-item of a release candidate (REQ-REL-048): self-contained,
-/// with real checkboxes.
+/// with real checkboxes, the protocol of a release angle and the method's
+/// notes of the angle embedded (BR-ASDLC-015), the project's notes linked.
 #[allow(clippy::too_many_arguments)]
 pub fn release_angle_item(
     product: &str,
@@ -231,8 +234,8 @@ pub fn release_angle_item(
     let v = crate::method::vocabulary::normalise_version(version);
     let title = format!("{} — {product} {v} (rc.{rc})", angle.title);
     let body = format!(
-        "{marker}\n\n## Goal\nRender the {key} review of the whole project at candidate `{candidate}`, as \
-         `docs/agents/review-release.md` and `docs/agents/angles/{key}.md` describe it.\n\n\
+        "{marker}\n\n## Goal\nRender the {key} review of the whole project at candidate `{candidate}`, as the \
+         protocol below describes it (`## Protocol`: the release angle's protocol and the angle's notes).\n\n\
          ## Non-goals\n- Another angle's review: the angles run in parallel.\n\n\
          ## Acceptance criteria\n\
          - [ ] The branch `qa/{candidate}/{key}` is cut from `{branch}`.\n\
@@ -240,18 +243,32 @@ pub fn release_angle_item(
          - [ ] The report `{report_path}` is committed (mandatory, even when nothing was found).\n\
          - [ ] A PR from `qa/{candidate}/{key}` to `{branch}` names this item.\n\n\
          ## Business rules\n{absence}\n\n\
+         ## What closes this item\nThe bridge sets this sub-item Done when it merges your angle PR into `{branch}`, \
+         which it does once the PR is ready (not a draft), names this item's key in its title or body, carries a valid \
+         report at `{report_path}` on its head, is approved at its head by a release coordinator with no request for \
+         changes standing, has its required checks green and is up to date with `{branch}`. A report that is missing or \
+         invalid is said in a comment here and the PR is not merged. An item still open when the cycle closes is closed \
+         with the release.\n\n\
          ## Context\n- Candidate: `{candidate}`\n- Release label: `{label}`\n- Project notes: {notes}\n- The brief is on the release item.\n\
          - This item follows your PR: `In Progress` once it appears; `In Review` once it is ready with its checks green, \
          assigned to the coordinator who reviews it; back `In Progress` when the coordinator requests changes, assigned to \
-         this angle's assignee again (or to nobody); `Done` when the bridge merges it after the coordinator's approval.",
+         this angle's assignee again (or to nobody); `Done` when the bridge merges it after the coordinator's approval.\n\n\
+         {protocol}",
         marker = marker("angle", &[("scope", candidate), ("angle", &angle.key)]),
         key = angle.key,
         absence = crate::method::business_rules::ABSENCE_DECLARATION,
-        notes = notes
-            .map(|n| format!("`{n}`"))
-            .unwrap_or_else(|| "none".into()),
+        notes = project_notes(notes),
+        protocol = protocol::section(protocol::Job::ReleaseAngle, Some(&angle.key)),
     );
     (title, body)
+}
+
+/// The project's notes of an angle, linked (never embedded): they live in
+/// the project's repository.
+fn project_notes(notes: Option<&str>) -> String {
+    notes
+        .map(|n| format!("`{n}`, in the project's repository"))
+        .unwrap_or_else(|| "none".into())
 }
 
 /// The scope of a PR review round: the PR and the head it opened at. A
@@ -261,12 +278,15 @@ pub fn round_scope(pr_url: &str, head: &str) -> String {
     format!("{pr_url}@{}", short(head))
 }
 
-/// An angle sub-item of a PR review (spec 04 §3).
+/// An angle sub-item of a PR review (spec 04 §3): the PR-review protocol
+/// and the method's notes of the angle embedded (BR-ASDLC-015), the
+/// project's notes linked.
 pub fn review_angle_item(
     ticket: &str,
     pr_url: &str,
     head: &str,
     angle: &str,
+    notes: Option<&str>,
     reasons: &[String],
 ) -> (String, String) {
     let title = format!("{} review — {ticket} ({})", capitalised(angle), short(head));
@@ -279,20 +299,26 @@ pub fn review_angle_item(
         )
     };
     let body = format!(
-        "{marker}\n\n## Goal\nReview the diff of {pr_url} at `{head12}` from the {angle} angle, as \
-         `docs/agents/review-pr.md` describes it, and post the findings as review comments on the PR (one thread per \
-         finding, severity in the first line).\n\n\
+        "{marker}\n\n## Goal\nReview the diff of {pr_url} at `{head12}` from the {angle} angle, as the protocol below \
+         describes it (`## Protocol`: the PR-review protocol and the angle's notes), and post the findings as review \
+         comments on the PR (one thread per finding, severity in the first line).\n\n\
          ## Non-goals\n- The other angles of the round.\n- Fixing: the coordinator applies the retained fixes.\n\n\
          ## Acceptance criteria\n- [ ] Every finding is a review thread on the PR, with its severity.\n\
-         - [ ] The review is submitted on GitHub.\n\n\
+         - [ ] The review is submitted on GitHub, its body naming this item's key.\n\n\
          ## Business rules\n{absence}\n\n\
-         ## Context\n- Ticket: {ticket}{why}",
+         ## What closes this item\nThe bridge sets this sub-item Done at the first tick that finds on {pr_url} a \
+         submitted review (any state but pending) whose body names this item's key as a whole word: name it in the \
+         body of your review. The PR's merge closes it too (Done), its close without merge cancels it.\n\n\
+         ## Context\n- Ticket: {ticket}\n- Project notes: {notes}{why}\n\n\
+         {protocol}",
         marker = marker(
             "angle",
             &[("scope", &round_scope(pr_url, head)), ("angle", angle)]
         ),
         head12 = short(head),
         absence = crate::method::business_rules::ABSENCE_DECLARATION,
+        notes = project_notes(notes),
+        protocol = protocol::section(protocol::Job::PrAngle, Some(angle)),
     );
     (title, body)
 }
@@ -357,43 +383,72 @@ pub fn post_deploy_validation_item(
     (title, body)
 }
 
-/// The consolidation item of a PR review (a release candidate's is
-/// `release_consolidation_item`).
-pub fn consolidation_item(scope: &str, title_of: &str, protocol: &str) -> (String, String) {
-    let title = format!("Consolidation — {title_of}");
-    let body = format!(
-        "{marker}\n\n## Goal\nConsolidate every angle of {scope} as `{protocol}` describes it: confirm or reject each finding \
-         exactly once, with a reason for every rejection, apply the retained fixes, and approve.\n\n\
-         ## Non-goals\n- New findings beyond what a fix requires.\n\n\
-         ## Acceptance criteria\n- [ ] Every finding is confirmed or rejected in its thread.\n\
-         - [ ] The retained fixes are commits of the branch.\n- [ ] The approval is submitted at the head.\n\n\
-         ## Business rules\n{absence}",
-        marker = marker("consolidation", &[("scope", scope)]),
-        absence = crate::method::business_rules::ABSENCE_DECLARATION,
-    );
-    (title, body)
+/// What a consolidation item consolidates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Consolidating {
+    /// The review round of a PR.
+    PullRequest,
+    /// The QA of a release candidate.
+    Candidate,
 }
 
-/// The consolidation item of a release candidate (BR-ASDLC-020): the
-/// overall review, served once every angle PR of the candidate is merged
-/// (its item is blocked by every angle sub-item). The coordinator reviewed
-/// each angle PR as it came; this item reads them together.
-pub fn release_consolidation_item(candidate: &str, title_of: &str) -> (String, String) {
+/// The consolidation item of a PR review or of a release candidate, with
+/// the consolidation protocol embedded (BR-ASDLC-015). A candidate's is the
+/// overall review (BR-ASDLC-020): served once every angle PR of the
+/// candidate is merged, its item blocked by every angle sub-item; the
+/// coordinator reviewed each angle PR as it came, this item reads them
+/// together.
+pub fn consolidation_item(scope: &str, title_of: &str, of: Consolidating) -> (String, String) {
     let title = format!("Consolidation — {title_of}");
+    let (goal, non_goals, criteria, closes, job) = match of {
+        Consolidating::PullRequest => (
+            format!(
+                "Consolidate every angle of {scope} as the protocol below describes it (`## Protocol`, its part \
+                 \"For a PR review\"): confirm or reject each finding exactly once, with a reason for every rejection, \
+                 apply the retained fixes, and approve."
+            ),
+            "- New findings beyond what a fix requires.",
+            "- [ ] Every finding is confirmed or rejected in its thread.\n\
+             - [ ] The retained fixes are commits of the branch.\n- [ ] The approval is submitted at the head.",
+            "Nothing you set closes this item: its PR does. The bridge sets it Done when it merges the PR, which it does \
+             once a coordinator's approval stands at the PR's head commit (of each coordinator's latest approval or \
+             request for changes, none requests changes and one approves the current head), the required checks are \
+             green there, every review thread is resolved, the branch is up to date when the base requires it, no hold \
+             stands and, when the project requires one, a human approved too. A close of the PR without merge cancels \
+             it. A request for changes at the head sends the ticket back to In Progress and leaves this item open.",
+            protocol::Job::PrConsolidation,
+        ),
+        Consolidating::Candidate => (
+            format!(
+                "The overall review of candidate `{scope}`, as the protocol below describes it (`## Protocol`, its part \
+                 \"For a release candidate\", the overall review), once every angle PR of the candidate is merged: read \
+                 every merged report together, confirm or reject each non-blocking finding in a comment on its ticket, \
+                 with a reason for every rejection, check that nothing falls between the angles, then tag the next \
+                 candidate (the cut workflow, action `candidate`) unless the project automates it."
+            ),
+            "- Reviewing an angle PR: the coordinator reviews each one as it comes, before the bridge merges it.\n\
+             - Filing tickets: the bridge creates them from the merged reports.\n- Declaring the GO: the bridge computes it.",
+            "- [ ] Every merged report of the candidate is read, with the others.\n\
+             - [ ] Every non-blocking finding is confirmed or rejected on its ticket, with a reason for every rejection.\n\
+             - [ ] What falls between the angles is checked, and said on the release item.\n\
+             - [ ] The next candidate is tagged, or the project's automation tags it.",
+            "Nothing you set closes this item. It is served once every angle sub-item of the candidate is resolved, \
+             that is once the bridge merged every angle PR, since it is blocked by each of them. The bridge sets it Done \
+             when a newer candidate is tagged, or when the release is published; the cycle's closure closes it \
+             otherwise. The GO is computed from the facts, never declared.",
+            protocol::Job::ReleaseConsolidation,
+        ),
+    };
     let body = format!(
-        "{marker}\n\n## Goal\nThe overall review of candidate `{candidate}`, as `docs/agents/consolidate.md` (release \
-         candidate) describes it, once every angle PR of the candidate is merged: read every merged report together, \
-         confirm or reject each non-blocking finding in a comment on its ticket, with a reason for every rejection, \
-         check that nothing falls between the angles, then tag the next candidate (the cut workflow, action `candidate`) unless the project automates it.\n\n\
-         ## Non-goals\n- Reviewing an angle PR: the coordinator reviews each one as it comes, before the bridge merges it.\n\
-         - Filing tickets: the bridge creates them from the merged reports.\n- Declaring the GO: the bridge computes it.\n\n\
-         ## Acceptance criteria\n- [ ] Every merged report of the candidate is read, with the others.\n\
-         - [ ] Every non-blocking finding is confirmed or rejected on its ticket, with a reason for every rejection.\n\
-         - [ ] What falls between the angles is checked, and said on the release item.\n\
-         - [ ] The next candidate is tagged, or the project's automation tags it.\n\n\
-         ## Business rules\n{absence}",
-        marker = marker("consolidation", &[("scope", candidate)]),
+        "{marker}\n\n## Goal\n{goal}\n\n\
+         ## Non-goals\n{non_goals}\n\n\
+         ## Acceptance criteria\n{criteria}\n\n\
+         ## Business rules\n{absence}\n\n\
+         ## What closes this item\n{closes}\n\n\
+         {protocol}",
+        marker = marker("consolidation", &[("scope", scope)]),
         absence = crate::method::business_rules::ABSENCE_DECLARATION,
+        protocol = protocol::section(job, None),
     );
     (title, body)
 }

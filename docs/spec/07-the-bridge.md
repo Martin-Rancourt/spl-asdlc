@@ -38,6 +38,8 @@ One deterministic process, `spl-asdlc tick`, that turns GitHub facts into tracke
 
 Read an item and its description; create an item (with parent, labels, assignee hint); set a status by canonical name; add a label; comment; add a relation (`blocks`, `duplicate`); link an item to a PR URL and find an item by a PR URL; list the children of an item; find the release issue of a product and version; list items by label. Nothing else. Every text it writes is English.
 
+An item it serves to an agent is a complete contract that carries its protocol (BR-ASDLC-015): an angle sub-item or a consolidation item, of a PR review or of a release candidate, embeds the method's protocol of its job under a `## Protocol` section, compiled into the binary (`04-pr-review.md` §3, `05-release-cycle.md` §3), and says what closes it in the bridge's terms. The item is frozen at its creation: found again by its marker, it is never rewritten, so a later bridge's protocol never changes an open item. Every item stays well under the tracker's description size (a conservative 60 000 characters, which a test holds the longest item to); a protocol that would outgrow it is trimmed in its file, never cut in the item.
+
 ## What it writes to GitHub
 
 Merges (REST, pinned to a head SHA), branch deletions, labels, comments on PRs (one per cause, never repeated), the dispatch of the cut workflow when the policy tags the next RC automatically.
