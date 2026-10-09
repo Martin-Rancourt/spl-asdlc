@@ -1251,3 +1251,68 @@ fn a_dry_run_says_the_relations_it_would_write() {
         .collect();
     assert!(!relations.is_empty(), "{lines:?}");
 }
+
+// ---- spec 04 §3: the coordinator receives the consolidation item ----
+
+fn coordinator() -> crate::tracker::User {
+    crate::tracker::User {
+        id: "u-coordinator".into(),
+        name: "coordinator-handle".into(),
+    }
+}
+
+fn consolidation(w: &World, ticket: &str, pr: &PullRequest) -> crate::tracker::Item {
+    let (key, _) = round_keys(w, ticket, pr);
+    w.tracker.item(&key)
+}
+
+#[test]
+fn a_pr_rounds_consolidation_item_goes_to_its_coordinator_once() {
+    let w = World::new();
+    assert_eq!(
+        w.config.review.coordinator_assignee.as_deref(),
+        Some("coordinator-handle")
+    );
+    w.tracker.state.borrow_mut().users.push(coordinator());
+    let pr = in_review(&w, 7);
+    assert_eq!(
+        consolidation(&w, "ABC-7", &pr).assignee,
+        Some(coordinator())
+    );
+    let (_, angles) = round_keys(&w, "ABC-7", &pr);
+    for a in angles {
+        assert_eq!(w.tracker.item(&a).assignee, None, "an angle has its own");
+    }
+    quiet(&w);
+}
+
+#[test]
+fn without_a_coordinator_assignee_the_consolidation_item_is_unassigned() {
+    let mut w = World::new();
+    w.config.review.coordinator_assignee = None;
+    w.tracker.state.borrow_mut().users.push(coordinator());
+    let pr = in_review(&w, 7);
+    assert_eq!(consolidation(&w, "ABC-7", &pr).assignee, None);
+    quiet(&w);
+}
+
+#[test]
+fn an_unknown_coordinator_leaves_the_item_unassigned_and_it_is_never_reassigned() {
+    let w = World::new();
+    let pr = in_review(&w, 7);
+    let item = consolidation(&w, "ABC-7", &pr);
+    assert_eq!(item.assignee, None, "the tracker does not know the name");
+    quiet(&w);
+    // The participant now exists: the existing item stays as it is.
+    w.tracker.state.borrow_mut().users.push(coordinator());
+    quiet(&w);
+    assert_eq!(w.tracker.item(&item.key).assignee, None);
+    // Someone takes it: the bridge leaves it with them.
+    let taker = crate::tracker::User {
+        id: "u-taker".into(),
+        name: "taker-handle".into(),
+    };
+    crate::tracker::Tracker::assign(&w.tracker, &item.key, Some(&taker)).unwrap();
+    quiet(&w);
+    assert_eq!(w.tracker.item(&item.key).assignee, Some(taker));
+}

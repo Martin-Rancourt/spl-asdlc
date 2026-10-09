@@ -755,7 +755,15 @@ fn open_round(
             &format!("{product} {v} (rc.{})", c.rc),
             "docs/agents/consolidate.md",
         );
-        if let Some(created) = create_child(t, log, report, &item.key, &title, &body, label, None) {
+        let assignee = t
+            .config
+            .release
+            .coordinator_assignee
+            .as_ref()
+            .and_then(|a| t.tracker.user(a).ok());
+        if let Some(created) =
+            create_child(t, log, report, &item.key, &title, &body, label, assignee)
+        {
             children.push(created);
         }
     }

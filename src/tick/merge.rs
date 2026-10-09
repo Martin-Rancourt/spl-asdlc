@@ -984,6 +984,14 @@ fn enter_review(
                 &format!("{} ({})", ticket.key, texts::short(&pr.head_sha)),
                 "docs/agents/consolidate.md",
             );
+            // Its coordinator, at creation only: an existing consolidation
+            // item is never reassigned (someone may have taken it).
+            let assignee = t
+                .config
+                .review
+                .coordinator_assignee
+                .as_ref()
+                .and_then(|name| t.tracker.user(name).ok());
             match create(
                 t,
                 log,
@@ -992,7 +1000,7 @@ fn enter_review(
                 &title,
                 &body,
                 &ticket.key,
-                None,
+                assignee,
                 &pr.url,
             ) {
                 Some(k) => k,
