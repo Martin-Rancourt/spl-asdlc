@@ -22,12 +22,13 @@ use crate::github::{PrState, PullRequest, RequiredChecks};
 use crate::method::business_rules::{self, Registry};
 use crate::method::checks::{self, CheckState};
 use crate::method::contract;
+use crate::method::release::findings;
 use crate::method::release::prs::trusted_author;
 use crate::method::review::{self, Approval, BranchState, ReviewFacts, SensitivePaths};
 use crate::method::texts::{self, BridgeItem};
 use crate::method::ticket_state::{self, Facts, OpenPr};
 use crate::method::vocabulary::{Status, TICKETLESS_LABEL};
-use crate::tracker::{Item, NewItem};
+use crate::tracker::{Item, NewItem, RelationKind};
 
 use super::link::{self, Linked};
 use super::{Report, Tick};
@@ -292,11 +293,14 @@ fn one(
 
     // ---- reviews submitted close their angle sub-items ----
     let mut has_round = true;
+    let mut open_angles = Vec::new();
     if ticket.state.status == Some(Status::InReview) {
         match t.tracker.children(&ticket.key) {
             Ok(children) => {
                 has_round = children.iter().any(|c| round_of(c, &pr.url));
-                close_reviewed_sub_items(t, log, report, &pr, &children);
+                let closed = close_reviewed_sub_items(t, log, report, &pr, &children);
+                open_angles = angles_open(&children, &pr, &closed);
+                repair_rounds(t, log, report, &pr, &children);
             }
             Err(e) => {
                 t.unreadable(report, &ticket.key, format!("the ticket's children: {e}"));
@@ -536,6 +540,26 @@ fn one(
         }
         _ => return None,
     };
+    // The consolidation starts only after its angles (BR-ASDLC-018): an
+    // approval given while an angle sub-item of the round is open does not
+    // count, even when a dispatcher ignored the blocking relation.
+    if !open_angles.is_empty() {
+        say_once(
+            t,
+            log,
+            report,
+            &pr,
+            "angles-open",
+            &[("pr", &pr.url), ("head", texts::short(&pr.head_sha))],
+            &format!(
+                "Waiting for the angle reviews: {} still open, so the approval at `{}` does not \
+                 count yet and the PR is not merged (BR-ASDLC-018).",
+                open_angles.join(", "),
+                texts::short(&pr.head_sha)
+            ),
+        );
+        return None;
+    }
     if !plan.holds.is_empty() {
         return None;
     }
@@ -855,7 +879,8 @@ fn changes_requested_at_head(pr: &PullRequest, coordinators: &[String]) -> bool 
 }
 
 /// Open the review round: the angle sub-items and the consolidation item
-/// (each linked to the PR), the round comment, then In Review last, so that
+/// (each linked to the PR), the consolidation item blocked by every angle
+/// sub-item (BR-ASDLC-018), the round comment, then In Review last, so that
 /// a tick cut short re-creates nothing (spec 04 §3).
 fn enter_review(
     t: &Tick,
@@ -948,29 +973,39 @@ fn enter_review(
     let want = BridgeItem::Consolidation {
         scope: scope.clone(),
     };
-    if let Some(k) = existing(&want) {
-        relink(&k, "consolidation", log, report);
-    } else {
-        let (title, body) = texts::consolidation_item(
-            &scope,
-            &format!("{} ({})", ticket.key, texts::short(&pr.head_sha)),
-            "docs/agents/consolidate.md",
-        );
-        if create(
-            t,
-            log,
-            report,
-            &object,
-            &title,
-            &body,
-            &ticket.key,
-            None,
-            &pr.url,
-        )
-        .is_none()
-        {
-            return;
+    let consolidation = match existing(&want) {
+        Some(k) => {
+            relink(&k, "consolidation", log, report);
+            k
         }
+        None => {
+            let (title, body) = texts::consolidation_item(
+                &scope,
+                &format!("{} ({})", ticket.key, texts::short(&pr.head_sha)),
+                "docs/agents/consolidate.md",
+            );
+            match create(
+                t,
+                log,
+                report,
+                &object,
+                &title,
+                &body,
+                &ticket.key,
+                None,
+                &pr.url,
+            ) {
+                Some(k) => k,
+                None => return,
+            }
+        }
+    };
+    // The consolidation item waits on every angle of its round
+    // (BR-ASDLC-018); a relation not written holds the round's opening, so
+    // the next tick writes it again.
+    let angle_keys: Vec<String> = items.iter().map(|(_, k)| k.clone()).collect();
+    if !block_consolidation(t, log, report, &consolidation, &angle_keys) {
+        return;
     }
     let round = texts::review_round_comment(
         &pr.url,
@@ -1182,14 +1217,144 @@ fn hint(t: &Tick, angles: &[crate::config::Angle], angle: &str) -> Option<crate:
     t.tracker.user(name).ok()
 }
 
-/// A submitted review closes the angle sub-item it names (spec 04 §4).
-fn close_reviewed_sub_items(
+/// The consolidation item of a round is blocked by every angle sub-item of
+/// the round (BR-ASDLC-018), through the tracker's own `blocks` relation,
+/// which dispatchers respect; it stops blocking when the angle item is
+/// resolved. A relation already there is not written again. `false` when a
+/// relation could not be read or written: reported, retried at the next tick.
+pub fn block_consolidation(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    consolidation: &str,
+    angles: &[String],
+) -> bool {
+    if angles.is_empty() {
+        return true;
+    }
+    let present: Vec<String> = match t.tracker.relations(consolidation) {
+        Ok(r) if r.cut => {
+            t.unreadable(
+                report,
+                consolidation,
+                "the relation list is cut: whether its angles block it cannot be told",
+            );
+            return false;
+        }
+        Ok(r) => r.blocked_by.into_iter().map(|r| r.other).collect(),
+        Err(e) => {
+            t.unreadable(report, consolidation, format!("relations: {e}"));
+            return false;
+        }
+    };
+    let mut all = true;
+    for angle in angles {
+        if present.iter().any(|p| p.eq_ignore_ascii_case(angle)) {
+            continue;
+        }
+        let mut blockers_of = |x: &str| -> Result<Vec<String>, String> {
+            t.tracker
+                .relations(x)
+                .map(|r| r.blocked_by.into_iter().map(|r| r.other).collect())
+                .map_err(|e| e.to_string())
+        };
+        if let Err(e) = findings::may_block(angle, consolidation, &mut blockers_of) {
+            t.unreadable(
+                report,
+                angle,
+                format!("{angle} cannot block {consolidation}: {e}"),
+            );
+            all = false;
+            continue;
+        }
+        all &= t
+            .act(
+                log,
+                report,
+                angle,
+                &format!("relate Blocks {consolidation}"),
+                json!({"consolidation": consolidation}),
+                || {
+                    t.tracker
+                        .relate(angle, consolidation, RelationKind::Blocks)
+                        .map_err(|e| e.to_string())
+                },
+            )
+            .is_some();
+    }
+    all
+}
+
+/// Every open round of this PR (its consolidation item not resolved) gets
+/// the relations it lacks: a round opened before them, or one whose
+/// relation failed, is repaired.
+fn repair_rounds(
     t: &Tick,
     log: &mut ActionLog,
     report: &mut Report,
     pr: &PullRequest,
     children: &[Item],
 ) {
+    let prefix = format!("{}@", pr.url);
+    for child in children {
+        let Some(BridgeItem::Consolidation { scope }) =
+            texts::bridge_item(&child.description, child.parent.as_deref())
+        else {
+            continue;
+        };
+        if !scope.starts_with(&prefix) || child.state.is_resolved() {
+            continue;
+        }
+        let angles: Vec<String> = children
+            .iter()
+            .filter(|c| {
+                matches!(
+                    texts::bridge_item(&c.description, c.parent.as_deref()),
+                    Some(BridgeItem::Angle { scope: s, .. }) if s == scope
+                )
+            })
+            .map(|c| c.key.clone())
+            .collect();
+        block_consolidation(t, log, report, &child.key, &angles);
+    }
+}
+
+/// The angle sub-items of this PR's round still open (BR-ASDLC-018), but
+/// those closed this tick: the round at the PR's head when there is one,
+/// otherwise every round of the PR (fail closed).
+fn angles_open(children: &[Item], pr: &PullRequest, closed: &[String]) -> Vec<String> {
+    let prefix = format!("{}@", pr.url);
+    let head = texts::round_scope(&pr.url, &pr.head_sha);
+    let angles: Vec<(&Item, String)> = children
+        .iter()
+        .filter_map(
+            |c| match texts::bridge_item(&c.description, c.parent.as_deref()) {
+                Some(BridgeItem::Angle { scope, .. }) if scope.starts_with(&prefix) => {
+                    Some((c, scope))
+                }
+                _ => None,
+            },
+        )
+        .collect();
+    let at_head = angles.iter().any(|(_, s)| *s == head);
+    angles
+        .into_iter()
+        .filter(|(_, s)| !at_head || *s == head)
+        .filter(|(c, _)| !c.state.is_resolved() && !closed.contains(&c.key))
+        .map(|(c, _)| c.key.clone())
+        .collect()
+}
+
+/// A submitted review closes the angle sub-item it names (spec 04 §4).
+/// Returns the sub-items closed now.
+fn close_reviewed_sub_items(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    pr: &PullRequest,
+    children: &[Item],
+) -> Vec<String> {
+    let mut closed = Vec::new();
     let prefix = format!("{}@", pr.url);
     for child in children {
         let Some(BridgeItem::Angle { scope, .. }) =
@@ -1204,8 +1369,8 @@ fn close_reviewed_sub_items(
             .reviews
             .iter()
             .any(|r| !r.state.eq_ignore_ascii_case("PENDING") && names(&r.body, &child.key));
-        if reviewed {
-            t.act(
+        if reviewed
+            && t.act(
                 log,
                 report,
                 &child.key,
@@ -1216,9 +1381,13 @@ fn close_reviewed_sub_items(
                         .set_status(&child.key, Status::Done, None)
                         .map_err(|e| e.to_string())
                 },
-            );
+            )
+            .is_some()
+        {
+            closed.push(child.key.clone());
         }
     }
+    closed
 }
 
 /// Whether a text names an item key as a whole word.
