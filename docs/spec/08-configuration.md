@@ -123,6 +123,7 @@ events = ["release-note", "escalation", "stagnation", "stuck-pr", "blind-pass"]
 6. Unknown keys are errors (a misspelt key is never a silently ignored setting). `config check` lists every problem of a well-formed file; a file that is not valid TOML, carries an unknown key or a value of the wrong type (a string where a number is expected) is reported by its first such error, with its line.
 7. Every default below is what the bridge uses when the key is absent; a present key with an invalid value is an error, never replaced by its default.
 8. A list never names the same entry twice (paths, logins, components, events): a repeated entry is an error, not a harmless duplicate, because it usually hides a typo next to it.
+9. A GitHub App may be written `<slug>` or `<slug>[bot]` (and `app/<slug>`) wherever a login is configured: `release.coordinators`, `release.release_please_authors`, `review.coordinators`, `review.ticketless_authors`. GitHub's GraphQL API names an App by its slug where REST and the UI write `<slug>[bot]`, so the bridge compares a configured login with a review's or a PR's author case-insensitively and with a trailing `[bot]` set apart on both sides; how the login was spelt never decides whether an approval counts.
 
 ## The instance overlay
 
@@ -196,12 +197,12 @@ Every other key is the method's shape and stays in the repository's file, where 
 | `release.version_component` | none; required with components | The component whose release ends the cycle; merged last. | Missing, or not a component: file invalid. |
 | `release.gate_record` | none; required with components | Path of the gate record (`{version}` once) the deployment reads. | Missing with components: file invalid. |
 | `release.release_pr_label` | `autorelease: pending` | Label that identifies release-please PRs. | — |
-| `release.release_please_authors` | required | GitHub logins allowed to author release-please PRs (`<slug>[bot]` and `app/<slug>` are both accepted at run time). | A release-shaped PR by anyone else is ignored and logged, never merged. |
+| `release.release_please_authors` | required | GitHub logins allowed to author release-please PRs (`<slug>`, `<slug>[bot]` and `app/<slug>` are all accepted, rule 9). | A release-shaped PR by anyone else is ignored and logged, never merged. |
 | `release.bookkeeping_paths` | `[]` | Files allowed to differ between the latest RC and the release branch tip (release-please manifest, changelog, version files). | Empty: the RC must equal the tip exactly; anything else is a tip gap and the GO is false. |
 | `release.registry_path` | `docs/business-rules.md` | The business-rule registry (`02-business-rules.md`). | Unreadable at the judged ref: the guard fails closed. |
 | `release.business_rule_paths` | `["docs/business-rules.md", "**/business-rules.md"]` | Paths whose change the brief singles out as "business rules touched". | — |
 | `release.stagnation_hours` | `2` | A GO false for longer than this is reported once. | Not a positive integer: file invalid. |
-| `release.coordinators` | required | GitHub logins whose approval at the head SHA lets the bridge merge an angle PR. | No approval by one of them: the angle PR is not merged. |
+| `release.coordinators` | required | GitHub logins whose approval at the head SHA lets the bridge merge an angle PR; a coordinator App may be written `<slug>` or `<slug>[bot]` (rule 9). | No approval by one of them: the angle PR is not merged. |
 | `release.escalation_label` | `blocked-by-human` | Label added to the release issue when it waits for the owner. | — |
 | `release.auto_candidate` | `false` | When true the bridge dispatches the next RC itself once a pass is merged; otherwise the coordinator does. | — |
 | `release.cut_workflow` | `release-cut.yml` | Workflow the bridge dispatches for `release cut`. | Not a file name: file invalid; absent on GitHub: the dispatch fails and says so. |
@@ -222,8 +223,8 @@ Every other key is the method's shape and stays in the repository's file, where 
 | `review.human_approval` | `"never"` | Whether a human must approve besides the coordinator: `never`, `sensitive-paths`, `always`. | `sensitive-paths` without `sensitive_paths`: file invalid. |
 | `review.sensitive_paths` | not declared | Path of the sensitive-path list read at the PR's base (rule 5). | Declared and absent or unreadable: the PR waits, one human notice. |
 | `review.sensitive_angle` | `security` | The angle a sensitive path adds. | — |
-| `review.coordinators` | required | GitHub logins whose approval at the head SHA lets the bridge merge a PR. A later `COMMENTED` review never cancels an approval; a standing `CHANGES_REQUESTED` from any configured login blocks. | No approval at the head SHA: not merged. |
-| `review.ticketless_authors` | `[]` | Apps whose PRs need no ticket (`<slug>`, `<slug>[bot]` or `app/<slug>`): for such a PR linked to no ticket, the bridge opens one labelled `ticketless-pr` with a complete contract, and the PR takes the usual path (spec 04 §9). | A human account whose login matches never qualifies; any other PR without a ticket waits. |
+| `review.coordinators` | required | GitHub logins whose approval at the head SHA lets the bridge merge a PR; a coordinator App may be written `<slug>` or `<slug>[bot]` (rule 9). A later `COMMENTED` review never cancels an approval; a standing `CHANGES_REQUESTED` from any configured login blocks. | No approval at the head SHA: not merged, and the tick's report says so with the approvals it did find (spec 07). |
+| `review.ticketless_authors` | `[]` | Apps whose PRs need no ticket (`<slug>`, `<slug>[bot]` or `app/<slug>`, rule 9): for such a PR linked to no ticket, the bridge opens one labelled `ticketless-pr` with a complete contract, and the PR takes the usual path (spec 04 §9). | A human account whose login matches never qualifies; any other PR without a ticket waits. |
 | `review.human_reviewer` | none | GitHub login asked to look at a green PR stuck on something only a human can lift. | Absent: the notice says that a reviewer must be assigned by hand. |
 | `[[review.angles]]` | at least one required | Base angles of every PR review: `key` (required), `assignee`. | No angle: file invalid. |
 | `[[review.path_angles]]` | none | `paths` (globs, `*` crosses `/`) and the `angle` they add. | — |

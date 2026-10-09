@@ -150,6 +150,23 @@ pub struct Actor {
     pub is_bot: bool,
 }
 
+/// What a login is compared by: case folded, with an App's spelling set
+/// apart. GraphQL names an App by its slug, REST and the UI by
+/// `<slug>[bot]`, the `gh` CLI by `app/<slug>`: all three are one App.
+pub fn login_key(login: &str) -> String {
+    let l = login.trim().to_ascii_lowercase();
+    let l = l.strip_prefix("app/").unwrap_or(&l);
+    l.strip_suffix("[bot]").unwrap_or(l).to_string()
+}
+
+/// Whether two logins name the same account, however an App is spelt on
+/// either side (configuration or API). Every match of a review or PR author
+/// against a configured list goes through here.
+pub fn same_login(a: &str, b: &str) -> bool {
+    let (a, b) = (login_key(a), login_key(b));
+    !a.is_empty() && a == b
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectType {
     Commit,
@@ -388,5 +405,40 @@ impl MergeMethod {
             MergeMethod::Squash => "squash",
             MergeMethod::Merge => "merge",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The login REST and the UI show for an App.
+    fn bot(slug: &str) -> String {
+        format!("{slug}[bot]")
+    }
+
+    #[test]
+    fn an_app_is_one_login_however_it_is_spelt() {
+        let spellings = [
+            "coord-app".to_string(),
+            bot("coord-app"),
+            bot("Coord-App"),
+            "COORD-APP".to_string(),
+            "app/coord-app".to_string(),
+            format!(" {} ", bot("coord-app")),
+        ];
+        for a in &spellings {
+            for b in &spellings {
+                assert!(same_login(a, b), "{a} and {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn other_logins_stay_other() {
+        assert!(!same_login(&bot("coord-app"), "coord-app-2"));
+        assert!(!same_login("coord", &bot("coord-app")));
+        assert!(!same_login("", &bot("")), "an empty login names nobody");
+        assert_eq!(login_key(&bot("Coord-App")), "coord-app");
     }
 }

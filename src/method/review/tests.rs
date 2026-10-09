@@ -431,6 +431,98 @@ fn human_approval_follows_the_policy() {
     assert!(!needs_human_approval(&config, &plan_clean));
 }
 
+// ---- an App's login, however it is spelt (SID-1008) ----
+
+/// The login REST and the UI show for an App.
+fn bot(slug: &str) -> String {
+    format!("{slug}[bot]")
+}
+
+#[test]
+fn an_app_approval_qualifies_however_either_side_spells_it() {
+    // (configured, as GitHub reported the review's author)
+    let spellings = [
+        (bot("coord-app"), "coord-app".to_string()),
+        ("coord-app".to_string(), bot("coord-app")),
+        (bot("Coord-App"), "coord-app".to_string()),
+        ("coord-app".to_string(), bot("COORD-APP")),
+        (bot("coord-app"), bot("coord-app")),
+    ];
+    for (configured, author) in spellings {
+        let reviews = [review(&author, "APPROVED", "h1")];
+        assert_eq!(
+            approval(&reviews, std::slice::from_ref(&configured), "h1"),
+            Approval::Qualified { by: author.clone() },
+            "configured {configured}, reviewed by {author}"
+        );
+    }
+    let other = [review(&bot("coord-app-2"), "APPROVED", "h1")];
+    assert_eq!(
+        approval(&other, &[bot("coord-app")], "h1"),
+        Approval::Missing,
+        "a longer slug is another App"
+    );
+}
+
+#[test]
+fn an_app_spelt_two_ways_is_one_reviewer() {
+    // The approval under one spelling, the request for changes under the
+    // other: the later one stands.
+    let reviews = [
+        review(&bot("coord-app"), "APPROVED", "h1"),
+        review("coord-app", "CHANGES_REQUESTED", "h1"),
+    ];
+    assert_eq!(
+        approval(&reviews, &[bot("coord-app")], "h1"),
+        Approval::ChangesRequested {
+            by: "coord-app".into()
+        }
+    );
+}
+
+#[test]
+fn a_standing_request_for_changes_is_found_however_the_app_is_spelt() {
+    let mut pr = pull_request(1);
+    let head = pr.head_sha.clone();
+    for (configured, author) in [
+        (bot("coord-app"), "Coord-App".to_string()),
+        ("coord-app".to_string(), bot("coord-app")),
+    ] {
+        pr.reviews = vec![review(&author, "CHANGES_REQUESTED", &head)];
+        assert_eq!(
+            changes_requested_at_head(&pr, std::slice::from_ref(&configured)),
+            Some(author.clone()),
+            "configured {configured}, reviewed by {author}"
+        );
+    }
+    pr.reviews = vec![review("coord-app", "CHANGES_REQUESTED", "older")];
+    assert_eq!(
+        changes_requested_at_head(&pr, &[bot("coord-app")]),
+        None,
+        "a request on an older head is not standing at this one"
+    );
+    pr.reviews = vec![
+        review("coord-app", "CHANGES_REQUESTED", &head),
+        review(&bot("coord-app"), "APPROVED", &head),
+    ];
+    assert_eq!(changes_requested_at_head(&pr, &[bot("coord-app")]), None);
+}
+
+#[test]
+fn the_approvals_at_the_head_are_named_as_github_spelt_them() {
+    let reviews = [
+        review("dev", "APPROVED", "h1"),
+        review("coord-app", "APPROVED", "h0"),
+        review("other", "APPROVED", "h1"),
+        review("other", "CHANGES_REQUESTED", "h1"),
+        review(&bot("qa-app"), "APPROVED", "h1"),
+    ];
+    assert_eq!(
+        approvals_at_head(&reviews, "h1"),
+        vec!["dev".to_string(), bot("qa-app")]
+    );
+}
+
 #[test]
 fn a_cut_review_list_never_qualifies() {
     let mut pr = pull_request(1);
