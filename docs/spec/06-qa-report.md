@@ -40,7 +40,7 @@ Every angle of a release QA commits one report in its branch, in `.spl-asdlc/qa/
 
 ## Consolidation
 
-The coordinator's review of an angle PR is the consolidation of that angle. In the PR threads it confirms or rejects each finding, exactly once, with a reason for every rejection; it may lower or raise a severity with a reason; it resolves conflicts with other angle branches. The bridge checks, before merging an angle PR, that the report is valid (schema, rules 1 and 2) and that the coordinator approved at the head SHA. A rejected finding stays in the report with the coordinator's verdict recorded in the thread; the bridge does not create a ticket for a rejected finding.
+The coordinator reviews each angle PR as it comes, as its reviewer: that review is the consolidation of that angle. In the PR threads it confirms or rejects each finding, exactly once, with a reason for every rejection; it may lower or raise a severity with a reason; it resolves conflicts with other angle branches. The bridge checks, before merging an angle PR, that the report is valid (schema, rules 1 and 2) and that the coordinator approved at the head SHA. A rejected finding stays in the report with the coordinator's verdict recorded in the thread; the bridge does not create a ticket for a rejected finding. Once every angle PR of the candidate is merged, the candidate's consolidation item serves the **overall review** (`05-release-cycle.md` §5, BR-ASDLC-020): the coordinator reads every merged report together, confirms or rejects the non-blocking findings filed from them, and checks that nothing falls between the angles.
 
 ## Prompts
 
