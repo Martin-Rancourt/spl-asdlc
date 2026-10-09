@@ -1,5 +1,6 @@
-//! Canonical names (`docs/spec/03-vocabulary.md`). A tracker adapter maps
-//! them to the tracker's own names; the method speaks only these.
+//! Canonical names (`docs/spec/03-vocabulary.md`). A tracker names statuses
+//! exactly so; an adapter may map backend-specific IDs internally. The method
+//! speaks only these.
 
 use std::fmt;
 

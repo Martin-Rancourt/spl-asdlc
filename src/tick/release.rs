@@ -753,7 +753,7 @@ fn open_round(
         let (title, body) = texts::consolidation_item(
             &c.tag,
             &format!("{product} {v} (rc.{})", c.rc),
-            "docs/agents/consolidate.md",
+            texts::Consolidating::Candidate,
         );
         if let Some(created) = create_child(t, log, report, &item.key, &title, &body, label, None) {
             children.push(created);

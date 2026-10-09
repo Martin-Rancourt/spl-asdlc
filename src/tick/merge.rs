@@ -1001,11 +1001,19 @@ fn enter_review(
                 k
             }
             None => {
+                let notes = t
+                    .config
+                    .review
+                    .angles
+                    .iter()
+                    .find(|a| a.key == *angle)
+                    .and_then(|a| a.notes.as_deref());
                 let (title, body) = texts::review_angle_item(
                     &ticket.key,
                     &pr.url,
                     &pr.head_sha,
                     angle,
+                    notes,
                     &plan.reasons,
                 );
                 let assignee = hint(t, &t.config.review.angles, angle);
@@ -1036,7 +1044,7 @@ fn enter_review(
         let (title, body) = texts::consolidation_item(
             &scope,
             &format!("{} ({})", ticket.key, texts::short(&pr.head_sha)),
-            "docs/agents/consolidate.md",
+            texts::Consolidating::PullRequest,
         );
         if create(
             t,

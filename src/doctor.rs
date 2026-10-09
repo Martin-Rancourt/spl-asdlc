@@ -247,18 +247,22 @@ fn tracker_checks(config: &Config, tracker: &dyn Tracker) -> Vec<Check> {
         )),
         Err(e) => out.push(check("tracker", Verdict::Missing, e.to_string())),
     }
-    let table = StatusTable::from_config(&config.tracker.statuses);
+    let table = StatusTable::identity();
     out.push(match tracker.status_names() {
         Ok(names) => {
             let missing = table.missing(&names);
             if missing.is_empty() {
-                check("statuses", Verdict::Ok, "every canonical status is mapped")
+                check(
+                    "statuses",
+                    Verdict::Ok,
+                    "the tracker names every canonical status",
+                )
             } else {
                 check(
                     "statuses",
                     Verdict::Missing,
                     format!(
-                        "the tracker lacks: {}",
+                        "the tracker lacks {}: it must name each canonical status exactly so",
                         missing
                             .iter()
                             .map(|s| table.tracker_name(*s))
@@ -360,6 +364,21 @@ mod tests {
             c.to_string()
                 .starts_with("workflow release-cut.yml: missing")
         }));
+    }
+
+    #[test]
+    fn a_canonical_status_the_team_lacks_is_reported_by_its_exact_name() {
+        let c = config();
+        let mut t = FakeTracker::default();
+        t.status_names.retain(|n| n != "To Deploy");
+        t.status_names.push("To deploy".into());
+        let checks = tracker_checks(&c, &t);
+        let statuses = checks.iter().find(|c| c.name == "statuses").unwrap();
+        assert_eq!(statuses.verdict, Verdict::Missing);
+        assert_eq!(
+            statuses.to_string(),
+            "statuses: missing — the tracker lacks To Deploy: it must name each canonical status exactly so"
+        );
     }
 
     /// The repository's file at the default branch is neutral: the doctor

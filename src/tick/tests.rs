@@ -196,6 +196,99 @@ fn a_green_pr_with_a_complete_contract_opens_a_review_round_then_nothing_more() 
     quiet(&w);
 }
 
+// ---- BR-ASDLC-015: an item carries its protocol, frozen at creation ----
+
+#[test]
+fn a_rounds_items_carry_their_protocol_and_one_found_by_its_marker_is_never_rewritten() {
+    let w = World::new();
+    let pr = green(pull_request(7));
+    w.ticket("ABC-1", Status::InProgress, &pr);
+    w.open(pr.clone());
+    // An angle sub-item of this round, created by an older bridge (its
+    // creation answer lost), with another protocol.
+    let scope = texts::round_scope(&pr.url, &pr.head_sha);
+    let m = texts::marker("angle", &[("scope", &scope), ("angle", "maintainability")]);
+    let older = format!(
+        "{m}\n\n## Goal\nAn older text.\n\n## Acceptance criteria\n- [ ] it\n\n## Business rules\nNo new rule.\n\n## Protocol\n\nAn older protocol.\n"
+    );
+    w.tracker.seed(
+        "ABC-900",
+        "Maintainability review",
+        &older,
+        Status::Ready,
+        &[],
+    );
+    w.tracker.state.borrow_mut().set_parent("ABC-900", "ABC-1");
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(w.tracker.item("ABC-900").description, older);
+    assert!(
+        !w.tracker.writes().iter().any(|x| x.starts_with("describe")),
+        "{:?}",
+        w.tracker.writes()
+    );
+    let children = children_of(&w, "ABC-1");
+    let angles: Vec<_> = children
+        .iter()
+        .filter(|c| {
+            matches!(
+                texts::bridge_item(&c.description, c.parent.as_deref()),
+                Some(BridgeItem::Angle { .. })
+            )
+        })
+        .collect();
+    assert_eq!(angles.len(), 1, "found by its marker, not created again");
+    // The item the tick created carries the protocol of this bridge.
+    let consolidation = children
+        .iter()
+        .find(|c| {
+            matches!(
+                texts::bridge_item(&c.description, c.parent.as_deref()),
+                Some(BridgeItem::Consolidation { .. })
+            )
+        })
+        .unwrap();
+    assert!(
+        consolidation.description.contains(&format!(
+            "Embedded by spl-asdlc {}",
+            texts::protocol::VERSION
+        )) && consolidation.description.contains("### Consolidate"),
+        "{}",
+        consolidation.description
+    );
+    quiet(&w);
+}
+
+#[test]
+fn a_new_angle_sub_item_embeds_the_pr_review_protocol_and_links_the_projects_notes() {
+    let mut w = World::new();
+    w.config.review.angles[0].notes = Some(".spl-asdlc/angles/maintainability.md".into());
+    let pr = green(pull_request(7));
+    w.ticket("ABC-1", Status::InProgress, &pr);
+    w.open(pr.clone());
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    let angle = children_of(&w, "ABC-1")
+        .into_iter()
+        .find(|c| {
+            matches!(
+                texts::bridge_item(&c.description, c.parent.as_deref()),
+                Some(BridgeItem::Angle { .. })
+            )
+        })
+        .unwrap();
+    let d = &angle.description;
+    assert!(d.contains("### Review a PR from one angle"), "{d}");
+    assert!(d.contains("### Angle: maintainability"), "{d}");
+    assert!(
+        d.contains(
+            "- Project notes: `.spl-asdlc/angles/maintainability.md`, in the project's repository"
+        ),
+        "{d}"
+    );
+    assert!(crate::method::contract::missing_from_contract(d).is_empty());
+}
+
 #[test]
 fn an_unreadable_sensitive_list_is_said_once_and_holds_the_merge() {
     let w = World::new();
