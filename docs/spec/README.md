@@ -12,5 +12,5 @@ One file per topic. Each file states invariants (numbered), the vocabulary it in
 | `05-release-cycle.md` | Cut by dispatch; release issue at the next tick; angle branches with a mandatory report; RC passes; computed GO; publish; merge-back; closure; release note |
 | `06-qa-report.md` | The angle report schema, findings, severities, consolidation rules |
 | `07-the-bridge.md` | One deterministic process; polling; what it reads on GitHub; what it writes to the tracker; what it merges; idempotence; identity |
-| `08-configuration.md` | `spl-asdlc.toml`: product, release shape, tracker and status map, angles, `max_rc_passes`, GO policy, merge policy, channels, cadence |
+| `08-configuration.md` | `spl-asdlc.toml`: product, release shape, tracker, angles, `max_rc_passes`, GO policy, merge policy, channels, cadence |
 | `09-requalification-and-human-gestures.md` | Cut, requalify a finding, human GO policy, resume |
