@@ -632,6 +632,14 @@ fn one(
                 texts::short(&pr.head_sha)
             ),
         );
+        t.wait(
+            report,
+            &pr,
+            format!(
+                "its angle reviews are still open ({}): the approval at {head} does not count yet",
+                open_angles.join(", ")
+            ),
+        );
         return None;
     }
     if !plan.holds.is_empty() {

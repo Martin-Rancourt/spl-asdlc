@@ -1527,6 +1527,14 @@ fn an_approval_while_an_angle_is_open_does_not_merge_and_says_why_once() {
         .collect();
     assert_eq!(said.len(), 1, "{writes:?}");
     assert!(angles.iter().all(|a| said[0].contains(a.as_str())));
+    assert_eq!(
+        report.waiting_lines(),
+        vec![format!(
+            "waiting: pr#7 its angle reviews are still open ({}): the approval at head-7 does not count yet",
+            angles.join(", ")
+        )],
+        "the tick's report says why it waits (SID-1008)"
+    );
     quiet(&w);
 
     // The angles report: the same approval now counts.
