@@ -28,6 +28,8 @@ struct MemStore {
     facts: Vec<(String, String)>,
     /// The priority each ticket was created with.
     priorities: BTreeMap<String, Option<u8>>,
+    /// A status the ticket type lacks, for the refusal tests.
+    lacks: Option<&'static str>,
 }
 
 impl Default for MemStore {
@@ -39,6 +41,7 @@ impl Default for MemStore {
             author: "runner".into(),
             facts: Vec::new(),
             priorities: BTreeMap::new(),
+            lacks: None,
         }
     }
 }
@@ -119,7 +122,11 @@ impl LivelaStore for MemStore {
         "TD".into()
     }
     fn ticket_statuses(&self) -> Vec<String> {
-        STATUSES.iter().map(|s| s.to_string()).collect()
+        STATUSES
+            .iter()
+            .filter(|s| Some(**s) != self.lacks)
+            .map(|s| s.to_string())
+            .collect()
     }
     fn find_by_web_link(&self, url: &str) -> Vec<String> {
         self.items
@@ -344,9 +351,11 @@ fn a_status_write_can_unassign_and_a_replay_leaves_no_fact() {
 
 #[test]
 fn a_creation_in_an_unknown_status_writes_nothing() {
-    let mut map = std::collections::BTreeMap::new();
-    map.insert("Ready".to_string(), "Prete".to_string());
-    let t = Livela::new(MemStore::default(), StatusTable::from_config(&map));
+    let store = MemStore {
+        lacks: Some("Ready"),
+        ..MemStore::default()
+    };
+    let t = Livela::new(store, StatusTable::identity());
     let err = t.create_item(&new_item("a", Status::Ready)).unwrap_err();
     assert!(matches!(err, TrackerError::Refused { .. }), "{err}");
     assert!(t.store.borrow().items.is_empty());

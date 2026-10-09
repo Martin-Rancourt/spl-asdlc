@@ -1,6 +1,6 @@
 # 03 — Vocabulary
 
-Canonical names. A tracker adapter maps them to the tracker's own names; configuration may rename the display, never the meaning.
+Canonical names. A tracker names its statuses exactly so; the configuration maps none (`08-configuration.md`). An adapter whose tracker keys statuses by its own ids maps them in its code.
 
 ## Statuses of a work item (ticket, bug)
 
@@ -24,7 +24,7 @@ In Review, To Deploy and Post Deploy are **validation** states: the item is stil
 |---|---|---|
 | **Release issue** | none | One per cycle: title names the product and the version; carries the brief and the GO decision. |
 | **Angle sub-item** | the release issue, or the PR's ticket | One per configured angle; served to a reviewer; its PR (release) or its findings (PR review) are its output. A PR review's sub-items belong to their PR's round: they close when that PR resolves, whatever becomes of the ticket. |
-| **Consolidation item** | same parent | Served to the coordinator once every angle has reported; closes with its round. |
+| **Consolidation item** | same parent | Served to the coordinator once every angle has reported; at a PR review it is blocked by every angle sub-item of its round until each is resolved (BR-ASDLC-018); closes with its round. |
 | **Gate-fix ticket** | the release issue | One per candidate whose gate concluded red once its automatic rerun settled, or once `gate_rerun_wait_minutes` passed with no rerun seen (`05-release-cycle.md` §3, BR-ASDLC-016): unassigned, in Ready, **urgent**, labelled with the release label, with a complete contract (the gate green on the release branch; the failing suites from the evidence pack, or "unknown", and the gate run; its one criterion, the failing suites passing on the release branch). An implementer takes it by role, fixes on the release branch and ticks that criterion as any; the ticket then goes To Deploy at its fix's merge and Done at the closure. The next candidate's gate is the verification: still red, it gets a gate-fix ticket of its own; green, the bridge closes Done a gate-fix ticket that never reached a merge (still Triage, Backlog, Ready or In Progress) and leaves any other alone. A ticket like any other, not a bridge item: its PR links to it. |
 | **Validation sub-task** | a ticket the closure moved to Post Deploy | One per ticket, unassigned, in Ready, **urgent** (production is waiting on it, BR-ASDLC-017), with a complete contract: an agent verifies the parent's `## Post deploy` boxes in production and checks the ones it can verify, then closes it; a check that needs a human, or is beyond the agent, is named in a comment and the sub-task is reassigned to the owner (`owner.tracker_user`). |
 | **Finding ticket** | none, related to the release issue | A non-blocking finding to fix later; labelled `qa-finding`. |

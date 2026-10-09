@@ -15,12 +15,10 @@ impl Transport for Shared {
 
 fn linear() -> (Linear, Arc<ScriptedTransport>) {
     let t = Arc::new(ScriptedTransport::new());
-    let mut map = BTreeMap::new();
-    map.insert("To Deploy".to_string(), "To deploy".to_string());
     let l = Linear::with_transport(
         "lin-test-key",
         "ABC",
-        StatusTable::from_config(&map),
+        StatusTable::identity(),
         Box::new(Shared(t.clone())),
         URL,
     );
@@ -38,7 +36,7 @@ fn issue(key: &str, state: &str, kind: &str) -> String {
 fn team(t: &ScriptedTransport) {
     t.on_body("POST", URL, "teams(filter", 200, r#"{"data":{"teams":{"nodes":[{"id":"team-1","key":"ABC","states":{"nodes":[
         {"id":"s-ready","name":"Ready","type":"unstarted"},{"id":"s-review","name":"In Review","type":"started"},
-        {"id":"s-deploy","name":"To deploy","type":"completed"},{"id":"s-done","name":"Done","type":"completed"}]}}]}}}"#);
+        {"id":"s-deploy","name":"To Deploy","type":"completed"},{"id":"s-done","name":"Done","type":"completed"}]}}]}}}"#);
 }
 
 #[test]
@@ -51,7 +49,7 @@ fn an_item_is_read_with_its_canonical_status_and_kind() {
         200,
         &format!(
             r#"{{"data":{{"issue":{}}}}}"#,
-            issue("ABC-2", "To deploy", "completed")
+            issue("ABC-2", "To Deploy", "completed")
         ),
     );
     let item = l.get("ABC-2").unwrap();

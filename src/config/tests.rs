@@ -85,8 +85,6 @@ fn a_minimal_file_gets_every_documented_default() {
     assert_eq!(c.bridge.github_identity, GithubIdentity::App);
     assert_eq!(c.bridge.sweep_hours, 24);
     assert_eq!(c.tracker.link_fallback, LinkFallback::None);
-    assert_eq!(c.tracker.statuses.len(), CANONICAL_STATUSES.len());
-    assert_eq!(c.tracker.statuses["To Deploy"], "To Deploy");
     assert!(c.notify.is_empty());
 }
 
@@ -303,24 +301,17 @@ fn sensitive_path_approval_needs_the_sensitive_path_file() {
 }
 
 #[test]
-fn status_mapping_accepts_only_canonical_names_and_no_collision() {
-    let unknown = MINIMAL.replace(
-        "service_identity = \"spl-asdlc\"\n",
-        "service_identity = \"spl-asdlc\"\n\n[tracker.statuses]\n\"Shipped\" = \"Done\"\n",
-    );
-    assert_refused_with(&unknown, "\"Shipped\" is not a canonical status");
-    let collide = MINIMAL.replace(
-        "service_identity = \"spl-asdlc\"\n",
-        "service_identity = \"spl-asdlc\"\n\n[tracker.statuses]\n\"To Deploy\" = \"Done\"\n",
-    );
-    assert_refused_with(&collide, "both map to the tracker status \"Done\"");
-    let renamed = MINIMAL.replace(
+fn a_tracker_status_mapping_is_refused_as_unknown() {
+    let mapped = MINIMAL.replace(
         "service_identity = \"spl-asdlc\"\n",
         "service_identity = \"spl-asdlc\"\n\n[tracker.statuses]\n\"To Deploy\" = \"To deploy\"\n",
     );
-    assert_eq!(
-        Config::parse(&renamed).unwrap().tracker.statuses["To Deploy"],
-        "To deploy"
+    let errs = errors(&mapped);
+    assert!(
+        errs.len() == 1
+            && errs[0].contains("at line 16")
+            && errs[0].contains("unknown field `statuses`"),
+        "{errs:#?}"
     );
 }
 
@@ -571,6 +562,47 @@ fn an_angle_assignee_and_the_channels_are_set_in_one_file_only() {
         Some("reviewer-handle")
     );
     assert_eq!(c.notify.len(), 1);
+}
+
+#[test]
+fn the_coordinator_assignees_are_instance_keys_set_in_one_file_only() {
+    let overlay = OVERLAY
+        .replace(
+            "[release]\n",
+            "[release]\ncoordinator_assignee = \"coordinator-handle\"\n",
+        )
+        .replace(
+            "[review]\n",
+            "[review]\ncoordinator_assignee = \"coordinator-handle\"\n",
+        );
+    let c = merged(NEUTRAL, &overlay).unwrap();
+    assert_eq!(
+        c.release.coordinator_assignee.as_deref(),
+        Some("coordinator-handle")
+    );
+    assert_eq!(
+        c.review.coordinator_assignee.as_deref(),
+        Some("coordinator-handle")
+    );
+    let single = MINIMAL.replace(
+        "[review]\n",
+        "[review]\ncoordinator_assignee = \"coordinator-handle\"\n",
+    );
+    let c = Config::parse(&single).unwrap();
+    assert_eq!(
+        c.review.coordinator_assignee.as_deref(),
+        Some("coordinator-handle")
+    );
+    assert_eq!(c.release.coordinator_assignee, None, "none by default");
+    let both = NEUTRAL.replace(
+        "[review]\n",
+        "[review]\ncoordinator_assignee = \"another-handle\"\n",
+    );
+    assert_merge_refused_with(
+        &both,
+        &overlay,
+        "review.coordinator_assignee: is set in both",
+    );
 }
 
 #[test]

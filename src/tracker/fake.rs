@@ -41,7 +41,8 @@ impl FakeState {
 pub struct FakeTracker {
     pub team: String,
     pub bridge: User,
-    pub statuses: StatusTable,
+    /// The team's status names: the canonical ones unless a test removes one.
+    pub status_names: Vec<String>,
     pub state: RefCell<FakeState>,
 }
 
@@ -59,7 +60,7 @@ impl FakeTracker {
                 id: "u-bridge".into(),
                 name: "spl-asdlc".into(),
             },
-            statuses: StatusTable::identity(),
+            status_names: Status::ALL.iter().map(|s| s.name().to_string()).collect(),
             state: RefCell::new(FakeState::default()),
         }
     }
@@ -183,10 +184,7 @@ impl Tracker for FakeTracker {
     }
 
     fn status_names(&self) -> TResult<Vec<String>> {
-        Ok(Status::ALL
-            .iter()
-            .map(|s| self.statuses.tracker_name(*s).to_string())
-            .collect())
+        Ok(self.status_names.clone())
     }
 
     fn user(&self, reference: &str) -> TResult<User> {
@@ -345,7 +343,7 @@ impl Tracker for FakeTracker {
         self.record(format!("status {key} {status}{who}"))?;
         self.with(key, |st| {
             st.item.state = ItemState {
-                name: self.statuses.tracker_name(status).to_string(),
+                name: status.name().to_string(),
                 status: Some(status),
                 kind: StateKind::of(status),
             };

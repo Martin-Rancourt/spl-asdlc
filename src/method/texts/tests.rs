@@ -2,6 +2,7 @@
 //! carried text tests (release.md, merge.md).
 
 use super::*;
+use crate::method::texts::protocol;
 
 fn angle(key: &str) -> AngleLine {
     AngleLine {
@@ -70,6 +71,7 @@ fn review_items_are_contracts_marked_as_the_bridges() {
         "https://github.com/example-org/acme/pull/9",
         "abcdef01abcdef01",
         "security",
+        None,
         &["it touches reviewed paths: `a`".into()],
     );
     assert!(crate::method::contract::missing_from_contract(&angle_body).is_empty());
@@ -80,7 +82,7 @@ fn review_items_are_contracts_marked_as_the_bridges() {
     let (title, cons) = consolidation_item(
         "https://github.com/example-org/acme/pull/9",
         "ABC-1 (#9)",
-        "docs/agents/consolidate.md",
+        Consolidating::PullRequest,
     );
     assert_eq!(title, "Consolidation — ABC-1 (#9)");
     assert!(crate::method::contract::missing_from_contract(&cons).is_empty());
@@ -500,6 +502,7 @@ fn review_rounds_are_scoped_by_the_head_they_opened_at() {
         "https://github.com/example-org/acme/pull/9",
         "aaaaaaaaaaaaaaaa",
         "security",
+        None,
         &[],
     );
     let (_, b) = review_angle_item(
@@ -507,6 +510,7 @@ fn review_rounds_are_scoped_by_the_head_they_opened_at() {
         "https://github.com/example-org/acme/pull/9",
         "bbbbbbbbbbbbbbbb",
         "security",
+        None,
         &[],
     );
     assert_ne!(
@@ -517,5 +521,240 @@ fn review_rounds_are_scoped_by_the_head_they_opened_at() {
         short("ééééééééééééééé").chars().count(),
         12,
         "never cut inside a character"
+    );
+}
+
+// ---- BR-ASDLC-015: an item the bridge serves carries its protocol ----
+
+const PR: &str = "https://github.com/example-org/acme/pull/9";
+
+/// The one section of each contract heading an item has, and its protocol
+/// under `## Protocol`, with nothing of the contract below it.
+fn assert_one_contract(body: &str) {
+    use crate::method::contract::*;
+    use crate::method::markdown::sections;
+    assert!(missing_from_contract(body).is_empty(), "{body}");
+    assert_eq!(sections(body, is_goal_heading).len(), 1, "{body}");
+    assert_eq!(sections(body, is_acceptance_heading).len(), 1, "{body}");
+    assert_eq!(sections(body, is_business_rules_heading).len(), 1, "{body}");
+    let protocol = body.split("\n## Protocol\n").nth(1).expect("a protocol");
+    assert!(
+        crate::method::markdown::checkboxes(protocol).is_empty(),
+        "the protocol adds no box: {protocol}"
+    );
+    assert!(
+        !protocol
+            .lines()
+            .any(|l| l.starts_with("# ") || l.starts_with("## ")),
+        "every heading of the protocol is demoted below `## Protocol`: {protocol}"
+    );
+    assert!(
+        body.len() <= protocol::ITEM_LIMIT,
+        "{} characters",
+        body.len()
+    );
+}
+
+/// A protocol's text, its headings demoted as the item embeds them.
+fn embedded(text: &str) -> String {
+    protocol::demote(text, 2).trim().to_string()
+}
+
+#[test]
+fn a_pr_review_angle_sub_item_embeds_the_pr_review_protocol_and_its_angles_notes() {
+    let (_, body) = review_angle_item(
+        "ABC-1",
+        PR,
+        "abcdef01abcdef01",
+        "security",
+        Some(".spl-asdlc/angles/security.md"),
+        &[],
+    );
+    assert_one_contract(&body);
+    assert!(body.contains(&embedded(protocol::REVIEW_PR)), "{body}");
+    assert!(
+        body.contains(&embedded(protocol::angle_notes("security").unwrap())),
+        "{body}"
+    );
+    assert!(body.contains(&format!("spl-asdlc {}", protocol::VERSION)));
+    assert!(
+        body.contains(
+            "- Project notes: `.spl-asdlc/angles/security.md`, in the project's repository"
+        ),
+        "the project's notes are linked, never embedded: {body}"
+    );
+    assert!(
+        !body.contains("as `docs/agents/review-pr.md` describes it"),
+        "no path the project's repository lacks is the instruction: {body}"
+    );
+    // What closes it, in the bridge's terms (`close_reviewed_sub_items`).
+    assert!(
+        body.contains(
+            "a submitted review (any state but pending) whose body names this item's key"
+        ),
+        "{body}"
+    );
+    assert!(
+        body.contains("- [ ] The review is submitted on GitHub, its body naming this item's key.")
+    );
+}
+
+#[test]
+fn a_release_angle_sub_item_embeds_the_release_protocol_its_angles_notes_and_the_report_schema() {
+    let (_, body) = release_angle_item(
+        "acme",
+        "1.2.3",
+        "acme-v1.2.3-rc.2",
+        2,
+        &angle("product"),
+        "release/2026-10-05-14-03-utc",
+        ".spl-asdlc/qa/acme-v1.2.3-rc.2/product.json",
+        "release/acme-v1.2.3",
+        None,
+    );
+    assert_one_contract(&body);
+    assert!(body.contains(&embedded(protocol::REVIEW_RELEASE)), "{body}");
+    assert!(
+        body.contains(&embedded(protocol::angle_notes("product").unwrap())),
+        "{body}"
+    );
+    assert!(
+        body.contains("\"schema\": \"spl-asdlc/qa-report/1\""),
+        "{body}"
+    );
+    assert!(body.contains("- Project notes: none"), "{body}");
+    assert!(
+        body.contains("The bridge sets this sub-item Done when it merges your angle PR into `release/2026-10-05-14-03-utc`"),
+        "{body}"
+    );
+    assert!(
+        body.contains("names this item's key in its title or body"),
+        "{body}"
+    );
+}
+
+#[test]
+fn a_consolidation_item_embeds_the_consolidation_protocol_and_says_what_closes_it() {
+    let (_, pr) = consolidation_item(
+        &round_scope(PR, "abcdef01abcdef01"),
+        "ABC-1 (abcdef01abcd)",
+        Consolidating::PullRequest,
+    );
+    assert_one_contract(&pr);
+    assert!(pr.contains(&embedded(protocol::CONSOLIDATE)), "{pr}");
+    assert!(pr.contains("its part \"For a PR review\""), "{pr}");
+    assert!(
+        pr.contains("The bridge sets it Done when it merges the PR, which it does once a coordinator's approval stands at the PR's head commit"),
+        "{pr}"
+    );
+    assert!(
+        !pr.contains("qa-report/1"),
+        "a PR's consolidation has no report"
+    );
+
+    let (_, rc) = consolidation_item(
+        "acme-v1.2.3-rc.1",
+        "acme v1.2.3 (rc.1)",
+        Consolidating::Candidate,
+    );
+    assert_one_contract(&rc);
+    assert!(rc.contains(&embedded(protocol::CONSOLIDATE)), "{rc}");
+    assert!(rc.contains("its part \"For a release candidate\""), "{rc}");
+    assert!(rc.contains("\"schema\": \"spl-asdlc/qa-report/1\""), "{rc}");
+    assert!(rc.contains("when it closes the cycle"), "{rc}");
+}
+
+#[test]
+fn a_project_only_angle_gets_the_generic_protocol_a_line_and_its_linked_notes() {
+    let (_, body) = review_angle_item(
+        "ABC-1",
+        PR,
+        "abcdef01abcdef01",
+        "accessibility",
+        Some(".spl-asdlc/angles/accessibility.md"),
+        &[],
+    );
+    assert_one_contract(&body);
+    assert!(body.contains(&embedded(protocol::REVIEW_PR)), "{body}");
+    assert!(
+        body.contains("The method has no notes for the `accessibility` angle"),
+        "{body}"
+    );
+    assert!(body.contains("`.spl-asdlc/angles/accessibility.md`, in the project's repository"));
+    let (_, release) = release_angle_item(
+        "acme",
+        "1.2.3",
+        "c",
+        1,
+        &angle("accessibility"),
+        "b",
+        "p",
+        "l",
+        None,
+    );
+    assert_one_contract(&release);
+    assert!(release.contains("The method has no notes for the `accessibility` angle"));
+}
+
+#[test]
+fn the_longest_item_stays_within_the_trackers_size() {
+    let reasons: Vec<String> = (0..10)
+        .map(|i| {
+            format!(
+                "it touches reviewed paths: `{}` (+99 more)",
+                "p/".repeat(40) + &i.to_string()
+            )
+        })
+        .collect();
+    let mut longest = 0;
+    for (key, _) in protocol::ANGLES {
+        let (_, pr) = review_angle_item(
+            "ABC-1",
+            PR,
+            "abcdef01abcdef01",
+            key,
+            Some(&"n/".repeat(100)),
+            &reasons,
+        );
+        let (_, rc) = release_angle_item(
+            "acme",
+            "1.2.3",
+            "acme-v1.2.3-rc.12",
+            12,
+            &angle(key),
+            "release/2026-10-05-14-03-utc",
+            ".spl-asdlc/qa/acme-v1.2.3-rc.12/security.json",
+            "release/acme-v1.2.3",
+            Some(&"n/".repeat(100)),
+        );
+        longest = longest.max(pr.len()).max(rc.len());
+    }
+    for of in [Consolidating::PullRequest, Consolidating::Candidate] {
+        let (_, c) = consolidation_item(&round_scope(PR, "abcdef01abcdef01"), "ABC-1", of);
+        longest = longest.max(c.len());
+    }
+    assert!(
+        longest <= protocol::ITEM_LIMIT,
+        "{longest} characters: trim the protocols, never cut them in the item"
+    );
+}
+
+#[test]
+fn the_markers_carry_no_protocol_text() {
+    let (_, body) = review_angle_item("ABC-1", PR, "abcdef01abcdef01", "security", None, &[]);
+    let m = marker(
+        "angle",
+        &[
+            ("scope", &round_scope(PR, "abcdef01abcdef01")),
+            ("angle", "security"),
+        ],
+    );
+    assert!(body.starts_with(&format!("{m}\n")), "{body}");
+    // The same item with another protocol is the same item.
+    let older = body.split("\n## Protocol\n").next().unwrap().to_string()
+        + "\n## Protocol\n\nAn older protocol.\n";
+    assert_eq!(
+        bridge_item(&older, Some("ABC-1")),
+        bridge_item(&body, Some("ABC-1"))
     );
 }

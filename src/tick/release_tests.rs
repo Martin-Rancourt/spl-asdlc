@@ -560,6 +560,62 @@ fn a_later_candidate_with_a_red_gate_waits_again() {
     );
 }
 
+// ---- BR-ASDLC-015: an item carries its protocol, frozen at creation ----
+
+#[test]
+fn a_release_rounds_items_carry_their_protocol_and_keep_it_while_open() {
+    let w = World::new();
+    w.tick();
+    let round = w.round(CAND);
+    assert_eq!(round.len(), 3);
+    for i in &round {
+        assert!(
+            i.description.contains("\n## Protocol\n")
+                && i.description.contains(&format!(
+                    "Embedded by spl-asdlc {}",
+                    texts::protocol::VERSION
+                ))
+                && i.description
+                    .contains("\"schema\": \"spl-asdlc/qa-report/1\""),
+            "{}",
+            i.description
+        );
+    }
+    // A later bridge with another protocol: the open items are not rewritten.
+    let mut older = Vec::new();
+    for i in &round {
+        let marker = i.description.lines().next().unwrap();
+        let text = format!(
+            "{marker}\n\n## Goal\nAn older text.\n\n## Acceptance criteria\n- [ ] it\n\n## Business rules\nNo new rule.\n\n## Protocol\n\nAn older protocol.\n"
+        );
+        w.tracker.update_description(&i.key, &text).unwrap();
+        older.push((i.key.clone(), text));
+    }
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(writes.is_empty(), "{writes:?}");
+    for (key, text) in &older {
+        assert_eq!(&w.tracker.item(key).description, text);
+    }
+    // The next candidate's items carry the protocol of the bridge that
+    // creates them.
+    w.cut_rc2();
+    w.gate(vec![
+        gate_run(2, CAND2, "c2", Some("success")),
+        gate_run(1, CAND, "c1", Some("success")),
+    ]);
+    assert!(w.tick().ok());
+    let round2 = w.round(CAND2);
+    assert_eq!(round2.len(), 3);
+    assert!(round2.iter().all(|i| {
+        i.description
+            .contains("\n## Protocol\n\nEmbedded by spl-asdlc")
+    }));
+    for (key, text) in &older {
+        assert_eq!(&w.tracker.item(key).description, text);
+    }
+}
+
 #[test]
 fn an_unreadable_gate_writes_nothing_more_and_says_why() {
     let w = World::new();
@@ -2605,4 +2661,77 @@ fn the_validation_sub_task_is_created_urgent_and_a_dry_run_says_so() {
                 .to_string()
         ]
     );
+}
+
+// ---- spec 05 §3: the coordinator receives the consolidation item ----
+
+impl World {
+    fn consolidation(&self) -> crate::tracker::Item {
+        self.round(CAND)
+            .into_iter()
+            .find(|c| {
+                texts::bridge_item(&c.description, c.parent.as_deref())
+                    == Some(BridgeItem::Consolidation { scope: CAND.into() })
+            })
+            .expect("a consolidation item")
+    }
+}
+
+fn release_coordinator() -> crate::tracker::User {
+    crate::tracker::User {
+        id: "u-coordinator".into(),
+        name: "coordinator-handle".into(),
+    }
+}
+
+#[test]
+fn a_candidates_consolidation_item_goes_to_its_coordinator_once() {
+    let w = World::new();
+    assert_eq!(
+        w.config.release.coordinator_assignee.as_deref(),
+        Some("coordinator-handle")
+    );
+    w.tracker
+        .state
+        .borrow_mut()
+        .users
+        .push(release_coordinator());
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(w.consolidation().assignee, Some(release_coordinator()));
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(writes.is_empty(), "{writes:?}");
+}
+
+#[test]
+fn without_a_release_coordinator_assignee_the_consolidation_item_is_unassigned() {
+    let mut w = World::new();
+    w.config.release.coordinator_assignee = None;
+    w.tracker
+        .state
+        .borrow_mut()
+        .users
+        .push(release_coordinator());
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(w.consolidation().assignee, None);
+}
+
+#[test]
+fn an_unknown_release_coordinator_leaves_the_item_unassigned_and_never_reassigns_it() {
+    let w = World::new();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let item = w.consolidation();
+    assert_eq!(item.assignee, None, "the tracker does not know the name");
+    w.tracker
+        .state
+        .borrow_mut()
+        .users
+        .push(release_coordinator());
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(writes.is_empty(), "never reassigned: {writes:?}");
+    assert_eq!(w.tracker.item(&item.key).assignee, None);
 }
