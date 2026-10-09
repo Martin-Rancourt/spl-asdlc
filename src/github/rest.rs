@@ -1191,6 +1191,7 @@ impl GitHub for RestGitHub {
                 attempt: r["run_attempt"].as_u64().unwrap_or(1),
                 url: str_of(r, "html_url"),
                 created_at: time_of(r, "created_at"),
+                updated_at: time_of(r, "updated_at"),
             })
         })
     }

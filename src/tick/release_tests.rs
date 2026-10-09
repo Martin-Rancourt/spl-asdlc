@@ -81,6 +81,7 @@ fn gate_run(id: u64, candidate: &str, sha: &str, conclusion: Option<&str>) -> Wo
         attempt: 1,
         url: format!("https://github.com/example-org/acme/actions/runs/{id}"),
         created_at: None,
+        updated_at: None,
     }
 }
 
@@ -2208,6 +2209,110 @@ fn a_red_gate_whose_rerun_may_still_come_opens_nothing_until_it_settled() {
     assert!(writes.is_empty(), "{writes:?}");
 }
 
+/// A red first attempt of the gate of `CAND` that completed at 11:45.
+fn red_completed_at_11_45() -> WorkflowRun {
+    WorkflowRun {
+        created_at: Timestamp::parse("2026-10-05T11:31:00Z"),
+        updated_at: Timestamp::parse("2026-10-05T11:45:00Z"),
+        ..gate_run(1, CAND, "c1", Some("failure"))
+    }
+}
+
+impl World {
+    fn writes_of_a_tick_at(&self, now: &str) -> (Report, Vec<String>) {
+        let before = self.tracker.writes().len();
+        let r = self.tick_at(now);
+        (r, self.tracker.writes()[before..].to_vec())
+    }
+}
+
+#[test]
+fn a_red_gate_with_no_rerun_seen_waits_up_to_its_bound_then_opens_its_ticket() {
+    let w = World::new();
+    w.gate(vec![red_completed_at_11_45()]);
+    w.suites(r#"{"failed":["tests"]}"#);
+    w.reruns(Vec::new());
+    // `gate_rerun_wait_minutes = 30`: until 12:15 the rerun may still come.
+    let r = w.tick_at("2026-10-05T12:14:59Z");
+    assert!(r.ok(), "{r:?}");
+    assert!(
+        w.gate_fixes().is_empty(),
+        "no rerun visible before the bound"
+    );
+    // From the bound on, the ticket all the same: the rerun workflow may be
+    // absent or broken, and the ticket says so.
+    let r = w.tick_at("2026-10-05T12:15:00Z");
+    assert!(r.ok(), "{r:?}");
+    let fixes = w.gate_fixes();
+    assert_eq!(fixes.len(), 1, "{:?}", w.tracker.writes());
+    let d = &fixes[0].description;
+    assert!(
+        d.contains("- Automatic rerun: no run of the automatic rerun workflow showed up within 30 minutes of the completion of"),
+        "{d}"
+    );
+    assert!(crate::method::contract::has_contract(d));
+    assert_eq!(fixes[0].state.status, Some(Status::Ready));
+    assert_eq!(
+        w.tracker.priority(&fixes[0].key),
+        Some(crate::tracker::Priority::Urgent)
+    );
+    let (r, writes) = w.writes_of_a_tick_at("2026-10-05T12:30:00Z");
+    assert!(r.ok(), "{r:?}");
+    assert!(
+        writes.is_empty(),
+        "a second tick writes nothing: {writes:?}"
+    );
+}
+
+#[test]
+fn a_rerun_still_running_past_the_bound_keeps_the_wait() {
+    let w = World::new();
+    w.gate(vec![red_completed_at_11_45()]);
+    w.suites(r#"{"failed":["tests"]}"#);
+    w.reruns(vec![rerun_run(91, "c1", "in_progress")]);
+    let (r, writes) = w.writes_of_a_tick_at("2026-10-05T13:00:00Z");
+    assert!(r.ok(), "{r:?}");
+    assert!(
+        w.gate_fixes().is_empty(),
+        "the rerun it shows may still rerun the gate"
+    );
+    assert!(
+        !writes
+            .iter()
+            .any(|l| l.starts_with("create Make the gate green")),
+        "{writes:?}"
+    );
+    // It completed without rerunning: settled, and nothing says it was unseen.
+    w.reruns(vec![rerun_run(91, "c1", "completed")]);
+    let r = w.tick_at("2026-10-05T13:05:00Z");
+    assert!(r.ok(), "{r:?}");
+    let fixes = w.gate_fixes();
+    assert_eq!(fixes.len(), 1);
+    assert!(!fixes[0].description.contains("Automatic rerun:"));
+}
+
+#[test]
+fn an_absent_rerun_workflow_is_said_and_the_bound_still_opens_the_ticket() {
+    let w = World::new();
+    w.gate(vec![red_completed_at_11_45()]);
+    w.suites(r#"{"failed":["tests"]}"#);
+    w.github.state.borrow_mut().runs.insert(
+        (repo(), "release-gate-auto-rerun.yml".into()),
+        Err(crate::github::ReadError::NotFound {
+            what: "runs of release-gate-auto-rerun.yml".into(),
+        }),
+    );
+    let r = w.tick_at("2026-10-05T12:00:00Z");
+    assert!(
+        r.failures.iter().any(|f| f.contains("not found")
+            && f.contains("the gate-fix ticket opens 30 minutes after the gate run completed")),
+        "{r:?}"
+    );
+    assert!(w.gate_fixes().is_empty());
+    w.tick_at("2026-10-05T12:15:00Z");
+    assert_eq!(w.gate_fixes().len(), 1, "never a silence");
+}
+
 #[test]
 fn an_unreadable_rerun_workflow_opens_nothing_and_says_why() {
     let w = World::new();
@@ -2289,9 +2394,45 @@ fn a_newer_green_candidate_closes_the_gate_fix_ticket_once() {
         gate_run(2, CAND2, "c2", Some("success")),
         gate_run(1, CAND, "c1", Some("failure")),
     ]);
+    let before = w.tracker.writes().len();
     let r = w.tick();
     assert!(r.ok(), "{r:?}");
     assert_eq!(w.tracker.item(&fix.key).state.status, Some(Status::Done));
+    // The box the bridge verified is ticked first, then the comment, then Done.
+    let mine: Vec<String> = w.tracker.writes()[before..]
+        .iter()
+        .filter(|l| l.contains(&format!(" {} ", fix.key)) || l.ends_with(&format!(" {}", fix.key)))
+        .cloned()
+        .collect();
+    assert_eq!(mine.len(), 3, "{mine:?}");
+    assert_eq!(mine[0], format!("describe {}", fix.key));
+    assert!(
+        mine[1].starts_with(&format!("comment {} Done:", fix.key)),
+        "{mine:?}"
+    );
+    assert_eq!(mine[2], format!("status {} Done", fix.key));
+    let d = w.tracker.item(&fix.key).description;
+    assert!(
+        d.contains(&format!(
+            "- [x] The gate of the next candidate cut from `{BRANCH}` is green."
+        )),
+        "{d}"
+    );
+    assert!(
+        d.contains(&format!(
+            "- [ ] Each failing suite passes on `{BRANCH}`: `tests`."
+        )),
+        "no other box is ticked: {d}"
+    );
+    assert_eq!(
+        d.replacen(
+            "- [x] The gate of the next",
+            "- [ ] The gate of the next",
+            1
+        ),
+        fix.description,
+        "nothing else of the description changes"
+    );
     let said: Vec<String> = w
         .tracker
         .comments(&fix.key)
@@ -2306,6 +2447,39 @@ fn a_newer_green_candidate_closes_the_gate_fix_ticket_once() {
     let (r, writes) = w.writes_of_a_tick();
     assert!(r.ok(), "{r:?}");
     assert!(writes.is_empty(), "{writes:?}");
+}
+
+#[test]
+fn a_box_already_ticked_is_not_written_again_and_a_refused_tick_holds_the_close() {
+    let w = World::new();
+    w.red_settled(1, CAND, "c1", r#""tests""#);
+    w.tick();
+    let fix = w.gate_fixes().remove(0);
+    w.cut_rc2();
+    w.gate(vec![
+        gate_run(2, CAND2, "c2", Some("success")),
+        gate_run(1, CAND, "c1", Some("failure")),
+    ]);
+    // The tick of the box is refused: no comment, no Done, retried.
+    w.tracker
+        .fail_writes_starting_with(&format!("describe {}", fix.key));
+    let r = w.tick();
+    assert!(!r.ok(), "the refused write is said: {r:?}");
+    assert_eq!(w.tracker.item(&fix.key).state.status, Some(Status::Ready));
+    assert!(w.tracker.comments(&fix.key).unwrap().is_empty());
+    // Someone ticked it meanwhile: the bridge only comments and closes.
+    let ticked = texts::tick_next_gate_box(&fix.description).unwrap();
+    w.tracker.state.borrow_mut().failing_writes.clear();
+    w.tracker.update_description(&fix.key, &ticked).unwrap();
+    let before = w.tracker.writes().len();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let writes = w.tracker.writes()[before..].to_vec();
+    assert!(
+        !writes.iter().any(|l| l == &format!("describe {}", fix.key)),
+        "{writes:?}"
+    );
+    assert_eq!(w.tracker.item(&fix.key).state.status, Some(Status::Done));
 }
 
 #[test]
@@ -2325,6 +2499,20 @@ fn a_gate_fix_ticket_resolved_in_review_or_to_deploy_is_left_alone_on_a_green_ga
         assert!(r.ok(), "{r:?}");
         assert_eq!(w.tracker.item(&fix.key).state.status, Some(status));
         assert!(w.tracker.comments(&fix.key).unwrap().is_empty(), "{status}");
+        // The box the bridge verified is ticked all the same, so that the
+        // closure finds it ticked; a resolved ticket is not touched.
+        let ticked = w
+            .tracker
+            .item(&fix.key)
+            .description
+            .contains("- [x] The gate of the next candidate");
+        assert_eq!(ticked, status != Status::Canceled, "{status}");
+        let (r, writes) = w.writes_of_a_tick();
+        assert!(r.ok(), "{r:?}");
+        assert!(
+            writes.is_empty(),
+            "a second tick writes nothing: {writes:?}"
+        );
     }
 }
 

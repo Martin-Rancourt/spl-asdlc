@@ -114,10 +114,27 @@ pub fn post_deploy_boxes(description: &str) -> Vec<Checkbox> {
     markdown::checkboxes_in_sections(description, is_post_deploy_heading)
 }
 
+/// The token of the marker a box carries when only the bridge ticks it,
+/// once it verified the fact itself (the gate-fix ticket's "the gate of the
+/// next candidate is green", BR-ASDLC-016).
+pub const BRIDGE_VERIFIED: &str = "spl-asdlc:bridge-verified";
+
+/// Whether a box line carries the bridge-verified marker, hidden or visible,
+/// whole (`spl-asdlc:bridge-verifiedx` is not it). Untrusted text the bridge
+/// writes is made inert, so no report or title can forge it.
+pub fn is_bridge_verified(line: &str) -> bool {
+    line.match_indices(BRIDGE_VERIFIED).any(|(i, _)| {
+        let rest = &line[i + BRIDGE_VERIFIED.len()..];
+        rest.is_empty() || rest.starts_with(char::is_whitespace) || rest.starts_with('`')
+    })
+}
+
 /// The completeness rule (spec 04 §10, BR-ASDLC-008): the open boxes of
 /// the ticket's own description outside its `## Post deploy` section(s),
-/// under any heading (spec 01 §3). `None` when it declares no box there:
-/// nothing declared is not everything checked.
+/// under any heading (spec 01 §3). A bridge-verified box is set apart too:
+/// it is not the implementer's to tick, the bridge ticks it once it saw the
+/// fact (BR-ASDLC-016). `None` when it declares no other box: nothing
+/// declared is not everything checked.
 pub fn open_before_deploy(description: &str) -> Option<Vec<String>> {
     let after: std::collections::BTreeSet<usize> = post_deploy_boxes(description)
         .iter()
@@ -125,7 +142,7 @@ pub fn open_before_deploy(description: &str) -> Option<Vec<String>> {
         .collect();
     let boxes: Vec<Checkbox> = markdown::checkboxes(description)
         .into_iter()
-        .filter(|b| !after.contains(&b.line_no))
+        .filter(|b| !after.contains(&b.line_no) && !is_bridge_verified(&b.line))
         .collect();
     if boxes.is_empty() {
         return None;
@@ -330,6 +347,38 @@ mod tests {
             open_before_deploy("```\n- [ ] an example\n```\n- [x] a\n"),
             Some(Vec::new()),
             "a fenced box is an example"
+        );
+    }
+
+    #[test]
+    fn a_bridge_verified_box_is_set_apart_from_the_completeness_rule() {
+        let text = "## Acceptance criteria\n- [x] fixed\n- [ ] the next gate is green. <!-- spl-asdlc:bridge-verified check=next-gate-green -->\n";
+        assert_eq!(open_before_deploy(text), Some(Vec::new()));
+        let visible = text.replace(
+            "<!-- spl-asdlc:bridge-verified check=next-gate-green -->",
+            "`spl-asdlc:bridge-verified check=next-gate-green`",
+        );
+        assert_eq!(
+            open_before_deploy(&visible),
+            Some(Vec::new()),
+            "visible as well"
+        );
+        let open = text.replace("- [x] fixed", "- [ ] fixed");
+        assert_eq!(
+            open_before_deploy(&open),
+            Some(vec!["- [ ] fixed".to_string()])
+        );
+        assert_eq!(
+            open_before_deploy("- [ ] green <!-- spl-asdlc:bridge-verified -->\n"),
+            None,
+            "a bridge-verified box alone declares nothing of the implementer's"
+        );
+        assert!(!is_bridge_verified(
+            "- [ ] x <!-- spl-asdlc:bridge-verifiedx -->"
+        ));
+        assert!(
+            !is_bridge_verified("- [ ] x spl-asdlc :bridge-verified"),
+            "made inert"
         );
     }
 

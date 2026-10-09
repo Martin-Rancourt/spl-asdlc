@@ -99,6 +99,7 @@ fn red_gate(suites: Result<Vec<String>, String>) -> (String, String) {
         conclusion: "failure",
         run_url: "https://github.com/example-org/acme/actions/runs/1",
         suites,
+        rerun_unseen: None,
     })
 }
 
@@ -140,6 +141,68 @@ fn the_gate_fix_ticket_is_a_contract_in_every_case_and_a_ticket_not_a_bridge_ite
     assert!(body.contains("`suite29`, and 10 more"), "{body}");
     let (_, body) = red_gate(Err("HTTP 502".into()));
     assert!(body.contains("unknown: the evidence pack could not be read (HTTP 502)"));
+}
+
+#[test]
+fn the_bridge_ticks_the_next_gate_box_only_and_once() {
+    let (_, body) = red_gate(Ok(vec!["tests".to_string()]));
+    // The implementer ticked the suite's box; the next gate's box is the bridge's.
+    let body = body.replacen("- [ ] Each failing suite", "- [x] Each failing suite", 1);
+    assert!(crate::method::contract::open_before_deploy(&body).is_some_and(|o| o.is_empty()));
+    let ticked = tick_next_gate_box(&body).expect("its box is open");
+    assert!(
+        ticked.contains("- [x] The gate of the next candidate cut from `release/x` is green."),
+        "{ticked}"
+    );
+    let changed: Vec<(&str, &str)> = body
+        .lines()
+        .zip(ticked.lines())
+        .filter(|(a, b)| a != b)
+        .collect();
+    assert_eq!(changed.len(), 1, "no other box, no other line: {changed:?}");
+    assert_eq!(ticked.len(), body.len());
+    assert_eq!(
+        tick_next_gate_box(&ticked),
+        None,
+        "a second tick writes nothing"
+    );
+    // A box the implementer left open stays open; a visible marker is read too.
+    let (_, open) = red_gate(Ok(vec!["tests".to_string()]));
+    let ticked = tick_next_gate_box(&visible_markers(&open)).unwrap();
+    assert!(
+        ticked.contains("- [ ] Each failing suite passes"),
+        "{ticked}"
+    );
+    assert!(
+        ticked.contains("- [x] The gate of the next candidate"),
+        "{ticked}"
+    );
+    // A box without the marker is never ticked.
+    assert_eq!(
+        tick_next_gate_box("- [ ] The gate of the next candidate is green.\n"),
+        None
+    );
+}
+
+#[test]
+fn a_gate_fix_ticket_opened_past_the_bounded_wait_says_no_rerun_was_seen() {
+    let (_, body) = gate_fix_ticket(&RedGateFacts {
+        release: "ABC-1",
+        candidate: "acme-v1.2.0-rc.1",
+        sha: "c1c1c1c1c1c1c1c1",
+        branch: "release/x",
+        conclusion: "failure",
+        run_url: "https://github.com/example-org/acme/actions/runs/1",
+        suites: Ok(vec!["tests".to_string()]),
+        rerun_unseen: Some("no run of the automatic rerun workflow showed up within 30 minutes"),
+    });
+    assert!(
+        body.contains("- Automatic rerun: no run of the automatic rerun workflow showed up within 30 minutes; check the rerun workflow.\n"),
+        "{body}"
+    );
+    assert!(crate::method::contract::has_contract(&body));
+    let (_, settled) = red_gate(Ok(vec!["tests".to_string()]));
+    assert!(!settled.contains("Automatic rerun:"));
 }
 
 #[test]

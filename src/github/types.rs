@@ -355,6 +355,9 @@ pub struct WorkflowRun {
     pub attempt: u64,
     pub url: String,
     pub created_at: Option<Timestamp>,
+    /// When GitHub last changed the run (`updated_at`): for a completed
+    /// run, when its latest attempt completed.
+    pub updated_at: Option<Timestamp>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

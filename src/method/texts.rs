@@ -329,6 +329,40 @@ pub fn gate_fix_candidate(description: &str) -> Option<String> {
     GATE_FIX.captures(description).map(|c| c[1].to_string())
 }
 
+/// The marker of the gate-fix ticket's box "the gate of the next candidate
+/// is green": the only box the bridge ticks, once it saw that gate green,
+/// and the completeness rule sets it apart (`contract::BRIDGE_VERIFIED`).
+pub fn next_gate_box_marker() -> String {
+    marker("bridge-verified", &[("check", "next-gate-green")])
+}
+
+/// The description with its next-gate box ticked, or `None` when no such
+/// box is open (a second tick writes nothing). No other box is touched.
+pub fn tick_next_gate_box(description: &str) -> Option<String> {
+    let marker = next_gate_box_marker();
+    let open: std::collections::BTreeSet<usize> = markdown::checkboxes(description)
+        .into_iter()
+        .filter(|b| !b.checked && has_marker(&b.line, &marker))
+        .map(|b| b.line_no)
+        .collect();
+    if open.is_empty() {
+        return None;
+    }
+    Some(
+        description
+            .split_inclusive('\n')
+            .enumerate()
+            .map(|(i, line)| {
+                if open.contains(&i) {
+                    line.replacen("[ ]", "[x]", 1)
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect(),
+    )
+}
+
 /// The facts of a red gate the gate-fix ticket carries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RedGateFacts<'a> {
@@ -340,6 +374,9 @@ pub struct RedGateFacts<'a> {
     pub run_url: &'a str,
     /// The failed suites of the evidence pack, or why it could not be read.
     pub suites: Result<Vec<String>, String>,
+    /// Why the red is taken as final although no automatic rerun was seen
+    /// (the bounded wait ran out), when that is the case.
+    pub rerun_unseen: Option<&'a str>,
 }
 
 /// At most this many failed suites are named one by one.
@@ -400,12 +437,13 @@ pub fn gate_fix_ticket(f: &RedGateFacts) -> (String, String) {
          - Cutting the next candidate: the coordinator does it through the cut workflow (or the bridge, when \
          `auto_candidate = true`).\n\n\
          ## Acceptance criteria\n{criterion}\n\
-         - [ ] The gate of the next candidate cut from `{branch}` is green.\n\n\
+         - [ ] The gate of the next candidate cut from `{branch}` is green. {next_gate}\n\n\
          ## Business rules\n{absence}\n\n\
          ## Context\n- Release: {release}\n- Candidate: `{candidate}` at `{sha12}`\n- Gate run: {run_url}\n\
-         - Failing suites (`{suites_file}` of the evidence pack `{pack}`): {found}\n\
-         - Once a newer candidate's gate is green, the bridge closes this ticket (Done, with a comment naming that \
-         candidate) unless it is already resolved, in review, or to deploy.",
+         - Failing suites (`{suites_file}` of the evidence pack `{pack}`): {found}\n{unseen}\
+         - The box of the next candidate's gate is the bridge's: it ticks it once it sees that gate green, and \
+         until then that box alone does not send this ticket back to work. Then the bridge closes this ticket \
+         (Done, with a comment naming that candidate) unless it is already resolved, in review, or to deploy.",
         marker = gate_fix_marker(f.candidate),
         branch = f.branch,
         candidate = code(f.candidate),
@@ -416,6 +454,14 @@ pub fn gate_fix_ticket(f: &RedGateFacts) -> (String, String) {
         suites_file = crate::method::release::gate::SUITES_FILE,
         pack = crate::method::release::gate::evidence_artifact(f.sha),
         absence = crate::method::business_rules::ABSENCE_DECLARATION,
+        next_gate = next_gate_box_marker(),
+        unseen = f
+            .rerun_unseen
+            .map(|why| format!(
+                "- Automatic rerun: {}; check the rerun workflow.\n",
+                inert(why)
+            ))
+            .unwrap_or_default(),
     );
     (title, body)
 }

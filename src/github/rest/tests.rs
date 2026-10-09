@@ -1001,13 +1001,19 @@ fn a_run_says_its_attempt_and_an_absent_attempt_reads_as_the_first() {
         &url("/repos/example-org/acme/actions/workflows/release-gate.yml/runs"),
         200,
         r#"{"workflow_runs":[
-            {"id":2,"head_sha":"s","head_branch":"t","event":"push","status":"completed","conclusion":"failure","run_attempt":2,"html_url":"u2"},
+            {"id":2,"head_sha":"s","head_branch":"t","event":"push","status":"completed","conclusion":"failure","run_attempt":2,"html_url":"u2","created_at":"2026-10-05T11:00:00Z","updated_at":"2026-10-05T11:40:00Z"},
             {"id":1,"head_sha":"s","head_branch":"t","event":"push","status":"completed","conclusion":"failure","html_url":"u1"}]}"#,
     );
     let runs = gh
         .workflow_runs(&repo(), "release-gate.yml", None, Some("s"), None)
         .unwrap();
     assert_eq!(runs.iter().map(|r| r.attempt).collect::<Vec<_>>(), [2, 1]);
+    assert_eq!(
+        runs[0].updated_at,
+        crate::github::Timestamp::parse("2026-10-05T11:40:00Z"),
+        "when it completed, for the bounded wait of its rerun"
+    );
+    assert_eq!(runs[1].updated_at, None);
 }
 
 #[test]

@@ -9,7 +9,8 @@
 //!    runs in full; a PR the coordinator sent back puts it In Progress
 //!    (spec 04 §5).
 //! 2. **The completeness rule**: with no PR in review, a ticket whose boxes
-//!    are not all checked (its `## Post deploy` section set apart) goes back
+//!    are not all checked (its `## Post deploy` section and its
+//!    bridge-verified boxes set apart) goes back
 //!    In Progress; an implementer resumes, and its next PR brings it to
 //!    review again.
 //!

@@ -946,11 +946,13 @@ fn gate_run(t: &Tick, c: &Candidate) -> Result<Option<crate::github::WorkflowRun
 }
 
 /// The gate-fix work of the candidate (spec 05 §3, BR-ASDLC-016). A red
-/// gate whose automatic rerun settled gets one gate-fix ticket: a child of
-/// the release item, unassigned, in Ready, urgent, with a complete contract,
-/// found again by its marker whatever its state (one per candidate, ever).
-/// A green gate closes the gate-fix tickets it made moot. A pending gate, or
-/// a red one whose rerun may still come, writes nothing.
+/// gate whose automatic rerun settled, or for which no rerun showed up
+/// within `gate_rerun_wait_minutes` of its completion, gets one gate-fix
+/// ticket: a child of the release item, unassigned, in Ready, urgent, with
+/// a complete contract, found again by its marker whatever its state (one
+/// per candidate, ever). A green gate closes the gate-fix tickets it made
+/// moot. A pending gate, or a red one whose rerun may still come, writes
+/// nothing.
 #[allow(clippy::too_many_arguments)]
 fn gate_fix(
     t: &Tick,
@@ -970,7 +972,11 @@ fn gate_fix(
         close_gate_fixes(t, log, report, shape, item, c, first);
         return;
     }
-    if gate::red_gate(first, &[]) == gate::RedGate::NotRed {
+    let wait = gate::RerunWait {
+        now: t.now,
+        bound: time::Duration::minutes(i64::from(t.config.release.gate_rerun_wait_minutes)),
+    };
+    if gate::red_gate(first, &[], &wait) == gate::RedGate::NotRed {
         return;
     }
     let children = match t.tracker.children(&item.key) {
@@ -1013,6 +1019,19 @@ fn gate_fix(
         Some("workflow_run"),
     ) {
         Ok(r) => r,
+        // An absent rerun workflow makes no rerun: said, and the bounded
+        // wait decides as for one that never runs.
+        Err(e) if e.is_not_found() => {
+            t.unreadable(
+                report,
+                &item.key,
+                format!(
+                    "the automatic rerun of the gate of {}: {e}; the gate-fix ticket opens {} minutes after the gate run completed",
+                    c.tag, t.config.release.gate_rerun_wait_minutes
+                ),
+            );
+            Vec::new()
+        }
         Err(e) => {
             t.unreadable(
                 report,
@@ -1030,9 +1049,14 @@ fn gate_fix(
             return;
         }
     };
-    if gate::red_gate(&run, &reruns) != gate::RedGate::Settled {
+    let red = gate::red_gate(&run, &reruns, &wait);
+    if !red.is_final() {
         return;
     }
+    let unseen = match &red {
+        gate::RedGate::Unseen(why) => Some(why.as_str()),
+        _ => None,
+    };
     let facts = texts::RedGateFacts {
         release: &item.key,
         candidate: &c.tag,
@@ -1041,6 +1065,7 @@ fn gate_fix(
         conclusion: run.conclusion.as_deref().unwrap_or_default(),
         run_url: &run.url,
         suites: failed_suites_of(t, c, &run),
+        rerun_unseen: unseen,
     };
     let (title, body) = texts::gate_fix_ticket(&facts);
     let body = for_tracker(t, &body);
@@ -1049,7 +1074,7 @@ fn gate_fix(
         report,
         &item.key,
         "create gate-fix ticket",
-        json!({"candidate": c.tag, "run": run.url, "attempt": run.attempt, "priority": "urgent"}),
+        json!({"candidate": c.tag, "run": run.url, "attempt": run.attempt, "priority": "urgent", "rerun_seen": unseen.is_none()}),
         || {
             t.tracker
                 .create_item(&NewItem {
@@ -1097,11 +1122,14 @@ fn failed_suites_of(
 }
 
 /// The gate of the newest candidate is green: every gate-fix ticket of this
-/// release opened for it or an earlier candidate, and still waiting for an
-/// implementer or in their hands, is closed Done with a comment naming the
-/// green candidate. One already resolved, in review (a PR of it is being
-/// judged) or past the merge (the closure judges it) is left alone, and so
-/// is one whose state or candidate cannot be read as such (fail-closed).
+/// release opened for it or an earlier candidate first has its box "the
+/// gate of the next candidate is green" ticked, the only box the bridge
+/// verifies and ever ticks (once: a ticked box writes nothing). One still
+/// waiting for an implementer or in their hands is then closed Done with a
+/// comment naming the green candidate. One in review (a PR of it is being
+/// judged) or past the merge (the closure judges it) gets the box only, one
+/// already resolved nothing, and so does one whose state or candidate
+/// cannot be read as such (fail-closed).
 fn close_gate_fixes(
     t: &Tick,
     log: &mut ActionLog,
@@ -1126,10 +1154,22 @@ fn close_gate_fixes(
             ch.state.status,
             Some(Status::Triage | Status::Backlog | Status::Ready | Status::InProgress)
         );
+        let judged = matches!(
+            ch.state.status,
+            Some(Status::InReview | Status::ToDeploy | Status::PostDeploy)
+        );
         let earlier = shape
             .parse_candidate(&cand)
             .is_some_and(|(v, rc)| v == c.version && rc <= c.rc);
-        if ch.archived || !open || !earlier {
+        if ch.archived || !(open || judged) || !earlier {
+            continue;
+        }
+        if texts::tick_next_gate_box(&ch.description).is_some()
+            && !tick_next_gate_box(t, log, report, &ch.key, &cand, c)
+        {
+            continue;
+        }
+        if !open {
             continue;
         }
         let marker = texts::marker(
@@ -1175,6 +1215,42 @@ fn close_gate_fixes(
             },
         );
     }
+}
+
+/// Ticks the next-gate box of the gate-fix ticket `key`, read again just
+/// before the write so that nothing written meanwhile is lost. Whether the
+/// box is ticked now (already, or by this write).
+fn tick_next_gate_box(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    key: &str,
+    cand: &str,
+    c: &Candidate,
+) -> bool {
+    let current = match t.tracker.get(key) {
+        Ok(i) => i.description,
+        Err(e) => {
+            t.unreadable(report, key, e);
+            return false;
+        }
+    };
+    let Some(next) = texts::tick_next_gate_box(&current) else {
+        return true;
+    };
+    t.act(
+        log,
+        report,
+        key,
+        "tick next-gate box",
+        json!({"candidate": cand, "green": c.tag}),
+        || {
+            t.tracker
+                .update_description(key, &next)
+                .map_err(|e| e.to_string())
+        },
+    )
+    .is_some()
 }
 
 /// One angle PR of the candidate: its state for the GO, merged into the
