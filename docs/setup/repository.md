@@ -5,6 +5,8 @@
 - `release/**`: same, bypass list: the App only.
 - Tags `*-rc.*` and release tags: block updates and deletions (an RC tag is immutable).
 
+`spl-asdlc doctor` reports one line per ruleset above. `ruleset <default branch>` and `ruleset release/**` (`[release] branch_prefix` followed by `**`) are `ok` when an active branch ruleset that covers the branch requires the status check `required-check`; the release branches are judged on sample names of the configured shape, so no release branch needs to exist. `ruleset tags` is `ok` when active tag rulesets restrict updates and deletions on every tag the configuration creates, judged on sample release and candidate tags built from `[release] release_tag` and `candidate_tag`: a pattern that leaves one of them out (`*-rc.*` alone leaves the release tags out) is `missing`, with the tag it misses. A ruleset whose enforcement is `evaluate` or `disabled` counts for nothing and makes its line `invalid`. Patterns are read as GitHub reads them: full refs (`refs/heads/…`, `refs/tags/…`), `~DEFAULT_BRANCH`, `~ALL`, the exclusions winning. The doctor does not judge the other rules (pull request, up to date, force pushes) nor the bypass list, which an App's token reads empty: check those in the settings.
+
 **Secrets**: `SPL_ASDLC_APP_ID`, `SPL_ASDLC_APP_PRIVATE_KEY` (the App), plus whatever the project's publication and deployment steps need. Never a tracker key: the CI does not write to the tracker.
 
 **Variables**: `SPL_ASDLC_RUNNER_READY` (`true` to run the gate on the project's self-hosted runner, otherwise the hosted runner is used for what fits there).
