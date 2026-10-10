@@ -2,7 +2,7 @@
   "schema": "spl-asdlc/qa-report/1",
   "candidate": "v0.2.0-rc.1",
   "angle": "security",
-  "reviewer": "Ben",
+  "reviewer": "SID-1023",
   "verdict": "go-with-note",
   "checked": [
     "Identity and privilege: src/github/auth.rs and src/github/rest.rs credential minting, token cache, GitHub API host boundary, and tracker authorization paths",
