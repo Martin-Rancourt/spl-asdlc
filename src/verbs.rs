@@ -62,7 +62,13 @@ pub fn status(t: &Tick) -> Result<(Cycle, GoDecision), String> {
         .merged_pulls(&t.repo, Some(&branch), None, 500)
         .map_err(|e| e.to_string())?;
     let c = &cy.candidate;
-    let states: Vec<(String, AngleState)> = release::offered(t, c)
+    let without_angles = release::without_angles(t, &cy.item, c)?;
+    let offered = if without_angles {
+        Vec::new()
+    } else {
+        release::offered(t, c)
+    };
+    let states: Vec<(String, AngleState)> = offered
         .into_iter()
         .map(|angle| {
             let offered = children
@@ -98,6 +104,7 @@ pub fn status(t: &Tick) -> Result<(Cycle, GoDecision), String> {
         &branch,
         &states,
         &open,
+        without_angles,
     )
     .ok_or_else(|| report.failures.join("; "))?;
     Ok((cy, decision))

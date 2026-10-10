@@ -891,7 +891,34 @@ impl Validator {
             false,
         );
         let stagnation_hours = self.positive("release.stagnation_hours", raw.stagnation_hours, 2);
-        let coordinators = self.list("release.coordinators", raw.coordinators, Vec::new(), true);
+        // `angles = []` written under [release] is a release with no QA
+        // angle, whose GO rests on the gate; no angle written at all is a
+        // file that forgot them, refused.
+        let no_qa_angle = raw.angles.as_ref().is_some_and(Vec::is_empty);
+        let angles = match raw.angles {
+            None => {
+                self.err(
+                    "release.angles",
+                    "at least one angle is required, or `angles = []` written under [release] for a release with no QA angle (its GO rests on the gate)",
+                );
+                Vec::new()
+            }
+            Some(list) if list.is_empty() => Vec::new(),
+            Some(list) => self.angles(
+                "release.angles",
+                list.into_iter()
+                    .map(|a| (a.key, a.title, a.assignee, a.notes))
+                    .collect(),
+            ),
+        };
+        // The coordinators approve angle PRs: required only when there is
+        // an angle to approve.
+        let coordinators = self.list(
+            "release.coordinators",
+            raw.coordinators,
+            Vec::new(),
+            !no_qa_angle,
+        );
         let coordinator_assignee =
             self.optional("release.coordinator_assignee", raw.coordinator_assignee);
         let escalation_label = self
@@ -929,13 +956,6 @@ impl Validator {
                 raw.release_please_manifest,
             )
             .unwrap_or_else(|| ".release-please-manifest.json".to_string());
-        let angles = self.angles(
-            "release.angles",
-            raw.angles
-                .into_iter()
-                .map(|a| (a.key, a.title, a.assignee, a.notes))
-                .collect(),
-        );
         Some(Release {
             candidate_tag,
             release_tag,
