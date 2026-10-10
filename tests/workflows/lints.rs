@@ -263,3 +263,26 @@ fn the_title_check_has_no_if_anywhere() {
         assert!(s["if"].is_badvalue(), "a step has an if: (REQ-CI-018)");
     }
 }
+
+#[test]
+fn the_rust_cache_never_cleans_the_cargo_bin_directory() {
+    // Its post step deletes what `cargo install` did not put in $CARGO_HOME/bin,
+    // rustup included: fatal on a self-hosted runner (SID-987).
+    for f in files() {
+        let doc = load(&f);
+        for (job, s) in steps(&doc) {
+            let Some(uses) = s["uses"].as_str() else {
+                continue;
+            };
+            if !uses.starts_with("Swatinem/rust-cache@") {
+                continue;
+            }
+            assert_eq!(
+                s["with"]["cache-bin"].as_str(),
+                Some("false"),
+                "{} ({job}): Swatinem/rust-cache without `cache-bin: \"false\"`",
+                relative(&f)
+            );
+        }
+    }
+}
