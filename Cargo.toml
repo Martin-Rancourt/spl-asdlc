@@ -22,6 +22,11 @@ path = "src/main.rs"
 [dependencies]
 base64 = "0.23"
 clap = { version = "4.6", features = ["derive"] }
+# Verifies the CRC recorded for artifact ZIP entries before gate evidence is read.
+crc32fast = "1.5"
+# Inflates the file the bridge reads out of an artifact zip (the gate's
+# evidence pack); already in the tree through ureq's gzip.
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 jsonwebtoken = { version = "11.1", default-features = false, features = ["use_pem", "rust_crypto"] }
 regex = "1.13"
 serde = { version = "1.0", features = ["derive"] }

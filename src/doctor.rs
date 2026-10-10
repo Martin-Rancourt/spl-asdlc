@@ -212,6 +212,7 @@ fn files(
     for wf in [
         &config.release.cut_workflow,
         &config.release.gate_workflow,
+        &config.release.gate_rerun_workflow,
         &config.release.release_please_workflow,
     ] {
         let path = format!(".github/workflows/{wf}");
