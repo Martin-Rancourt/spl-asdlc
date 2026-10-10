@@ -1,6 +1,6 @@
 //! Post-deploy validation (`docs/spec/05-release-cycle.md` §11,
-//! BR-ASDLC-002/003). When the closure moves a ticket to Post Deploy it
-//! labels it `post-deploy-validation` and creates one validation sub-task,
+//! BR-ASDLC-002/003). When the closure (or, in a project without a release
+//! cycle, the merge) moves a ticket to Post Deploy it labels it `post-deploy-validation` and creates one validation sub-task,
 //! unassigned in Ready and urgent (BR-ASDLC-017: production is waiting on
 //! it), that an agent takes: verify the ticket's `## Post deploy` boxes in
 //! production and check them, or hand the sub-task to the owner. At each tick the bridge reads the labelled tickets and moves

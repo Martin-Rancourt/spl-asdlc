@@ -170,9 +170,10 @@ impl Tick<'_> {
     }
 }
 
-/// One tick over the repository of `t.config`: the release pass, the PR
-/// pass, the sweep, the post-deploy validation (spec 07, "What a tick
-/// does"). At most one merge per
+/// One tick over the repository of `t.config`: the release pass (with its
+/// closure; nothing without a `[release]` section, spec 05 "Without a
+/// release cycle"), the PR pass, the sweep, the post-deploy validation
+/// (spec 07, "What a tick does"). At most one merge per
 /// repository per tick (invariant 6). The caller flushes the action log.
 pub fn run(t: &Tick, log: &mut ActionLog) -> Report {
     let mut report = Report::default();

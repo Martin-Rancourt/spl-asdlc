@@ -43,7 +43,10 @@ struct Base {
 pub struct Candidate {
     pub pr: PullRequest,
     pub ticket: Item,
-    pub approved_by: String,
+    /// The coordinator whose approval at the head lets it merge; `None` for a
+    /// PR with no angle, which merges with no round and no approval (spec 04
+    /// §11).
+    pub approved_by: Option<String>,
 }
 
 /// What the pass found: the PRs ready to merge, and the open PRs of each
@@ -144,7 +147,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> Pass {
         }
     };
     prs.sort_by_key(|p| p.number);
-    let release = &t.config.release;
+    let (branch_prefix, release_pr_label) = t.config.release_machinery();
     let coordinators = &t.config.review.coordinators;
     let mut open = OpenPrs {
         known: true,
@@ -156,9 +159,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> Pass {
             report.out_of_time = true;
             return Pass::default();
         }
-        if review::excluded_from_merge_pass(&pr, &release.branch_prefix, &release.release_pr_label)
-            .is_some()
-        {
+        if review::excluded_from_merge_pass(&pr, branch_prefix, release_pr_label).is_some() {
             continue;
         }
         let link = link::ticket_item(&pr, t.tracker, t.config.tracker.link_fallback);
@@ -226,7 +227,6 @@ fn one(
     open: &OpenPrs,
 ) -> Option<Candidate> {
     let object = format!("pr#{}", pr.number);
-    let release = &t.config.release;
 
     // ---- the ticket ----
     let ticket = match link {
@@ -467,7 +467,7 @@ fn one(
             &ticket.description,
             &registry,
             files.as_deref(),
-            &release.registry_path,
+            t.config.registry_path(),
         );
         if !gate.ok() {
             t.wait(report, &pr, "the business-rule guard refuses it");
@@ -481,7 +481,7 @@ fn one(
                     ("ticket", &ticket.key),
                     ("head", texts::short(&pr.head_sha)),
                 ],
-                &business_rules::refusal(&gate, &ticket.key, &release.registry_path),
+                &business_rules::refusal(&gate, &ticket.key, t.config.registry_path()),
             );
             return None;
         }
@@ -558,6 +558,9 @@ fn one(
         if let Some(by) = &changes_at_head {
             t.wait(report, &pr, changes_wait(by));
             return None;
+        }
+        if plan.unreviewed() {
+            return unreviewed(t, log, report, pr, ticket, &plan, branch);
         }
         enter_review(t, log, report, &pr, &ticket, &plan);
         return None;
@@ -669,13 +672,66 @@ fn one(
         );
         // Whose approval counts as the human one is the owner's to say
         // (`docs/open-points.md` #4); until then the PR waits and a human is asked once.
-        ask_human(t, log, report, &pr);
+        ask_human(t, log, report, &pr, true);
         return None;
     }
     Some(Candidate {
         pr,
         ticket,
-        approved_by: by,
+        approved_by: Some(by),
+    })
+}
+
+/// A PR with no angle (spec 04 §11): no round, no sub-item, no approval. It
+/// merges on what the pass already checked (CI green, the contract complete
+/// with a box ticked, the business-rule guard), once nothing holds it, no
+/// thread is open and its branch is current; the ticket is never set In
+/// Review for it. A coordinator's standing request for changes still holds
+/// it, and a human approval, when the project asks for one, is then the only
+/// approval required.
+fn unreviewed(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    pr: PullRequest,
+    ticket: Item,
+    plan: &review::ReviewPlan,
+    branch: BranchState,
+) -> Option<Candidate> {
+    let object = format!("pr#{} {}", pr.number, ticket.key);
+    let coordinators = &t.config.review.coordinators;
+    if !coordinators.is_empty() {
+        match review::pr_approval(&pr, coordinators) {
+            Approval::ChangesRequested { .. } => return None,
+            Approval::Unreadable => {
+                t.unreadable(report, &object, "GitHub cut the review list");
+                return None;
+            }
+            _ => {}
+        }
+    }
+    if !plan.holds.is_empty() {
+        return None;
+    }
+    match review::unresolved_threads(&pr) {
+        Some(0) => {}
+        Some(_) => return None,
+        None => {
+            t.unreadable(report, &object, "GitHub cut the review threads");
+            return None;
+        }
+    }
+    if branch != BranchState::Current {
+        return None;
+    }
+    if review::needs_human_approval(&t.config.review, plan) {
+        ask_human(t, log, report, &pr, false);
+        return None;
+    }
+    Some(Candidate {
+        pr,
+        ticket,
+        approved_by: None,
     })
 }
 
@@ -692,13 +748,19 @@ pub fn merge(
     let pr = &c.pr;
     let object = format!("pr#{} {}", pr.number, c.ticket.key);
     let method: crate::github::MergeMethod = t.config.review.merge_method.into();
-    let merged = t.act(
-        log,
-        report,
-        &object,
-        &format!("merge ({})", method.as_str()),
-        json!({"head": pr.head_sha, "approved_by": c.approved_by, "base": pr.base_ref}),
-        || match t
+    // A PR merged with no review says so in the action log and the dry run.
+    let (action, inputs) = match &c.approved_by {
+        Some(by) => (
+            format!("merge ({})", method.as_str()),
+            json!({"head": pr.head_sha, "approved_by": by, "base": pr.base_ref}),
+        ),
+        None => (
+            format!("merge ({}, no PR review)", method.as_str()),
+            json!({"head": pr.head_sha, "approved_by": null, "review": "none: no angle for this PR", "base": pr.base_ref}),
+        ),
+    };
+    let merged = t.act(log, report, &object, &action, inputs, || {
+        match t
             .github
             .merge_pull(&t.repo, pr.number, &pr.head_sha, method)
         {
@@ -708,8 +770,8 @@ pub fn merge(
                 Ok(p) if p.state == PrState::Merged => Ok(p.merge_commit_sha.unwrap_or_default()),
                 _ => Err(e.to_string()),
             },
-        },
-    );
+        }
+    });
     if merged.is_none() {
         return false;
     }
@@ -838,9 +900,10 @@ fn reopen_for_open_pr(
 
 /// A merged PR's ticket goes where the state rules say (spec 04 §10,
 /// BR-ASDLC-008): In Review while another of its PRs is in review, In
-/// Progress while a box of its contract is open, otherwise To Deploy; never
-/// backwards past the merge (REQ-MERGE-062 as the spec corrects it, never
-/// Done). The merge comment records it, once.
+/// Progress while a box of its contract is open, otherwise To Deploy, or,
+/// without a release cycle, Done (Post Deploy while its own `## Post
+/// deploy` boxes wait); never backwards past the merge (REQ-MERGE-062 as the
+/// spec corrects it). The merge comment records it, once.
 pub fn after_merge(
     t: &Tick,
     log: &mut ActionLog,
@@ -880,24 +943,27 @@ pub fn after_merge(
             );
             return;
         };
-        if state != Some(to) {
-            let moved = t.act(
+        let (to, why) = match delivered(t, ticket, to, why) {
+            Ok(d) => d,
+            Err(e) => {
+                t.unreadable(report, &object, format!("its contract: {e}"));
+                return;
+            }
+        };
+        // The comment records the transition: without it, the sweep
+        // retries the status at the next tick.
+        if state != Some(to)
+            && !set_state(
+                t,
                 log,
                 report,
                 &object,
-                &format!("status {to}"),
+                ticket,
+                to,
                 json!({"merged_pr": pr.url, "next": why.next()}),
-                || {
-                    t.tracker
-                        .set_status(&ticket.key, to, None)
-                        .map_err(|e| e.to_string())
-                },
-            );
-            // The comment records the transition: without it, the sweep
-            // retries the status at the next tick.
-            if moved.is_none() {
-                return;
-            }
+            )
+        {
+            return;
         }
         state = Some(to);
         next = why.next();
@@ -916,6 +982,57 @@ pub fn after_merge(
         }
         Err(e) => t.unreadable(report, &object, format!("the ticket's comments: {e}")),
     }
+}
+
+/// Without a release cycle (no `[release]`, `docs/spec/05-release-cycle.md`,
+/// "Without a release cycle") merging is delivering: a ticket the state
+/// rules put To Deploy goes where the Done gate says
+/// ([`ticket_state::delivered`]). With a release cycle, or for any other
+/// state, the rules' answer stands. `Err` when the contract could not be
+/// read in full: nothing is written, the next tick retries.
+pub fn delivered(
+    t: &Tick,
+    ticket: &Item,
+    to: Status,
+    why: ticket_state::Why,
+) -> Result<(Status, ticket_state::Why), String> {
+    if to != Status::ToDeploy || t.config.release.is_some() {
+        return Ok((to, why));
+    }
+    let gate = super::closure::contract_gate(t, ticket)?;
+    ticket_state::delivered(&ticket.key, &gate).ok_or_else(|| {
+        gate.unreadable_reason
+            .unwrap_or_else(|| "it could not be read in full".to_string())
+    })
+}
+
+/// Write the status the state rules gave a ticket whose PR resolved; whether
+/// it is in place. Post Deploy (only without a release cycle, at a merge)
+/// gets its index label first and its validation sub-task after, as at the
+/// closure (BR-ASDLC-003): a replay writes none of them again.
+pub fn set_state(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    object: &str,
+    ticket: &Item,
+    to: Status,
+    inputs: serde_json::Value,
+) -> bool {
+    if to == Status::PostDeploy && !super::post_deploy::watch(t, log, report, ticket) {
+        return false;
+    }
+    let moved = t
+        .act(log, report, object, &format!("status {to}"), inputs, || {
+            t.tracker
+                .set_status(&ticket.key, to, None)
+                .map_err(|e| e.to_string())
+        })
+        .is_some();
+    if moved && to == Status::PostDeploy {
+        super::post_deploy::ensure_sub_task(t, log, report, ticket);
+    }
+    moved
 }
 
 /// Whether the bridge already recorded this merge on the ticket.
@@ -938,7 +1055,7 @@ pub fn any_merge_recorded(t: &Tick, key: &str) -> Result<bool, String> {
 }
 
 fn read_registry(t: &Tick, head: &str) -> Registry {
-    let path = &t.config.release.registry_path;
+    let path = t.config.registry_path();
     match t.github.file(&t.repo, path, head) {
         Ok(text) => Registry::Ids(business_rules::registry_ids(&text)),
         Err(e) if e.is_not_found() => match t.github.commit(&t.repo, head) {
@@ -1523,14 +1640,24 @@ fn conflict(t: &Tick, log: &mut ActionLog, report: &mut Report, pr: &PullRequest
     );
 }
 
-fn ask_human(t: &Tick, log: &mut ActionLog, report: &mut Report, pr: &PullRequest) {
+/// Ask a human to approve, once per head. `reviewed`: the PR has a round,
+/// so the human approves besides the coordinator; otherwise the human's is
+/// the only approval it needs.
+fn ask_human(t: &Tick, log: &mut ActionLog, report: &mut Report, pr: &PullRequest, reviewed: bool) {
     let who = t.config.review.human_reviewer.clone();
+    let needs = if reviewed {
+        "a human approval besides the coordinator's"
+    } else {
+        "a human approval, the only one it needs: it has no review angle"
+    };
     let text = match &who {
         Some(login) => format!(
-            "This PR needs a human approval besides the coordinator's (`human_approval = {:?}`); @{login} is asked to look.",
+            "This PR needs {needs} (`human_approval = {:?}`); @{login} is asked to look.",
             t.config.review.human_approval
         ),
-        None => "This PR needs a human approval besides the coordinator's; no `human_reviewer` is configured, so a reviewer must be assigned by hand.".to_string(),
+        None => format!(
+            "This PR needs {needs}; no `human_reviewer` is configured, so a reviewer must be assigned by hand."
+        ),
     };
     let fields = [("head", texts::short(&pr.head_sha))];
     match pr_said(t, pr.number, &texts::marker("human-approval", &fields)) {

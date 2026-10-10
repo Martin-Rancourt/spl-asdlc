@@ -75,6 +75,21 @@ fn a_valid_file_exits_zero_and_says_what_it_read() {
 }
 
 #[test]
+fn a_file_without_a_release_section_is_valid_and_says_there_is_no_release_cycle() {
+    let text = spec_example();
+    let start = text.find("[release]\n").unwrap();
+    let end = text.find("[review]\n").unwrap();
+    let path = write_temp(
+        "no-release.toml",
+        &format!("{}{}", &text[..start], &text[end..]),
+    );
+    let out = check(&path);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains(", no release cycle, "), "{stdout}");
+}
+
+#[test]
 fn an_invalid_file_exits_one_and_lists_every_problem() {
     let text = spec_example()
         .replace("kind = \"linear\"", "kind = \"jira\"")

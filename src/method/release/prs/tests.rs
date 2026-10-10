@@ -36,7 +36,7 @@ fn shape() -> Shape {
         [release]\ncandidate_tag = \"v{version}-rc.{rc}\"\nrelease_tag = \"app-v{version}\"\ncomponents = [\"app\", \"website\", \"admin\"]\nversion_component = \"app\"\ngate_record = \"docs/releases/v{version}.md\"\nrelease_please_authors = [\"app/release-app\"]\ncoordinators = [\"c\"]\n[[release.angles]]\nkey = \"security\"\n\
         [review]\ncoordinators = [\"c\"]\ndiff_size_extra_angle = 0\n[[review.angles]]\nkey = \"m\"\n";
     let c = Config::parse(text).unwrap();
-    Shape::of(&c.product.name, &c.release)
+    Shape::of(&c.product.name, c.release.as_ref().unwrap())
 }
 
 #[test]

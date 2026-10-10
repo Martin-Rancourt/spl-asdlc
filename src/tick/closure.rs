@@ -282,7 +282,7 @@ fn ready_to_close(
     // and deleted.
     let branches = t
         .github
-        .branches(&t.repo, &t.config.release.branch_prefix)
+        .branches(&t.repo, &shape.branch_prefix)
         .map_err(|e| e.to_string())?;
     for b in branches.iter().filter(|b| shape.is_release_branch(&b.name)) {
         let cmp = t
@@ -354,7 +354,7 @@ fn members(t: &Tick, item: &Item, label: &str) -> TResult<Vec<Item>> {
 }
 
 fn read_registry(t: &Tick, tag: &str) -> Option<Registry> {
-    let path = &t.config.release.registry_path;
+    let path = t.config.registry_path();
     Some(match t.github.file(&t.repo, path, tag) {
         Ok(text) => Registry::Ids(business_rules::registry_ids(&text)),
         Err(e) if e.is_not_found() => match t.github.commit(&t.repo, tag) {
@@ -488,7 +488,7 @@ fn judge_member(
                         t,
                         &closure::unknown_rules_comment(
                             &missing,
-                            &t.config.release.registry_path,
+                            t.config.registry_path(),
                             &t.config.product.name,
                         ),
                     );

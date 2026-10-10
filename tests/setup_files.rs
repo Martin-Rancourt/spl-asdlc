@@ -61,6 +61,39 @@ fn the_configuration_template_is_valid_as_written() {
     assert!(c.notify.is_empty(), "no channel is configured by default");
 }
 
+/// The template's no-review variant, made as its comment says, is valid and
+/// has no PR review (spec 04 §11); without the angles at all it is refused.
+#[test]
+fn the_configuration_templates_no_review_variant_is_valid() {
+    let text = read(TOML);
+    let edits = [
+        (
+            "[[review.angles]]\nkey = \"maintainability\"\n",
+            String::new(),
+        ),
+        ("[review]\n", "[review]\nangles = []\n".to_string()),
+        (
+            "sensitive_paths = \".github/review-paths.json\"\n",
+            String::new(),
+        ),
+        (
+            "coordinators = [\"coordinator-login\"]   # GitHub logins whose approval at the head SHA merges a PR;",
+            "# coordinators;".to_string(),
+        ),
+    ];
+    let mut variant = text.clone();
+    for (from, to) in &edits {
+        assert_eq!(variant.matches(from).count(), 1, "{from:?} in {TOML}");
+        variant = variant.replacen(from, to, 1);
+    }
+    let c = Config::parse(&variant).unwrap_or_else(|e| panic!("{e}\n{variant}"));
+    assert!(!c.review.angle_possible(), "no PR review");
+    assert!(c.review.coordinators.is_empty());
+    let absent = variant.replace("angles = []\n", "");
+    let errs = Config::parse(&absent).expect_err("absent angles are refused");
+    assert!(errs.to_string().contains("review.angles"), "{errs}");
+}
+
 #[test]
 fn config_check_accepts_the_configuration_template() {
     let out = cli(&["config", "check", "--file", TOML]);
@@ -71,10 +104,10 @@ fn config_check_accepts_the_configuration_template() {
 fn the_configuration_template_names_the_example_callers() {
     let c = Config::parse(&read(TOML)).unwrap();
     for wf in [
-        &c.release.cut_workflow,
-        &c.release.gate_workflow,
-        &c.release.gate_rerun_workflow,
-        &c.release.release_please_workflow,
+        &c.release.as_ref().unwrap().cut_workflow,
+        &c.release.as_ref().unwrap().gate_workflow,
+        &c.release.as_ref().unwrap().gate_rerun_workflow,
+        &c.release.as_ref().unwrap().release_please_workflow,
     ] {
         assert!(
             root().join("docs/setup/examples").join(wf).is_file(),

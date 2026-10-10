@@ -103,8 +103,9 @@ pub(super) struct RawReview {
     pub coordinator_assignee: Option<String>,
     pub human_reviewer: Option<String>,
     pub ticketless_authors: Option<Vec<String>>,
-    #[serde(default)]
-    pub angles: Vec<RawReviewAngle>,
+    /// `None` when the file says nothing (refused: no PR review is an
+    /// explicit choice); `angles = []` under `[review]` is `Some` and empty.
+    pub angles: Option<Vec<RawReviewAngle>>,
     #[serde(default)]
     pub path_angles: Vec<RawPathAngle>,
 }
