@@ -49,14 +49,19 @@ pub struct Candidate {
     pub tagged_at: Option<crate::github::Timestamp>,
 }
 
-/// The `[release]` section. The release pass, the closure it runs and the
-/// release verbs run only when the configuration has one: [`pass`] and the
-/// verbs (`crate::verbs`) check it before anything reads it here.
-pub(crate) fn section<'a>(t: &Tick<'a>) -> &'a Release {
+/// Why the release cycle has nothing to act on.
+pub(crate) const NO_RELEASE_CYCLE: &str =
+    "the configuration has no [release] section: the project has no release cycle";
+
+/// The `[release]` section, or [`NO_RELEASE_CYCLE`]. Every reader handles
+/// its absence, never by a panic (a host's daemon runs the bridge): the
+/// pass does nothing, the verbs refuse, a step reached without it writes
+/// nothing.
+pub(crate) fn section<'a>(t: &Tick<'a>) -> Result<&'a Release, String> {
     t.config
         .release
         .as_ref()
-        .expect("the release cycle runs only with a [release] section")
+        .ok_or_else(|| NO_RELEASE_CYCLE.to_string())
 }
 
 /// Run the pass. Returns whether it merged a PR (the tick's one merge).
@@ -64,7 +69,7 @@ pub(crate) fn section<'a>(t: &Tick<'a>) -> &'a Release {
 /// is read or written (spec 05, "Without a release cycle").
 pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
     let cfg = t.config;
-    let Some(release) = &cfg.release else {
+    let Ok(release) = section(t) else {
         return false;
     };
     if release.angles.is_empty() {
@@ -335,7 +340,7 @@ fn previous_candidate(shape: &Shape, tags: &[GitRef], c: &Candidate) -> Option<S
 pub fn release_branch(t: &Tick, shape: &Shape, c: &Candidate) -> Result<String, String> {
     let branches = t
         .github
-        .branches(&t.repo, &section(t).branch_prefix)
+        .branches(&t.repo, &shape.branch_prefix)
         .map_err(|e| e.to_string())?;
     let mut holding = Vec::new();
     for b in branches.iter().filter(|b| shape.is_release_branch(&b.name)) {
@@ -404,7 +409,10 @@ fn release_item(
             return None;
         }
     }
-    let angles: Vec<AngleLine> = section(t)
+    let Ok(release) = section(t) else {
+        return None;
+    };
+    let angles: Vec<AngleLine> = release
         .angles
         .iter()
         .map(|a| AngleLine {
@@ -506,7 +514,8 @@ fn record_candidate(
                     return;
                 }
             };
-            let lighter = c.rc > 1 && section(t).later_passes == LaterPasses::GateAndCoordinator;
+            let lighter = c.rc > 1
+                && section(t).is_ok_and(|r| r.later_passes == LaterPasses::GateAndCoordinator);
             let offered = offered(t, c);
             let body = for_tracker(
                 t,
@@ -550,7 +559,9 @@ fn record_candidate(
 
 /// The angles offered on this candidate (spec 05 §7, `later_passes`).
 pub fn offered(t: &Tick, c: &Candidate) -> Vec<String> {
-    let release = section(t);
+    let Ok(release) = section(t) else {
+        return Vec::new();
+    };
     if c.rc > u64::from(release.max_rc_passes)
         || (c.rc > 1 && release.later_passes == LaterPasses::GateAndCoordinator)
     {
@@ -595,7 +606,7 @@ pub fn embarked(t: &Tick, shape: &Shape, c: &Candidate) -> Result<Vec<(String, V
             continue;
         };
         if pr.head_ref.starts_with(review::RELEASE_PLEASE_PREFIX)
-            || pr.head_ref.starts_with(&section(t).branch_prefix)
+            || pr.head_ref.starts_with(&shape.branch_prefix)
         {
             continue;
         }
@@ -727,6 +738,7 @@ fn open_round(
     label: &str,
     offered: &[String],
 ) -> Option<Vec<Item>> {
+    let release = section(t).ok()?;
     let mut children = match t.tracker.children(&item.key) {
         Ok(c) => c,
         Err(e) => {
@@ -736,7 +748,7 @@ fn open_round(
     };
     let product = &t.config.product.name;
     let v = c.version.to_string();
-    for angle in &section(t).angles {
+    for angle in &release.angles {
         if !offered.contains(&angle.key) {
             continue;
         }
@@ -751,7 +763,7 @@ fn open_round(
             title: angle.title.clone(),
             assignee: angle.assignee.clone(),
         };
-        let path = report::report_path(&section(t).record, &c.tag, &angle.key);
+        let path = report::report_path(&release.record, &c.tag, &angle.key);
         let (title, body) = texts::release_angle_item(
             product,
             &v,
@@ -782,7 +794,7 @@ fn open_round(
             &format!("{product} {v} (rc.{})", c.rc),
             texts::Consolidating::Candidate,
         );
-        let assignee = section(t)
+        let assignee = release
             .coordinator_assignee
             .as_ref()
             .and_then(|a| t.tracker.user(a).ok());
@@ -886,7 +898,7 @@ fn brief_facts(
             description: Some(item.description),
         });
     }
-    let rule_paths = &section(t).business_rule_paths;
+    let rule_paths = &section(t)?.business_rule_paths;
     let rule_files_touched = crate::method::glob::hits(&paths_since_release, rule_paths);
     let evidence_url = evidence_url(t, c, run)?;
     Ok(texts::Brief {
@@ -952,7 +964,13 @@ fn post_brief(
 fn gate_run(t: &Tick, c: &Candidate) -> Result<Option<crate::github::WorkflowRun>, String> {
     let runs = t
         .github
-        .workflow_runs(&t.repo, &section(t).gate_workflow, None, Some(&c.sha), None)
+        .workflow_runs(
+            &t.repo,
+            &section(t)?.gate_workflow,
+            None,
+            Some(&c.sha),
+            None,
+        )
         .map_err(|e| e.to_string())?;
     Ok(gate::gate_run(&runs, &c.sha, &c.tag).cloned())
 }
@@ -977,7 +995,7 @@ fn gate_fix(
     label: &str,
     gate: Option<&crate::github::WorkflowRun>,
 ) {
-    let Some(first) = gate else {
+    let (Some(first), Ok(release)) = (gate, section(t)) else {
         return;
     };
     if gate::is_green(Some(first)) {
@@ -986,7 +1004,7 @@ fn gate_fix(
     }
     let wait = gate::RerunWait {
         now: t.now,
-        bound: time::Duration::minutes(i64::from(section(t).gate_rerun_wait_minutes)),
+        bound: time::Duration::minutes(i64::from(release.gate_rerun_wait_minutes)),
     };
     if gate::red_gate(first, &[], &wait) == gate::RedGate::NotRed {
         return;
@@ -1022,7 +1040,7 @@ fn gate_fix(
     }
     // The rerun workflow first, the gate again after it: a rerun its
     // completed run made is then seen on the gate run.
-    let rerun_workflow = &section(t).gate_rerun_workflow;
+    let rerun_workflow = &release.gate_rerun_workflow;
     let reruns = match t.github.workflow_runs(
         &t.repo,
         rerun_workflow,
@@ -1039,7 +1057,7 @@ fn gate_fix(
                 &item.key,
                 format!(
                     "the automatic rerun of the gate of {}: {e}; the gate-fix ticket opens {} minutes after the gate run completed",
-                    c.tag, section(t).gate_rerun_wait_minutes
+                    c.tag, release.gate_rerun_wait_minutes
                 ),
             );
             Vec::new()
@@ -1237,7 +1255,10 @@ fn angle_pr(
     else {
         return AngleState::InReview;
     };
-    let path = report::report_path(&section(t).record, &c.tag, angle);
+    let Ok(release) = section(t) else {
+        return AngleState::InReview;
+    };
+    let path = report::report_path(&release.record, &c.tag, angle);
     let valid = match t.github.file(&t.repo, &path, &pr.head_sha) {
         Ok(text) => report::validate(&text, &c.tag, angle).map_err(|e| e.join("; ")),
         Err(e) if e.is_not_found() => Err(format!("no report at `{path}`")),
@@ -1279,7 +1300,7 @@ fn angle_pr(
     if *merged || pr.draft || !prs::names_sub_item(pr, &sub.key) {
         return AngleState::InReview;
     }
-    let Approval::Qualified { by } = review::pr_approval(pr, &section(t).coordinators) else {
+    let Approval::Qualified { by } = review::pr_approval(pr, &release.coordinators) else {
         return AngleState::InReview;
     };
     let required = match t.github.required_checks(&t.repo, branch) {
@@ -1362,6 +1383,9 @@ fn file_merged_findings(
     children: &[Item],
     states: &mut [(String, AngleState)],
 ) {
+    let Ok(release) = section(t) else {
+        return;
+    };
     let merged = match t.github.merged_pulls(&t.repo, Some(branch), None, 500) {
         Ok(m) => m,
         Err(e) => {
@@ -1406,7 +1430,7 @@ fn file_merged_findings(
                 );
             }
         }
-        let path = report::report_path(&section(t).record, &c.tag, &angle);
+        let path = report::report_path(&release.record, &c.tag, &angle);
         let rev = pr
             .merge_commit_sha
             .clone()
@@ -1456,7 +1480,10 @@ fn file_findings(
     };
     let product = &t.config.product.name;
     let v = c.version.to_string();
-    let shared = section(t).nits == NitsGrouping::Shared;
+    let Ok(release) = section(t) else {
+        return;
+    };
+    let shared = release.nits == NitsGrouping::Shared;
     // The shared nits ticket, once found or created in this call: its key
     // and its description as this call last wrote it. `Err` once it is
     // refused (unreadable, or no contract): no nit of this call goes in.
@@ -1667,7 +1694,10 @@ fn release_prs(
     open: &[PullRequest],
 ) -> (Vec<String>, Vec<String>, Vec<ReleasePr>) {
     let cfg = t.config;
-    let rp_path = section(t).release_please_config.as_str();
+    let Ok(release) = section(t) else {
+        return (vec![NO_RELEASE_CYCLE.to_string()], Vec::new(), Vec::new());
+    };
+    let rp_path = release.release_please_config.as_str();
     let rp_config = |pr: &PullRequest| t.github.file(&t.repo, rp_path, &pr.head_sha);
     // The range, read once: unreadable is a gap, never an empty range.
     let range: Result<Vec<crate::github::CommitSummary>, String> = t
@@ -1702,8 +1732,8 @@ fn release_prs(
         return match prs::release_please_pr(
             open,
             branch,
-            &section(t).release_please_authors,
-            &section(t).release_pr_label,
+            &release.release_please_authors,
+            &release.release_pr_label,
         ) {
             Err(e) => (vec![e.to_string()], Vec::new(), Vec::new()),
             Ok(lookup) => match lookup.pr {
@@ -1743,8 +1773,8 @@ fn release_prs(
         open,
         shape,
         branch,
-        &section(t).release_please_authors,
-        &section(t).release_pr_label,
+        &release.release_please_authors,
+        &release.release_pr_label,
     ) {
         Ok(f) => f,
         Err(e) => return (vec![e], Vec::new(), Vec::new()),
@@ -1846,6 +1876,13 @@ pub fn decide(
     open: &[PullRequest],
 ) -> Option<(go::GoDecision, Vec<ReleasePr>)> {
     let cfg = t.config;
+    let release = match section(t) {
+        Ok(r) => r,
+        Err(e) => {
+            t.unreadable(report, &item.key, e);
+            return None;
+        }
+    };
     let gate_green = match gate_run(t, c) {
         Ok(run) => Some(gate::is_green(run.as_ref())),
         Err(e) => {
@@ -1897,7 +1934,7 @@ pub fn decide(
             let moved: Vec<String> = cmp
                 .files
                 .into_iter()
-                .filter(|f| !section(t).bookkeeping_paths.iter().any(|b| b == f))
+                .filter(|f| !release.bookkeeping_paths.iter().any(|b| b == f))
                 .filter(|f| record.as_deref() != Some(f.as_str()))
                 .collect();
             if moved.is_empty() {
@@ -1916,7 +1953,7 @@ pub fn decide(
         )],
     };
     let (note_gaps, version_gaps, rp) = release_prs(t, shape, c, branch, open);
-    let policy = match section(t).go_policy {
+    let policy = match release.go_policy {
         crate::config::GoPolicy::Computed => Policy::Computed,
         // Whose approval counts is the owner's to settle (`docs/open-points.md` #3): never given.
         crate::config::GoPolicy::Human => Policy::Human { approved: None },
@@ -2256,7 +2293,10 @@ fn escalate(
     d: &go::GoDecision,
     _branch: &str,
 ) {
-    let max = section(t).max_rc_passes;
+    let Ok(release) = section(t) else {
+        return;
+    };
+    let max = release.max_rc_passes;
     let moved = !d.tip_gaps.is_empty();
     if c.rc < u64::from(max) || !d.every_angle_answered() || (d.blockers.is_empty() && !moved) {
         return;
@@ -2296,7 +2336,7 @@ fn escalate(
     {
         return;
     }
-    let hold_label = &section(t).escalation_label;
+    let hold_label = &release.escalation_label;
     if !item.labels.iter().any(|l| l == hold_label)
         && t.act(
             log,
@@ -2350,7 +2390,10 @@ fn stagnation(
     c: &Candidate,
     d: &go::GoDecision,
 ) {
-    let hours = section(t).stagnation_hours;
+    let Ok(release) = section(t) else {
+        return;
+    };
+    let hours = release.stagnation_hours;
     let Some(tagged) = c.tagged_at else {
         return;
     };

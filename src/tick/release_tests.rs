@@ -2783,6 +2783,32 @@ fn without_a_release_section_the_tick_skips_the_release_and_closure_passes() {
     assert!(w.signal.sent.borrow().is_empty(), "no release note");
 }
 
+/// A host's daemon runs the bridge: nothing panics on a configuration
+/// without `[release]`, even a step the pass never reaches without it.
+#[test]
+fn without_a_release_section_the_release_pass_and_its_readers_return_cleanly() {
+    let mut w = World::new();
+    w.config.release = None;
+    let t = w.tick_ctx();
+    let mut log = ActionLog::in_memory();
+    let mut report = Report::default();
+    assert!(!release::pass(&t, &mut log, &mut report), "no merge");
+    assert!(report.ok(), "nothing to report: {report:?}");
+    assert!(log.entries().is_empty(), "{:?}", log.entries());
+    assert_eq!(release::section(&t).unwrap_err(), release::NO_RELEASE_CYCLE);
+    let candidate = release::Candidate {
+        tag: CAND.into(),
+        version: crate::method::release::shape::Version::parse("1.2.0").unwrap(),
+        rc: 1,
+        sha: "c1".into(),
+        class: "minor".into(),
+        tagged_at: None,
+    };
+    assert!(release::offered(&t, &candidate).is_empty());
+    assert!(w.github.writes().is_empty());
+    assert!(w.tracker.writes().is_empty());
+}
+
 #[test]
 fn without_a_release_section_the_release_verbs_say_there_is_no_cycle() {
     let mut w = World::new();

@@ -57,6 +57,7 @@ pub fn cycle(t: &Tick) -> Result<Cycle, String> {
 
 /// `release status`: the GO and its inputs, read-only.
 pub fn status(t: &Tick) -> Result<(Cycle, GoDecision), String> {
+    let record = &release_cycle(t)?.record;
     let cy = cycle(t)?;
     let branch = cy
         .branch
@@ -86,7 +87,7 @@ pub fn status(t: &Tick) -> Result<(Cycle, GoDecision), String> {
             let state = if merged.iter().any(|p| mine(&p.head_ref)) {
                 AngleState::Merged
             } else if let Some(pr) = open.iter().find(|p| mine(&p.head_ref)) {
-                let path = report::report_path(&release::section(t).record, &c.tag, &angle);
+                let path = report::report_path(record, &c.tag, &angle);
                 match t.github.file(&t.repo, &path, &pr.head_sha) {
                     Ok(text) if report::validate(&text, &c.tag, &angle).is_ok() => {
                         AngleState::InReview
