@@ -178,7 +178,11 @@ pub fn plan(facts: &ReviewFacts<'_>, review: &config::Review) -> ReviewPlan {
             let reason = "the diff could not be read, so the reviewed-path rule could not run";
             plan.reasons.push(reason.to_string());
             plan.holds.push(reason.to_string());
-            push_unique(&mut plan.angles, &review.sensitive_angle);
+            // A project with no PR review has no round to add it to: the
+            // hold alone keeps the PR waiting until the diff is read.
+            if review.angle_possible() {
+                push_unique(&mut plan.angles, &review.sensitive_angle);
+            }
         }
         Some(paths) => {
             match facts.sensitive {
@@ -237,7 +241,16 @@ pub fn plan(facts: &ReviewFacts<'_>, review: &config::Review) -> ReviewPlan {
     plan
 }
 
-/// Whether a human must approve besides the coordinator (spec 04).
+impl ReviewPlan {
+    /// No angle for this PR: no round, no approval; it merges on its CI and
+    /// the other merge conditions (spec 04 §11).
+    pub fn unreviewed(&self) -> bool {
+        self.angles.is_empty()
+    }
+}
+
+/// Whether a human must approve besides the coordinator, or alone when the
+/// PR has no angle (spec 04).
 pub fn needs_human_approval(review: &config::Review, plan: &ReviewPlan) -> bool {
     match review.human_approval {
         config::HumanApproval::Never => false,

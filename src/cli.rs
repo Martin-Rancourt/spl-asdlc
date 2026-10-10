@@ -593,13 +593,17 @@ fn config_check(
         Ok((c, _)) => {
             let _ = writeln!(
                 out,
-                "{name}: valid — product {} ({}), tracker {} team {}, {} release angle(s), {} review angle(s)",
+                "{name}: valid — product {} ({}), tracker {} team {}, {} release angle(s), {}",
                 c.product.name,
                 c.product.repository,
                 c.tracker.kind,
                 c.tracker.team,
                 c.release.angles.len(),
-                c.review.angles.len(),
+                if c.review.angle_possible() {
+                    format!("{} review angle(s)", c.review.angles.len())
+                } else {
+                    "no PR review".to_string()
+                },
             );
             ExitCode::SUCCESS
         }

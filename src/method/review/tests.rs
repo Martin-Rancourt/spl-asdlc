@@ -208,6 +208,26 @@ fn an_unreadable_diff_buys_a_reviewer_instead_of_a_merge() {
     assert!(plan.angles.contains(&"security".to_string()));
 }
 
+/// A project with no PR review (spec 04 §11): a PR gets no angle, and an
+/// unread diff holds it without opening a round nobody would approve.
+#[test]
+fn with_no_possible_angle_a_pr_is_unreviewed_and_an_unread_diff_only_holds_it() {
+    let mut config = review_config();
+    config.angles.clear();
+    config.path_angles.clear();
+    config.sensitive_paths = None;
+    config.diff_size_extra_angle = 0;
+    let paths = s(&["src/auth/login.rs"]);
+    let read = plan(
+        &facts(Some(&paths), &SensitivePaths::NotDeclared, &[]),
+        &config,
+    );
+    assert!(read.unreviewed() && read.holds.is_empty(), "{read:?}");
+    let unread = plan(&facts(None, &SensitivePaths::NotDeclared, &[]), &config);
+    assert!(unread.unreviewed(), "{unread:?}");
+    assert!(unread.holds[0].contains("the diff could not be read"));
+}
+
 #[test]
 fn an_empty_file_list_that_contradicts_the_pr_is_not_an_answer() {
     let config = review_config();

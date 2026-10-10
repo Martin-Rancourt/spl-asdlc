@@ -84,12 +84,19 @@ diff_size_angle = "maintainability"    # required while diff_size_extra_angle is
 # waits (spec 08 rule 5). Remove the key only to have no sensitive path at all.
 sensitive_paths = ".github/review-paths.json"
 # sensitive_angle = "security"
-coordinators = ["coordinator-login"]   # GitHub logins whose approval at the head SHA merges a PR
+coordinators = ["coordinator-login"]   # GitHub logins whose approval at the head SHA merges a PR; optional with no PR review
 # coordinator_assignee = "coordinator-handle" # tracker participant who receives each PR round's consolidation item
 # human_reviewer = "owner-login"       # asked to look at a green PR stuck on a human
 # ticketless_authors = []              # Apps whose PRs need no ticket, e.g. ["dependabot"]
 
-# The base angles of every PR review: at least one.
+# The base angles of every PR review: one table each.
+#
+# No PR review (docs/spec/04-pr-review.md §11) is an explicit choice: replace
+# these tables with `angles = []` under [review], set diff_size_extra_angle = 0
+# and remove sensitive_paths and every path angle. No PR then gets an angle: it
+# merges on its CI (contract complete, checks green, branch up to date,
+# business-rule guard) with no round and no approval, and coordinators may be
+# left out. Leaving the angles out altogether makes the file invalid.
 [[review.angles]]
 key = "maintainability"
 

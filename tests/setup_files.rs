@@ -61,6 +61,46 @@ fn the_configuration_template_is_valid_as_written() {
     assert!(c.notify.is_empty(), "no channel is configured by default");
 }
 
+/// The template's no-review variant, made as its comment says, is valid and
+/// has no PR review (spec 04 §11); without the angles at all it is refused.
+#[test]
+fn the_configuration_templates_no_review_variant_is_valid() {
+    let text = read(TOML);
+    let edits = [
+        (
+            "[[review.angles]]\nkey = \"maintainability\"\n",
+            String::new(),
+        ),
+        (
+            "[review]\n",
+            "[review]\nangles = []\ndiff_size_extra_angle = 0\n".to_string(),
+        ),
+        (
+            "sensitive_paths = \".github/review-paths.json\"\n",
+            String::new(),
+        ),
+        (
+            "diff_size_angle = \"maintainability\"",
+            "# diff_size_angle".to_string(),
+        ),
+        (
+            "coordinators = [\"coordinator-login\"]   # GitHub logins whose approval at the head SHA merges a PR;",
+            "# coordinators;".to_string(),
+        ),
+    ];
+    let mut variant = text.clone();
+    for (from, to) in &edits {
+        assert_eq!(variant.matches(from).count(), 1, "{from:?} in {TOML}");
+        variant = variant.replacen(from, to, 1);
+    }
+    let c = Config::parse(&variant).unwrap_or_else(|e| panic!("{e}\n{variant}"));
+    assert!(!c.review.angle_possible(), "no PR review");
+    assert!(c.review.coordinators.is_empty());
+    let absent = variant.replace("angles = []\n", "");
+    let errs = Config::parse(&absent).expect_err("absent angles are refused");
+    assert!(errs.to_string().contains("review.angles"), "{errs}");
+}
+
 #[test]
 fn config_check_accepts_the_configuration_template() {
     let out = cli(&["config", "check", "--file", TOML]);
