@@ -73,6 +73,7 @@ fn the_configuration_template_names_the_example_callers() {
     for wf in [
         &c.release.cut_workflow,
         &c.release.gate_workflow,
+        &c.release.gate_rerun_workflow,
         &c.release.release_please_workflow,
     ] {
         assert!(
