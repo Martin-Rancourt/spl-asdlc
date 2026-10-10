@@ -66,6 +66,7 @@ pub fn run(
             Verdict::Ok,
             instance.map_or("none", |i| i.label.as_str()),
         ),
+        pr_review(config),
     ];
     let Some(repo) = RepoSlug::parse(&config.product.repository) else {
         out.push(check(
@@ -101,6 +102,53 @@ pub fn run(
     out.extend(ruleset_checks(config, &default, &github.rulesets(&repo)));
     out.extend(tracker_checks(config, tracker));
     out
+}
+
+/// What reviews a PR (spec 04 §11): its base angles and what can add one,
+/// or none, when no PR can get an angle and a PR merges on its CI.
+fn pr_review(config: &Config) -> Check {
+    let r = &config.review;
+    if !r.angle_possible() {
+        return check(
+            "PR review",
+            Verdict::Ok,
+            "none — a PR merges on its CI and the other merge conditions, with no round and no coordinator approval",
+        );
+    }
+    let mut parts = Vec::new();
+    parts.push(if r.angles.is_empty() {
+        "no base angle".to_string()
+    } else {
+        format!(
+            "base angles {}",
+            r.angles
+                .iter()
+                .map(|a| a.key.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    });
+    for pa in &r.path_angles {
+        parts.push(format!("{} on its paths", pa.angle));
+    }
+    if r.sensitive_paths.is_some() {
+        parts.push(format!("{} on sensitive paths", r.sensitive_angle));
+    }
+    if let (true, Some(angle)) = (r.diff_size_extra_angle > 0, &r.diff_size_angle) {
+        parts.push(format!(
+            "{angle} above {} changed lines",
+            r.diff_size_extra_angle
+        ));
+    }
+    let detail = if r.angles.is_empty() {
+        format!(
+            "{}; a PR that gets no angle merges on its CI with no round",
+            parts.join("; ")
+        )
+    } else {
+        parts.join("; ")
+    };
+    check("PR review", Verdict::Ok, detail)
 }
 
 /// What a required ruleset must enforce on a ref.
@@ -696,6 +744,36 @@ mod tests {
         assert_eq!(
             statuses.to_string(),
             "statuses: missing — the tracker lacks To Deploy: it must name each canonical status exactly so"
+        );
+    }
+
+    #[test]
+    fn the_pr_review_is_reported_and_none_when_no_pr_can_get_an_angle() {
+        let mut c = config();
+        let line = pr_review(&c).to_string();
+        assert!(
+            line.starts_with("PR review: ok — base angles maintainability"),
+            "{line}"
+        );
+        c.review.angles.clear();
+        let line = pr_review(&c).to_string();
+        assert!(line.contains("no base angle"), "{line}");
+        assert!(line.contains("security on sensitive paths"), "{line}");
+        c.review.path_angles.clear();
+        c.review.sensitive_paths = None;
+        c.review.diff_size_extra_angle = 0;
+        c.review.coordinators.clear();
+        assert_eq!(
+            pr_review(&c).to_string(),
+            "PR review: ok — none — a PR merges on its CI and the other merge conditions, with no round and no coordinator approval"
+        );
+        let t = FakeTracker::default();
+        let checks = run(&c, None, &FakeGitHub::new(), &t, "workstation");
+        assert!(
+            checks
+                .iter()
+                .any(|x| x.name == "PR review" && x.detail.starts_with("none")),
+            "{checks:#?}"
         );
     }
 

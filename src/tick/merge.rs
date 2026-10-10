@@ -43,7 +43,10 @@ struct Base {
 pub struct Candidate {
     pub pr: PullRequest,
     pub ticket: Item,
-    pub approved_by: String,
+    /// The coordinator whose approval at the head lets it merge; `None` for a
+    /// PR with no angle, which merges with no round and no approval (spec 04
+    /// §11).
+    pub approved_by: Option<String>,
 }
 
 /// What the pass found: the PRs ready to merge, and the open PRs of each
@@ -559,6 +562,9 @@ fn one(
             t.wait(report, &pr, changes_wait(by));
             return None;
         }
+        if plan.unreviewed() {
+            return unreviewed(t, log, report, pr, ticket, &plan, branch);
+        }
         enter_review(t, log, report, &pr, &ticket, &plan);
         return None;
     }
@@ -669,13 +675,66 @@ fn one(
         );
         // Whose approval counts as the human one is the owner's to say
         // (`docs/open-points.md` #4); until then the PR waits and a human is asked once.
-        ask_human(t, log, report, &pr);
+        ask_human(t, log, report, &pr, true);
         return None;
     }
     Some(Candidate {
         pr,
         ticket,
-        approved_by: by,
+        approved_by: Some(by),
+    })
+}
+
+/// A PR with no angle (spec 04 §11): no round, no sub-item, no approval. It
+/// merges on what the pass already checked (CI green, the contract complete
+/// with a box ticked, the business-rule guard), once nothing holds it, no
+/// thread is open and its branch is current; the ticket is never set In
+/// Review for it. A coordinator's standing request for changes still holds
+/// it, and a human approval, when the project asks for one, is then the only
+/// approval required.
+fn unreviewed(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    pr: PullRequest,
+    ticket: Item,
+    plan: &review::ReviewPlan,
+    branch: BranchState,
+) -> Option<Candidate> {
+    let object = format!("pr#{} {}", pr.number, ticket.key);
+    let coordinators = &t.config.review.coordinators;
+    if !coordinators.is_empty() {
+        match review::pr_approval(&pr, coordinators) {
+            Approval::ChangesRequested { .. } => return None,
+            Approval::Unreadable => {
+                t.unreadable(report, &object, "GitHub cut the review list");
+                return None;
+            }
+            _ => {}
+        }
+    }
+    if !plan.holds.is_empty() {
+        return None;
+    }
+    match review::unresolved_threads(&pr) {
+        Some(0) => {}
+        Some(_) => return None,
+        None => {
+            t.unreadable(report, &object, "GitHub cut the review threads");
+            return None;
+        }
+    }
+    if branch != BranchState::Current {
+        return None;
+    }
+    if review::needs_human_approval(&t.config.review, plan) {
+        ask_human(t, log, report, &pr, false);
+        return None;
+    }
+    Some(Candidate {
+        pr,
+        ticket,
+        approved_by: None,
     })
 }
 
@@ -692,13 +751,19 @@ pub fn merge(
     let pr = &c.pr;
     let object = format!("pr#{} {}", pr.number, c.ticket.key);
     let method: crate::github::MergeMethod = t.config.review.merge_method.into();
-    let merged = t.act(
-        log,
-        report,
-        &object,
-        &format!("merge ({})", method.as_str()),
-        json!({"head": pr.head_sha, "approved_by": c.approved_by, "base": pr.base_ref}),
-        || match t
+    // A PR merged with no review says so in the action log and the dry run.
+    let (action, inputs) = match &c.approved_by {
+        Some(by) => (
+            format!("merge ({})", method.as_str()),
+            json!({"head": pr.head_sha, "approved_by": by, "base": pr.base_ref}),
+        ),
+        None => (
+            format!("merge ({}, no PR review)", method.as_str()),
+            json!({"head": pr.head_sha, "approved_by": null, "review": "none: no angle for this PR", "base": pr.base_ref}),
+        ),
+    };
+    let merged = t.act(log, report, &object, &action, inputs, || {
+        match t
             .github
             .merge_pull(&t.repo, pr.number, &pr.head_sha, method)
         {
@@ -708,8 +773,8 @@ pub fn merge(
                 Ok(p) if p.state == PrState::Merged => Ok(p.merge_commit_sha.unwrap_or_default()),
                 _ => Err(e.to_string()),
             },
-        },
-    );
+        }
+    });
     if merged.is_none() {
         return false;
     }
@@ -1523,14 +1588,24 @@ fn conflict(t: &Tick, log: &mut ActionLog, report: &mut Report, pr: &PullRequest
     );
 }
 
-fn ask_human(t: &Tick, log: &mut ActionLog, report: &mut Report, pr: &PullRequest) {
+/// Ask a human to approve, once per head. `reviewed`: the PR has a round,
+/// so the human approves besides the coordinator; otherwise the human's is
+/// the only approval it needs.
+fn ask_human(t: &Tick, log: &mut ActionLog, report: &mut Report, pr: &PullRequest, reviewed: bool) {
     let who = t.config.review.human_reviewer.clone();
+    let needs = if reviewed {
+        "a human approval besides the coordinator's"
+    } else {
+        "a human approval, the only one it needs: it has no review angle"
+    };
     let text = match &who {
         Some(login) => format!(
-            "This PR needs a human approval besides the coordinator's (`human_approval = {:?}`); @{login} is asked to look.",
+            "This PR needs {needs} (`human_approval = {:?}`); @{login} is asked to look.",
             t.config.review.human_approval
         ),
-        None => "This PR needs a human approval besides the coordinator's; no `human_reviewer` is configured, so a reviewer must be assigned by hand.".to_string(),
+        None => format!(
+            "This PR needs {needs}; no `human_reviewer` is configured, so a reviewer must be assigned by hand."
+        ),
     };
     let fields = [("head", texts::short(&pr.head_sha))];
     match pr_said(t, pr.number, &texts::marker("human-approval", &fields)) {

@@ -216,7 +216,8 @@ pub struct PathAngle {
 pub struct Review {
     pub merge_method: MergeMethod,
     pub require_up_to_date: bool,
-    /// Changed lines above which `diff_size_angle` is added; 0 disables it.
+    /// Changed lines above which `diff_size_angle` is added; 0 (the
+    /// default) disables it.
     pub diff_size_extra_angle: u32,
     pub diff_size_angle: Option<String>,
     pub human_approval: HumanApproval,
@@ -233,6 +234,21 @@ pub struct Review {
     pub ticketless_authors: Vec<String>,
     pub angles: Vec<Angle>,
     pub path_angles: Vec<PathAngle>,
+}
+
+impl Review {
+    /// Whether some PR can get an angle (spec 04 §11): a base angle, a path
+    /// angle, a sensitive-path list or a size threshold. When none can, the
+    /// project has no PR review: a PR merges on its CI and the other merge
+    /// conditions, with no round and no approval.
+    pub fn angle_possible(&self) -> bool {
+        angle_possible(
+            !self.angles.is_empty(),
+            !self.path_angles.is_empty(),
+            self.sensitive_paths.is_some(),
+            self.diff_size_extra_angle,
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -719,8 +735,10 @@ impl Validator {
         })
     }
 
-    fn angles(&mut self, key: &str, raw: Vec<AngleFields>) -> Vec<Angle> {
-        if raw.is_empty() {
+    /// The angles of a list, each checked; an empty list is refused only
+    /// when `at_least_one`.
+    fn angles(&mut self, key: &str, raw: Vec<AngleFields>, at_least_one: bool) -> Vec<Angle> {
+        if raw.is_empty() && at_least_one {
             self.err(
                 key,
                 "at least one angle is required: a review with no angle computes its verdict from nobody",
@@ -909,6 +927,7 @@ impl Validator {
                 list.into_iter()
                     .map(|a| (a.key, a.title, a.assignee, a.notes))
                     .collect(),
+                true,
             ),
         };
         // The coordinators approve angle PRs: required only when there is
@@ -1004,17 +1023,16 @@ impl Validator {
             ],
         );
         let require_up_to_date = raw.require_up_to_date.unwrap_or(true);
-        let diff_size_extra_angle = self.non_negative(
-            "review.diff_size_extra_angle",
-            raw.diff_size_extra_angle,
-            1500,
-        );
+        // Off by default: a project that wants an angle by size sets the
+        // threshold and the angle it adds.
+        let diff_size_extra_angle =
+            self.non_negative("review.diff_size_extra_angle", raw.diff_size_extra_angle, 0);
         let diff_size_angle = self.optional("review.diff_size_angle", raw.diff_size_angle);
         if diff_size_extra_angle > 0 && diff_size_angle.is_none() {
             self.err(
                 "review.diff_size_angle",
                 format!(
-                    "is required while review.diff_size_extra_angle is {diff_size_extra_angle} (set it to 0 to add no angle by size)"
+                    "is required while review.diff_size_extra_angle is {diff_size_extra_angle} (leave the threshold out, or 0, to add no angle by size)"
                 ),
             );
         }
@@ -1051,7 +1069,6 @@ impl Validator {
                 }
             }
         }
-        let coordinators = self.list("review.coordinators", raw.coordinators, Vec::new(), true);
         let coordinator_assignee =
             self.optional("review.coordinator_assignee", raw.coordinator_assignee);
         let human_reviewer = self.optional("review.human_reviewer", raw.human_reviewer);
@@ -1061,13 +1078,24 @@ impl Validator {
             Vec::new(),
             false,
         );
-        let angles = self.angles(
-            "review.angles",
-            raw.angles
-                .into_iter()
-                .map(|a| (a.key, None, a.assignee, None))
-                .collect(),
-        );
+        // No PR review is an explicit choice (`angles = []`): a file that
+        // says nothing about its base angles is refused, never read as none.
+        let angles = match raw.angles {
+            None => {
+                self.err(
+                    "review.angles",
+                    "is required: one `[[review.angles]]` table per base angle, or `angles = []` under [review] for no base angle",
+                );
+                Vec::new()
+            }
+            Some(list) => self.angles(
+                "review.angles",
+                list.into_iter()
+                    .map(|a| (a.key, None, a.assignee, None))
+                    .collect(),
+                false,
+            ),
+        };
         let mut path_angles = Vec::new();
         for (i, pa) in raw.path_angles.into_iter().enumerate() {
             let at = format!("review.path_angles[{i}]");
@@ -1084,6 +1112,21 @@ impl Validator {
             if let Some(angle) = angle {
                 path_angles.push(PathAngle { paths, angle });
             }
+        }
+        // The coordinator approves a round; a project where no PR can get an
+        // angle has no round, so no coordinator to name.
+        let coordinators = self.list("review.coordinators", raw.coordinators, Vec::new(), false);
+        let angle_possible = angle_possible(
+            !angles.is_empty(),
+            !path_angles.is_empty(),
+            sensitive_paths.is_some(),
+            diff_size_extra_angle,
+        );
+        if angle_possible && coordinators.is_empty() {
+            self.err(
+                "review.coordinators",
+                "is required and must name at least one entry while a PR can get an angle (a base angle, a path angle, sensitive paths or a size threshold): the coordinator approves its round",
+            );
         }
         Some(Review {
             merge_method: merge_method?,
@@ -1240,6 +1283,12 @@ fn is_product_name(s: &str) -> bool {
     let mut chars = s.chars();
     matches!(chars.next(), Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit())
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// Whether some PR can get an angle: a base angle, a path angle, a
+/// sensitive-path list or a size threshold. Without one, no PR is reviewed.
+fn angle_possible(base: bool, path: bool, sensitive: bool, diff_size_extra_angle: u32) -> bool {
+    base || path || sensitive || diff_size_extra_angle > 0
 }
 
 fn is_angle_key(s: &str) -> bool {
