@@ -263,7 +263,7 @@ fn a_skipped_required_check_holds_the_merge() {
 }
 
 #[test]
-fn the_default_threshold_was_raised_for_agent_produced_diffs() {
+fn a_configured_size_threshold_adds_its_angle_only_above_it() {
     let config = review_config();
     let paths = s(&["src/x.rs"]);
     let mut f = facts(Some(&paths), &SensitivePaths::NotDeclared, &[]);

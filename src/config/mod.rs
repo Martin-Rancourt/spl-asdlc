@@ -216,7 +216,8 @@ pub struct PathAngle {
 pub struct Review {
     pub merge_method: MergeMethod,
     pub require_up_to_date: bool,
-    /// Changed lines above which `diff_size_angle` is added; 0 disables it.
+    /// Changed lines above which `diff_size_angle` is added; 0 (the
+    /// default) disables it.
     pub diff_size_extra_angle: u32,
     pub diff_size_angle: Option<String>,
     pub human_approval: HumanApproval,
@@ -1002,17 +1003,16 @@ impl Validator {
             ],
         );
         let require_up_to_date = raw.require_up_to_date.unwrap_or(true);
-        let diff_size_extra_angle = self.non_negative(
-            "review.diff_size_extra_angle",
-            raw.diff_size_extra_angle,
-            1500,
-        );
+        // Off by default: a project that wants an angle by size sets the
+        // threshold and the angle it adds.
+        let diff_size_extra_angle =
+            self.non_negative("review.diff_size_extra_angle", raw.diff_size_extra_angle, 0);
         let diff_size_angle = self.optional("review.diff_size_angle", raw.diff_size_angle);
         if diff_size_extra_angle > 0 && diff_size_angle.is_none() {
             self.err(
                 "review.diff_size_angle",
                 format!(
-                    "is required while review.diff_size_extra_angle is {diff_size_extra_angle} (set it to 0 to add no angle by size)"
+                    "is required while review.diff_size_extra_angle is {diff_size_extra_angle} (leave the threshold out, or 0, to add no angle by size)"
                 ),
             );
         }

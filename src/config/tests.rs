@@ -77,7 +77,7 @@ fn a_minimal_file_gets_every_documented_default() {
     assert_eq!(c.release.angles[0].title, "Security review");
     assert_eq!(c.review.merge_method, MergeMethod::Squash);
     assert!(c.review.require_up_to_date);
-    assert_eq!(c.review.diff_size_extra_angle, 1500);
+    assert_eq!(c.review.diff_size_extra_angle, 0, "no size trigger");
     assert_eq!(c.review.human_approval, HumanApproval::Never);
     assert_eq!(c.review.sensitive_paths, None);
     assert_eq!(c.review.sensitive_angle, "security");
@@ -229,12 +229,12 @@ fn a_version_component_must_be_one_of_the_components() {
 
 // ---- spec 04 §11: a project may configure no PR review ----
 
-/// MINIMAL with no PR review: no base angle, written explicitly, no size
-/// threshold, no coordinator.
+/// MINIMAL with no PR review: no base angle, written explicitly, and
+/// nothing else (no size threshold is the default), no coordinator.
 fn no_review() -> String {
     let text = MINIMAL.replace(
         "[review]\ncoordinators = [\"coordinator-login\"]\ndiff_size_angle = \"maintainability\"\n\n[[review.angles]]\nkey = \"maintainability\"\n",
-        "[review]\nangles = []\ndiff_size_extra_angle = 0\n",
+        "[review]\nangles = []\n",
     );
     assert_ne!(text, MINIMAL, "the replacement applied");
     text
@@ -270,8 +270,8 @@ fn the_coordinators_are_required_while_some_angle_can_be_added() {
         (
             "an angle by size",
             text.replace(
-                "diff_size_extra_angle = 0\n",
-                "diff_size_angle = \"maintainability\"\n",
+                "angles = []\n",
+                "angles = []\ndiff_size_extra_angle = 1500\ndiff_size_angle = \"maintainability\"\n",
             ),
         ),
         (
@@ -346,18 +346,21 @@ fn coordinators_and_release_please_authors_are_required() {
 }
 
 #[test]
-fn a_size_trigger_names_the_angle_it_adds_or_is_disabled() {
-    let text = MINIMAL.replace("diff_size_angle = \"maintainability\"\n", "");
-    assert_refused_with(&text, "review.diff_size_angle: is required while");
-    let disabled = MINIMAL.replace(
-        "diff_size_angle = \"maintainability\"\n",
-        "diff_size_extra_angle = 0\n",
-    );
+fn a_size_trigger_is_off_by_default_and_names_the_angle_it_adds() {
+    // Off unless asked for: no threshold, no angle to name.
+    let off = MINIMAL.replace("diff_size_angle = \"maintainability\"\n", "");
+    assert_eq!(Config::parse(&off).unwrap().review.diff_size_extra_angle, 0);
+    // A threshold above 0 names the angle it adds.
+    let unnamed = off.replace("[review]\n", "[review]\ndiff_size_extra_angle = 1500\n");
+    assert_refused_with(&unnamed, "review.diff_size_angle: is required while");
+    let on = MINIMAL.replace("[review]\n", "[review]\ndiff_size_extra_angle = 1500\n");
+    let r = Config::parse(&on).unwrap().review;
+    assert_eq!(r.diff_size_extra_angle, 1500);
+    assert_eq!(r.diff_size_angle.as_deref(), Some("maintainability"));
+    // 0 written explicitly stays valid.
+    let zero = off.replace("[review]\n", "[review]\ndiff_size_extra_angle = 0\n");
     assert_eq!(
-        Config::parse(&disabled)
-            .unwrap()
-            .review
-            .diff_size_extra_angle,
+        Config::parse(&zero).unwrap().review.diff_size_extra_angle,
         0
     );
 }

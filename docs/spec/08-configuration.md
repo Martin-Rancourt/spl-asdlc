@@ -54,14 +54,14 @@ key = "product"
 [review]
 merge_method = "squash"                # "squash" | "merge"
 require_up_to_date = true
-diff_size_extra_angle = 1500
+diff_size_extra_angle = 1500            # off (0) by default; above 0 it names the angle it adds
 diff_size_angle = "maintainability"
 human_approval = "never"               # "never" | "sensitive-paths" | "always"
 sensitive_paths = ".github/review-paths.json"  # globs that add the sensitive angle
 sensitive_angle = "security"
 ticketless_authors = ["dependabot"]    # Apps whose PRs need no ticket: the bridge opens one (spec 04 §9)
 # No PR review instead (spec 04 §11): `angles = []` here, no path angle, no
-# sensitive_paths, diff_size_extra_angle = 0; review.coordinators is then optional.
+# sensitive_paths, no size threshold; review.coordinators is then optional.
 
 [[review.angles]]                      # base angles of every PR review
 key = "maintainability"
@@ -124,7 +124,7 @@ events = ["release-note", "escalation", "stagnation", "stuck-pr", "blind-pass"]
 6. Unknown keys are errors (a misspelt key is never a silently ignored setting). `config check` lists every problem of a well-formed file; a file that is not valid TOML, carries an unknown key or a value of the wrong type (a string where a number is expected) is reported by its first such error, with its line.
 7. Every default below is what the bridge uses when the key is absent; a present key with an invalid value is an error, never replaced by its default.
 8. A list never names the same entry twice (paths, logins, components, events): a repeated entry is an error, not a harmless duplicate, because it usually hides a typo next to it.
-9. No PR review is an explicit choice (`04-pr-review.md` §11): `angles = []` under `[review]` means no base angle, while a file that writes neither `angles = []` nor a `[[review.angles]]` table is invalid, never read as "no angle". A PR can get an angle when the project has a base angle, a `[[review.path_angles]]` entry, a declared `sensitive_paths` or a `diff_size_extra_angle` above 0; `review.coordinators` is required whenever one can, and optional when none can (the project then has no PR review: a PR merges on its CI and the other merge conditions, with no round and no approval). `human_approval` other than `never` is accepted with no possible angle: the human's approval is then the only one required.
+9. No PR review is an explicit choice (`04-pr-review.md` §11): `angles = []` under `[review]` means no base angle, while a file that writes neither `angles = []` nor a `[[review.angles]]` table is invalid, never read as "no angle". A PR can get an angle when the project has a base angle, a `[[review.path_angles]]` entry, a declared `sensitive_paths` or a `diff_size_extra_angle` above 0 (the size trigger is off by default); `review.coordinators` is required whenever one can, and optional when none can (the project then has no PR review: a PR merges on its CI and the other merge conditions, with no round and no approval). `human_approval` other than `never` is accepted with no possible angle: the human's approval is then the only one required.
 
 ## The instance overlay
 
@@ -224,7 +224,7 @@ The configuration maps no status: the tracker names each canonical status (`03-v
 |---|---|---|---|
 | `review.merge_method` | `"squash"` | Merge method of ordinary PRs. | Other value: file invalid. |
 | `review.require_up_to_date` | `true` | Bring a behind PR up to date with its base before merging. | — |
-| `review.diff_size_extra_angle` | `1500` | Changed lines (additions + deletions) above which `diff_size_angle` is added; `0` disables it. | Negative: file invalid. |
+| `review.diff_size_extra_angle` | `0` (no size trigger) | Changed lines (additions + deletions) above which `diff_size_angle` is added; `0` adds no angle by size. A project that wants the size trigger sets both this threshold and `diff_size_angle`. | Negative: file invalid. |
 | `review.diff_size_angle` | none; required while the threshold is above 0 | The angle the size trigger adds. | Missing with a threshold: file invalid. |
 | `review.human_approval` | `"never"` | Whether a human must approve besides the coordinator (alone, for a PR with no angle): `never`, `sensitive-paths`, `always`. | `sensitive-paths` without `sensitive_paths`: file invalid. |
 | `review.sensitive_paths` | not declared | Path of the sensitive-path list read at the PR's base (rule 5). | Declared and absent or unreadable: the PR waits, one human notice. |

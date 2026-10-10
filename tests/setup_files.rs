@@ -71,17 +71,10 @@ fn the_configuration_templates_no_review_variant_is_valid() {
             "[[review.angles]]\nkey = \"maintainability\"\n",
             String::new(),
         ),
-        (
-            "[review]\n",
-            "[review]\nangles = []\ndiff_size_extra_angle = 0\n".to_string(),
-        ),
+        ("[review]\n", "[review]\nangles = []\n".to_string()),
         (
             "sensitive_paths = \".github/review-paths.json\"\n",
             String::new(),
-        ),
-        (
-            "diff_size_angle = \"maintainability\"",
-            "# diff_size_angle".to_string(),
         ),
         (
             "coordinators = [\"coordinator-login\"]   # GitHub logins whose approval at the head SHA merges a PR;",
