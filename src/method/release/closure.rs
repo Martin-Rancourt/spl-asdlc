@@ -46,6 +46,39 @@ pub fn classify(member: &Member) -> Action {
     }
 }
 
+/// What an item is to a closed cycle, for its archiving (BR-ASDLC-019).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resolved {
+    /// A child of the release item: an angle sub-item, the consolidation
+    /// item, a gate-fix ticket.
+    ReleaseChild,
+    /// The shared nits ticket of the release.
+    Nits,
+    /// A ticket carrying the release label: an embarked ticket, a finding.
+    Embarked,
+    /// An angle sub-item or the consolidation item of a PR review round of
+    /// an embarked ticket (recognised by its bridge marker).
+    ReviewRound,
+}
+
+/// Whether the closure archives this item (BR-ASDLC-019): a release child,
+/// the nits ticket or a review round item once resolved (Done or Canceled);
+/// an embarked ticket only in Done, as the closure moves it. An open item
+/// never: Post Deploy, In Progress, a finding in Triage, an open nits
+/// ticket; nor a state the status table does not place (fail closed). An
+/// item already archived is not archived again.
+pub fn archivable(kind: Resolved, state: &ItemState, archived: bool) -> bool {
+    if archived {
+        return false;
+    }
+    match kind {
+        Resolved::ReleaseChild | Resolved::Nits | Resolved::ReviewRound => {
+            state.status.is_some_and(Status::is_resolved)
+        }
+        Resolved::Embarked => state.status == Some(Status::Done),
+    }
+}
+
 /// Whether judging this ticket needs the registry at the release tag.
 pub fn needs_registry(description: &str) -> bool {
     !cited_ids(description).is_empty()
@@ -200,6 +233,43 @@ mod tests {
             state,
             bridge_child,
         }
+    }
+
+    #[test]
+    fn the_closure_archives_resolved_items_and_never_an_open_one() {
+        use super::Resolved::*;
+        let of = ItemState::of;
+        for kind in [ReleaseChild, Nits, ReviewRound] {
+            assert!(archivable(kind, &of(Status::Done), false), "{kind:?}");
+            assert!(archivable(kind, &of(Status::Canceled), false), "{kind:?}");
+            assert!(!archivable(kind, &of(Status::Ready), false), "{kind:?}");
+            assert!(!archivable(kind, &of(Status::Triage), false), "{kind:?}");
+        }
+        assert!(archivable(Embarked, &of(Status::Done), false));
+        for open in [
+            Status::PostDeploy,
+            Status::InProgress,
+            Status::InReview,
+            Status::ToDeploy,
+            Status::Triage,
+            Status::Backlog,
+            Status::Canceled,
+        ] {
+            assert!(!archivable(Embarked, &of(open), false), "{open}");
+        }
+        assert!(
+            !archivable(ReleaseChild, &of(Status::Done), true),
+            "already archived"
+        );
+        let unplaced = ItemState {
+            name: "Shipped".into(),
+            status: None,
+            kind: StateKind::Completed,
+        };
+        assert!(
+            !archivable(ReleaseChild, &unplaced, false),
+            "a state the table does not place is never archived"
+        );
     }
 
     #[test]

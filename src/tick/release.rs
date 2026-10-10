@@ -110,6 +110,10 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
         return false;
     };
     if item.state.is_resolved() {
+        // A closed cycle: what its archiving left is retried (BR-ASDLC-019).
+        if let Some(published) = &published {
+            closure::archive_closed(t, log, report, &shape, &candidate, &item, published);
+        }
         return false;
     }
     if let Some(published) = published {

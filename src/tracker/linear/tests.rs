@@ -617,3 +617,83 @@ fn a_marker_is_searched_on_linears_side_not_over_the_labels_history() {
         "{body}"
     );
 }
+
+#[test]
+fn an_item_is_archived_never_trashed() {
+    let (l, t) = linear();
+    t.on_body(
+        "POST",
+        URL,
+        "issue(id: $id) { id identifier",
+        200,
+        &format!(
+            r#"{{"data":{{"issue":{}}}}}"#,
+            issue("ABC-2", "Done", "completed")
+        ),
+    );
+    t.on_body(
+        "POST",
+        URL,
+        "issueArchive",
+        200,
+        r#"{"data":{"issueArchive":{"success":true}}}"#,
+    );
+    assert!(l.archives());
+    l.archive("ABC-2").unwrap();
+    let body = t
+        .bodies()
+        .into_iter()
+        .find(|b| b.contains("issueArchive"))
+        .unwrap();
+    assert!(body.contains(r#""id":"id-ABC-2""#), "{body}");
+    assert!(!body.contains(r#""id":"ABC-2""#), "{body}");
+    assert!(!body.contains("trash"), "an archive never deletes: {body}");
+}
+
+#[test]
+fn an_archive_whose_answer_is_lost_is_read_back() {
+    let read = |at: &str| {
+        format!(
+            r#"{{"data":{{"issue":{}}}}}"#,
+            issue("ABC-2", "Done", "completed").replace(r#""archivedAt":null"#, at)
+        )
+    };
+    let (l, t) = linear();
+    t.on_body(
+        "POST",
+        URL,
+        "issue(id: $id) { id identifier",
+        200,
+        &read(r#""archivedAt":null"#),
+    );
+    t.on_body("POST", URL, "issueArchive", 502, "upstream timeout");
+    t.on_body(
+        "POST",
+        URL,
+        "issue(id: $id) { id identifier",
+        200,
+        &read(r#""archivedAt":"2026-10-09T12:00:00.000Z""#),
+    );
+    l.archive("ABC-2").unwrap();
+    // Not archived after all: the refusal stands, the next tick retries.
+    let (l, t) = linear();
+    t.on_body(
+        "POST",
+        URL,
+        "issue(id: $id) { id identifier",
+        200,
+        &read(r#""archivedAt":null"#),
+    );
+    t.on_body("POST", URL, "issueArchive", 502, "upstream timeout");
+    t.on_body(
+        "POST",
+        URL,
+        "issue(id: $id) { id identifier",
+        200,
+        &read(r#""archivedAt":null"#),
+    );
+    assert!(matches!(
+        l.archive("ABC-2").unwrap_err(),
+        TrackerError::Refused { .. }
+    ));
+}

@@ -1,6 +1,7 @@
 //! An in-memory tracker for tests: items, relations, comments and links held
-//! in memory, every write recorded, failures injected by write prefix. Like
-//! the real adapters, a write of an unchanged value records nothing.
+//! in memory, every write recorded (an archive too), failures injected by
+//! write prefix. Like the real adapters, a write of an unchanged value records
+//! nothing.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -43,6 +44,9 @@ pub struct FakeTracker {
     pub bridge: User,
     /// The team's status names: the canonical ones unless a test removes one.
     pub status_names: Vec<String>,
+    /// Whether it archives, as a tracker with an open-item limit does
+    /// (true by default); false plays a tracker without one.
+    pub archiving: bool,
     pub state: RefCell<FakeState>,
 }
 
@@ -61,6 +65,7 @@ impl FakeTracker {
                 name: "spl-asdlc".into(),
             },
             status_names: Status::ALL.iter().map(|s| s.name().to_string()).collect(),
+            archiving: true,
             state: RefCell::new(FakeState::default()),
         }
     }
@@ -453,6 +458,18 @@ impl Tracker for FakeTracker {
         keys.sort();
         keys.dedup();
         keys
+    }
+
+    fn archives(&self) -> bool {
+        self.archiving
+    }
+
+    fn archive(&self, key: &str) -> TResult<()> {
+        if !self.archiving || self.read(key)?.item.archived {
+            return Ok(());
+        }
+        self.record(format!("archive {key}"))?;
+        self.with(key, |st| st.item.archived = true)
     }
 
     fn link_pr(&self, key: &str, pr_url: &str, _title: &str) -> TResult<()> {
