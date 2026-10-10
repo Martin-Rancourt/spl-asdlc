@@ -321,6 +321,69 @@ fn a_release_without_angles_is_refused() {
     assert_refused_with(&text, "release.angles: at least one angle is required");
 }
 
+/// MINIMAL with `angles = []` under [release] and no release coordinator.
+fn no_qa_angle() -> String {
+    let text = MINIMAL.replace(
+        "coordinators = [\"coordinator-login\"]\n\n[[release.angles]]\nkey = \"security\"\n",
+        "angles = []\n",
+    );
+    assert_ne!(text, MINIMAL);
+    text
+}
+
+#[test]
+fn a_release_with_no_qa_angle_is_written_explicitly_and_needs_no_coordinator() {
+    let c = Config::parse(&no_qa_angle()).unwrap();
+    assert!(c.release.angles.is_empty());
+    assert!(c.release.coordinators.is_empty());
+    let with = no_qa_angle().replace(
+        "angles = []\n",
+        "angles = []\ncoordinators = [\"coordinator-login\"]\n",
+    );
+    assert_eq!(
+        Config::parse(&with).unwrap().release.coordinators,
+        vec!["coordinator-login"],
+        "a coordinator named anyway is read"
+    );
+}
+
+#[test]
+fn an_absent_angle_list_is_refused_and_says_how_to_write_none() {
+    let text = MINIMAL.replace("[[release.angles]]\nkey = \"security\"\n", "");
+    assert_refused_with(&text, "or `angles = []` written under [release]");
+}
+
+#[test]
+fn the_release_coordinators_are_required_while_there_is_a_release_angle() {
+    let text = MINIMAL.replace(
+        "coordinators = [\"coordinator-login\"]\n\n[[release.angles]]",
+        "\n[[release.angles]]",
+    );
+    assert_refused_with(&text, "release.coordinators: is required");
+    let empty = MINIMAL.replace(
+        "coordinators = [\"coordinator-login\"]\n\n[[release.angles]]",
+        "coordinators = []\n\n[[release.angles]]",
+    );
+    assert_refused_with(&empty, "release.coordinators: must name at least one entry");
+}
+
+#[test]
+fn a_release_with_no_qa_angle_reads_the_same_through_the_overlay() {
+    let repository = NEUTRAL.replace(
+        "[[release.angles]]\nkey = \"security\"\n",
+        "[release]\nangles = []\n",
+    );
+    assert_ne!(repository, NEUTRAL);
+    let overlay = OVERLAY.replace(
+        "coordinators = [\"coordinator-login\"]\n\n[review]",
+        "\n[review]",
+    );
+    assert_ne!(overlay, OVERLAY);
+    let c = merged(&repository, &overlay).unwrap();
+    assert!(c.release.angles.is_empty());
+    assert!(c.release.coordinators.is_empty());
+}
+
 #[test]
 fn an_angle_key_is_a_branch_segment_and_unique() {
     let text = MINIMAL.replace("key = \"security\"", "key = \"Security Review\"");

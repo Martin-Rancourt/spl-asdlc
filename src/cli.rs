@@ -345,7 +345,12 @@ fn tick(
             }
         };
         let report = crate::tick::run(&t, &mut log);
-        for e in log.entries() {
+        // A waiting note is said by the report's own line below.
+        for e in log
+            .entries()
+            .iter()
+            .filter(|e| e.outcome != action_log::Outcome::Waiting)
+        {
             let _ = writeln!(out, "{}", action_log::describe(e));
         }
         if dry_run {
@@ -359,6 +364,9 @@ fn tick(
         }
         for f in &report.failures {
             let _ = writeln!(err, "{}: {f}", c.repo);
+        }
+        for line in report.waiting_lines() {
+            let _ = writeln!(out, "{}: {line}", c.repo);
         }
         let _ = writeln!(out, "{}: {}", c.repo, report.summary());
         if !report.ok() {

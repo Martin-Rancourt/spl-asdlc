@@ -9,14 +9,17 @@
 //!
 //! A tick that does nothing writes nothing here either: a decision that
 //! found its effect already in place is not an entry, and the file is not
-//! even created until there is something to say.
+//! even created until there is something to say. A PR the merge pass holds
+//! is noted ([`Outcome::Waiting`]) only when the reason it waits, or its
+//! head, changes: the tick's report says it every time, the log once.
 
+use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::github::{RepoSlug, Timestamp};
 
@@ -29,7 +32,12 @@ pub enum Outcome {
     Failed(String),
     /// A dry run: the action the tick would take.
     WouldDo,
+    /// Nothing was done: a PR the merge pass holds, and why (the inputs).
+    Waiting,
 }
+
+/// The action of an [`Outcome::Waiting`] entry.
+pub const WAITING: &str = "waiting";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
@@ -52,6 +60,9 @@ pub struct ActionLog {
     path: Option<PathBuf>,
     entries: Vec<Entry>,
     flushed: usize,
+    /// The last waiting note of each (repository, object), read back from
+    /// the file the first time one is noted.
+    waits: Option<BTreeMap<(String, String), Value>>,
 }
 
 impl ActionLog {
@@ -89,6 +100,29 @@ impl ActionLog {
             inputs,
             outcome,
         });
+    }
+
+    /// Note why a PR waits, unless the log's last note for it says the
+    /// same of the same head. Returns whether it was noted. A log whose file
+    /// cannot be read back notes it again: the log is an audit cache.
+    pub fn note_waiting(
+        &mut self,
+        at: Timestamp,
+        repo: &RepoSlug,
+        object: &str,
+        head: &str,
+        reason: &str,
+    ) -> bool {
+        let inputs = json!({"head": head, "reason": reason});
+        let key = (repo.to_string(), object.to_string());
+        let path = self.path.as_deref();
+        let waits = self.waits.get_or_insert_with(|| last_waits(path));
+        if waits.get(&key) == Some(&inputs) {
+            return false;
+        }
+        waits.insert(key, inputs.clone());
+        self.record(at, repo, object, WAITING, inputs, Outcome::Waiting);
+        true
     }
 
     pub fn entries(&self) -> &[Entry] {
@@ -174,6 +208,19 @@ impl ActionLog {
     }
 }
 
+/// The last waiting note of each (repository, object) in a log file.
+fn last_waits(path: Option<&Path>) -> BTreeMap<(String, String), Value> {
+    let entries = path
+        .and_then(|p| ActionLog::read(p).ok())
+        .map(|(entries, _)| entries)
+        .unwrap_or_default();
+    entries
+        .into_iter()
+        .filter(|e| e.outcome == Outcome::Waiting && e.action == WAITING)
+        .map(|e| ((e.repo, e.object), e.inputs))
+        .collect()
+}
+
 /// One line of the human-readable account of a tick (`tick --dry-run`
 /// prints these).
 pub fn describe(e: &Entry) -> String {
@@ -181,6 +228,10 @@ pub fn describe(e: &Entry) -> String {
         Outcome::Done => "done".to_string(),
         Outcome::Failed(d) => format!("FAILED: {d}"),
         Outcome::WouldDo => "would do".to_string(),
+        Outcome::Waiting => {
+            let reason = e.inputs["reason"].as_str().unwrap_or_default();
+            return format!("{} {} {}: waiting — {reason}", e.at, e.repo, e.object);
+        }
     };
     format!(
         "{} {} {}: {} — {}",
@@ -268,6 +319,50 @@ mod tests {
             PathBuf::from("/state/spl-asdlc/acme-widget.jsonl")
         );
         assert!(ActionLog::default_path(&repo(), &|_| None).is_none());
+    }
+
+    #[test]
+    fn why_a_pr_waits_is_noted_only_when_it_changes_across_ticks() {
+        let dir = std::env::temp_dir().join(format!("spl-asdlc-log-w-{}", std::process::id()));
+        let path = dir.join("acme-widget.jsonl");
+        let _ = std::fs::remove_file(&path);
+        let other = RepoSlug::parse("acme/gadget").unwrap();
+        let tick = |notes: &[(&RepoSlug, &str, &str)]| {
+            let mut log = ActionLog::at(path.clone());
+            let noted: Vec<bool> = notes
+                .iter()
+                .map(|(repo, head, reason)| log.note_waiting(at(), repo, "pr#7", head, reason))
+                .collect();
+            log.flush().unwrap();
+            noted
+        };
+        assert_eq!(tick(&[(&repo(), "h1", "a draft")]), vec![true]);
+        assert_eq!(
+            tick(&[(&repo(), "h1", "a draft"), (&repo(), "h1", "a draft")]),
+            vec![false, false],
+            "the same reason at the same head: noted once, whatever the tick"
+        );
+        assert_eq!(
+            tick(&[
+                (&repo(), "h2", "a draft"),
+                (&repo(), "h2", "red"),
+                (&other, "h2", "red")
+            ]),
+            vec![true, true, true],
+            "a new head, a new reason, another repository's PR"
+        );
+        let (entries, _) = ActionLog::read(&path).unwrap();
+        assert_eq!(entries.len(), 4);
+        assert!(entries.iter().all(|e| e.outcome == Outcome::Waiting));
+        assert_eq!(
+            describe(&entries[0]),
+            "2026-10-05T12:00:00Z acme/widget pr#7: waiting — a draft"
+        );
+        assert!(
+            ActionLog::in_memory().note_waiting(at(), &repo(), "pr#7", "h2", "red"),
+            "a log without a file remembers nothing"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
