@@ -66,7 +66,9 @@ coordinators = ["coordinator-login"]   # GitHub logins whose approval at the hea
 # gate_record = "docs/releases/v{version}.md"
 
 # The angles of a release QA: at least one. `assignee` (a participant hint)
-# and `notes` (the project's notes for the angle) are optional.
+# and `notes` (the project's notes for the angle) are optional. A release
+# with no QA angle writes `angles = []` under [release] instead: its GO rests
+# on the gate, and `coordinators` becomes optional.
 [[release.angles]]
 key = "security"
 # notes = ".spl-asdlc/angles/security.md"
