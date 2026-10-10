@@ -142,6 +142,23 @@ impl ScriptedTransport {
         self
     }
 
+    /// Answer `method url…` with `status` and a binary `body` (an archive).
+    pub fn on_bytes(
+        &self,
+        method: &'static str,
+        url_prefix: &str,
+        status: u16,
+        body: &[u8],
+    ) -> &Self {
+        let response = HttpResponse {
+            status,
+            headers: Vec::new(),
+            body: body.to_vec(),
+        };
+        self.add(method, url_prefix, None, response);
+        self
+    }
+
     /// Answer requests whose body contains `body_contains` (a GraphQL query
     /// by one of its words); preferred over a route without a body match.
     pub fn on_body(

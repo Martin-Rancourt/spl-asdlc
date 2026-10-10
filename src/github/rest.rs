@@ -21,6 +21,8 @@ const MAX_PULL_FILES: usize = 3000;
 const MAX_COMPARE_FILES: usize = 300;
 /// A paged list longer than this many pages is refused.
 const MAX_PAGES: usize = 1000;
+/// A file read out of an artifact larger than this is refused.
+const MAX_ARTIFACT_FILE: u64 = 1024 * 1024;
 
 pub struct RestGitHub {
     transport: Box<dyn Transport>,
@@ -1184,8 +1186,12 @@ impl GitHub for RestGitHub {
                 event: str_of(r, "event"),
                 status: str_of(r, "status"),
                 conclusion: opt_str(r, "conclusion"),
+                // Absent reads as the first attempt: a rerun is then
+                // still awaited, never presumed spent.
+                attempt: r["run_attempt"].as_u64().unwrap_or(1),
                 url: str_of(r, "html_url"),
                 created_at: time_of(r, "created_at"),
+                updated_at: time_of(r, "updated_at"),
             })
         })
     }
@@ -1224,6 +1230,63 @@ impl GitHub for RestGitHub {
                 expired: a["expired"].as_bool().unwrap_or(false),
             })
         })
+    }
+
+    fn artifact_file(&self, repo: &RepoSlug, artifact_id: u64, path: &str) -> Read<String> {
+        let what = format!("{path} in artifact {artifact_id} of {repo}");
+        let unreadable = |status: Option<u16>, detail: String| ReadError::Unreadable {
+            what: what.clone(),
+            status,
+            detail,
+        };
+        let mut response = self
+            .call(
+                repo,
+                "GET",
+                &format!("/repos/{repo}/actions/artifacts/{artifact_id}/zip"),
+                None,
+                None,
+            )
+            .map_err(|(status, detail)| unreadable(status, detail))?;
+        // GitHub answers with a short-lived link to the zip: followed
+        // without the token, which goes to the API host and nowhere else.
+        if matches!(response.status, 301 | 302 | 303 | 307 | 308) {
+            let location = response
+                .header("location")
+                .ok_or_else(|| {
+                    unreadable(Some(response.status), "a redirect with no location".into())
+                })?
+                .to_string();
+            response = self
+                .transport
+                .send(HttpRequest {
+                    method: "GET",
+                    url: location,
+                    headers: vec![(
+                        "User-Agent".to_string(),
+                        concat!("spl-asdlc/", env!("CARGO_PKG_VERSION")).to_string(),
+                    )],
+                    body: None,
+                })
+                .map_err(|e| unreadable(None, e))?;
+        }
+        match response.status {
+            200 => {}
+            // The artifact itself is gone (deleted, or expired and purged).
+            404 | 410 => {
+                return Err(unreadable(
+                    Some(response.status),
+                    "the artifact could not be downloaded".into(),
+                ));
+            }
+            status => return Err(unreadable(Some(status), message_of(&response))),
+        }
+        match super::zip::extract(&response.body, path, MAX_ARTIFACT_FILE) {
+            Ok(bytes) => String::from_utf8(bytes)
+                .map_err(|_| ReadError::unreadable(&what, "the file is not UTF-8 text")),
+            Err(super::zip::ZipError::Absent) => Err(ReadError::NotFound { what }),
+            Err(super::zip::ZipError::Unreadable(e)) => Err(ReadError::unreadable(&what, e)),
+        }
     }
 
     fn merge_pull(

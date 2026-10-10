@@ -78,8 +78,10 @@ fn gate_run(id: u64, candidate: &str, sha: &str, conclusion: Option<&str>) -> Wo
             "in_progress".into()
         },
         conclusion: conclusion.map(str::to_string),
+        attempt: 1,
         url: format!("https://github.com/example-org/acme/actions/runs/{id}"),
         created_at: None,
+        updated_at: None,
     }
 }
 
@@ -404,12 +406,59 @@ impl World {
             Ok(vec![evidence(&gate::evidence_artifact("c2"))]),
         );
     }
+
+    /// The runs of the gate's automatic-rerun workflow, newest first.
+    fn reruns(&self, runs: Vec<WorkflowRun>) {
+        self.github
+            .state
+            .borrow_mut()
+            .runs
+            .insert((repo(), "release-gate-auto-rerun.yml".into()), Ok(runs));
+    }
+
+    /// The `results/suites.json` of the evidence packs (artifact 7).
+    fn suites(&self, json: &str) {
+        self.github
+            .state
+            .borrow_mut()
+            .artifact_files
+            .insert((repo(), 7, gate::SUITES_FILE.into()), Ok(json.to_string()));
+    }
+
+    /// The gate-fix tickets under the release item.
+    fn gate_fixes(&self) -> Vec<crate::tracker::Item> {
+        let release = self.release_item();
+        self.tracker
+            .children(&release.key)
+            .unwrap()
+            .into_iter()
+            .filter(|c| texts::gate_fix_candidate(&c.description).is_some())
+            .collect()
+    }
+
+    /// A red first attempt of `candidate`'s gate whose rerun settled
+    /// without a rerun, `failed` named by its evidence pack.
+    fn red_settled(&self, id: u64, candidate: &str, sha: &str, failed: &str) {
+        self.gate(vec![gate_run(id, candidate, sha, Some("failure"))]);
+        self.reruns(vec![rerun_run(90 + id, sha, "completed")]);
+        self.suites(&format!(r#"{{"failed":[{failed}],"suites":[]}}"#));
+    }
+}
+
+/// A run of the automatic-rerun workflow, triggered by a gate run on `sha`.
+fn rerun_run(id: u64, sha: &str, status: &str) -> WorkflowRun {
+    WorkflowRun {
+        event: "workflow_run".into(),
+        status: status.into(),
+        conclusion: (status == "completed").then(|| "success".to_string()),
+        ..gate_run(id, CAND, sha, None)
+    }
 }
 
 #[test]
 fn a_red_gate_opens_the_release_item_but_no_angle_nor_brief() {
     let w = World::new();
-    w.gate(vec![gate_run(1, CAND, "c1", Some("failure"))]);
+    w.red_settled(1, CAND, "c1", r#""tests""#);
     let r = w.tick();
     assert!(r.ok(), "{r:?}");
     let item = w.release_item();
@@ -422,8 +471,9 @@ fn a_red_gate_opens_the_release_item_but_no_angle_nor_brief() {
             .any(|c| c.body.starts_with(&format!("### Candidate `{CAND}`")))
     );
     assert!(w.tracker.item("ABC-5").labels.contains(&LABEL.to_string()));
-    assert!(w.round(CAND).is_empty(), "no agent starts on a red gate");
+    assert!(w.round(CAND).is_empty(), "no angle starts on a red gate");
     assert!(w.briefs(CAND).is_empty());
+    assert_eq!(w.gate_fixes().len(), 1, "but the gate's own fix does");
 
     let (r, writes) = w.writes_of_a_tick();
     assert!(r.ok(), "{r:?}");
@@ -475,6 +525,8 @@ fn a_later_candidate_with_a_red_gate_waits_again() {
         gate_run(2, CAND2, "c2", Some("failure")),
         gate_run(1, CAND, "c1", Some("success")),
     ]);
+    w.reruns(vec![rerun_run(92, "c2", "completed")]);
+    w.suites(r#"{"failed":["tests"]}"#);
     let r = w.tick();
     assert!(r.ok(), "{r:?}");
     let item = w.release_item();
@@ -2097,6 +2149,517 @@ fn a_dry_run_of_the_closure_prints_the_unassign() {
             .contains(&"tracker: ABC-5 → In Progress, unassigned".to_string()),
         "{:?}",
         intents.lines()
+    );
+}
+
+// ---- the gate-fix ticket (spec 05 §3, BR-ASDLC-016) ----
+
+impl World {
+    fn tick_at(&self, now: &str) -> Report {
+        let t = Tick {
+            now: Timestamp::parse(now).unwrap(),
+            ..self.tick_ctx()
+        };
+        let mut log = ActionLog::in_memory();
+        run(&t, &mut log)
+    }
+}
+
+const RUN1: &str = "https://github.com/example-org/acme/actions/runs/1";
+
+#[test]
+fn a_red_gate_opens_one_urgent_gate_fix_ticket_once_its_rerun_settled() {
+    let w = World::new();
+    w.red_settled(1, CAND, "c1", r#""tests","lint""#);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let release = w.release_item();
+    let fixes = w.gate_fixes();
+    assert_eq!(fixes.len(), 1, "{:?}", w.tracker.writes());
+    let fix = &fixes[0];
+    assert_eq!(fix.title, format!("Make the gate green — {CAND}"));
+    assert_eq!(fix.state.status, Some(Status::Ready));
+    assert_eq!(fix.assignee, None, "taken by role, nobody named");
+    assert_eq!(fix.parent.as_deref(), Some(release.key.as_str()));
+    assert!(fix.labels.contains(&LABEL.to_string()));
+    assert_eq!(
+        w.tracker.priority(&fix.key),
+        Some(crate::tracker::Priority::Urgent)
+    );
+    assert_eq!(
+        crate::method::contract::missing_from_contract(&fix.description),
+        Vec::<String>::new(),
+        "ticket check accepts it"
+    );
+    assert!(
+        fix.description.contains(&format!(
+            "- [ ] Each failing suite passes on `{BRANCH}`: `tests`, `lint`."
+        )),
+        "{}",
+        fix.description
+    );
+    assert!(fix.description.contains(&format!("- Gate run: {RUN1}")));
+    assert!(fix.description.contains("No new rule."));
+    assert!(fix.description.contains("- No new feature."));
+    assert_eq!(
+        texts::gate_fix_candidate(&fix.description).as_deref(),
+        Some(CAND)
+    );
+
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(
+        writes.is_empty(),
+        "a second tick writes nothing: {writes:?}"
+    );
+}
+
+#[test]
+fn a_green_or_pending_gate_opens_no_gate_fix_ticket() {
+    let w = World::new();
+    w.gate(vec![gate_run(1, CAND, "c1", None)]);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(w.gate_fixes().is_empty(), "pending");
+    let w = World::new();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(w.gate_fixes().is_empty(), "green");
+}
+
+#[test]
+fn a_red_gate_whose_rerun_may_still_come_opens_nothing_until_it_settled() {
+    let w = World::new();
+    w.gate(vec![gate_run(1, CAND, "c1", Some("failure"))]);
+    w.suites(r#"{"failed":["tests"]}"#);
+    // The rerun workflow has not run for this gate run yet.
+    w.reruns(Vec::new());
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(w.gate_fixes().is_empty(), "the rerun may still come");
+    // It runs: the rerun it may make is not decided yet.
+    w.reruns(vec![rerun_run(91, "c1", "in_progress")]);
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(writes.is_empty(), "{writes:?}");
+    // It reran the gate: the second attempt is pending.
+    w.reruns(vec![rerun_run(91, "c1", "completed")]);
+    let mut second = gate_run(1, CAND, "c1", None);
+    second.attempt = 2;
+    w.gate(vec![second.clone()]);
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(writes.is_empty(), "{writes:?}");
+    // The second attempt is red too: final, whatever the rerun workflow says.
+    second.status = "completed".into();
+    second.conclusion = Some("failure".into());
+    w.gate(vec![second]);
+    w.reruns(vec![
+        rerun_run(93, "c1", "in_progress"),
+        rerun_run(91, "c1", "completed"),
+    ]);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(w.gate_fixes().len(), 1);
+    let (_, writes) = w.writes_of_a_tick();
+    assert!(writes.is_empty(), "{writes:?}");
+}
+
+/// A red first attempt of the gate of `CAND` that completed at 11:45.
+fn red_completed_at_11_45() -> WorkflowRun {
+    WorkflowRun {
+        created_at: Timestamp::parse("2026-10-05T11:31:00Z"),
+        updated_at: Timestamp::parse("2026-10-05T11:45:00Z"),
+        ..gate_run(1, CAND, "c1", Some("failure"))
+    }
+}
+
+impl World {
+    fn writes_of_a_tick_at(&self, now: &str) -> (Report, Vec<String>) {
+        let before = self.tracker.writes().len();
+        let r = self.tick_at(now);
+        (r, self.tracker.writes()[before..].to_vec())
+    }
+}
+
+#[test]
+fn a_red_gate_with_no_rerun_seen_waits_up_to_its_bound_then_opens_its_ticket() {
+    let w = World::new();
+    w.gate(vec![red_completed_at_11_45()]);
+    w.suites(r#"{"failed":["tests"]}"#);
+    w.reruns(Vec::new());
+    // `gate_rerun_wait_minutes = 30`: until 12:15 the rerun may still come.
+    let r = w.tick_at("2026-10-05T12:14:59Z");
+    assert!(r.ok(), "{r:?}");
+    assert!(
+        w.gate_fixes().is_empty(),
+        "no rerun visible before the bound"
+    );
+    // From the bound on, the ticket all the same: the rerun workflow may be
+    // absent or broken, and the ticket says so.
+    let r = w.tick_at("2026-10-05T12:15:00Z");
+    assert!(r.ok(), "{r:?}");
+    let fixes = w.gate_fixes();
+    assert_eq!(fixes.len(), 1, "{:?}", w.tracker.writes());
+    let d = &fixes[0].description;
+    assert!(
+        d.contains("- Automatic rerun: no run of the automatic rerun workflow showed up within 30 minutes of the completion of"),
+        "{d}"
+    );
+    assert!(crate::method::contract::has_contract(d));
+    assert_eq!(fixes[0].state.status, Some(Status::Ready));
+    assert_eq!(
+        w.tracker.priority(&fixes[0].key),
+        Some(crate::tracker::Priority::Urgent)
+    );
+    let (r, writes) = w.writes_of_a_tick_at("2026-10-05T12:30:00Z");
+    assert!(r.ok(), "{r:?}");
+    assert!(
+        writes.is_empty(),
+        "a second tick writes nothing: {writes:?}"
+    );
+}
+
+#[test]
+fn a_rerun_still_running_past_the_bound_keeps_the_wait() {
+    let w = World::new();
+    w.gate(vec![red_completed_at_11_45()]);
+    w.suites(r#"{"failed":["tests"]}"#);
+    w.reruns(vec![rerun_run(91, "c1", "in_progress")]);
+    let (r, writes) = w.writes_of_a_tick_at("2026-10-05T13:00:00Z");
+    assert!(r.ok(), "{r:?}");
+    assert!(
+        w.gate_fixes().is_empty(),
+        "the rerun it shows may still rerun the gate"
+    );
+    assert!(
+        !writes
+            .iter()
+            .any(|l| l.starts_with("create Make the gate green")),
+        "{writes:?}"
+    );
+    // It completed without rerunning: settled, and nothing says it was unseen.
+    w.reruns(vec![rerun_run(91, "c1", "completed")]);
+    let r = w.tick_at("2026-10-05T13:05:00Z");
+    assert!(r.ok(), "{r:?}");
+    let fixes = w.gate_fixes();
+    assert_eq!(fixes.len(), 1);
+    assert!(!fixes[0].description.contains("Automatic rerun:"));
+}
+
+#[test]
+fn an_absent_rerun_workflow_is_said_and_the_bound_still_opens_the_ticket() {
+    let w = World::new();
+    w.gate(vec![red_completed_at_11_45()]);
+    w.suites(r#"{"failed":["tests"]}"#);
+    w.github.state.borrow_mut().runs.insert(
+        (repo(), "release-gate-auto-rerun.yml".into()),
+        Err(crate::github::ReadError::NotFound {
+            what: "runs of release-gate-auto-rerun.yml".into(),
+        }),
+    );
+    let r = w.tick_at("2026-10-05T12:00:00Z");
+    assert!(
+        r.failures.iter().any(|f| f.contains("not found")
+            && f.contains("the gate-fix ticket opens 30 minutes after the gate run completed")),
+        "{r:?}"
+    );
+    assert!(w.gate_fixes().is_empty());
+    w.tick_at("2026-10-05T12:15:00Z");
+    assert_eq!(w.gate_fixes().len(), 1, "never a silence");
+}
+
+#[test]
+fn an_unreadable_rerun_workflow_opens_nothing_and_says_why() {
+    let w = World::new();
+    w.gate(vec![gate_run(1, CAND, "c1", Some("failure"))]);
+    w.suites(r#"{"failed":["tests"]}"#);
+    let r = w.tick();
+    assert!(
+        r.failures
+            .iter()
+            .any(|f| f.contains(&format!("the automatic rerun of the gate of {CAND}"))),
+        "{r:?}"
+    );
+    assert!(w.gate_fixes().is_empty());
+}
+
+#[test]
+fn a_red_gate_whose_evidence_cannot_be_read_still_opens_its_ticket() {
+    let w = World::new();
+    w.gate(vec![gate_run(1, CAND, "c1", Some("failure"))]);
+    w.reruns(vec![rerun_run(91, "c1", "completed")]);
+    w.github.state.borrow_mut().artifact_files.insert(
+        (repo(), 7, gate::SUITES_FILE.into()),
+        Err(crate::github::ReadError::unreadable(
+            "results/suites.json in artifact 7",
+            "HTTP 502",
+        )),
+    );
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let fixes = w.gate_fixes();
+    assert_eq!(fixes.len(), 1, "never a silence");
+    let d = &fixes[0].description;
+    assert!(
+        d.contains("unknown: the evidence pack could not be read"),
+        "{d}"
+    );
+    assert!(d.contains("HTTP 502"), "{d}");
+    assert!(
+        d.contains(&format!(
+            "- [ ] The suites that failed in the gate run {RUN1} (unknown here"
+        )),
+        "{d}"
+    );
+    assert!(crate::method::contract::has_contract(d));
+    assert_eq!(
+        w.tracker.priority(&fixes[0].key),
+        Some(crate::tracker::Priority::Urgent)
+    );
+
+    // A run that carries no pack is no better read.
+    let w = World::new();
+    w.gate(vec![gate_run(1, CAND, "c1", Some("failure"))]);
+    w.reruns(vec![rerun_run(91, "c1", "completed")]);
+    w.github
+        .state
+        .borrow_mut()
+        .artifacts
+        .insert((repo(), 1), Ok(Vec::new()));
+    w.tick();
+    let fixes = w.gate_fixes();
+    assert_eq!(fixes.len(), 1);
+    assert!(
+        fixes[0]
+            .description
+            .contains("the run carries no evidence pack `release-gate-evidence-c1`"),
+        "{}",
+        fixes[0].description
+    );
+}
+
+#[test]
+fn a_newer_green_candidate_closes_the_gate_fix_ticket_once() {
+    let w = World::new();
+    w.red_settled(1, CAND, "c1", r#""tests""#);
+    w.tick();
+    let fix = w.gate_fixes().remove(0);
+    // The implementer took it, no PR of it merged yet: the green gate of
+    // rc.2 (a rerun made it green, say) makes it moot.
+    w.tracker
+        .set_status(&fix.key, Status::InProgress, None)
+        .unwrap();
+    w.cut_rc2();
+    w.gate(vec![
+        gate_run(2, CAND2, "c2", Some("success")),
+        gate_run(1, CAND, "c1", Some("failure")),
+    ]);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(w.tracker.item(&fix.key).state.status, Some(Status::Done));
+    assert_eq!(
+        w.tracker.item(&fix.key).description,
+        fix.description,
+        "the bridge ticks no box of it"
+    );
+    let said: Vec<String> = w
+        .tracker
+        .comments(&fix.key)
+        .unwrap()
+        .into_iter()
+        .map(|c| c.body)
+        .filter(|b| b.contains(&format!("`{CAND2}` is green")))
+        .collect();
+    assert_eq!(said.len(), 1, "a comment names the green candidate");
+    assert_eq!(w.round(CAND2).len(), 3, "and the round of rc.2 opens");
+
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(writes.is_empty(), "{writes:?}");
+}
+
+#[test]
+fn a_gate_fix_ticket_resolved_in_review_or_to_deploy_is_left_alone_on_a_green_gate() {
+    for status in [
+        Status::InReview,
+        Status::ToDeploy,
+        Status::PostDeploy,
+        Status::Done,
+        Status::Canceled,
+    ] {
+        let w = World::new();
+        w.red_settled(1, CAND, "c1", r#""tests""#);
+        w.tick();
+        let fix = w.gate_fixes().remove(0);
+        w.tracker.set_status(&fix.key, status, None).unwrap();
+        w.cut_rc2();
+        w.gate(vec![
+            gate_run(2, CAND2, "c2", Some("success")),
+            gate_run(1, CAND, "c1", Some("failure")),
+        ]);
+        let r = w.tick();
+        assert!(r.ok(), "{r:?}");
+        // Past the merge it follows the flow of any ticket: To Deploy at
+        // its fix's merge, Done at the closure, never closed by the bridge.
+        assert_eq!(w.tracker.item(&fix.key).state.status, Some(status));
+        assert!(w.tracker.comments(&fix.key).unwrap().is_empty(), "{status}");
+        assert_eq!(
+            w.tracker.item(&fix.key).description,
+            fix.description,
+            "{status}: no box ticked by the bridge"
+        );
+    }
+}
+
+#[test]
+fn a_still_red_next_gate_opens_a_new_gate_fix_ticket_for_its_candidate() {
+    let w = World::new();
+    w.red_settled(1, CAND, "c1", r#""tests""#);
+    w.tick();
+    let first = w.gate_fixes().remove(0);
+    // Its fix merged: To Deploy, as any ticket.
+    w.tracker
+        .set_status(&first.key, Status::ToDeploy, None)
+        .unwrap();
+    // The gate of rc.2 is the verification, and it is still red.
+    w.cut_rc2();
+    w.gate(vec![
+        gate_run(2, CAND2, "c2", Some("failure")),
+        gate_run(1, CAND, "c1", Some("failure")),
+    ]);
+    w.reruns(vec![
+        rerun_run(91, "c1", "completed"),
+        rerun_run(92, "c2", "completed"),
+    ]);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let fixes = w.gate_fixes();
+    assert_eq!(fixes.len(), 2, "{:?}", w.tracker.writes());
+    let second = fixes
+        .iter()
+        .find(|f| f.key != first.key)
+        .expect("a new ticket");
+    assert_eq!(
+        texts::gate_fix_candidate(&second.description).as_deref(),
+        Some(CAND2)
+    );
+    assert_eq!(second.state.status, Some(Status::Ready));
+    assert_eq!(
+        w.tracker.priority(&second.key),
+        Some(crate::tracker::Priority::Urgent)
+    );
+    let old = w.tracker.item(&first.key);
+    assert_eq!(old.state.status, Some(Status::ToDeploy), "left to its flow");
+    assert_eq!(old.description, first.description);
+    assert!(w.tracker.comments(&first.key).unwrap().is_empty());
+
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(writes.is_empty(), "never opened twice: {writes:?}");
+}
+
+#[test]
+fn a_red_gate_older_than_stagnation_hours_raises_the_stagnation_notice() {
+    let w = World::new();
+    w.red_settled(1, CAND, "c1", r#""tests""#);
+    // Tagged at 11:30; `stagnation_hours = 2`.
+    let r = w.tick_at("2026-10-05T14:00:00Z");
+    assert!(r.ok(), "{r:?}");
+    let sent = w.signal.sent.borrow().clone();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(
+        sent[0].starts_with("[stagnation] Release stuck"),
+        "{sent:?}"
+    );
+    assert!(sent[0].contains("Candidate gate red"), "{sent:?}");
+    assert_eq!(w.gate_fixes().len(), 1, "and the fix is served");
+    w.tick_at("2026-10-05T15:00:00Z");
+    assert_eq!(w.signal.sent.borrow().len(), 1, "said once");
+}
+
+#[test]
+fn a_dry_run_prints_the_urgent_gate_fix_ticket_it_would_open() {
+    let w = World::new();
+    w.red_settled(1, CAND, "c1", r#""tests""#);
+    // The release item exists; its gate-fix ticket does not yet.
+    w.tracker
+        .fail_writes_starting_with("create Make the gate green");
+    w.tick();
+    assert!(w.gate_fixes().is_empty());
+    let release = w.release_item();
+    let before = w.tracker.writes().len();
+    let intents = crate::dry::Intents::default();
+    let tr = crate::dry::DryTracker {
+        inner: &w.tracker,
+        intents: &intents,
+    };
+    let sig = crate::dry::DrySignal { intents: &intents };
+    let t = Tick {
+        tracker: &tr,
+        signal: &sig,
+        dry_run: true,
+        ..w.tick_ctx()
+    };
+    let mut log = ActionLog::in_memory();
+    let r = run(&t, &mut log);
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(w.tracker.writes().len(), before, "the tracker saw no write");
+    let want = format!(
+        "tracker: create \"Make the gate green — {CAND}\" [Ready] priority urgent under {}",
+        release.key
+    );
+    assert!(intents.lines().contains(&want), "{:?}", intents.lines());
+}
+
+#[test]
+fn the_validation_sub_task_is_created_urgent_and_a_dry_run_says_so() {
+    let w = closed_with_post_deploy();
+    let tasks = validation_tasks(&w, "ABC-5");
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(
+        w.tracker.priority(&tasks[0].key),
+        Some(crate::tracker::Priority::Urgent),
+        "production is waiting on it"
+    );
+    let before = w.tracker.writes().len();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.tracker.writes().len(),
+        before,
+        "a second tick writes nothing"
+    );
+
+    let w = World::new();
+    w.tick();
+    w.tracker.seed(
+        "ABC-9",
+        "Waiting",
+        POST,
+        Status::PostDeploy,
+        &[POST_DEPLOY_LABEL],
+    );
+    let intents = crate::dry::Intents::default();
+    let tr = crate::dry::DryTracker {
+        inner: &w.tracker,
+        intents: &intents,
+    };
+    let t = Tick {
+        tracker: &tr,
+        dry_run: true,
+        ..w.tick_ctx()
+    };
+    let mut log = ActionLog::in_memory();
+    let mut report = Report::default();
+    post_deploy::pass(&t, &mut log, &mut report);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(
+        intents.lines(),
+        vec![
+            "tracker: create \"Post-deploy validation — ABC-9: Waiting\" [Ready] priority urgent under ABC-9"
+                .to_string()
+        ]
     );
 }
 
