@@ -75,8 +75,9 @@ pub(super) struct RawRelease {
     pub release_please_workflow: Option<String>,
     pub release_please_config: Option<String>,
     pub release_please_manifest: Option<String>,
-    #[serde(default)]
-    pub angles: Vec<RawReleaseAngle>,
+    /// `None` when the file writes no angle at all; `Some([])` when it
+    /// writes `angles = []` under `[release]`: a release with no QA angle.
+    pub angles: Option<Vec<RawReleaseAngle>>,
 }
 
 #[derive(Debug, Deserialize)]

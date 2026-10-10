@@ -161,13 +161,26 @@ pub fn release_description(
             )
         })
         .collect();
+    let (angle_condition, angle_scope) = if angles.is_empty() {
+        (
+            "",
+            "No QA angle is configured (`release.angles = []`): the GO rests on the gate and the conditions that \
+             involve no angle.\n"
+                .to_string(),
+        )
+    } else {
+        (
+            " every angle's PR merged,",
+            format!("| Angle | Owner |\n|---|---|\n{table}"),
+        )
+    };
     format!(
-        "{marker}\n\n## Goal\nDeliver {product} {v} to production: the gate green on the latest candidate, every angle's PR \
-         merged, no open blocker, the release-please note covering the range, the fixes in the candidate. The GO belongs \
+        "{marker}\n\n## Goal\nDeliver {product} {v} to production: the gate green on the latest candidate,{angle_condition} \
+         no open blocker, the release-please note covering the range, the fixes in the candidate. The GO belongs \
          to nobody: it is computed. Nobody closes this item by hand: the closure does.\n\n\
          ## Release note\n\n_{placeholder}_\n\n\
          ## Candidates\n\n\
-         ## Scope\nThe label `{label}` groups the release's issues.\n\n| Angle | Owner |\n|---|---|\n{table}",
+         ## Scope\nThe label `{label}` groups the release's issues.\n\n{angle_scope}",
         marker = marker("release", &[("product", product), ("version", &v)]),
         placeholder = crate::method::release::note::PLACEHOLDER,
     )
@@ -584,6 +597,24 @@ pub fn short(sha: &str) -> &str {
 
 // ---- release comments ----
 
+/// Which angles a candidate is offered, and why (spec 05 §3, §7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AngleScope {
+    /// The configured angles, while passes remain.
+    Configured,
+    /// A later pass under `later_passes = "gate-and-coordinator"`: none.
+    LighterPass,
+    /// No QA angle is configured (`release.angles = []`): none, and the
+    /// candidate keeps none should angles be configured before its GO.
+    NoQaAngle,
+}
+
+/// The marker of a candidate recorded while no QA angle was configured:
+/// angles configured later apply from the next candidate, never to it.
+pub fn no_qa_angle_marker(candidate: &str) -> String {
+    marker("no-qa-angle", &[("candidate", candidate)])
+}
+
 /// The comment posted once per candidate (REQ-REL-041).
 pub fn candidate_comment(
     candidate: &str,
@@ -592,7 +623,7 @@ pub fn candidate_comment(
     gate_url: Option<&str>,
     paths_since_previous: &[String],
     offered: &[String],
-    lighter_pass: bool,
+    scope: AngleScope,
 ) -> String {
     let mut out = format!("### Candidate `{candidate}`\n\n- Class: {class}\n");
     out.push_str(&match previous {
@@ -615,7 +646,9 @@ pub fn candidate_comment(
             paths_since_previous.len() - 20
         ));
     }
-    if lighter_pass {
+    if scope == AngleScope::NoQaAngle {
+        out.push_str("\nNo QA angle is configured (`release.angles = []`): this candidate opens no angle sub-item and no consolidation item, and its GO rests on the gate and the conditions that involve no angle. Angles configured later apply from the next candidate.\n");
+    } else if scope == AngleScope::LighterPass {
         out.push_str("\nNo angle is offered on this candidate: later passes are judged by the gate and the coordinator (`later_passes = \"gate-and-coordinator\"`).\n");
     } else if offered.is_empty() {
         out.push_str("\nNo review reopened: no angle is offered on this candidate.\n");
@@ -627,6 +660,10 @@ pub fn candidate_comment(
     }
     out.push('\n');
     out.push_str(&marker("candidate", &[("tag", candidate)]));
+    if scope == AngleScope::NoQaAngle {
+        out.push('\n');
+        out.push_str(&no_qa_angle_marker(candidate));
+    }
     out
 }
 
@@ -656,6 +693,8 @@ pub struct Brief {
     pub tickets: Vec<BriefTicket>,
     pub untracked: Vec<String>,
     pub rule_files_touched: Vec<String>,
+    /// The candidate has no QA angle (`release.angles = []`).
+    pub no_qa_angle: bool,
 }
 
 pub fn brief(b: &Brief) -> String {
@@ -680,6 +719,11 @@ pub fn brief(b: &Brief) -> String {
     }
     if let Some(u) = &b.evidence_url {
         out.push_str(&format!("- Evidence pack: {u}\n"));
+    }
+    if b.no_qa_angle {
+        out.push_str(
+            "\n#### QA angles\n\nNo QA angle is configured (`release.angles = []`): no angle sub-item and no consolidation item are opened for this candidate. The GO rests on the gate green on the latest candidate, no open blocker, the release-please note covering the range and the staged version being the one judged.\n",
+        );
     }
     out.push_str("\n#### Tickets included\n\n");
     if b.tickets.is_empty() {
@@ -895,6 +939,14 @@ pub fn gate_record(
         .iter()
         .map(|(a, s)| format!("| {a} | {s} |\n"))
         .collect();
+    let qa = if angles.is_empty() {
+        "The gate is green on the candidate, no QA angle is configured, no blocker is open.\n"
+            .to_string()
+    } else {
+        format!(
+            "The gate is green on the candidate, every angle PR is merged, no blocker is open.\n\n| angle | state |\n|---|---|\n{rows}"
+        )
+    };
     let prs: String = prs
         .iter()
         .map(|(c, v, n)| format!("- `{c}` {v}: #{n}\n"))
@@ -902,8 +954,7 @@ pub fn gate_record(
     Some(format!(
         "# Release v{version}\n\n{marker}\n\n- Candidate: {candidate} ({sha12}) on {branch}\n- Release item: [{release}]({release_url})\n\
          - GO computed at {computed_at} UTC by the release pass\n\nBlockers-Carried: {blockers_carried}\n\n## Computed GO\n\n\
-         The gate is green on the candidate, every angle PR is merged, no blocker is open.\n\n| angle | state |\n|---|---|\n{rows}\n\
-         ## Release PRs of the cycle\n\n{prs}",
+         {qa}\n## Release PRs of the cycle\n\n{prs}",
         marker = record_marker(candidate),
         sha12 = short(sha),
     ))

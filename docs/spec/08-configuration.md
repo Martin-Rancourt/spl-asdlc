@@ -202,7 +202,7 @@ The configuration maps no status: the tracker names each canonical status (`03-v
 | `release.registry_path` | `docs/business-rules.md` | The business-rule registry (`02-business-rules.md`). | Unreadable at the judged ref: the guard fails closed. |
 | `release.business_rule_paths` | `["docs/business-rules.md", "**/business-rules.md"]` | Paths whose change the brief singles out as "business rules touched". | — |
 | `release.stagnation_hours` | `2` | A GO false for longer than this is reported once. | Not a positive integer: file invalid. |
-| `release.coordinators` | required | GitHub logins whose approval at the head SHA lets the bridge merge an angle PR. | No approval by one of them: the angle PR is not merged. |
+| `release.coordinators` | required while there is a release angle; optional with `angles = []` | GitHub logins whose approval at the head SHA lets the bridge merge an angle PR. | No approval by one of them: the angle PR is not merged. Absent or empty while a release angle is configured: file invalid. |
 | `release.coordinator_assignee` | none | The tracker participant (an agent the tracker serves, like an angle's `assignee`) who receives the consolidation item of each candidate, assigned when the bridge creates it (`05-release-cycle.md` §3); an existing consolidation item is never reassigned. | Absent, or unknown to the tracker: the item is created unassigned; `doctor` reports an unknown participant. |
 | `release.escalation_label` | `blocked-by-human` | Label added to the release issue when it waits for the owner. | — |
 | `release.auto_candidate` | `false` | When true the bridge dispatches the next RC itself once a pass is merged; otherwise the coordinator does. | — |
@@ -213,7 +213,7 @@ The configuration maps no status: the tracker names each canonical status (`03-v
 | `release.release_please_workflow` | `release-please.yml` | Workflow redispatched once when release-please's PR is stale. | — |
 | `release.release_please_config` | `release-please-config.json` | release-please's configuration (its `config-file`), read at the release PR's head for each component's changelog path. | Unreadable for a multi-component product: a note gap, the GO is false. |
 | `release.release_please_manifest` | `.release-please-manifest.json` | release-please's manifest (its `manifest-file`). | — |
-| `[[release.angles]]` | at least one required | `key` (required), `title` (default `<Key> review`), `assignee` (participant hint), `notes` (path). | No angle: file invalid — a release with no angle would compute its GO from nobody. An `assignee` unknown to the tracker: the angle item is created unassigned; `doctor` reports it. |
+| `[[release.angles]]` | required: at least one entry, or `angles = []` written under `[release]` | `key` (required), `title` (default `<Key> review`), `assignee` (participant hint), `notes` (path). `angles = []` is a release with no QA angle: the bridge opens no angle sub-item and no consolidation item, the brief says no QA angle is configured, and the GO rests on the gate and the conditions that involve no angle (`05-release-cycle.md` §3, §8). Angles configured later apply from the next candidate: a candidate recorded with none keeps none. | No angle written at all: file invalid — the file forgot them, it never means none. An `assignee` unknown to the tracker: the angle item is created unassigned; `doctor` reports it. |
 
 ### `[review]`
 
