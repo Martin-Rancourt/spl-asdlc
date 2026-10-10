@@ -36,7 +36,7 @@ fn shape() -> Shape {
         [release]\ncandidate_tag = \"v{version}-rc.{rc}\"\nrelease_tag = \"app-v{version}\"\ncomponents = [\"app\", \"website\", \"admin\"]\nversion_component = \"app\"\ngate_record = \"docs/releases/v{version}.md\"\nrelease_please_authors = [\"app/release-app\"]\ncoordinators = [\"c\"]\n[[release.angles]]\nkey = \"security\"\n\
         [review]\ncoordinators = [\"c\"]\ndiff_size_extra_angle = 0\n[[review.angles]]\nkey = \"m\"\n";
     let c = Config::parse(text).unwrap();
-    Shape::of(&c.product.name, &c.release)
+    Shape::of(&c.product.name, c.release.as_ref().unwrap())
 }
 
 #[test]
@@ -69,6 +69,40 @@ fn a_release_pr_of_another_author_is_never_merged() {
     assert!(lookup.pr.is_none());
     assert!(lookup.shape_seen, "the shape is seen even when refused");
     assert_eq!(lookup.refused, vec![1]);
+}
+
+/// The login REST and the UI show for an App.
+fn bot_login(slug: &str) -> String {
+    format!("{slug}[bot]")
+}
+
+#[test]
+fn a_configured_app_is_trusted_however_the_configuration_spells_it() {
+    // The author as read: an App in the REST spelling. A list of Apps reads
+    // a bare slug as the App too.
+    let author = bot_login("release-app");
+    for configured in [
+        bot_login("release-app"),
+        bot_login("RELEASE-APP"),
+        "app/Release-App".to_string(),
+        "release-app".to_string(),
+    ] {
+        let mut pr = release_pr(1);
+        pr.author = bot(&author);
+        assert!(
+            trusted_author(&pr, std::slice::from_ref(&configured)),
+            "configured {configured}, authored by {author}"
+        );
+        // `review.ticketless_authors` is matched the same way.
+        pr.author = Some(Actor {
+            login: "release-app".into(),
+            is_bot: false,
+        });
+        assert!(
+            !trusted_author(&pr, &[configured]),
+            "a human account never qualifies"
+        );
+    }
 }
 
 #[test]

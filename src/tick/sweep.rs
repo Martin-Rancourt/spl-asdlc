@@ -47,15 +47,13 @@ fn closed(t: &Tick, log: &mut ActionLog, report: &mut Report, open: &OpenPrs) {
             return;
         }
     };
-    let release = &t.config.release;
+    let (branch_prefix, release_pr_label) = t.config.release_machinery();
     for pr in &prs {
         if !t.in_time() {
             report.out_of_time = true;
             return;
         }
-        if review::excluded_from_merge_pass(pr, &release.branch_prefix, &release.release_pr_label)
-            .is_some()
-        {
+        if review::excluded_from_merge_pass(pr, branch_prefix, release_pr_label).is_some() {
             continue;
         }
         let object = format!("pr#{}", pr.number);
@@ -88,7 +86,9 @@ fn closed(t: &Tick, log: &mut ActionLog, report: &mut Report, open: &OpenPrs) {
 /// A ticket In Review whose PR closed without merge: In Review stays only
 /// while another of its PRs is (or waits to be) reviewed; otherwise the
 /// completeness rule says In Progress, and To Deploy only when every box is
-/// checked and an earlier PR of it was merged (BR-ASDLC-008). The comment
+/// checked and an earlier PR of it was merged (BR-ASDLC-008), or, without a
+/// release cycle, Done (Post Deploy while its own `## Post deploy` boxes
+/// wait). The comment
 /// goes first and the status last, so a cut tick retries the status without
 /// repeating the comment.
 fn settle_after_close(
@@ -132,6 +132,13 @@ fn settle_after_close(
     if to == Status::InReview {
         return;
     }
+    let (to, why) = match merge::delivered(t, ticket, to, why) {
+        Ok(d) => d,
+        Err(e) => {
+            t.unreadable(report, &object, format!("its contract: {e}"));
+            return;
+        }
+    };
     let body = texts::closed_unmerged_comment(pr_url, to.name(), &why.next());
     let marker = texts::marker("closed-unmerged", &[("pr", pr_url)]);
     match merge::tracker_said(t, &ticket.key, &marker) {
@@ -160,17 +167,14 @@ fn settle_after_close(
             return;
         }
     }
-    t.act(
+    merge::set_state(
+        t,
         log,
         report,
         &object,
-        &format!("status {to}"),
+        ticket,
+        to,
         json!({"closed_pr": pr_url, "next": why.next()}),
-        || {
-            t.tracker
-                .set_status(&ticket.key, to, None)
-                .map_err(|e| e.to_string())
-        },
     );
 }
 
@@ -252,15 +256,13 @@ fn merged(t: &Tick, log: &mut ActionLog, report: &mut Report, open: &OpenPrs) {
             return;
         }
     };
-    let release = &t.config.release;
+    let (branch_prefix, release_pr_label) = t.config.release_machinery();
     for pr in prs {
         if !t.in_time() {
             report.out_of_time = true;
             return;
         }
-        if review::excluded_from_merge_pass(&pr, &release.branch_prefix, &release.release_pr_label)
-            .is_some()
-        {
+        if review::excluded_from_merge_pass(&pr, branch_prefix, release_pr_label).is_some() {
             continue;
         }
         let object = format!("pr#{}", pr.number);

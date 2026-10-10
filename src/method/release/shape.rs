@@ -217,7 +217,7 @@ mod tests {
              [review]\ncoordinators = [\"c\"]\ndiff_size_extra_angle = 0\n[[review.angles]]\nkey = \"m\"\n"
         );
         let c = Config::parse(&text).unwrap();
-        Shape::of(&c.product.name, &c.release)
+        Shape::of(&c.product.name, c.release.as_ref().unwrap())
     }
 
     fn v(s: &str) -> Version {

@@ -6,7 +6,8 @@
 //!    embarked tickets labelled; once the candidate's gate is green, and
 //!    never before, the angle sub-items and the consolidation item of the
 //!    candidate, the consolidation item blocked by every angle sub-item,
-//!    then the brief (BR-ASDLC-004, BR-ASDLC-020); the consolidation item of
+//!    then the brief (BR-ASDLC-004, BR-ASDLC-020); a candidate with no QA
+//!    angle (`release.angles = []`) gets the brief alone; the consolidation item of
 //!    an older candidate Done; a red gate whose automatic rerun settled gets
 //!    its urgent gate-fix ticket, which a later green gate closes
 //!    (BR-ASDLC-016);
@@ -26,7 +27,7 @@
 use serde_json::json;
 
 use crate::action_log::ActionLog;
-use crate::config::{LaterPasses, NitsGrouping};
+use crate::config::{LaterPasses, NitsGrouping, Release};
 use crate::github::{CompareStatus, GitRef, ObjectType, PullRequest};
 use crate::method::checks::{self, CheckState};
 use crate::method::release::findings;
@@ -37,7 +38,7 @@ use crate::method::release::prs;
 use crate::method::release::report::{self, Report as AngleReport};
 use crate::method::release::shape::{Shape, Version};
 use crate::method::review::{self, Approval, BranchState};
-use crate::method::texts::{self, AngleLine, BridgeItem};
+use crate::method::texts::{self, AngleLine, AngleScope, BridgeItem};
 use crate::method::vocabulary::{self, Severity, Status};
 use crate::tracker::{Item, NewItem, Priority, RelationKind};
 
@@ -54,13 +55,30 @@ pub struct Candidate {
     pub tagged_at: Option<crate::github::Timestamp>,
 }
 
+/// Why the release cycle has nothing to act on.
+pub(crate) const NO_RELEASE_CYCLE: &str =
+    "the configuration has no [release] section: the project has no release cycle";
+
+/// The `[release]` section, or [`NO_RELEASE_CYCLE`]. Every reader handles
+/// its absence, never by a panic (a host's daemon runs the bridge): the
+/// pass does nothing, the verbs refuse, a step reached without it writes
+/// nothing.
+pub(crate) fn section<'a>(t: &Tick<'a>) -> Result<&'a Release, String> {
+    t.config
+        .release
+        .as_ref()
+        .ok_or_else(|| NO_RELEASE_CYCLE.to_string())
+}
+
 /// Run the pass. Returns whether it merged a PR (the tick's one merge).
+/// Without a `[release]` section the project has no release cycle: nothing
+/// is read or written (spec 05, "Without a release cycle").
 pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
     let cfg = t.config;
-    if cfg.release.angles.is_empty() {
+    let Ok(release) = section(t) else {
         return false;
-    }
-    let shape = Shape::of(&cfg.product.name, &cfg.release);
+    };
+    let shape = Shape::of(&cfg.product.name, release);
     let (candidate, tags) = match newest(t, &shape) {
         Ok(Some(found)) => found,
         Ok(None) => return false,
@@ -97,6 +115,10 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
         return false;
     };
     if item.state.is_resolved() {
+        // A closed cycle: what its archiving left is retried (BR-ASDLC-019).
+        if let Some(published) = &published {
+            closure::archive_closed(t, log, report, &shape, &candidate, &item, published);
+        }
         return false;
     }
     if let Some(published) = published {
@@ -122,13 +144,23 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
     // its comment is recorded, which happens only after every embarked
     // ticket carries the label.
     let candidate_marker = texts::marker("candidate", &[("tag", &candidate.tag)]);
-    let recorded = match tracker_said(t, &item.key, &candidate_marker) {
-        Ok(r) => r,
+    let comments = match t.tracker.comments(&item.key) {
+        Ok(c) => c,
         Err(e) => {
             t.unreadable(report, &item.key, format!("comments: {e}"));
             return false;
         }
     };
+    let said = |marker: &str| {
+        comments
+            .iter()
+            .any(|c| c.by_bridge && texts::has_marker(&c.body, marker))
+    };
+    let recorded = said(&candidate_marker);
+    // A candidate recorded while no QA angle was configured keeps none:
+    // angles configured later apply from the next candidate.
+    let without_angles =
+        release.angles.is_empty() || said(&texts::no_qa_angle_marker(&candidate.tag));
     if recorded || label_embarked(t, log, report, &shape, &candidate, &label) {
         record_candidate(t, log, report, &item, &candidate, previous.as_deref());
     }
@@ -136,7 +168,11 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
         report.out_of_time = true;
         return false;
     }
-    let offered = offered(t, &candidate);
+    let offered = if without_angles {
+        Vec::new()
+    } else {
+        offered(t, &candidate)
+    };
     let gate = match gate_run(t, &candidate) {
         Ok(run) => run,
         Err(e) => {
@@ -171,6 +207,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
         &candidate,
         previous.as_deref(),
         gate,
+        without_angles,
     );
     let children = match round {
         Round::Wait => match t.tracker.children(&item.key) {
@@ -262,7 +299,15 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
         return true;
     }
     let decision = decide(
-        t, report, &shape, &item, &candidate, &branch, &states, &angle_prs,
+        t,
+        report,
+        &shape,
+        &item,
+        &candidate,
+        &branch,
+        &states,
+        &angle_prs,
+        without_angles,
     );
     let Some((decision, rp)) = decision else {
         return merged;
@@ -341,7 +386,7 @@ fn previous_candidate(shape: &Shape, tags: &[GitRef], c: &Candidate) -> Option<S
 pub fn release_branch(t: &Tick, shape: &Shape, c: &Candidate) -> Result<String, String> {
     let branches = t
         .github
-        .branches(&t.repo, &t.config.release.branch_prefix)
+        .branches(&t.repo, &shape.branch_prefix)
         .map_err(|e| e.to_string())?;
     let mut holding = Vec::new();
     for b in branches.iter().filter(|b| shape.is_release_branch(&b.name)) {
@@ -410,9 +455,10 @@ fn release_item(
             return None;
         }
     }
-    let angles: Vec<AngleLine> = t
-        .config
-        .release
+    let Ok(release) = section(t) else {
+        return None;
+    };
+    let angles: Vec<AngleLine> = release
         .angles
         .iter()
         .map(|a| AngleLine {
@@ -514,13 +560,19 @@ fn record_candidate(
                     return;
                 }
             };
-            let lighter =
-                c.rc > 1 && t.config.release.later_passes == LaterPasses::GateAndCoordinator;
+            let scope = match section(t) {
+                Err(_) => AngleScope::NoQaAngle,
+                Ok(r) if r.angles.is_empty() => AngleScope::NoQaAngle,
+                Ok(r) if c.rc > 1 && r.later_passes == LaterPasses::GateAndCoordinator => {
+                    AngleScope::LighterPass
+                }
+                Ok(_) => AngleScope::Configured,
+            };
             let offered = offered(t, c);
             let body = for_tracker(
                 t,
                 &texts::candidate_comment(
-                    &c.tag, &c.class, previous, None, &paths, &offered, lighter,
+                    &c.tag, &c.class, previous, None, &paths, &offered, scope,
                 ),
             );
             t.act(
@@ -557,9 +609,19 @@ fn record_candidate(
     }
 }
 
+/// Whether the candidate has no QA angle: none is configured
+/// (`release.angles = []`), or none was when the candidate was recorded
+/// (angles configured later apply from the next candidate).
+pub fn without_angles(t: &Tick, item: &Item, c: &Candidate) -> Result<bool, String> {
+    Ok(section(t)?.angles.is_empty()
+        || tracker_said(t, &item.key, &texts::no_qa_angle_marker(&c.tag))?)
+}
+
 /// The angles offered on this candidate (spec 05 §7, `later_passes`).
 pub fn offered(t: &Tick, c: &Candidate) -> Vec<String> {
-    let release = &t.config.release;
+    let Ok(release) = section(t) else {
+        return Vec::new();
+    };
     if c.rc > u64::from(release.max_rc_passes)
         || (c.rc > 1 && release.later_passes == LaterPasses::GateAndCoordinator)
     {
@@ -604,7 +666,7 @@ pub fn embarked(t: &Tick, shape: &Shape, c: &Candidate) -> Result<Vec<(String, V
             continue;
         };
         if pr.head_ref.starts_with(review::RELEASE_PLEASE_PREFIX)
-            || pr.head_ref.starts_with(&t.config.release.branch_prefix)
+            || pr.head_ref.starts_with(&shape.branch_prefix)
         {
             continue;
         }
@@ -692,6 +754,7 @@ enum Round {
 /// the candidate's own gate run is green (REQ-REL-046/048, BR-ASDLC-004).
 /// The brief's facts are read before anything is created: facts that cannot
 /// be read open nothing, so that no agent starts without its brief.
+#[allow(clippy::too_many_arguments)]
 fn qa_round(
     t: &Tick,
     report: &mut Report,
@@ -700,6 +763,7 @@ fn qa_round(
     c: &Candidate,
     previous: Option<&str>,
     gate: Option<crate::github::WorkflowRun>,
+    without_angles: bool,
 ) -> Round {
     let Some(run) = gate.filter(|r| gate::is_green(Some(r))) else {
         return Round::Wait;
@@ -714,7 +778,10 @@ fn qa_round(
         }
     }
     match brief_facts(t, shape, c, previous, &run) {
-        Ok(b) => Round::Brief(Box::new(b)),
+        Ok(b) => Round::Brief(Box::new(texts::Brief {
+            no_qa_angle: without_angles,
+            ..b
+        })),
         Err(e) => {
             t.unreadable(report, &item.key, format!("the brief of {}: {e}", c.tag));
             Round::Wait
@@ -740,6 +807,7 @@ fn open_round(
     label: &str,
     offered: &[String],
 ) -> Option<(Vec<Item>, bool)> {
+    let release = section(t).ok()?;
     let mut children = match t.tracker.children(&item.key) {
         Ok(c) => c,
         Err(e) => {
@@ -749,7 +817,7 @@ fn open_round(
     };
     let product = &t.config.product.name;
     let v = c.version.to_string();
-    for angle in &t.config.release.angles {
+    for angle in &release.angles {
         if !offered.contains(&angle.key) {
             continue;
         }
@@ -764,7 +832,7 @@ fn open_round(
             title: angle.title.clone(),
             assignee: angle.assignee.clone(),
         };
-        let path = report::report_path(&t.config.release.record, &c.tag, &angle.key);
+        let path = report::report_path(&release.record, &c.tag, &angle.key);
         let (title, body) = texts::release_angle_item(
             product,
             &v,
@@ -966,7 +1034,7 @@ fn brief_facts(
             description: Some(item.description),
         });
     }
-    let rule_paths = &t.config.release.business_rule_paths;
+    let rule_paths = &section(t)?.business_rule_paths;
     let rule_files_touched = crate::method::glob::hits(&paths_since_release, rule_paths);
     let evidence_url = evidence_url(t, c, run)?;
     Ok(texts::Brief {
@@ -982,6 +1050,7 @@ fn brief_facts(
         tickets,
         untracked: Vec::new(),
         rule_files_touched,
+        no_qa_angle: false,
     })
 }
 
@@ -1034,7 +1103,7 @@ fn gate_run(t: &Tick, c: &Candidate) -> Result<Option<crate::github::WorkflowRun
         .github
         .workflow_runs(
             &t.repo,
-            &t.config.release.gate_workflow,
+            &section(t)?.gate_workflow,
             None,
             Some(&c.sha),
             None,
@@ -1063,7 +1132,7 @@ fn gate_fix(
     label: &str,
     gate: Option<&crate::github::WorkflowRun>,
 ) {
-    let Some(first) = gate else {
+    let (Some(first), Ok(release)) = (gate, section(t)) else {
         return;
     };
     if gate::is_green(Some(first)) {
@@ -1072,7 +1141,7 @@ fn gate_fix(
     }
     let wait = gate::RerunWait {
         now: t.now,
-        bound: time::Duration::minutes(i64::from(t.config.release.gate_rerun_wait_minutes)),
+        bound: time::Duration::minutes(i64::from(release.gate_rerun_wait_minutes)),
     };
     if gate::red_gate(first, &[], &wait) == gate::RedGate::NotRed {
         return;
@@ -1108,7 +1177,7 @@ fn gate_fix(
     }
     // The rerun workflow first, the gate again after it: a rerun its
     // completed run made is then seen on the gate run.
-    let rerun_workflow = &t.config.release.gate_rerun_workflow;
+    let rerun_workflow = &release.gate_rerun_workflow;
     let reruns = match t.github.workflow_runs(
         &t.repo,
         rerun_workflow,
@@ -1125,7 +1194,7 @@ fn gate_fix(
                 &item.key,
                 format!(
                     "the automatic rerun of the gate of {}: {e}; the gate-fix ticket opens {} minutes after the gate run completed",
-                    c.tag, t.config.release.gate_rerun_wait_minutes
+                    c.tag, release.gate_rerun_wait_minutes
                 ),
             );
             Vec::new()
@@ -1323,6 +1392,9 @@ fn angle_pr(
     else {
         return AngleState::InReview;
     };
+    let Ok(release) = section(t) else {
+        return AngleState::InReview;
+    };
     let required = match t.github.required_checks(&t.repo, branch) {
         Ok(r) => r,
         Err(e) => {
@@ -1332,7 +1404,7 @@ fn angle_pr(
     };
     let green = checks::pr_state(pr, &required.contexts) == CheckState::Green;
     follow_angle_pr(t, log, report, pr, sub, angle, green);
-    let path = report::report_path(&t.config.release.record, &c.tag, angle);
+    let path = report::report_path(&release.record, &c.tag, angle);
     let valid = match t.github.file(&t.repo, &path, &pr.head_sha) {
         Ok(text) => report::validate(&text, &c.tag, angle).map_err(|e| e.join("; ")),
         Err(e) if e.is_not_found() => Err(format!("no report at `{path}`")),
@@ -1374,7 +1446,7 @@ fn angle_pr(
     if *merged || pr.draft || !prs::names_sub_item(pr, &sub.key) {
         return AngleState::InReview;
     }
-    let Approval::Qualified { by } = review::pr_approval(pr, &t.config.release.coordinators) else {
+    let Approval::Qualified { by } = review::pr_approval(pr, &release.coordinators) else {
         return AngleState::InReview;
     };
     if !green {
@@ -1476,7 +1548,8 @@ fn follow_angle_pr(
     let facts = prs::AnglePrFacts {
         draft: pr.draft,
         green,
-        sent_back: super::merge::changes_requested_at_head(pr, &t.config.release.coordinators),
+        sent_back: section(t)
+            .is_ok_and(|r| review::changes_requested_at_head(pr, &r.coordinators).is_some()),
     };
     let Some(to) = prs::angle_item_status(sub.state.status, facts) else {
         return;
@@ -1511,15 +1584,14 @@ fn follow_angle_pr(
 /// The participant `release.coordinator_assignee` names, when the tracker
 /// knows it (`doctor` reports one it does not).
 fn coordinator(t: &Tick) -> Option<crate::tracker::User> {
-    let name = t.config.release.coordinator_assignee.as_ref()?;
+    let name = section(t).ok()?.coordinator_assignee.as_ref()?;
     t.tracker.user(name).ok()
 }
 
 /// The configured assignee of a release angle, when the tracker knows it.
 fn angle_assignee(t: &Tick, angle: &str) -> Option<crate::tracker::User> {
-    let name = t
-        .config
-        .release
+    let name = section(t)
+        .ok()?
         .angles
         .iter()
         .find(|a| a.key == angle)?
@@ -1542,6 +1614,9 @@ fn file_merged_findings(
     children: &[Item],
     states: &mut [(String, AngleState)],
 ) {
+    let Ok(release) = section(t) else {
+        return;
+    };
     let merged = match t.github.merged_pulls(&t.repo, Some(branch), None, 500) {
         Ok(m) => m,
         Err(e) => {
@@ -1586,7 +1661,7 @@ fn file_merged_findings(
                 );
             }
         }
-        let path = report::report_path(&t.config.release.record, &c.tag, &angle);
+        let path = report::report_path(&release.record, &c.tag, &angle);
         let rev = pr
             .merge_commit_sha
             .clone()
@@ -1636,7 +1711,10 @@ fn file_findings(
     };
     let product = &t.config.product.name;
     let v = c.version.to_string();
-    let shared = t.config.release.nits == NitsGrouping::Shared;
+    let Ok(release) = section(t) else {
+        return;
+    };
+    let shared = release.nits == NitsGrouping::Shared;
     // The shared nits ticket, once found or created in this call: its key
     // and its description as this call last wrote it. `Err` once it is
     // refused (unreadable, or no contract): no nit of this call goes in.
@@ -1847,7 +1925,10 @@ fn release_prs(
     open: &[PullRequest],
 ) -> (Vec<String>, Vec<String>, Vec<ReleasePr>) {
     let cfg = t.config;
-    let rp_path = cfg.release.release_please_config.as_str();
+    let Ok(release) = section(t) else {
+        return (vec![NO_RELEASE_CYCLE.to_string()], Vec::new(), Vec::new());
+    };
+    let rp_path = release.release_please_config.as_str();
     let rp_config = |pr: &PullRequest| t.github.file(&t.repo, rp_path, &pr.head_sha);
     // The range, read once: unreadable is a gap, never an empty range.
     let range: Result<Vec<crate::github::CommitSummary>, String> = t
@@ -1882,8 +1963,8 @@ fn release_prs(
         return match prs::release_please_pr(
             open,
             branch,
-            &cfg.release.release_please_authors,
-            &cfg.release.release_pr_label,
+            &release.release_please_authors,
+            &release.release_pr_label,
         ) {
             Err(e) => (vec![e.to_string()], Vec::new(), Vec::new()),
             Ok(lookup) => match lookup.pr {
@@ -1923,8 +2004,8 @@ fn release_prs(
         open,
         shape,
         branch,
-        &cfg.release.release_please_authors,
-        &cfg.release.release_pr_label,
+        &release.release_please_authors,
+        &release.release_pr_label,
     ) {
         Ok(f) => f,
         Err(e) => return (vec![e], Vec::new(), Vec::new()),
@@ -2024,8 +2105,16 @@ pub fn decide(
     branch: &str,
     states: &[(String, AngleState)],
     open: &[PullRequest],
+    no_qa_angle: bool,
 ) -> Option<(go::GoDecision, Vec<ReleasePr>)> {
     let cfg = t.config;
+    let release = match section(t) {
+        Ok(r) => r,
+        Err(e) => {
+            t.unreadable(report, &item.key, e);
+            return None;
+        }
+    };
     let gate_green = match gate_run(t, c) {
         Ok(run) => Some(gate::is_green(run.as_ref())),
         Err(e) => {
@@ -2077,7 +2166,7 @@ pub fn decide(
             let moved: Vec<String> = cmp
                 .files
                 .into_iter()
-                .filter(|f| !cfg.release.bookkeeping_paths.iter().any(|b| b == f))
+                .filter(|f| !release.bookkeeping_paths.iter().any(|b| b == f))
                 .filter(|f| record.as_deref() != Some(f.as_str()))
                 .collect();
             if moved.is_empty() {
@@ -2096,7 +2185,7 @@ pub fn decide(
         )],
     };
     let (note_gaps, version_gaps, rp) = release_prs(t, shape, c, branch, open);
-    let policy = match cfg.release.go_policy {
+    let policy = match release.go_policy {
         crate::config::GoPolicy::Computed => Policy::Computed,
         // Whose approval counts is the owner's to settle (`docs/open-points.md` #3): never given.
         crate::config::GoPolicy::Human => Policy::Human { approved: None },
@@ -2105,6 +2194,7 @@ pub fn decide(
         release: item.key.clone(),
         gate_green,
         angles: states.to_vec(),
+        no_qa_angle,
         blockers,
         unlinked_blockers,
         note_gaps,
@@ -2436,7 +2526,10 @@ fn escalate(
     d: &go::GoDecision,
     _branch: &str,
 ) {
-    let max = t.config.release.max_rc_passes;
+    let Ok(release) = section(t) else {
+        return;
+    };
+    let max = release.max_rc_passes;
     let moved = !d.tip_gaps.is_empty();
     if c.rc < u64::from(max) || !d.every_angle_answered() || (d.blockers.is_empty() && !moved) {
         return;
@@ -2476,7 +2569,7 @@ fn escalate(
     {
         return;
     }
-    let hold_label = &t.config.release.escalation_label;
+    let hold_label = &release.escalation_label;
     if !item.labels.iter().any(|l| l == hold_label)
         && t.act(
             log,
@@ -2530,7 +2623,10 @@ fn stagnation(
     c: &Candidate,
     d: &go::GoDecision,
 ) {
-    let hours = t.config.release.stagnation_hours;
+    let Ok(release) = section(t) else {
+        return;
+    };
+    let hours = release.stagnation_hours;
     let Some(tagged) = c.tagged_at else {
         return;
     };

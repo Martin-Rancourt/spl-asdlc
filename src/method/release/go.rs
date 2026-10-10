@@ -1,6 +1,9 @@
 //! The GO (`docs/spec/05-release-cycle.md` §8, REQ-REL-066/067): a pure
 //! reading of facts others established. Nobody gives it; under the `human`
-//! policy the owner's approval is one more condition, never a substitute.
+//! policy the owner's approval is one more condition, never a substitute. A
+//! candidate with no QA angle (`release.angles = []`) is judged without the
+//! angle condition: its GO rests on the gate and the conditions that involve
+//! no angle.
 
 use serde_json::{Value, json};
 
@@ -39,6 +42,10 @@ pub struct GoFacts {
     pub gate_green: Option<bool>,
     /// The angles the GO expects, in configuration order, with their state.
     pub angles: Vec<(String, AngleState)>,
+    /// The candidate has no QA angle (`release.angles = []`, or the
+    /// candidate was recorded while none was configured): an empty `angles`
+    /// is then expected, not a round that never ran.
+    pub no_qa_angle: bool,
     pub blockers: Vec<String>,
     pub unlinked_blockers: Vec<String>,
     pub note_gaps: Vec<String>,
@@ -121,7 +128,7 @@ pub fn evaluate(facts: &GoFacts) -> GoDecision {
     if !gate_green {
         reasons.push("the CI gate is not green".to_string());
     }
-    if facts.angles.is_empty() {
+    if facts.angles.is_empty() && !facts.no_qa_angle {
         reasons.push("the release carries no angle sub-item and no verdict".to_string());
     }
     if !missing_angles.is_empty() {
@@ -304,6 +311,66 @@ mod tests {
             d.reasons
                 .contains(&"the release carries no angle sub-item and no verdict".to_string())
         );
+    }
+
+    fn no_qa_angle() -> GoFacts {
+        GoFacts {
+            angles: vec![],
+            no_qa_angle: true,
+            ..all_good()
+        }
+    }
+
+    #[test]
+    fn with_no_qa_angle_a_green_gate_is_a_go() {
+        let d = evaluate(&no_qa_angle());
+        assert!(d.go, "{:?}", d.reasons);
+        assert!(d.every_angle_answered());
+        assert_eq!(d.blockers_carried(), "none");
+    }
+
+    #[test]
+    fn with_no_qa_angle_a_red_or_unknown_gate_is_not_a_go() {
+        for gate in [Some(false), None] {
+            let d = evaluate(&GoFacts {
+                gate_green: gate,
+                ..no_qa_angle()
+            });
+            assert!(!d.go);
+            assert_eq!(d.reasons, vec!["the CI gate is not green"]);
+        }
+    }
+
+    #[test]
+    fn with_no_qa_angle_the_other_conditions_still_hold_the_go() {
+        for facts in [
+            GoFacts {
+                blockers: vec!["ABC-7".into()],
+                ..no_qa_angle()
+            },
+            GoFacts {
+                note_gaps: vec!["a1 feat: x".into()],
+                ..no_qa_angle()
+            },
+            GoFacts {
+                version_gaps: vec!["stages `v0.4.92`".into()],
+                ..no_qa_angle()
+            },
+            GoFacts {
+                tip_gaps: vec!["src/a.rs".into()],
+                ..no_qa_angle()
+            },
+            GoFacts {
+                policy: Policy::Human {
+                    approved: Some(false),
+                },
+                ..no_qa_angle()
+            },
+        ] {
+            let d = evaluate(&facts);
+            assert!(!d.go, "{facts:?}");
+            assert_eq!(d.reasons.len(), 1, "{:?}", d.reasons);
+        }
     }
 
     #[test]

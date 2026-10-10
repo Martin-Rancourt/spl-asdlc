@@ -12,6 +12,7 @@ The tracker operations the bridge needs are the union of REQ-REL-098 (`release.m
 | `comments` | Markers of once-only effects, merge records | The whole thread, oldest first, with `by_bridge` |
 | `children`, `list_by_label` | Release members, sub-items, findings | A list the tracker cuts is unreadable |
 | `items_linked_to_pr` | The PR ↔ ticket link (`docs/spec/01-ticket-contract.md` §7) | An answer that does not say it is whole is unreadable |
+| `archives`, `archive` | At the closure, the cycle's resolved items leave the open count of a tracker that limits it (BR-ASDLC-019, spec 05 §11) | Linear archives (`issueArchive`, never `trash`; a lost answer is read back); Livela has no limit, `archives` is false and `archive` writes nothing. An item already archived records nothing; the caller never archives an open item |
 | `ensure_label`, `create_item`, `update_description`, `add_label`, `remove_label`, `set_status` (with the assignee in the same write), `assign`, `comment`, `update_comment`, `relate`, `unrelate`, `link_pr` | The writes of the method | A write the tracker does not confirm is refused. A write of a value already there records nothing (no useless facts, `docs/livela-contract.md`). A creation whose answer is lost is looked up, never repeated blindly. |
 
 Only Done and Canceled are resolved. In Review, To Deploy and Post Deploy are open: they still block their dependents, whatever category the tracker files them under (the `validation` group, `docs/livela-contract.md`).

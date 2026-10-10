@@ -36,6 +36,7 @@ fn reads_a_real_repository() {
         "required checks of {default}: {:?}",
         gh.required_checks(&repo, &default)
     );
+    println!("rulesets: {:?}", gh.rulesets(&repo));
     println!(
         "release branches: {:?}",
         gh.branches(&repo, "release/").map(|b| b.len())

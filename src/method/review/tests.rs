@@ -208,6 +208,26 @@ fn an_unreadable_diff_buys_a_reviewer_instead_of_a_merge() {
     assert!(plan.angles.contains(&"security".to_string()));
 }
 
+/// A project with no PR review (spec 04 §11): a PR gets no angle, and an
+/// unread diff holds it without opening a round nobody would approve.
+#[test]
+fn with_no_possible_angle_a_pr_is_unreviewed_and_an_unread_diff_only_holds_it() {
+    let mut config = review_config();
+    config.angles.clear();
+    config.path_angles.clear();
+    config.sensitive_paths = None;
+    config.diff_size_extra_angle = 0;
+    let paths = s(&["src/auth/login.rs"]);
+    let read = plan(
+        &facts(Some(&paths), &SensitivePaths::NotDeclared, &[]),
+        &config,
+    );
+    assert!(read.unreviewed() && read.holds.is_empty(), "{read:?}");
+    let unread = plan(&facts(None, &SensitivePaths::NotDeclared, &[]), &config);
+    assert!(unread.unreviewed(), "{unread:?}");
+    assert!(unread.holds[0].contains("the diff could not be read"));
+}
+
 #[test]
 fn an_empty_file_list_that_contradicts_the_pr_is_not_an_answer() {
     let config = review_config();
@@ -243,7 +263,7 @@ fn a_skipped_required_check_holds_the_merge() {
 }
 
 #[test]
-fn the_default_threshold_was_raised_for_agent_produced_diffs() {
+fn a_configured_size_threshold_adds_its_angle_only_above_it() {
     let config = review_config();
     let paths = s(&["src/x.rs"]);
     let mut f = facts(Some(&paths), &SensitivePaths::NotDeclared, &[]);
@@ -429,6 +449,114 @@ fn human_approval_follows_the_policy() {
     config.human_approval = config::HumanApproval::SensitivePaths;
     assert!(needs_human_approval(&config, &plan_hit));
     assert!(!needs_human_approval(&config, &plan_clean));
+}
+
+// ---- an App's login against a person's (SID-1008) ----
+//
+// Authors are compared as read: an App in the REST spelling (`bot()`,
+// GraphQL's bare slug normalised at read time), a person bare.
+
+/// The login REST and the UI show for an App.
+fn bot(slug: &str) -> String {
+    format!("{slug}[bot]")
+}
+
+fn approved_by(configured: &str, author: &str) -> bool {
+    let reviews = [review(author, "APPROVED", "h1")];
+    matches!(
+        approval(&reviews, &[configured.to_string()], "h1"),
+        Approval::Qualified { .. }
+    )
+}
+
+#[test]
+fn a_coordinator_app_approves_and_a_person_of_its_name_does_not() {
+    for configured in [
+        bot("coord-app"),
+        bot("Coord-App"),
+        "app/coord-app".to_string(),
+        "APP/Coord-App".to_string(),
+    ] {
+        assert!(approved_by(&configured, &bot("coord-app")), "{configured}");
+        assert!(approved_by(&configured, &bot("COORD-APP")), "{configured}");
+        assert!(
+            !approved_by(&configured, "coord-app"),
+            "{configured}: a person who took the App's slug is not the App"
+        );
+    }
+    assert!(!approved_by(&bot("coord-app"), &bot("coord-app-2")));
+}
+
+#[test]
+fn a_bare_coordinator_is_a_person_and_never_an_app() {
+    assert!(approved_by("coord", "coord"));
+    assert!(approved_by("Coord", "COORD"));
+    assert!(
+        !approved_by("coord-app", &bot("coord-app")),
+        "a bare login never matches an App"
+    );
+}
+
+#[test]
+fn an_app_and_a_person_of_its_name_are_two_reviewers() {
+    // The person's request for changes is not the App's: the App's
+    // approval stands.
+    let reviews = [
+        review(&bot("coord-app"), "APPROVED", "h1"),
+        review("coord-app", "CHANGES_REQUESTED", "h1"),
+    ];
+    assert_eq!(
+        approval(&reviews, &[bot("coord-app")], "h1"),
+        Approval::Qualified {
+            by: bot("coord-app")
+        }
+    );
+}
+
+#[test]
+fn a_standing_request_for_changes_is_the_configured_accounts_only() {
+    let mut pr = pull_request(1);
+    let head = pr.head_sha.clone();
+    for (configured, author, standing) in [
+        (bot("coord-app"), bot("Coord-App"), true),
+        ("app/coord-app".to_string(), bot("coord-app"), true),
+        (bot("coord-app"), "coord-app".to_string(), false),
+        ("coord".to_string(), "Coord".to_string(), true),
+        ("coord".to_string(), bot("coord"), false),
+    ] {
+        pr.reviews = vec![review(&author, "CHANGES_REQUESTED", &head)];
+        assert_eq!(
+            changes_requested_at_head(&pr, std::slice::from_ref(&configured)),
+            standing.then(|| author.clone()),
+            "configured {configured}, reviewed by {author}"
+        );
+    }
+    pr.reviews = vec![review(&bot("coord-app"), "CHANGES_REQUESTED", "older")];
+    assert_eq!(
+        changes_requested_at_head(&pr, &[bot("coord-app")]),
+        None,
+        "a request on an older head is not standing at this one"
+    );
+    pr.reviews = vec![
+        review(&bot("coord-app"), "CHANGES_REQUESTED", &head),
+        review(&bot("Coord-App"), "APPROVED", &head),
+    ];
+    assert_eq!(changes_requested_at_head(&pr, &[bot("coord-app")]), None);
+}
+
+#[test]
+fn the_approvals_at_the_head_are_named_as_github_spelt_them() {
+    let reviews = [
+        review("dev", "APPROVED", "h1"),
+        review("coord-app", "APPROVED", "h0"),
+        review("other", "APPROVED", "h1"),
+        review("other", "CHANGES_REQUESTED", "h1"),
+        review(&bot("qa-app"), "APPROVED", "h1"),
+    ];
+    assert_eq!(
+        approvals_at_head(&reviews, "h1"),
+        vec!["dev".to_string(), bot("qa-app")]
+    );
 }
 
 #[test]

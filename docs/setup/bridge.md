@@ -1,12 +1,19 @@
 # 4. Where the bridge runs
 
-The bridge is the `spl-asdlc` binary (or the library linked into a tracker's runner). It needs: network access to GitHub and to the tracker, the App's id and private key (or the fallback token), the tracker's identity, and read access to the repositories' `spl-asdlc.toml` (it reads them through GitHub, so no clone is required).
+The bridge is the `spl-asdlc` binary (or the library linked into a tracker's runner). It needs: network access to GitHub and to the tracker, the App's id and private key (or the fallback token), the tracker's identity, and a local copy of each repository's `spl-asdlc.toml` (below).
 
 | Host | How |
 |---|---|
 | Livela runner | `BridgeJob`, a `DaemonJob` in the runner's own code that depends on this crate by version, called every pass; see `tracker-livela.md` |
 | A server or workstation | A timer or cron: `spl-asdlc tick` every five minutes; `spl-asdlc tick --dry-run` first |
 | An interactive session | A skill or alias that runs `spl-asdlc tick` on demand; the latency is then the human's |
+
+**The binary**: the bridge runs a published release of `spl-asdlc`, never a build from a branch, so that only code that went through a release gate runs against the repositories.
+- Install: the archive of the host's target from the latest GitHub release (`spl-asdlc-v<version>-<target>.tar.gz`, or `.zip` on Windows) and its `SHA256SUMS`; verify the checksum before extracting; check that `spl-asdlc --version` prints the release's version.
+- Update: before a tick, or on a slower timer, look at the latest release; install it only when its version is strictly newer than the installed one, never older (a host never downgrades by itself). Replace the binary atomically (write beside it, then rename) and keep the previous one for a one-command rollback. A failed check or download is logged and the tick runs with the binary already installed.
+- A Livela runner gets the bridge with the runner's own releases (`tracker-livela.md`).
+
+**The configuration**: `spl-asdlc tick --file <path>` reads a local file. Keep it current with the repository's default branch, for example a clone of the repository pulled (`git pull --ff-only`) before each tick, with the instance overlay beside it (ignored by git). `doctor` judges the file at the default branch merged with the overlay, so a stale local copy shows there.
 
 **Instance overlay**: the identities of this installation that the repository's `spl-asdlc.toml` leaves out live on this host, never in the repository (`docs/spec/08-configuration.md`, "The instance overlay"): `spl-asdlc.instance.toml` beside the configuration the bridge is given (the `--file`, or the path the Livela runner passes; `<stem>.instance.toml` beside a configuration not named `spl-asdlc.toml`), or the file named by `--instance`. It holds names, not secrets (a channel's destination and token are still `env:` references), but it is the installation's own: keep it with the host's configuration, readable by the account that runs the bridge. One overlay per configuration: with several `--file`, each reads the one beside it. A private project may have none and keep everything in its `spl-asdlc.toml`.
 
@@ -24,4 +31,4 @@ Secrets come from the environment or from the host's secret store; never from th
 - A pass with nothing to do writes nothing, not even the file.
 - The log is an audit trail, not the bridge's memory: the bridge decides from what GitHub and the tracker show. Losing the file costs nothing but the history.
 
-**Verify**: `spl-asdlc doctor --file <spl-asdlc.toml>` reports the identities it writes with, the repository it serves, the instance overlay it read (`instance overlay: ok — <path>`, or `none`), and each point of this procedure as `ok`, `missing` or `invalid`; the repository's `spl-asdlc.toml` at the default branch is judged merged with that overlay.
+**Verify**: `spl-asdlc doctor --file <spl-asdlc.toml>` reports the identities it writes with, the repository it serves, the instance overlay it read (`instance overlay: ok — <path>`, or `none`), what reviews a PR (`PR review: ok — none — …` for a project with no PR review), and each point of this procedure as `ok`, `missing` or `invalid`; the repository's `spl-asdlc.toml` at the default branch is judged merged with that overlay.

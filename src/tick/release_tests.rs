@@ -687,6 +687,34 @@ fn a_green_gate_whose_evidence_cannot_be_read_opens_nothing() {
 }
 
 #[test]
+fn a_release_coordinator_app_approves_and_a_person_of_its_name_does_not() {
+    // (configured, the review's author as read, merged)
+    for (configured, author, merged) in [
+        (bot("coord-app"), bot("Coord-App"), true),
+        ("app/coord-app".to_string(), bot("coord-app"), true),
+        (bot("coord-app"), "coord-app".to_string(), false),
+        ("coord-app".to_string(), bot("coord-app"), false),
+    ] {
+        let mut w = World::new();
+        w.config.release.as_mut().unwrap().coordinators = vec![configured.clone()];
+        w.tick();
+        let mut pr = w.angle_pr(30, "security", &report_json("security", ""));
+        pr.reviews[0].author = Some(author.clone());
+        w.open_on_branch(vec![pr.clone()]);
+        w.tick();
+        assert_eq!(
+            w.github.writes().contains(&format!(
+                "merge example-org/acme#30 at {} merge",
+                pr.head_sha
+            )),
+            merged,
+            "configured {configured}, reviewed by {author}: {:?}",
+            w.github.writes()
+        );
+    }
+}
+
+#[test]
 fn an_approved_angle_pr_with_a_valid_report_is_merged_and_its_findings_filed_once() {
     let w = World::new();
     w.tick();
@@ -1228,7 +1256,7 @@ fn two_nits_of_one_report_share_one_nits_ticket() {
 /// The nits of one merged report, under `release.nits`.
 fn nits_world(grouping: crate::config::NitsGrouping) -> World {
     let mut w = World::new();
-    w.config.release.nits = grouping;
+    w.config.release.as_mut().unwrap().nits = grouping;
     w.tick();
     let findings = [finding("security-1", "nit"), finding("security-2", "nit")].join(",");
     let pr = w.angle_pr(30, "security", &report_json("security", &findings));
@@ -2663,6 +2691,288 @@ fn the_validation_sub_task_is_created_urgent_and_a_dry_run_says_so() {
     );
 }
 
+// ---- archiving at the closure (BR-ASDLC-019) ----
+
+/// A PR review round of `ticket` (an angle sub-item and its consolidation
+/// item), seeded under it in `status`.
+fn review_round(w: &World, ticket: &str, keys: [&str; 2], status: Status) {
+    let (title, body) = texts::review_angle_item(ticket, PR5, "aaaaaaa1", "security", None, &[]);
+    w.tracker.seed(keys[0], &title, &body, status, &[]);
+    let scope = texts::round_scope(PR5, "aaaaaaa1");
+    let (title, body) =
+        texts::consolidation_item(&scope, ticket, texts::Consolidating::PullRequest);
+    w.tracker.seed(keys[1], &title, &body, status, &[]);
+    let mut s = w.tracker.state.borrow_mut();
+    s.set_parent(keys[0], ticket);
+    s.set_parent(keys[1], ticket);
+}
+
+fn nits_title(w: &World) -> String {
+    crate::method::release::findings::nits_title(&w.config.product.name, "1.2.0")
+}
+
+fn consolidation_of_release(w: &World) -> crate::tracker::Item {
+    let release = w.release_item();
+    w.tracker
+        .children(&release.key)
+        .unwrap()
+        .into_iter()
+        .find(|c| {
+            matches!(
+                texts::bridge_item(&c.description, c.parent.as_deref()),
+                Some(BridgeItem::Consolidation { .. })
+            )
+        })
+        .expect("the consolidation item")
+}
+
+fn archives(w: &World) -> Vec<String> {
+    w.tracker
+        .writes()
+        .into_iter()
+        .filter(|l| l.starts_with("archive "))
+        .collect()
+}
+
+/// A cycle opened over every kind of item the closure meets: the shipped
+/// ticket `ABC-5` with a resolved review round (`ABC-21`, `ABC-22`); a
+/// ticket that goes to Post Deploy (`ABC-31`); one sent back In Progress
+/// (`ABC-32`) with a resolved round (`ABC-33`, `ABC-34`); a finding left in
+/// Triage (`ABC-30`); a gate-fix child of the release item (`ABC-40`) in
+/// `gate_fix`; the nits ticket (`ABC-41`) in `nits`.
+fn every_kind(gate_fix: Status, nits: Status) -> World {
+    let w = World::new();
+    w.tick();
+    let release = w.release_item();
+    review_round(&w, "ABC-5", ["ABC-21", "ABC-22"], Status::Done);
+    w.tracker.seed(
+        "ABC-30",
+        "Finding product-1",
+        "A finding.",
+        Status::Triage,
+        &[LABEL],
+    );
+    w.tracker
+        .seed("ABC-31", "Post deploy", POST, Status::ToDeploy, &[LABEL]);
+    w.tracker.seed(
+        "ABC-32",
+        "Incomplete",
+        INCOMPLETE,
+        Status::ToDeploy,
+        &[LABEL],
+    );
+    review_round(&w, "ABC-32", ["ABC-33", "ABC-34"], Status::Canceled);
+    w.tracker
+        .seed("ABC-40", "Fix the gate", "A gate fix.", gate_fix, &[]);
+    w.tracker
+        .state
+        .borrow_mut()
+        .set_parent("ABC-40", &release.key);
+    w.tracker
+        .seed("ABC-41", &nits_title(&w), "Nits.", nits, &[LABEL]);
+    publish(&w);
+    w
+}
+
+#[test]
+fn the_closure_archives_what_the_cycle_resolved_once_and_never_an_open_item() {
+    let w = every_kind(Status::Done, Status::Done);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let release = w.release_item();
+    assert_eq!(release.state.status, Some(Status::Done));
+    let consolidation = consolidation_of_release(&w).key;
+    let security = w.sub_item("security").key;
+    let product = w.sub_item("product").key;
+    // The release item, its resolved children (angle sub-items,
+    // consolidation item, gate fix), the nits ticket, the review rounds of
+    // the embarked tickets, the ticket the closure moved to Done.
+    let resolved = [
+        release.key.as_str(),
+        &security,
+        &product,
+        &consolidation,
+        "ABC-40",
+        "ABC-41",
+        "ABC-21",
+        "ABC-22",
+        "ABC-33",
+        "ABC-34",
+        "ABC-5",
+    ];
+    for key in resolved {
+        assert!(w.tracker.item(key).archived, "{key} is archived");
+    }
+    // Never an open item: Post Deploy and its validation sub-task, In
+    // Progress, a finding in Triage.
+    let task = validation_tasks(&w, "ABC-31");
+    assert_eq!(task.len(), 1);
+    for key in ["ABC-30", "ABC-31", "ABC-32", task[0].key.as_str()] {
+        assert!(!w.tracker.item(key).archived, "{key} is open: kept");
+    }
+    let done = archives(&w);
+    assert_eq!(done.len(), resolved.len(), "each once: {done:?}");
+    assert_eq!(
+        done.last(),
+        Some(&format!("archive {}", release.key)),
+        "the release item last"
+    );
+    // A second tick writes nothing.
+    let before = w.tracker.writes().len();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.tracker.writes().len(),
+        before,
+        "{:?}",
+        &w.tracker.writes()[before..]
+    );
+}
+
+#[test]
+fn an_open_nits_ticket_stays_and_an_open_child_keeps_the_release_item() {
+    let w = every_kind(Status::Ready, Status::Triage);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let release = w.release_item();
+    assert_eq!(release.state.status, Some(Status::Done), "the cycle closes");
+    assert!(
+        !w.tracker.item("ABC-41").archived,
+        "an open nits ticket stays"
+    );
+    assert!(!w.tracker.item("ABC-40").archived, "an open child stays");
+    assert!(
+        !release.archived,
+        "nor is the release item archived over an open child"
+    );
+    assert!(w.tracker.item("ABC-5").archived, "the rest is archived");
+    assert!(w.sub_item("security").archived);
+    let before = w.tracker.writes().len();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(w.tracker.writes().len(), before, "a replay writes nothing");
+    // The child resolved, the next tick archives it and the release item.
+    w.tracker.set_status("ABC-40", Status::Done, None).unwrap();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(w.tracker.item("ABC-40").archived);
+    assert!(w.tracker.item(&release.key).archived);
+    assert!(!w.tracker.item("ABC-41").archived, "still open, still kept");
+}
+
+#[test]
+fn a_failed_archive_never_undoes_the_closure_and_is_retried() {
+    let w = every_kind(Status::Done, Status::Done);
+    w.tracker.fail_writes_starting_with("archive ABC-21");
+    let r = w.tick();
+    assert!(!r.ok(), "the failure is reported");
+    assert!(
+        r.failures.iter().any(|f| f.contains("archive")),
+        "{:?}",
+        r.failures
+    );
+    let release = w.release_item();
+    assert_eq!(
+        release.state.status,
+        Some(Status::Done),
+        "the closure stands"
+    );
+    assert!(!w.tracker.item("ABC-21").archived);
+    assert!(!release.archived, "the release item waits for the retry");
+    assert!(w.tracker.item("ABC-5").archived, "the others went through");
+    assert_eq!(w.signal.sent.borrow().len(), 1, "the note was sent once");
+    w.tracker.state.borrow_mut().failing_writes.clear();
+    let before = w.tracker.writes().len();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.tracker.writes()[before..],
+        [
+            "archive ABC-21".to_string(),
+            format!("archive {}", release.key)
+        ],
+        "only what was left"
+    );
+    let before = w.tracker.writes().len();
+    w.tick();
+    assert_eq!(w.tracker.writes().len(), before, "then nothing");
+    assert_eq!(w.signal.sent.borrow().len(), 1, "never sent again");
+}
+
+#[test]
+fn a_tracker_without_an_open_item_limit_archives_nothing() {
+    let mut w = every_kind(Status::Done, Status::Done);
+    w.tracker.archiving = false;
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.tracker.item(&w.release_item().key).state.status,
+        Some(Status::Done)
+    );
+    assert!(archives(&w).is_empty(), "{:?}", w.tracker.writes());
+    let before = w.tracker.writes().len();
+    w.tick();
+    assert_eq!(w.tracker.writes().len(), before, "a replay writes nothing");
+}
+
+#[test]
+fn a_release_item_closed_by_hand_is_not_archived_from() {
+    let w = World::new();
+    w.tick();
+    let release = w.release_item();
+    w.tracker
+        .set_status(&release.key, Status::Done, None)
+        .unwrap();
+    publish(&w);
+    let before = w.tracker.writes().len();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.tracker.writes().len(),
+        before,
+        "no closure ran: nothing archived"
+    );
+}
+
+#[test]
+fn a_dry_run_of_the_closure_prints_the_archives() {
+    let w = every_kind(Status::Done, Status::Done);
+    let release = w.release_item();
+    let before = w.tracker.writes().len();
+    let intents = crate::dry::Intents::default();
+    let tr = crate::dry::DryTracker {
+        inner: &w.tracker,
+        intents: &intents,
+    };
+    let sig = crate::dry::DrySignal { intents: &intents };
+    let t = Tick {
+        tracker: &tr,
+        signal: &sig,
+        dry_run: true,
+        ..w.tick_ctx()
+    };
+    let mut log = ActionLog::in_memory();
+    run(&t, &mut log);
+    assert_eq!(
+        w.tracker.writes().len(),
+        before,
+        "the real tracker saw no write"
+    );
+    let lines = intents.lines();
+    for key in ["ABC-5", "ABC-21", "ABC-40", release.key.as_str()] {
+        assert!(
+            lines.contains(&format!("tracker: archive {key}")),
+            "{key}: {lines:?}"
+        );
+    }
+    for key in ["ABC-30", "ABC-31", "ABC-32"] {
+        assert!(
+            !lines.contains(&format!("tracker: archive {key}")),
+            "{key}: {lines:?}"
+        );
+    }
+}
+
 // ---- spec 05 §3 and BR-ASDLC-020: the coordinator receives the
 // consolidation item; the angle items in the normal flow, the consolidation
 // as the overall review ----
@@ -3009,7 +3319,12 @@ fn release_coordinator() -> crate::tracker::User {
 fn a_candidates_consolidation_item_goes_to_its_coordinator_once() {
     let w = World::new();
     assert_eq!(
-        w.config.release.coordinator_assignee.as_deref(),
+        w.config
+            .release
+            .as_ref()
+            .unwrap()
+            .coordinator_assignee
+            .as_deref(),
         Some("coordinator-handle")
     );
     w.tracker
@@ -3028,7 +3343,7 @@ fn a_candidates_consolidation_item_goes_to_its_coordinator_once() {
 #[test]
 fn without_a_release_coordinator_assignee_the_consolidation_item_is_unassigned() {
     let mut w = World::new();
-    w.config.release.coordinator_assignee = None;
+    w.config.release.as_mut().unwrap().coordinator_assignee = None;
     w.tracker
         .state
         .borrow_mut()
@@ -3090,6 +3405,8 @@ fn in_review_serves_the_coordinator_and_changes_requested_serve_the_angle_again(
     assert_eq!(
         w.config
             .release
+            .as_ref()
+            .unwrap()
             .angles
             .iter()
             .find(|a| a.key == "security")
@@ -3153,7 +3470,7 @@ fn in_review_serves_the_coordinator_and_changes_requested_serve_the_angle_again(
 #[test]
 fn sent_back_with_no_angle_assignee_the_item_is_unassigned() {
     let mut w = World::new();
-    for a in &mut w.config.release.angles {
+    for a in &mut w.config.release.as_mut().unwrap().angles {
         a.assignee = None;
     }
     w.knows(&[release_coordinator(), angle_reviewer()]);
@@ -3179,7 +3496,7 @@ fn an_unset_or_unknown_coordinator_leaves_the_angle_items_assignee() {
     for unset in [true, false] {
         let mut w = World::new();
         if unset {
-            w.config.release.coordinator_assignee = None;
+            w.config.release.as_mut().unwrap().coordinator_assignee = None;
         }
         // Unknown: the tracker knows the angle's reviewer, not the coordinator.
         w.knows(&[angle_reviewer()]);
@@ -3224,4 +3541,284 @@ fn a_dry_run_prints_the_coordinator_served_in_review() {
         )),
         "{lines:?}"
     );
+}
+
+// ---- without a release cycle (spec 05, "Without a release cycle") ----
+
+#[test]
+fn without_a_release_section_the_tick_skips_the_release_and_closure_passes() {
+    let mut w = World::new();
+    w.config.release = None;
+    // The cut and a green gate: a cycle would open at the first tick.
+    for _ in 0..2 {
+        let r = w.tick();
+        assert!(r.ok(), "{r:?}");
+    }
+    assert!(w.tracker.writes().is_empty(), "{:?}", w.tracker.writes());
+    assert!(w.github.writes().is_empty(), "{:?}", w.github.writes());
+    assert!(
+        w.tracker.list_by_label(LABEL).unwrap().is_empty(),
+        "no release item"
+    );
+
+    // A cycle opened while the section was there, then published and
+    // merged back: the closure would judge ABC-5 at the next tick.
+    w.config.release = config().release;
+    assert!(w.tick().ok());
+    w.release_item();
+    publish(&w);
+    w.config.release = None;
+    let before = (w.tracker.writes().len(), w.github.writes().len());
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        (w.tracker.writes().len(), w.github.writes().len()),
+        before,
+        "{:?}",
+        w.tracker.writes()
+    );
+    assert_eq!(
+        w.tracker.item("ABC-5").state.status,
+        Some(Status::ToDeploy),
+        "no closure judges it"
+    );
+    assert!(w.signal.sent.borrow().is_empty(), "no release note");
+}
+
+/// A host's daemon runs the bridge: nothing panics on a configuration
+/// without `[release]`, even a step the pass never reaches without it.
+#[test]
+fn without_a_release_section_the_release_pass_and_its_readers_return_cleanly() {
+    let mut w = World::new();
+    w.config.release = None;
+    let t = w.tick_ctx();
+    let mut log = ActionLog::in_memory();
+    let mut report = Report::default();
+    assert!(!release::pass(&t, &mut log, &mut report), "no merge");
+    assert!(report.ok(), "nothing to report: {report:?}");
+    assert!(log.entries().is_empty(), "{:?}", log.entries());
+    assert_eq!(release::section(&t).unwrap_err(), release::NO_RELEASE_CYCLE);
+    let candidate = release::Candidate {
+        tag: CAND.into(),
+        version: crate::method::release::shape::Version::parse("1.2.0").unwrap(),
+        rc: 1,
+        sha: "c1".into(),
+        class: "minor".into(),
+        tagged_at: None,
+    };
+    assert!(release::offered(&t, &candidate).is_empty());
+    assert!(w.github.writes().is_empty());
+    assert!(w.tracker.writes().is_empty());
+}
+
+#[test]
+fn without_a_release_section_the_release_verbs_say_there_is_no_cycle() {
+    let mut w = World::new();
+    w.config.release = None;
+    let t = w.tick_ctx();
+    let mut log = ActionLog::in_memory();
+    for refused in [
+        crate::verbs::cut(&t, &mut log, true).unwrap_err(),
+        crate::verbs::status(&t).err().unwrap(),
+        crate::verbs::close(&t, &mut log, "1.2.0", "a reason", "someone").unwrap_err(),
+        crate::verbs::abandon(&t, &mut log, "someone").unwrap_err(),
+        crate::verbs::requalify(
+            &t,
+            &mut log,
+            "ABC-5",
+            crate::method::vocabulary::Severity::Nit,
+            "a reason",
+            "someone",
+        )
+        .unwrap_err(),
+    ] {
+        assert_eq!(
+            refused,
+            "acme has no release cycle: its configuration has no [release] section"
+        );
+    }
+    assert!(w.github.writes().is_empty());
+    assert!(w.tracker.writes().is_empty());
+}
+
+// ---- SID-1016: a release with no QA angle; its GO is the gate ----
+
+impl World {
+    /// The cut of `World::new`, for a project with `release.angles = []`
+    /// and no release coordinator.
+    fn without_angles() -> World {
+        let mut w = World::new();
+        w.config.release.as_mut().unwrap().angles.clear();
+        w.config.release.as_mut().unwrap().coordinators.clear();
+        w
+    }
+
+    /// The merges the bridge made on GitHub.
+    fn merges(&self) -> Vec<String> {
+        self.github
+            .writes()
+            .into_iter()
+            .filter(|l| l.starts_with("merge"))
+            .collect()
+    }
+}
+
+#[test]
+fn a_release_with_no_qa_angle_opens_no_round_and_posts_the_brief_once() {
+    let w = World::without_angles();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let item = w.release_item();
+    assert!(
+        item.description.contains("No QA angle is configured"),
+        "{}",
+        item.description
+    );
+    let comments = w.tracker.comments(&item.key).unwrap();
+    let candidate = comments
+        .iter()
+        .find(|c| c.body.starts_with(&format!("### Candidate `{CAND}`")))
+        .expect("the candidate is recorded");
+    assert!(texts::has_marker(
+        &candidate.body,
+        &texts::no_qa_angle_marker(CAND)
+    ));
+    assert!(
+        w.tracker.item("ABC-5").labels.contains(&LABEL.to_string()),
+        "embarked"
+    );
+    assert!(
+        w.round(CAND).is_empty(),
+        "no angle sub-item, no consolidation item"
+    );
+    let briefs = w.briefs(CAND);
+    assert_eq!(briefs.len(), 1);
+    assert!(
+        briefs[0].contains("No QA angle is configured"),
+        "{}",
+        briefs[0]
+    );
+    assert!(
+        briefs[0].contains("actions/runs/1#artifacts"),
+        "{}",
+        briefs[0]
+    );
+
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(writes.is_empty(), "{writes:?}");
+}
+
+#[test]
+fn with_no_qa_angle_a_green_gate_is_a_go_and_the_release_pr_is_merged() {
+    let w = World::without_angles();
+    w.tick();
+    let (_, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
+    assert!(
+        d.missing_angles.is_empty() && d.open_angles.is_empty(),
+        "{d:?}"
+    );
+    assert!(
+        !d.reasons
+            .iter()
+            .any(|r| r.contains("no angle sub-item and no verdict")),
+        "{:?}",
+        d.reasons
+    );
+    let rp = release_pr(&w, "1.2.0");
+    w.open_on_branch(vec![rp.clone()]);
+    let (_, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
+    assert!(d.go, "{:?}", d.reasons);
+    let r = w.tick();
+    assert_eq!(
+        w.merges(),
+        vec![format!(
+            "merge example-org/acme#40 at {} squash",
+            rp.head_sha
+        )],
+        "{r:?}"
+    );
+}
+
+#[test]
+fn with_no_qa_angle_a_red_gate_is_no_go() {
+    let w = World::without_angles();
+    w.red_settled(1, CAND, "c1", r#""tests""#);
+    w.tick();
+    w.open_on_branch(vec![release_pr(&w, "1.2.0")]);
+    let r = w.tick();
+    assert!(w.merges().is_empty(), "{r:?}");
+    let (_, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
+    assert!(!d.go);
+    assert_eq!(d.reasons, vec!["the CI gate is not green"]);
+    assert!(w.briefs(CAND).is_empty(), "no brief on a red gate");
+    assert_eq!(w.gate_fixes().len(), 1, "the gate's own fix still opens");
+}
+
+#[test]
+fn with_no_qa_angle_a_blocker_still_holds_the_release() {
+    let w = World::without_angles();
+    w.tick();
+    let release = w.release_item();
+    w.tracker
+        .seed("ABC-9", "Blocker", "## Goal\nFix.\n", Status::Ready, &[]);
+    w.tracker
+        .relate("ABC-9", &release.key, crate::tracker::RelationKind::Blocks)
+        .unwrap();
+    w.open_on_branch(vec![release_pr(&w, "1.2.0")]);
+    w.tick();
+    assert!(w.merges().is_empty());
+    let (_, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
+    assert_eq!(d.reasons, vec!["open blocking issues: ABC-9"]);
+}
+
+#[test]
+fn angles_configured_later_apply_from_the_next_candidate() {
+    let mut w = World::without_angles();
+    w.tick();
+    assert!(w.round(CAND).is_empty());
+    // The project configures its angles while rc.1 is in flight.
+    w.config = config();
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(writes.is_empty(), "rc.1 keeps no angle: {writes:?}");
+    assert!(w.round(CAND).is_empty());
+    let (_, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
+    assert!(
+        d.missing_angles.is_empty(),
+        "rc.1 owes no angle: {:?}",
+        d.reasons
+    );
+
+    w.cut_rc2();
+    w.gate(vec![
+        gate_run(2, CAND2, "c2", Some("success")),
+        gate_run(1, CAND, "c1", Some("success")),
+    ]);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.round(CAND2).len(),
+        3,
+        "two angles and the consolidation item"
+    );
+    let briefs = w.briefs(CAND2);
+    assert_eq!(briefs.len(), 1);
+    assert!(!briefs[0].contains("No QA angle"), "{}", briefs[0]);
+}
+
+#[test]
+fn with_no_qa_angle_the_closure_works_as_today() {
+    let w = World::without_angles();
+    w.tick();
+    let release = w.release_item();
+    publish(&w);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(w.tracker.item("ABC-5").state.status, Some(Status::Done));
+    assert_eq!(
+        w.tracker.item(&release.key).state.status,
+        Some(Status::Done)
+    );
+    assert_eq!(w.signal.sent.borrow().len(), 1, "the note is sent");
 }

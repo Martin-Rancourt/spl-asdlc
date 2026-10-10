@@ -86,6 +86,9 @@ impl GitHub for DryGitHub<'_> {
     fn required_checks(&self, repo: &RepoSlug, branch: &str) -> Read<github::RequiredChecks> {
         self.inner.required_checks(repo, branch)
     }
+    fn rulesets(&self, repo: &RepoSlug) -> Read<Vec<github::Ruleset>> {
+        self.inner.rulesets(repo)
+    }
     fn issue_comments(&self, repo: &RepoSlug, number: u64) -> Read<Vec<github::Comment>> {
         self.inner.issue_comments(repo, number)
     }
@@ -385,6 +388,13 @@ impl Tracker for DryTracker<'_> {
             .push(format!("tracker: link {key} to {pr_url}"));
         Ok(())
     }
+    fn archives(&self) -> bool {
+        self.inner.archives()
+    }
+    fn archive(&self, key: &str) -> TResult<()> {
+        self.intents.push(format!("tracker: archive {key}"));
+        Ok(())
+    }
     fn keeps_html_comments(&self) -> bool {
         self.inner.keeps_html_comments()
     }
@@ -425,8 +435,11 @@ mod tests {
         assert_eq!(dry.get("ABC-1").unwrap().key, "ABC-1");
         dry.set_status("ABC-1", Status::ToDeploy, None).unwrap();
         dry.comment("ABC-1", "Merged.\nmore").unwrap();
+        dry.archive("ABC-1").unwrap();
         assert!(t.writes().is_empty(), "the real tracker saw no write");
         assert_eq!(t.item("ABC-1").state.status, Some(Status::InReview));
+        assert!(!t.item("ABC-1").archived);
+        assert_eq!(dry.archives(), t.archives(), "the real capability");
         let repo = RepoSlug::parse("acme/widget").unwrap();
         let dgh = DryGitHub {
             inner: &gh,
@@ -439,6 +452,7 @@ mod tests {
             vec![
                 "tracker: ABC-1 → To Deploy",
                 "tracker: comment on ABC-1: Merged.",
+                "tracker: archive ABC-1",
                 "github acme/widget: merge #7 at abc (squash)",
             ]
         );

@@ -7,7 +7,8 @@
 //! rested on, a failure is logged and retried at the next tick, and a dry run
 //! records the action as what it would do. A decision whose effect is
 //! already in place calls no write and leaves no entry: a tick with nothing
-//! to do writes nothing, anywhere (invariant 7).
+//! to do writes nothing, anywhere (invariant 7), but the action log's note
+//! of why a PR waits when that reason changes ([`Report::waiting`]).
 
 pub mod closure;
 pub mod link;
@@ -27,7 +28,7 @@ use serde_json::Value;
 
 use crate::action_log::{ActionLog, Outcome};
 use crate::config::Config;
-use crate::github::{GitHub, RepoSlug, Timestamp};
+use crate::github::{GitHub, PullRequest, RepoSlug, Timestamp};
 use crate::notify::Signal;
 use crate::tracker::Tracker;
 
@@ -58,11 +59,41 @@ pub struct Report {
     pub failures: Vec<String>,
     /// The deadline cut the tick short.
     pub out_of_time: bool,
+    /// The PRs the merge pass holds, each with why (spec 07): said at every
+    /// tick, written nowhere but the action log, and there only when the
+    /// reason changes.
+    pub waiting: Vec<Waiting>,
+}
+
+/// A PR the merge pass holds, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Waiting {
+    pub pr: u64,
+    pub head: String,
+    pub reason: String,
+}
+
+impl Waiting {
+    /// What the action log is about.
+    pub fn object(&self) -> String {
+        format!("pr#{}", self.pr)
+    }
+}
+
+impl std::fmt::Display for Waiting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "waiting: pr#{} {}", self.pr, self.reason)
+    }
 }
 
 impl Report {
     pub fn ok(&self) -> bool {
         self.failures.is_empty() && !self.out_of_time
+    }
+
+    /// One line per PR the merge pass holds: `waiting: pr#<n> <reason>`.
+    pub fn waiting_lines(&self) -> Vec<String> {
+        self.waiting.iter().map(Waiting::to_string).collect()
     }
 
     /// One line for a host's job log.
@@ -123,47 +154,80 @@ impl Tick<'_> {
     pub fn unreadable(&self, report: &mut Report, object: &str, detail: impl std::fmt::Display) {
         report.failures.push(format!("{object}: {detail}"));
     }
+
+    /// A PR the merge pass holds: why goes in the report, nothing is
+    /// written to GitHub or the tracker. Said once per PR and tick (the
+    /// first reason found).
+    pub fn wait(&self, report: &mut Report, pr: &PullRequest, reason: impl Into<String>) {
+        if report.waiting.iter().any(|w| w.pr == pr.number) {
+            return;
+        }
+        report.waiting.push(Waiting {
+            pr: pr.number,
+            head: pr.head_sha.clone(),
+            reason: reason.into(),
+        });
+    }
 }
 
-/// One tick over the repository of `t.config`: the release pass, the PR
-/// pass, the sweep, the post-deploy validation (spec 07, "What a tick
-/// does"). At most one merge per
+/// One tick over the repository of `t.config`: the release pass (with its
+/// closure; nothing without a `[release]` section, spec 05 "Without a
+/// release cycle"), the PR pass, the sweep, the post-deploy validation
+/// (spec 07, "What a tick does"). At most one merge per
 /// repository per tick (invariant 6). The caller flushes the action log.
 pub fn run(t: &Tick, log: &mut ActionLog) -> Report {
     let mut report = Report::default();
+    passes(t, log, &mut report);
+    // Why each held PR waits is in the report at every tick; the log keeps
+    // it only when it changes (a dry run keeps nothing).
+    if !t.dry_run {
+        for w in &report.waiting {
+            log.note_waiting(t.now, &t.repo, &w.object(), &w.head, &w.reason);
+        }
+    }
+    report
+}
+
+fn passes(t: &Tick, log: &mut ActionLog, report: &mut Report) {
     if !t.in_time() {
         report.out_of_time = true;
-        return report;
+        return;
     }
-    let merged = release::pass(t, log, &mut report);
+    let merged = release::pass(t, log, report);
     if !t.in_time() {
         report.out_of_time = true;
-        return report;
+        return;
     }
-    let pass = merge::pass(t, log, &mut report);
-    if !merged {
-        // The first candidate GitHub accepts; a refused merge does not starve
-        // the others.
-        for c in &pass.candidates {
-            if !t.in_time() {
-                report.out_of_time = true;
-                break;
-            }
-            if merge::merge(t, log, &mut report, c, &pass.open) {
-                break;
-            }
+    let pass = merge::pass(t, log, report);
+    let mut merged_now = merged;
+    // The first candidate GitHub accepts; a refused merge does not starve
+    // the others.
+    for c in &pass.candidates {
+        if merged_now {
+            t.wait(
+                report,
+                &c.pr,
+                "ready, but a PR was merged this tick: one merge per repository per tick",
+            );
+            continue;
+        }
+        if !t.in_time() {
+            report.out_of_time = true;
+            break;
+        }
+        if merge::merge(t, log, report, c, &pass.open) {
+            merged_now = true;
         }
     }
     if t.in_time() {
-        sweep::pass(t, log, &mut report, &pass.open);
+        sweep::pass(t, log, report, &pass.open);
     } else {
         report.out_of_time = true;
-        return report;
+        return;
     }
     if t.in_time() {
-        post_deploy::pass(t, log, &mut report);
+        post_deploy::pass(t, log, report);
     } else {
         report.out_of_time = true;
     }
-    report
 }
