@@ -54,14 +54,16 @@ key = "product"
 [review]
 merge_method = "squash"                # "squash" | "merge"
 require_up_to_date = true
-diff_size_extra_angle = 1500
+diff_size_extra_angle = 1500            # off (0) by default; above 0 it names the angle it adds
 diff_size_angle = "maintainability"
 human_approval = "never"               # "never" | "sensitive-paths" | "always"
 sensitive_paths = ".github/review-paths.json"  # globs that add the sensitive angle
 sensitive_angle = "security"
 ticketless_authors = ["dependabot"]    # Apps whose PRs need no ticket: the bridge opens one (spec 04 §9)
+# No PR review instead (spec 04 §11): `angles = []` here, no path angle, no
+# sensitive_paths, no size threshold; review.coordinators is then optional.
 
-[[review.angles]]
+[[review.angles]]                      # base angles of every PR review
 key = "maintainability"
 
 [[review.path_angles]]
@@ -122,6 +124,8 @@ events = ["release-note", "escalation", "stagnation", "stuck-pr", "blind-pass"]
 6. Unknown keys are errors (a misspelt key is never a silently ignored setting). `config check` lists every problem of a well-formed file; a file that is not valid TOML, carries an unknown key or a value of the wrong type (a string where a number is expected) is reported by its first such error, with its line.
 7. Every default below is what the bridge uses when the key is absent; a present key with an invalid value is an error, never replaced by its default.
 8. A list never names the same entry twice (paths, logins, components, events): a repeated entry is an error, not a harmless duplicate, because it usually hides a typo next to it.
+9. Write a GitHub App as `<slug>[bot]` or `app/<slug>` (the one alias, read as `<slug>[bot]`); a bare login is a person (or a user account), never an App. The bridge reads every review and PR author in the REST spelling: GitHub's GraphQL API names an App by its bare slug, and the bridge normalises it to `<slug>[bot]` when it reads it. It then compares a configured login with an author exactly, ignoring case only. In `release.coordinators` and `review.coordinators`, `<slug>[bot]` matches only the App, and a person who registered the login `<slug>` never approves in its name; a bare `<slug>` matches only the account `<slug>`, never the App (fail closed). `release.release_please_authors` and `review.ticketless_authors` name only Apps (a human author never qualifies), so there a bare `<slug>` means the App too.
+10. No PR review is an explicit choice (`04-pr-review.md` §11): `angles = []` under `[review]` means no base angle, while a file that writes neither `angles = []` nor a `[[review.angles]]` table is invalid, never read as "no angle". A PR can get an angle when the project has a base angle, a `[[review.path_angles]]` entry, a declared `sensitive_paths` or a `diff_size_extra_angle` above 0 (the size trigger is off by default); `review.coordinators` is required whenever one can, and optional when none can (the project then has no PR review: a PR merges on its CI and the other merge conditions, with no round and no approval). `human_approval` other than `never` is accepted with no possible angle: the human's approval is then the only one required.
 
 ## The instance overlay
 
@@ -200,12 +204,12 @@ The section is optional, and so is the release cycle it configures (`05-release-
 | `release.version_component` | none; required with components | The component whose release ends the cycle; merged last. | Missing, or not a component: file invalid. |
 | `release.gate_record` | none; required with components | Path of the gate record (`{version}` once) the deployment reads. | Missing with components: file invalid. |
 | `release.release_pr_label` | `autorelease: pending` | Label that identifies release-please PRs. | — |
-| `release.release_please_authors` | required with `[release]` | GitHub logins allowed to author release-please PRs (`<slug>[bot]` and `app/<slug>` are both accepted at run time). | A release-shaped PR by anyone else is ignored and logged, never merged. |
+| `release.release_please_authors` | required with `[release]` | GitHub logins allowed to author release-please PRs (`<slug>`, `<slug>[bot]` and `app/<slug>` are all accepted, rule 9). | A release-shaped PR by anyone else is ignored and logged, never merged. |
 | `release.bookkeeping_paths` | `[]` | Files allowed to differ between the latest RC and the release branch tip (release-please manifest, changelog, version files). | Empty: the RC must equal the tip exactly; anything else is a tip gap and the GO is false. |
 | `release.registry_path` | `docs/business-rules.md` | The business-rule registry (`02-business-rules.md`). | Unreadable at the judged ref: the guard fails closed. |
 | `release.business_rule_paths` | `["docs/business-rules.md", "**/business-rules.md"]` | Paths whose change the brief singles out as "business rules touched". | — |
 | `release.stagnation_hours` | `2` | A GO false for longer than this is reported once. | Not a positive integer: file invalid. |
-| `release.coordinators` | required with `[release]` | GitHub logins whose approval at the head SHA lets the bridge merge an angle PR. | No approval by one of them: the angle PR is not merged. |
+| `release.coordinators` | required with `[release]` while there is a release angle; optional with `angles = []` | GitHub logins whose approval at the head SHA lets the bridge merge an angle PR; a coordinator App is written `<slug>[bot]` or `app/<slug>`, a bare login being a person (rule 9). | No approval by one of them: the angle PR is not merged. Absent or empty while a release angle is configured: file invalid. |
 | `release.coordinator_assignee` | none | The tracker participant (an agent the tracker serves, like an angle's `assignee`) who receives the consolidation item of each candidate, assigned when the bridge creates it (`05-release-cycle.md` §3); an existing consolidation item is never reassigned. | Absent, or unknown to the tracker: the item is created unassigned; `doctor` reports an unknown participant. |
 | `release.escalation_label` | `blocked-by-human` | Label added to the release issue when it waits for the owner. | — |
 | `release.auto_candidate` | `false` | When true the bridge dispatches the next RC itself once a pass is merged; otherwise the coordinator does. | — |
@@ -216,7 +220,7 @@ The section is optional, and so is the release cycle it configures (`05-release-
 | `release.release_please_workflow` | `release-please.yml` | Workflow redispatched once when release-please's PR is stale. | — |
 | `release.release_please_config` | `release-please-config.json` | release-please's configuration (its `config-file`), read at the release PR's head for each component's changelog path. | Unreadable for a multi-component product: a note gap, the GO is false. |
 | `release.release_please_manifest` | `.release-please-manifest.json` | release-please's manifest (its `manifest-file`). | — |
-| `[[release.angles]]` | at least one required with `[release]` | `key` (required), `title` (default `<Key> review`), `assignee` (participant hint), `notes` (path). | No angle: file invalid — a release with no angle would compute its GO from nobody. An `assignee` unknown to the tracker: the angle item is created unassigned; `doctor` reports it. |
+| `[[release.angles]]` | required with `[release]`: at least one entry, or `angles = []` written under `[release]` | `key` (required), `title` (default `<Key> review`), `assignee` (participant hint), `notes` (path). `angles = []` is a release with no QA angle: the bridge opens no angle sub-item and no consolidation item, the brief says no QA angle is configured, and the GO rests on the gate and the conditions that involve no angle (`05-release-cycle.md` §3, §8). Angles configured later apply from the next candidate: a candidate recorded with none keeps none. | No angle written at all: file invalid — the file forgot them, it never means none. An `assignee` unknown to the tracker: the angle item is created unassigned; `doctor` reports it. |
 
 ### `[review]`
 
@@ -224,16 +228,16 @@ The section is optional, and so is the release cycle it configures (`05-release-
 |---|---|---|---|
 | `review.merge_method` | `"squash"` | Merge method of ordinary PRs. | Other value: file invalid. |
 | `review.require_up_to_date` | `true` | Bring a behind PR up to date with its base before merging. | — |
-| `review.diff_size_extra_angle` | `1500` | Changed lines (additions + deletions) above which `diff_size_angle` is added; `0` disables it. | Negative: file invalid. |
+| `review.diff_size_extra_angle` | `0` (no size trigger) | Changed lines (additions + deletions) above which `diff_size_angle` is added; `0` adds no angle by size. A project that wants the size trigger sets both this threshold and `diff_size_angle`. | Negative: file invalid. |
 | `review.diff_size_angle` | none; required while the threshold is above 0 | The angle the size trigger adds. | Missing with a threshold: file invalid. |
-| `review.human_approval` | `"never"` | Whether a human must approve besides the coordinator: `never`, `sensitive-paths`, `always`. | `sensitive-paths` without `sensitive_paths`: file invalid. |
+| `review.human_approval` | `"never"` | Whether a human must approve besides the coordinator (alone, for a PR with no angle): `never`, `sensitive-paths`, `always`. | `sensitive-paths` without `sensitive_paths`: file invalid. |
 | `review.sensitive_paths` | not declared | Path of the sensitive-path list read at the PR's base (rule 5). | Declared and absent or unreadable: the PR waits, one human notice. |
 | `review.sensitive_angle` | `security` | The angle a sensitive path adds. | — |
-| `review.coordinators` | required | GitHub logins whose approval at the head SHA lets the bridge merge a PR. A later `COMMENTED` review never cancels an approval; a standing `CHANGES_REQUESTED` from any configured login blocks. | No approval at the head SHA: not merged. |
+| `review.coordinators` | required while a PR can get an angle (rule 10); otherwise none | GitHub logins whose approval at the head SHA lets the bridge merge a PR that has a review round; a coordinator App is written `<slug>[bot]` or `app/<slug>`, a bare login being a person (rule 9); a PR with no angle needs none. A later `COMMENTED` review never cancels an approval; a standing `CHANGES_REQUESTED` from any configured login blocks. | No approval at the head SHA: a PR with a round is not merged, and the tick's report says so with the approvals it did find (spec 07). Absent or empty while a PR can get an angle: file invalid. |
 | `review.coordinator_assignee` | none | The tracker participant (an agent the tracker serves, like an angle's `assignee`) who receives the consolidation item of each PR round, assigned when the bridge creates it (`04-pr-review.md` §3); an existing consolidation item is never reassigned. | Absent, or unknown to the tracker: the item is created unassigned; `doctor` reports an unknown participant. |
-| `review.ticketless_authors` | `[]` | Apps whose PRs need no ticket (`<slug>`, `<slug>[bot]` or `app/<slug>`): for such a PR linked to no ticket, the bridge opens one labelled `ticketless-pr` with a complete contract, and the PR takes the usual path (spec 04 §9). | A human account whose login matches never qualifies; any other PR without a ticket waits. |
+| `review.ticketless_authors` | `[]` | Apps whose PRs need no ticket (`<slug>`, `<slug>[bot]` or `app/<slug>`, rule 9): for such a PR linked to no ticket, the bridge opens one labelled `ticketless-pr` with a complete contract, and the PR takes the usual path (spec 04 §9). | A human account whose login matches never qualifies; any other PR without a ticket waits. |
 | `review.human_reviewer` | none | GitHub login asked to look at a green PR stuck on something only a human can lift. | Absent: the notice says that a reviewer must be assigned by hand. |
-| `[[review.angles]]` | at least one required | Base angles of every PR review: `key` (required), `assignee` (participant hint), `notes` (path, linked from the angle's sub-items). | No angle: file invalid. An `assignee` unknown to the tracker: the angle item is created unassigned; `doctor` reports it. |
+| `[[review.angles]]` | required: one table per base angle, or `angles = []` under `[review]` for none | Base angles of every PR review: `key` (required), `assignee` (participant hint), `notes` (path, linked from the angle's sub-items). `angles = []` is no base angle: with no other angle possible, no PR review (rule 10, `04-pr-review.md` §11). | Neither written: file invalid — no PR review is said, never assumed. An `assignee` unknown to the tracker: the angle item is created unassigned; `doctor` reports it. |
 | `[[review.path_angles]]` | none | `paths` (globs, `*` crosses `/`) and the `angle` they add. | — |
 
 ### `[bridge]`

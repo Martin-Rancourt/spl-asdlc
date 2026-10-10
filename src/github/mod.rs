@@ -70,6 +70,9 @@ pub trait GitHub {
     fn commit_pulls(&self, repo: &RepoSlug, sha: &str) -> Read<Vec<CommitPull>>;
     /// Required status checks of a branch: classic protection and rulesets.
     fn required_checks(&self, repo: &RepoSlug, branch: &str) -> Read<RequiredChecks>;
+    /// Every ruleset that applies to the repository, whatever its target or
+    /// enforcement, each read by id (conditions and rules).
+    fn rulesets(&self, repo: &RepoSlug) -> Read<Vec<Ruleset>>;
     /// Comments on a PR or an issue, oldest first.
     fn issue_comments(&self, repo: &RepoSlug, number: u64) -> Read<Vec<Comment>>;
 

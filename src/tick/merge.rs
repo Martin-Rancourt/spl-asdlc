@@ -43,7 +43,10 @@ struct Base {
 pub struct Candidate {
     pub pr: PullRequest,
     pub ticket: Item,
-    pub approved_by: String,
+    /// The coordinator whose approval at the head lets it merge; `None` for a
+    /// PR with no angle, which merges with no round and no approval (spec 04
+    /// §11).
+    pub approved_by: Option<String>,
 }
 
 /// What the pass found: the PRs ready to merge, and the open PRs of each
@@ -82,7 +85,7 @@ impl OpenPrs {
                 number: pr.number,
                 url: pr.url.clone(),
                 draft: pr.draft,
-                sent_back: changes_requested_at_head(pr, coordinators),
+                sent_back: review::changes_requested_at_head(pr, coordinators).is_some(),
             });
     }
 
@@ -236,6 +239,7 @@ fn one(
             return None;
         }
         Ok(Linked::None) => {
+            t.wait(report, &pr, "no ticket is linked to it");
             say_once(
                 t,
                 log,
@@ -256,6 +260,11 @@ fn one(
             return None;
         }
         Ok(Linked::Several(keys)) => {
+            t.wait(
+                report,
+                &pr,
+                format!("several tickets are linked to it ({})", keys.join(", ")),
+            );
             say_once(
                 t,
                 log,
@@ -274,6 +283,11 @@ fn one(
         Ok(Linked::One(item)) => *item,
     };
     if ticket.archived {
+        t.wait(
+            report,
+            &pr,
+            format!("its ticket {} is archived", ticket.key),
+        );
         return None;
     }
     let object = format!("pr#{} {}", pr.number, ticket.key);
@@ -327,9 +341,21 @@ fn one(
     if !matches!(status, Some(Status::InProgress | Status::InReview)) {
         // Triage, Backlog, a ticket past the merge, or a state outside the
         // table: the bridge never drags a ticket forward nor back here.
+        let state = status
+            .map(Status::name)
+            .unwrap_or("in a state outside the table");
+        t.wait(
+            report,
+            &pr,
+            format!(
+                "its ticket {} is {state}, not In Progress or In Review",
+                ticket.key
+            ),
+        );
         return None;
     }
     if pr.draft {
+        t.wait(report, &pr, "it is a draft");
         return None;
     }
 
@@ -348,6 +374,22 @@ fn one(
     let ci = checks::pr_state(&pr, &required.contexts);
     let branch = review::branch_state(&pr);
     if ci != CheckState::Green {
+        let head = texts::short(&pr.head_sha);
+        let missing = checks::missing_required(&pr.checks, &required.contexts);
+        let why = match ci {
+            CheckState::Red => match checks::first_failure(&pr.checks) {
+                Some(c) => format!("checks are red at {head} (`{}`)", c.name),
+                None => format!("checks are red at {head}"),
+            },
+            CheckState::Pending if !missing.is_empty() => format!(
+                "required checks have not reported at {head}: {}",
+                missing.join(", ")
+            ),
+            CheckState::Pending => format!("checks are still running at {head}"),
+            CheckState::None => format!("no check reported at {head}"),
+            _ => format!("the checks of {head} could not be read whole"),
+        };
+        t.wait(report, &pr, why);
         if ci == CheckState::None && branch == BranchState::Conflicting {
             conflict(t, log, report, &pr);
         }
@@ -357,6 +399,11 @@ fn one(
     // ---- the ticket's contract gates the review (spec 04 §2) ----
     let missing = contract::missing_from_contract(&ticket.description);
     if !missing.is_empty() {
+        t.wait(
+            report,
+            &pr,
+            format!("the contract of {} is incomplete", ticket.key),
+        );
         let digest = texts::digest(&missing.join("\n"));
         say_once(
             t,
@@ -380,6 +427,11 @@ fn one(
         return None;
     }
     if contract::declares_nothing(&ticket.description) {
+        t.wait(
+            report,
+            &pr,
+            format!("{} checks none of its boxes", ticket.key),
+        );
         say_once(
             t,
             log,
@@ -418,6 +470,7 @@ fn one(
             t.config.registry_path(),
         );
         if !gate.ok() {
+            t.wait(report, &pr, "the business-rule guard refuses it");
             say_once(
                 t,
                 log,
@@ -438,10 +491,19 @@ fn one(
     let must_be_current = t.config.review.require_up_to_date || required.strict;
     match branch {
         BranchState::Conflicting => {
+            t.wait(report, &pr, format!("it conflicts with {}", pr.base_ref));
             conflict(t, log, report, &pr);
             return None;
         }
         BranchState::Behind if must_be_current => {
+            t.wait(
+                report,
+                &pr,
+                format!(
+                    "it is behind {}, which it must be up to date with: its branch is updated",
+                    pr.base_ref
+                ),
+            );
             t.act(
                 log,
                 report,
@@ -486,12 +548,19 @@ fn one(
             ),
         );
     }
-    let changes_at_head = changes_requested_at_head(&pr, &t.config.review.coordinators);
+    let head = texts::short(&pr.head_sha);
+    let changes_at_head = review::changes_requested_at_head(&pr, &t.config.review.coordinators);
+    let changes_wait =
+        |by: &str| format!("{by} requested changes at {head}: the implementer's turn");
     // A ticket In Review for another of its PRs: this PR gets its own round
     // (a round is scoped to its PR, BR-ASDLC-007).
     if status == Some(Status::InProgress) || !has_round {
-        if changes_at_head {
+        if let Some(by) = &changes_at_head {
+            t.wait(report, &pr, changes_wait(by));
             return None;
+        }
+        if plan.unreviewed() {
+            return unreviewed(t, log, report, pr, ticket, &plan, branch);
         }
         enter_review(t, log, report, &pr, &ticket, &plan);
         return None;
@@ -500,9 +569,17 @@ fn one(
     // ---- In Review: changes requested, or the merge ----
     let approval = review::pr_approval(&pr, &t.config.review.coordinators);
     if let Approval::ChangesRequested { by } = &approval {
-        if !changes_at_head {
+        if changes_at_head.is_none() {
+            t.wait(
+                report,
+                &pr,
+                format!(
+                    "{by} requested changes on an older head and has not reviewed {head} since"
+                ),
+            );
             return None;
         }
+        t.wait(report, &pr, changes_wait(by));
         // The review rule first: while another PR of the ticket is in
         // review, the ticket stays In Review (BR-ASDLC-008); when an open
         // PR's ticket could not be read, it may be one: the state waits.
@@ -535,7 +612,10 @@ fn one(
             t.unreadable(report, &object, "GitHub cut the review list");
             return None;
         }
-        _ => return None,
+        other => {
+            t.wait(report, &pr, approval_wait(&pr, &other));
+            return None;
+        }
     };
     // The consolidation starts only after its angles (BR-ASDLC-018): an
     // approval given while an angle sub-item of the round is open does not
@@ -555,7 +635,80 @@ fn one(
                 texts::short(&pr.head_sha)
             ),
         );
+        t.wait(
+            report,
+            &pr,
+            format!(
+                "its angle reviews are still open ({}): the approval at {head} does not count yet",
+                open_angles.join(", ")
+            ),
+        );
         return None;
+    }
+    if !plan.holds.is_empty() {
+        t.wait(report, &pr, format!("held: {}", plan.holds.join("; ")));
+        return None;
+    }
+    match review::unresolved_threads(&pr) {
+        Some(0) => {}
+        Some(n) => {
+            t.wait(report, &pr, format!("{n} unresolved review thread(s)"));
+            return None;
+        }
+        None => {
+            t.unreadable(report, &object, "GitHub cut the review threads");
+            return None;
+        }
+    }
+    if branch != BranchState::Current {
+        t.wait(report, &pr, format!("it is behind {}", pr.base_ref));
+        return None;
+    }
+    if review::needs_human_approval(&t.config.review, &plan) {
+        t.wait(
+            report,
+            &pr,
+            "it needs a human approval besides the coordinator's",
+        );
+        // Whose approval counts as the human one is the owner's to say
+        // (`docs/open-points.md` #4); until then the PR waits and a human is asked once.
+        ask_human(t, log, report, &pr, true);
+        return None;
+    }
+    Some(Candidate {
+        pr,
+        ticket,
+        approved_by: Some(by),
+    })
+}
+
+/// A PR with no angle (spec 04 §11): no round, no sub-item, no approval. It
+/// merges on what the pass already checked (CI green, the contract complete
+/// with a box ticked, the business-rule guard), once nothing holds it, no
+/// thread is open and its branch is current; the ticket is never set In
+/// Review for it. A coordinator's standing request for changes still holds
+/// it, and a human approval, when the project asks for one, is then the only
+/// approval required.
+fn unreviewed(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    pr: PullRequest,
+    ticket: Item,
+    plan: &review::ReviewPlan,
+    branch: BranchState,
+) -> Option<Candidate> {
+    let object = format!("pr#{} {}", pr.number, ticket.key);
+    let coordinators = &t.config.review.coordinators;
+    if !coordinators.is_empty() {
+        match review::pr_approval(&pr, coordinators) {
+            Approval::ChangesRequested { .. } => return None,
+            Approval::Unreadable => {
+                t.unreadable(report, &object, "GitHub cut the review list");
+                return None;
+            }
+            _ => {}
+        }
     }
     if !plan.holds.is_empty() {
         return None;
@@ -571,16 +724,14 @@ fn one(
     if branch != BranchState::Current {
         return None;
     }
-    if review::needs_human_approval(&t.config.review, &plan) {
-        // Whose approval counts as the human one is the owner's to say
-        // (`docs/open-points.md` #4); until then the PR waits and a human is asked once.
-        ask_human(t, log, report, &pr);
+    if review::needs_human_approval(&t.config.review, plan) {
+        ask_human(t, log, report, &pr, false);
         return None;
     }
     Some(Candidate {
         pr,
         ticket,
-        approved_by: by,
+        approved_by: None,
     })
 }
 
@@ -597,13 +748,19 @@ pub fn merge(
     let pr = &c.pr;
     let object = format!("pr#{} {}", pr.number, c.ticket.key);
     let method: crate::github::MergeMethod = t.config.review.merge_method.into();
-    let merged = t.act(
-        log,
-        report,
-        &object,
-        &format!("merge ({})", method.as_str()),
-        json!({"head": pr.head_sha, "approved_by": c.approved_by, "base": pr.base_ref}),
-        || match t
+    // A PR merged with no review says so in the action log and the dry run.
+    let (action, inputs) = match &c.approved_by {
+        Some(by) => (
+            format!("merge ({})", method.as_str()),
+            json!({"head": pr.head_sha, "approved_by": by, "base": pr.base_ref}),
+        ),
+        None => (
+            format!("merge ({}, no PR review)", method.as_str()),
+            json!({"head": pr.head_sha, "approved_by": null, "review": "none: no angle for this PR", "base": pr.base_ref}),
+        ),
+    };
+    let merged = t.act(log, report, &object, &action, inputs, || {
+        match t
             .github
             .merge_pull(&t.repo, pr.number, &pr.head_sha, method)
         {
@@ -613,8 +770,8 @@ pub fn merge(
                 Ok(p) if p.state == PrState::Merged => Ok(p.merge_commit_sha.unwrap_or_default()),
                 _ => Err(e.to_string()),
             },
-        },
-    );
+        }
+    });
     if merged.is_none() {
         return false;
     }
@@ -910,24 +1067,22 @@ fn read_registry(t: &Tick, head: &str) -> Registry {
     }
 }
 
-/// A standing request for changes from a coordinator on the current head:
-/// the ticket stays with its implementer until the head moves.
-fn changes_requested_at_head(pr: &PullRequest, coordinators: &[String]) -> bool {
-    let mut latest: BTreeMap<String, &crate::github::Review> = BTreeMap::new();
-    for r in &pr.reviews {
-        let Some(login) = r.author.as_deref() else {
-            continue;
-        };
-        let state = r.state.to_ascii_uppercase();
-        if state == "APPROVED" || state == "CHANGES_REQUESTED" {
-            latest.insert(login.to_ascii_lowercase(), r);
-        }
+/// Why a PR In Review waits on its approval (Missing or Stale).
+fn approval_wait(pr: &PullRequest, approval: &Approval) -> String {
+    let head = texts::short(&pr.head_sha);
+    let from = review::approvals_at_head(&pr.reviews, &pr.head_sha);
+    let from = if from.is_empty() {
+        "no approval at this head".to_string()
+    } else {
+        format!("approvals from: {}", from.join(", "))
+    };
+    match approval {
+        Approval::Stale { by, sha } => format!(
+            "no coordinator approval at {head}: {by} approved {}, an older head ({from})",
+            texts::short(sha)
+        ),
+        _ => format!("no coordinator approval at {head} ({from})"),
     }
-    latest.iter().any(|(login, r)| {
-        coordinators.iter().any(|c| c.eq_ignore_ascii_case(login))
-            && r.state.eq_ignore_ascii_case("CHANGES_REQUESTED")
-            && r.commit_sha.as_deref() == Some(pr.head_sha.as_str())
-    })
 }
 
 /// Open the review round: the angle sub-items and the consolidation item
@@ -1485,14 +1640,24 @@ fn conflict(t: &Tick, log: &mut ActionLog, report: &mut Report, pr: &PullRequest
     );
 }
 
-fn ask_human(t: &Tick, log: &mut ActionLog, report: &mut Report, pr: &PullRequest) {
+/// Ask a human to approve, once per head. `reviewed`: the PR has a round,
+/// so the human approves besides the coordinator; otherwise the human's is
+/// the only approval it needs.
+fn ask_human(t: &Tick, log: &mut ActionLog, report: &mut Report, pr: &PullRequest, reviewed: bool) {
     let who = t.config.review.human_reviewer.clone();
+    let needs = if reviewed {
+        "a human approval besides the coordinator's"
+    } else {
+        "a human approval, the only one it needs: it has no review angle"
+    };
     let text = match &who {
         Some(login) => format!(
-            "This PR needs a human approval besides the coordinator's (`human_approval = {:?}`); @{login} is asked to look.",
+            "This PR needs {needs} (`human_approval = {:?}`); @{login} is asked to look.",
             t.config.review.human_approval
         ),
-        None => "This PR needs a human approval besides the coordinator's; no `human_reviewer` is configured, so a reviewer must be assigned by hand.".to_string(),
+        None => format!(
+            "This PR needs {needs}; no `human_reviewer` is configured, so a reviewer must be assigned by hand."
+        ),
     };
     let fields = [("head", texts::short(&pr.head_sha))];
     match pr_said(t, pr.number, &texts::marker("human-approval", &fields)) {

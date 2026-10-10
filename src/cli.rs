@@ -345,7 +345,12 @@ fn tick(
             }
         };
         let report = crate::tick::run(&t, &mut log);
-        for e in log.entries() {
+        // A waiting note is said by the report's own line below.
+        for e in log
+            .entries()
+            .iter()
+            .filter(|e| e.outcome != action_log::Outcome::Waiting)
+        {
             let _ = writeln!(out, "{}", action_log::describe(e));
         }
         if dry_run {
@@ -359,6 +364,9 @@ fn tick(
         }
         for f in &report.failures {
             let _ = writeln!(err, "{}: {f}", c.repo);
+        }
+        for line in report.waiting_lines() {
+            let _ = writeln!(out, "{}: {line}", c.repo);
         }
         let _ = writeln!(out, "{}: {}", c.repo, report.summary());
         if !report.ok() {
@@ -593,7 +601,7 @@ fn config_check(
         Ok((c, _)) => {
             let _ = writeln!(
                 out,
-                "{name}: valid — product {} ({}), tracker {} team {}, {}, {} review angle(s)",
+                "{name}: valid — product {} ({}), tracker {} team {}, {}, {}",
                 c.product.name,
                 c.product.repository,
                 c.tracker.kind,
@@ -602,7 +610,11 @@ fn config_check(
                     Some(r) => format!("{} release angle(s)", r.angles.len()),
                     None => "no release cycle".to_string(),
                 },
-                c.review.angles.len(),
+                if c.review.angle_possible() {
+                    format!("{} review angle(s)", c.review.angles.len())
+                } else {
+                    "no PR review".to_string()
+                },
             );
             ExitCode::SUCCESS
         }

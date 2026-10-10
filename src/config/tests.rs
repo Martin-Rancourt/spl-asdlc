@@ -101,7 +101,7 @@ fn a_minimal_file_gets_every_documented_default() {
     );
     assert_eq!(c.review.merge_method, MergeMethod::Squash);
     assert!(c.review.require_up_to_date);
-    assert_eq!(c.review.diff_size_extra_angle, 1500);
+    assert_eq!(c.review.diff_size_extra_angle, 0, "no size trigger");
     assert_eq!(c.review.human_approval, HumanApproval::Never);
     assert_eq!(c.review.sensitive_paths, None);
     assert_eq!(c.review.sensitive_angle, "security");
@@ -251,10 +251,161 @@ fn a_version_component_must_be_one_of_the_components() {
     assert_refused_with(&alone, "release.components is empty");
 }
 
+// ---- spec 04 §11: a project may configure no PR review ----
+
+/// MINIMAL with no PR review: no base angle, written explicitly, and
+/// nothing else (no size threshold is the default), no coordinator.
+fn no_review() -> String {
+    let text = MINIMAL.replace(
+        "[review]\ncoordinators = [\"coordinator-login\"]\ndiff_size_angle = \"maintainability\"\n\n[[review.angles]]\nkey = \"maintainability\"\n",
+        "[review]\nangles = []\n",
+    );
+    assert_ne!(text, MINIMAL, "the replacement applied");
+    text
+}
+
+#[test]
+fn an_explicit_empty_angle_list_is_no_pr_review_and_needs_no_coordinator() {
+    let c = Config::parse(&no_review()).expect("no PR review is a valid choice");
+    assert!(c.review.angles.is_empty());
+    assert!(c.review.coordinators.is_empty());
+    assert!(!c.review.angle_possible());
+    // A coordinator may still be named; it is never required.
+    let named = no_review().replace(
+        "angles = []\n",
+        "angles = []\ncoordinators = [\"coordinator-login\"]\n",
+    );
+    assert!(!Config::parse(&named).unwrap().review.angle_possible());
+}
+
+#[test]
+fn absent_base_angles_are_refused_never_read_as_none() {
+    let text = MINIMAL.replace("[[review.angles]]\nkey = \"maintainability\"\n", "");
+    assert_refused_with(&text, "review.angles: is required");
+    let absent = no_review().replace("angles = []\n", "");
+    assert_refused_with(&absent, "review.angles: is required");
+    assert_refused_with(&absent, "`angles = []`");
+}
+
+#[test]
+fn the_coordinators_are_required_while_some_angle_can_be_added() {
+    let text = no_review();
+    let cases = [
+        (
+            "an angle by size",
+            text.replace(
+                "angles = []\n",
+                "angles = []\ndiff_size_extra_angle = 1500\ndiff_size_angle = \"maintainability\"\n",
+            ),
+        ),
+        (
+            "an angle on sensitive paths",
+            text.replace(
+                "angles = []\n",
+                "angles = []\nsensitive_paths = \".github/review-paths.json\"\n",
+            ),
+        ),
+        (
+            "an angle by path",
+            format!("{text}\n[[review.path_angles]]\npaths = [\"ui/**\"]\nangle = \"design\"\n"),
+        ),
+        (
+            "a base angle",
+            text.replace(
+                "angles = []\n",
+                "angles = [{ key = \"maintainability\" }]\n",
+            ),
+        ),
+    ];
+    for (adds, file) in cases {
+        let errs = errors(&file);
+        assert!(
+            errs.iter()
+                .any(|e| e.starts_with("review.coordinators: is required")
+                    && e.contains("while a PR can get an angle")),
+            "{adds}: {errs:#?}"
+        );
+    }
+}
+
+#[test]
+fn a_human_approval_with_no_possible_angle_is_accepted() {
+    let text = no_review().replace(
+        "angles = []\n",
+        "angles = []\nhuman_approval = \"always\"\n",
+    );
+    let c = Config::parse(&text).expect("a human approval is then the only one");
+    assert_eq!(c.review.human_approval, HumanApproval::Always);
+    assert!(!c.review.angle_possible());
+}
+
 #[test]
 fn a_release_without_angles_is_refused() {
     let text = MINIMAL.replace("[[release.angles]]\nkey = \"security\"\n", "");
     assert_refused_with(&text, "release.angles: at least one angle is required");
+}
+
+/// MINIMAL with `angles = []` under [release] and no release coordinator.
+fn no_qa_angle() -> String {
+    let text = MINIMAL.replace(
+        "coordinators = [\"coordinator-login\"]\n\n[[release.angles]]\nkey = \"security\"\n",
+        "angles = []\n",
+    );
+    assert_ne!(text, MINIMAL);
+    text
+}
+
+#[test]
+fn a_release_with_no_qa_angle_is_written_explicitly_and_needs_no_coordinator() {
+    let c = Config::parse(&no_qa_angle()).unwrap();
+    assert!(c.release.as_ref().unwrap().angles.is_empty());
+    assert!(c.release.as_ref().unwrap().coordinators.is_empty());
+    let with = no_qa_angle().replace(
+        "angles = []\n",
+        "angles = []\ncoordinators = [\"coordinator-login\"]\n",
+    );
+    assert_eq!(
+        Config::parse(&with).unwrap().release.unwrap().coordinators,
+        vec!["coordinator-login"],
+        "a coordinator named anyway is read"
+    );
+}
+
+#[test]
+fn an_absent_angle_list_is_refused_and_says_how_to_write_none() {
+    let text = MINIMAL.replace("[[release.angles]]\nkey = \"security\"\n", "");
+    assert_refused_with(&text, "or `angles = []` written under [release]");
+}
+
+#[test]
+fn the_release_coordinators_are_required_while_there_is_a_release_angle() {
+    let text = MINIMAL.replace(
+        "coordinators = [\"coordinator-login\"]\n\n[[release.angles]]",
+        "\n[[release.angles]]",
+    );
+    assert_refused_with(&text, "release.coordinators: is required");
+    let empty = MINIMAL.replace(
+        "coordinators = [\"coordinator-login\"]\n\n[[release.angles]]",
+        "coordinators = []\n\n[[release.angles]]",
+    );
+    assert_refused_with(&empty, "release.coordinators: must name at least one entry");
+}
+
+#[test]
+fn a_release_with_no_qa_angle_reads_the_same_through_the_overlay() {
+    let repository = NEUTRAL.replace(
+        "[[release.angles]]\nkey = \"security\"\n",
+        "[release]\nangles = []\n",
+    );
+    assert_ne!(repository, NEUTRAL);
+    let overlay = OVERLAY.replace(
+        "coordinators = [\"coordinator-login\"]\n\n[review]",
+        "\n[review]",
+    );
+    assert_ne!(overlay, OVERLAY);
+    let c = merged(&repository, &overlay).unwrap();
+    assert!(c.release.as_ref().unwrap().angles.is_empty());
+    assert!(c.release.as_ref().unwrap().coordinators.is_empty());
 }
 
 #[test]
@@ -282,18 +433,21 @@ fn coordinators_and_release_please_authors_are_required() {
 }
 
 #[test]
-fn a_size_trigger_names_the_angle_it_adds_or_is_disabled() {
-    let text = MINIMAL.replace("diff_size_angle = \"maintainability\"\n", "");
-    assert_refused_with(&text, "review.diff_size_angle: is required while");
-    let disabled = MINIMAL.replace(
-        "diff_size_angle = \"maintainability\"\n",
-        "diff_size_extra_angle = 0\n",
-    );
+fn a_size_trigger_is_off_by_default_and_names_the_angle_it_adds() {
+    // Off unless asked for: no threshold, no angle to name.
+    let off = MINIMAL.replace("diff_size_angle = \"maintainability\"\n", "");
+    assert_eq!(Config::parse(&off).unwrap().review.diff_size_extra_angle, 0);
+    // A threshold above 0 names the angle it adds.
+    let unnamed = off.replace("[review]\n", "[review]\ndiff_size_extra_angle = 1500\n");
+    assert_refused_with(&unnamed, "review.diff_size_angle: is required while");
+    let on = MINIMAL.replace("[review]\n", "[review]\ndiff_size_extra_angle = 1500\n");
+    let r = Config::parse(&on).unwrap().review;
+    assert_eq!(r.diff_size_extra_angle, 1500);
+    assert_eq!(r.diff_size_angle.as_deref(), Some("maintainability"));
+    // 0 written explicitly stays valid.
+    let zero = off.replace("[review]\n", "[review]\ndiff_size_extra_angle = 0\n");
     assert_eq!(
-        Config::parse(&disabled)
-            .unwrap()
-            .review
-            .diff_size_extra_angle,
+        Config::parse(&zero).unwrap().review.diff_size_extra_angle,
         0
     );
 }

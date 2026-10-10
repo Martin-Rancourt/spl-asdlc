@@ -86,6 +86,9 @@ impl GitHub for DryGitHub<'_> {
     fn required_checks(&self, repo: &RepoSlug, branch: &str) -> Read<github::RequiredChecks> {
         self.inner.required_checks(repo, branch)
     }
+    fn rulesets(&self, repo: &RepoSlug) -> Read<Vec<github::Ruleset>> {
+        self.inner.rulesets(repo)
+    }
     fn issue_comments(&self, repo: &RepoSlug, number: u64) -> Read<Vec<github::Comment>> {
         self.inner.issue_comments(repo, number)
     }

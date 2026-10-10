@@ -261,7 +261,7 @@ fn the_comment_says_so_when_nothing_is_reopened() {
         None,
         &[],
         &[],
-        true,
+        AngleScope::LighterPass,
     );
     assert!(c.contains("No angle is offered on this candidate"));
     let paths: Vec<String> = (0..25).map(|i| format!("p{i}")).collect();
@@ -272,9 +272,10 @@ fn the_comment_says_so_when_nothing_is_reopened() {
         Some("u"),
         &paths,
         &["security".into()],
-        false,
+        AngleScope::Configured,
     );
     assert!(c.contains("- First candidate."));
+    assert!(!has_marker(&c, &no_qa_angle_marker("acme-v1.2.3-rc.1")));
     assert!(c.contains("… and 5 more"));
     assert!(c.contains(&marker("candidate", &[("tag", "acme-v1.2.3-rc.1")])));
 }
@@ -297,6 +298,7 @@ fn the_brief_names_tickets_criteria_rules_and_distinguishes_first_from_unresolva
         ],
         untracked: vec!["PR #12".into(), "commit abcdef01abcd".into()],
         rule_files_touched: vec!["docs/business-rules.md".into()],
+        no_qa_angle: false,
     };
     let text = brief(&b);
     assert!(text.contains("`acme-v1.2.3-rc.1` not found — diff cannot be computed"));
@@ -757,4 +759,82 @@ fn the_markers_carry_no_protocol_text() {
         bridge_item(&older, Some("ABC-1")),
         bridge_item(&body, Some("ABC-1"))
     );
+}
+
+#[test]
+fn a_release_with_no_qa_angle_says_so_in_its_texts() {
+    let d = release_description("acme", "1.2.3", "l", &[]);
+    assert!(d.contains("No QA angle is configured"), "{d}");
+    assert!(!d.contains("every angle's PR merged"), "{d}");
+    assert!(!d.contains("| Angle | Owner |"), "{d}");
+
+    let c = candidate_comment(
+        "acme-v1.2.3-rc.1",
+        "routine",
+        None,
+        None,
+        &[],
+        &[],
+        AngleScope::NoQaAngle,
+    );
+    assert!(c.contains("No QA angle is configured"), "{c}");
+    assert!(c.contains("Angles configured later apply from the next candidate."));
+    assert!(has_marker(
+        &c,
+        &marker("candidate", &[("tag", "acme-v1.2.3-rc.1")])
+    ));
+    assert!(has_marker(&c, &no_qa_angle_marker("acme-v1.2.3-rc.1")));
+    assert!(!has_marker(&c, &no_qa_angle_marker("acme-v1.2.3-rc.10")));
+    assert_eq!(
+        bridge_item(&c, Some("ABC-1")),
+        None,
+        "the marker names no item of the bridge's"
+    );
+
+    let b = Brief {
+        candidate: "acme-v1.2.3-rc.1".into(),
+        sha: "abc".into(),
+        class: "routine".into(),
+        last_release: None,
+        previous_candidate: None,
+        paths_since_release: vec![],
+        paths_since_candidate: None,
+        gate_url: Some("https://github.com/example-org/acme/actions/runs/1".into()),
+        evidence_url: None,
+        tickets: vec![],
+        untracked: vec![],
+        rule_files_touched: vec![],
+        no_qa_angle: true,
+    };
+    assert!(brief(&b).contains("#### QA angles\n\nNo QA angle is configured"));
+    assert!(
+        !brief(&Brief {
+            no_qa_angle: false,
+            ..b
+        })
+        .contains("No QA angle")
+    );
+
+    let go = crate::method::release::go::evaluate(&crate::method::release::go::GoFacts {
+        release: "ABC-100".into(),
+        gate_green: Some(true),
+        no_qa_angle: true,
+        ..Default::default()
+    });
+    let record = gate_record(
+        "1.2.3",
+        "v1.2.3-rc.1",
+        "abcdef01",
+        "release/x",
+        "ABC-100",
+        "u",
+        "t",
+        &go,
+        &[],
+        &[],
+    )
+    .unwrap();
+    assert!(record.contains("no QA angle is configured"), "{record}");
+    assert!(!record.contains("| angle | state |"), "{record}");
+    assert!(record.contains("Blockers-Carried: none"));
 }

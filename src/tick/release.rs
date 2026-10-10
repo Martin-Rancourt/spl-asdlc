@@ -5,7 +5,8 @@
 //! 2. the candidate's record (comment and `## Candidates` line), the
 //!    embarked tickets labelled; once the candidate's gate is green, and
 //!    never before, the angle sub-items and the consolidation item of the
-//!    candidate, then the brief (BR-ASDLC-004); a red gate whose automatic
+//!    candidate, then the brief (BR-ASDLC-004); a candidate with no QA
+//!    angle (`release.angles = []`) gets the brief alone; a red gate whose automatic
 //!    rerun settled gets its urgent gate-fix ticket, which a later green
 //!    gate closes (BR-ASDLC-016);
 //! 3. the angle PRs: merged into the release branch when approved, green and
@@ -32,7 +33,7 @@ use crate::method::release::prs;
 use crate::method::release::report::{self, Report as AngleReport};
 use crate::method::release::shape::{Shape, Version};
 use crate::method::review::{self, Approval, BranchState};
-use crate::method::texts::{self, AngleLine, BridgeItem};
+use crate::method::texts::{self, AngleLine, AngleScope, BridgeItem};
 use crate::method::vocabulary::{self, Severity, Status};
 use crate::tracker::{Item, NewItem, Priority, RelationKind};
 
@@ -72,9 +73,6 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
     let Ok(release) = section(t) else {
         return false;
     };
-    if release.angles.is_empty() {
-        return false;
-    }
     let shape = Shape::of(&cfg.product.name, release);
     let (candidate, tags) = match newest(t, &shape) {
         Ok(Some(found)) => found,
@@ -131,13 +129,23 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
     // its comment is recorded, which happens only after every embarked
     // ticket carries the label.
     let candidate_marker = texts::marker("candidate", &[("tag", &candidate.tag)]);
-    let recorded = match tracker_said(t, &item.key, &candidate_marker) {
-        Ok(r) => r,
+    let comments = match t.tracker.comments(&item.key) {
+        Ok(c) => c,
         Err(e) => {
             t.unreadable(report, &item.key, format!("comments: {e}"));
             return false;
         }
     };
+    let said = |marker: &str| {
+        comments
+            .iter()
+            .any(|c| c.by_bridge && texts::has_marker(&c.body, marker))
+    };
+    let recorded = said(&candidate_marker);
+    // A candidate recorded while no QA angle was configured keeps none:
+    // angles configured later apply from the next candidate.
+    let without_angles =
+        release.angles.is_empty() || said(&texts::no_qa_angle_marker(&candidate.tag));
     if recorded || label_embarked(t, log, report, &shape, &candidate, &label) {
         record_candidate(t, log, report, &item, &candidate, previous.as_deref());
     }
@@ -145,7 +153,11 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
         report.out_of_time = true;
         return false;
     }
-    let offered = offered(t, &candidate);
+    let offered = if without_angles {
+        Vec::new()
+    } else {
+        offered(t, &candidate)
+    };
     let gate = match gate_run(t, &candidate) {
         Ok(run) => run,
         Err(e) => {
@@ -180,6 +192,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
         &candidate,
         previous.as_deref(),
         gate,
+        without_angles,
     );
     let children = match round {
         Round::Wait => match t.tracker.children(&item.key) {
@@ -261,7 +274,15 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
         return true;
     }
     let decision = decide(
-        t, report, &shape, &item, &candidate, &branch, &states, &angle_prs,
+        t,
+        report,
+        &shape,
+        &item,
+        &candidate,
+        &branch,
+        &states,
+        &angle_prs,
+        without_angles,
     );
     let Some((decision, rp)) = decision else {
         return merged;
@@ -514,13 +535,19 @@ fn record_candidate(
                     return;
                 }
             };
-            let lighter = c.rc > 1
-                && section(t).is_ok_and(|r| r.later_passes == LaterPasses::GateAndCoordinator);
+            let scope = match section(t) {
+                Err(_) => AngleScope::NoQaAngle,
+                Ok(r) if r.angles.is_empty() => AngleScope::NoQaAngle,
+                Ok(r) if c.rc > 1 && r.later_passes == LaterPasses::GateAndCoordinator => {
+                    AngleScope::LighterPass
+                }
+                Ok(_) => AngleScope::Configured,
+            };
             let offered = offered(t, c);
             let body = for_tracker(
                 t,
                 &texts::candidate_comment(
-                    &c.tag, &c.class, previous, None, &paths, &offered, lighter,
+                    &c.tag, &c.class, previous, None, &paths, &offered, scope,
                 ),
             );
             t.act(
@@ -555,6 +582,14 @@ fn record_candidate(
             },
         );
     }
+}
+
+/// Whether the candidate has no QA angle: none is configured
+/// (`release.angles = []`), or none was when the candidate was recorded
+/// (angles configured later apply from the next candidate).
+pub fn without_angles(t: &Tick, item: &Item, c: &Candidate) -> Result<bool, String> {
+    Ok(section(t)?.angles.is_empty()
+        || tracker_said(t, &item.key, &texts::no_qa_angle_marker(&c.tag))?)
 }
 
 /// The angles offered on this candidate (spec 05 §7, `later_passes`).
@@ -694,6 +729,7 @@ enum Round {
 /// the candidate's own gate run is green (REQ-REL-046/048, BR-ASDLC-004).
 /// The brief's facts are read before anything is created: facts that cannot
 /// be read open nothing, so that no agent starts without its brief.
+#[allow(clippy::too_many_arguments)]
 fn qa_round(
     t: &Tick,
     report: &mut Report,
@@ -702,6 +738,7 @@ fn qa_round(
     c: &Candidate,
     previous: Option<&str>,
     gate: Option<crate::github::WorkflowRun>,
+    without_angles: bool,
 ) -> Round {
     let Some(run) = gate.filter(|r| gate::is_green(Some(r))) else {
         return Round::Wait;
@@ -716,7 +753,10 @@ fn qa_round(
         }
     }
     match brief_facts(t, shape, c, previous, &run) {
-        Ok(b) => Round::Brief(Box::new(b)),
+        Ok(b) => Round::Brief(Box::new(texts::Brief {
+            no_qa_angle: without_angles,
+            ..b
+        })),
         Err(e) => {
             t.unreadable(report, &item.key, format!("the brief of {}: {e}", c.tag));
             Round::Wait
@@ -914,6 +954,7 @@ fn brief_facts(
         tickets,
         untracked: Vec::new(),
         rule_files_touched,
+        no_qa_angle: false,
     })
 }
 
@@ -1874,6 +1915,7 @@ pub fn decide(
     branch: &str,
     states: &[(String, AngleState)],
     open: &[PullRequest],
+    no_qa_angle: bool,
 ) -> Option<(go::GoDecision, Vec<ReleasePr>)> {
     let cfg = t.config;
     let release = match section(t) {
@@ -1962,6 +2004,7 @@ pub fn decide(
         release: item.key.clone(),
         gate_green,
         angles: states.to_vec(),
+        no_qa_angle,
         blockers,
         unlinked_blockers,
         note_gaps,
