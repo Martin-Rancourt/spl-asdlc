@@ -467,8 +467,11 @@ fn the_callers_pass_the_tag_patterns_of_the_configuration_template() {
         for (id, job) in jobs(&load(&f)) {
             let with = &job["with"];
             for (input, want) in [
-                ("candidate-tag", &c.release.candidate_tag),
-                ("release-tag-pattern", &c.release.release_tag),
+                ("candidate-tag", &c.release.as_ref().unwrap().candidate_tag),
+                (
+                    "release-tag-pattern",
+                    &c.release.as_ref().unwrap().release_tag,
+                ),
             ] {
                 if let Some(v) = with[input].as_str() {
                     assert_eq!(v, want, "{} job {id}: {input}", relative(&f));
@@ -483,7 +486,12 @@ fn the_callers_pass_the_tag_patterns_of_the_configuration_template() {
                 .contains("release-publish")
             {
                 if let Some(v) = with["release-tag"].as_str() {
-                    assert_eq!(v, c.release.release_tag, "{} job {id}", relative(&f));
+                    assert_eq!(
+                        v,
+                        c.release.as_ref().unwrap().release_tag,
+                        "{} job {id}",
+                        relative(&f)
+                    );
                 }
             }
         }
@@ -494,6 +502,8 @@ fn the_callers_pass_the_tag_patterns_of_the_configuration_template() {
     let filter = gate["on"]["push"]["tags"][0].as_str().unwrap();
     let glob = c
         .release
+        .as_ref()
+        .unwrap()
         .candidate_tag
         .replace("{version}", "*")
         .replace("{rc}", "*");
@@ -641,11 +651,11 @@ fn release_please_runs_on_release_branches_only_as_the_app() {
     let c = template();
     assert_eq!(
         action["with"]["config-file"].as_str(),
-        Some(c.release.release_please_config.as_str())
+        Some(c.release.as_ref().unwrap().release_please_config.as_str())
     );
     assert_eq!(
         action["with"]["manifest-file"].as_str(),
-        Some(c.release.release_please_manifest.as_str())
+        Some(c.release.as_ref().unwrap().release_please_manifest.as_str())
     );
     let mint = all
         .iter()

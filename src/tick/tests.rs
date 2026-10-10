@@ -1907,3 +1907,159 @@ fn an_unread_diff_holds_a_pr_with_no_angle_and_opens_no_round() {
     assert!(!merged(&w));
     assert!(children_of(&w, "ABC-7").is_empty());
 }
+
+// ---- without a release cycle (spec 05, "Without a release cycle") ----
+
+/// A project whose configuration has no `[release]` section.
+fn without_release() -> World {
+    let mut w = World::new();
+    w.config.release = None;
+    w
+}
+
+#[test]
+fn without_a_release_cycle_a_merge_with_every_box_checked_is_done_once() {
+    let w = without_release();
+    let pr = in_review(&w, 7);
+    check_every_box(&w, "ABC-7");
+    w.open(approved(&w, pr.clone()));
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert!(w.github_writes().iter().any(|l| l.starts_with("merge")));
+    assert_eq!(
+        w.tracker.item("ABC-7").state.status,
+        Some(Status::Done),
+        "merging is delivering"
+    );
+    let comment = merge_comment(&w, "ABC-7", &pr);
+    assert!(comment.contains("state: Done"), "{comment}");
+    assert!(comment.contains("no release cycle"), "{comment}");
+    assert!(
+        children_of(&w, "ABC-7").iter().all(|c| texts::bridge_item(
+            &c.description,
+            c.parent.as_deref()
+        )
+        .is_some()),
+        "no validation sub-task: nothing waits in production"
+    );
+    quiet(&w);
+}
+
+#[test]
+fn without_a_release_cycle_a_merge_that_leaves_a_box_open_sends_the_ticket_back_to_work() {
+    let w = without_release();
+    let pr = in_review(&w, 7);
+    w.open(approved(&w, pr.clone()));
+    w.tick(false);
+    assert_eq!(
+        w.tracker.item("ABC-7").state.status,
+        Some(Status::InProgress)
+    );
+    quiet(&w);
+}
+
+#[test]
+fn without_a_release_cycle_post_deploy_boxes_wait_in_post_deploy_then_done() {
+    let w = without_release();
+    let pr = in_review(&w, 7);
+    let post = COMPLETE.replace("- [ ] it is fast", "- [x] it is fast")
+        + "\n## Post deploy\n- [ ] it runs in production\n";
+    crate::tracker::Tracker::update_description(&w.tracker, "ABC-7", &post).unwrap();
+    w.open(approved(&w, pr.clone()));
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    // Fail closed: never Done before the production check.
+    let ticket = w.tracker.item("ABC-7");
+    assert_eq!(ticket.state.status, Some(Status::PostDeploy));
+    assert!(
+        ticket
+            .labels
+            .iter()
+            .any(|l| l == "post-deploy-validation/acme"),
+        "the post-deploy pass finds it: {:?}",
+        ticket.labels
+    );
+    let marker = texts::post_deploy_validation_marker("ABC-7");
+    let tasks: Vec<_> = children_of(&w, "ABC-7")
+        .into_iter()
+        .filter(|c| texts::has_marker(&c.description, &marker))
+        .collect();
+    assert_eq!(tasks.len(), 1, "one validation sub-task");
+    assert!(merge_comment(&w, "ABC-7", &pr).contains("state: Post Deploy"));
+    quiet(&w);
+
+    // The production check is ticked: the post-deploy pass closes it.
+    let checked = post.replace("- [ ] it runs", "- [x] it runs");
+    crate::tracker::Tracker::update_description(&w.tracker, "ABC-7", &checked).unwrap();
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::Done));
+    quiet(&w);
+}
+
+#[test]
+fn without_a_release_cycle_a_pr_merged_outside_the_bridge_is_swept_to_done_once() {
+    let w = without_release();
+    let mut pr = pull_request(9);
+    pr.state = PrState::Merged;
+    pr.merged_at = crate::github::Timestamp::parse("2026-10-05T10:00:00Z");
+    w.ticket("ABC-9", Status::InReview, &pr);
+    check_every_box(&w, "ABC-9");
+    w.github
+        .state
+        .borrow_mut()
+        .merged_pulls
+        .insert(repo(), Ok(vec![pr]));
+    w.tick(false);
+    assert_eq!(w.tracker.item("ABC-9").state.status, Some(Status::Done));
+    quiet(&w);
+}
+
+#[test]
+fn without_a_release_cycle_a_complete_ticket_whose_last_pr_closes_unmerged_is_done() {
+    let w = without_release();
+    let pr = in_review(&w, 7);
+    check_every_box(&w, "ABC-7");
+    // An earlier PR of the ticket was merged.
+    crate::tracker::Tracker::comment(
+        &w.tracker,
+        "ABC-7",
+        &texts::merged_comment(
+            "https://github.com/example-org/acme/pull/6",
+            "main",
+            None,
+            "In Progress",
+            "a box remained",
+        ),
+    )
+    .unwrap();
+    close_unmerged(&w, &pr);
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::Done));
+    quiet(&w);
+}
+
+#[test]
+fn adding_a_release_section_later_switches_to_the_full_flow_and_leaves_done_tickets_done() {
+    let mut w = without_release();
+    let first = in_review(&w, 7);
+    check_every_box(&w, "ABC-7");
+    w.open(approved(&w, first.clone()));
+    w.tick(false);
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::Done));
+
+    // `[release]` is added: no migration, the Done ticket stays Done.
+    w.config.release = config().release;
+    quiet(&w);
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::Done));
+
+    // The next merge waits for a release, as with a release cycle always.
+    let second = in_review(&w, 8);
+    check_every_box(&w, "ABC-8");
+    w.open(approved(&w, second.clone()));
+    w.tick(false);
+    assert_eq!(w.tracker.item("ABC-8").state.status, Some(Status::ToDeploy));
+    assert!(merge_comment(&w, "ABC-8", &second).contains("state: To Deploy"));
+    quiet(&w);
+}

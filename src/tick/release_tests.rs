@@ -696,7 +696,7 @@ fn a_release_coordinator_app_approves_and_a_person_of_its_name_does_not() {
         ("coord-app".to_string(), bot("coord-app"), false),
     ] {
         let mut w = World::new();
-        w.config.release.coordinators = vec![configured.clone()];
+        w.config.release.as_mut().unwrap().coordinators = vec![configured.clone()];
         w.tick();
         let mut pr = w.angle_pr(30, "security", &report_json("security", ""));
         pr.reviews[0].author = Some(author.clone());
@@ -1256,7 +1256,7 @@ fn two_nits_of_one_report_share_one_nits_ticket() {
 /// The nits of one merged report, under `release.nits`.
 fn nits_world(grouping: crate::config::NitsGrouping) -> World {
     let mut w = World::new();
-    w.config.release.nits = grouping;
+    w.config.release.as_mut().unwrap().nits = grouping;
     w.tick();
     let findings = [finding("security-1", "nit"), finding("security-2", "nit")].join(",");
     let pr = w.angle_pr(30, "security", &report_json("security", &findings));
@@ -2716,7 +2716,12 @@ fn release_coordinator() -> crate::tracker::User {
 fn a_candidates_consolidation_item_goes_to_its_coordinator_once() {
     let w = World::new();
     assert_eq!(
-        w.config.release.coordinator_assignee.as_deref(),
+        w.config
+            .release
+            .as_ref()
+            .unwrap()
+            .coordinator_assignee
+            .as_deref(),
         Some("coordinator-handle")
     );
     w.tracker
@@ -2735,7 +2740,7 @@ fn a_candidates_consolidation_item_goes_to_its_coordinator_once() {
 #[test]
 fn without_a_release_coordinator_assignee_the_consolidation_item_is_unassigned() {
     let mut w = World::new();
-    w.config.release.coordinator_assignee = None;
+    w.config.release.as_mut().unwrap().coordinator_assignee = None;
     w.tracker
         .state
         .borrow_mut()
@@ -2764,6 +2769,104 @@ fn an_unknown_release_coordinator_leaves_the_item_unassigned_and_never_reassigns
     assert_eq!(w.tracker.item(&item.key).assignee, None);
 }
 
+// ---- without a release cycle (spec 05, "Without a release cycle") ----
+
+#[test]
+fn without_a_release_section_the_tick_skips_the_release_and_closure_passes() {
+    let mut w = World::new();
+    w.config.release = None;
+    // The cut and a green gate: a cycle would open at the first tick.
+    for _ in 0..2 {
+        let r = w.tick();
+        assert!(r.ok(), "{r:?}");
+    }
+    assert!(w.tracker.writes().is_empty(), "{:?}", w.tracker.writes());
+    assert!(w.github.writes().is_empty(), "{:?}", w.github.writes());
+    assert!(
+        w.tracker.list_by_label(LABEL).unwrap().is_empty(),
+        "no release item"
+    );
+
+    // A cycle opened while the section was there, then published and
+    // merged back: the closure would judge ABC-5 at the next tick.
+    w.config.release = config().release;
+    assert!(w.tick().ok());
+    w.release_item();
+    publish(&w);
+    w.config.release = None;
+    let before = (w.tracker.writes().len(), w.github.writes().len());
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        (w.tracker.writes().len(), w.github.writes().len()),
+        before,
+        "{:?}",
+        w.tracker.writes()
+    );
+    assert_eq!(
+        w.tracker.item("ABC-5").state.status,
+        Some(Status::ToDeploy),
+        "no closure judges it"
+    );
+    assert!(w.signal.sent.borrow().is_empty(), "no release note");
+}
+
+/// A host's daemon runs the bridge: nothing panics on a configuration
+/// without `[release]`, even a step the pass never reaches without it.
+#[test]
+fn without_a_release_section_the_release_pass_and_its_readers_return_cleanly() {
+    let mut w = World::new();
+    w.config.release = None;
+    let t = w.tick_ctx();
+    let mut log = ActionLog::in_memory();
+    let mut report = Report::default();
+    assert!(!release::pass(&t, &mut log, &mut report), "no merge");
+    assert!(report.ok(), "nothing to report: {report:?}");
+    assert!(log.entries().is_empty(), "{:?}", log.entries());
+    assert_eq!(release::section(&t).unwrap_err(), release::NO_RELEASE_CYCLE);
+    let candidate = release::Candidate {
+        tag: CAND.into(),
+        version: crate::method::release::shape::Version::parse("1.2.0").unwrap(),
+        rc: 1,
+        sha: "c1".into(),
+        class: "minor".into(),
+        tagged_at: None,
+    };
+    assert!(release::offered(&t, &candidate).is_empty());
+    assert!(w.github.writes().is_empty());
+    assert!(w.tracker.writes().is_empty());
+}
+
+#[test]
+fn without_a_release_section_the_release_verbs_say_there_is_no_cycle() {
+    let mut w = World::new();
+    w.config.release = None;
+    let t = w.tick_ctx();
+    let mut log = ActionLog::in_memory();
+    for refused in [
+        crate::verbs::cut(&t, &mut log, true).unwrap_err(),
+        crate::verbs::status(&t).err().unwrap(),
+        crate::verbs::close(&t, &mut log, "1.2.0", "a reason", "someone").unwrap_err(),
+        crate::verbs::abandon(&t, &mut log, "someone").unwrap_err(),
+        crate::verbs::requalify(
+            &t,
+            &mut log,
+            "ABC-5",
+            crate::method::vocabulary::Severity::Nit,
+            "a reason",
+            "someone",
+        )
+        .unwrap_err(),
+    ] {
+        assert_eq!(
+            refused,
+            "acme has no release cycle: its configuration has no [release] section"
+        );
+    }
+    assert!(w.github.writes().is_empty());
+    assert!(w.tracker.writes().is_empty());
+}
+
 // ---- SID-1016: a release with no QA angle; its GO is the gate ----
 
 impl World {
@@ -2771,8 +2874,8 @@ impl World {
     /// and no release coordinator.
     fn without_angles() -> World {
         let mut w = World::new();
-        w.config.release.angles.clear();
-        w.config.release.coordinators.clear();
+        w.config.release.as_mut().unwrap().angles.clear();
+        w.config.release.as_mut().unwrap().coordinators.clear();
         w
     }
 

@@ -601,12 +601,15 @@ fn config_check(
         Ok((c, _)) => {
             let _ = writeln!(
                 out,
-                "{name}: valid — product {} ({}), tracker {} team {}, {} release angle(s), {}",
+                "{name}: valid — product {} ({}), tracker {} team {}, {}, {}",
                 c.product.name,
                 c.product.repository,
                 c.tracker.kind,
                 c.tracker.team,
-                c.release.angles.len(),
+                match &c.release {
+                    Some(r) => format!("{} release angle(s)", r.angles.len()),
+                    None => "no release cycle".to_string(),
+                },
                 if c.review.angle_possible() {
                     format!("{} review angle(s)", c.review.angles.len())
                 } else {

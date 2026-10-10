@@ -49,32 +49,56 @@ fn assert_refused_with(text: &str, needle: &str) {
 #[test]
 fn a_minimal_file_gets_every_documented_default() {
     let c = Config::parse(MINIMAL).expect("minimal file is valid");
-    assert_eq!(c.release.candidate_tag, "acme-v{version}-rc.{rc}");
-    assert_eq!(c.release.release_tag, "acme-v{version}");
-    assert_eq!(c.release.branch_prefix, "release/");
-    assert_eq!(c.release.max_rc_passes, 2);
-    assert_eq!(c.release.later_passes, LaterPasses::Full);
-    assert_eq!(c.release.go_policy, GoPolicy::Computed);
-    assert_eq!(c.release.nits, NitsGrouping::Shared);
-    assert_eq!(c.release.record, ".spl-asdlc/qa/{candidate}/");
-    assert_eq!(c.release.release_pr_label, "autorelease: pending");
-    assert_eq!(c.release.registry_path, "docs/business-rules.md");
     assert_eq!(
-        c.release.release_please_config,
+        c.release.as_ref().unwrap().candidate_tag,
+        "acme-v{version}-rc.{rc}"
+    );
+    assert_eq!(c.release.as_ref().unwrap().release_tag, "acme-v{version}");
+    assert_eq!(c.release.as_ref().unwrap().branch_prefix, "release/");
+    assert_eq!(c.release.as_ref().unwrap().max_rc_passes, 2);
+    assert_eq!(c.release.as_ref().unwrap().later_passes, LaterPasses::Full);
+    assert_eq!(c.release.as_ref().unwrap().go_policy, GoPolicy::Computed);
+    assert_eq!(c.release.as_ref().unwrap().nits, NitsGrouping::Shared);
+    assert_eq!(
+        c.release.as_ref().unwrap().record,
+        ".spl-asdlc/qa/{candidate}/"
+    );
+    assert_eq!(
+        c.release.as_ref().unwrap().release_pr_label,
+        "autorelease: pending"
+    );
+    assert_eq!(
+        c.release.as_ref().unwrap().registry_path,
+        "docs/business-rules.md"
+    );
+    assert_eq!(
+        c.release.as_ref().unwrap().release_please_config,
         "release-please-config.json"
     );
     assert_eq!(
-        c.release.release_please_manifest,
+        c.release.as_ref().unwrap().release_please_manifest,
         ".release-please-manifest.json"
     );
-    assert_eq!(c.release.stagnation_hours, 2);
-    assert_eq!(c.release.escalation_label, "blocked-by-human");
-    assert!(!c.release.auto_candidate);
-    assert!(c.release.bookkeeping_paths.is_empty());
-    assert_eq!(c.release.gate_workflow, "release-gate.yml");
-    assert_eq!(c.release.gate_rerun_workflow, "release-gate-auto-rerun.yml");
-    assert_eq!(c.release.gate_rerun_wait_minutes, 30);
-    assert_eq!(c.release.angles[0].title, "Security review");
+    assert_eq!(c.release.as_ref().unwrap().stagnation_hours, 2);
+    assert_eq!(
+        c.release.as_ref().unwrap().escalation_label,
+        "blocked-by-human"
+    );
+    assert!(!c.release.as_ref().unwrap().auto_candidate);
+    assert!(c.release.as_ref().unwrap().bookkeeping_paths.is_empty());
+    assert_eq!(
+        c.release.as_ref().unwrap().gate_workflow,
+        "release-gate.yml"
+    );
+    assert_eq!(
+        c.release.as_ref().unwrap().gate_rerun_workflow,
+        "release-gate-auto-rerun.yml"
+    );
+    assert_eq!(c.release.as_ref().unwrap().gate_rerun_wait_minutes, 30);
+    assert_eq!(
+        c.release.as_ref().unwrap().angles[0].title,
+        "Security review"
+    );
     assert_eq!(c.review.merge_method, MergeMethod::Squash);
     assert!(c.review.require_up_to_date);
     assert_eq!(c.review.diff_size_extra_angle, 0, "no size trigger");
@@ -94,14 +118,14 @@ fn the_example_of_the_specification_is_valid_once_merged() {
     assert_eq!(c.notify.len(), 1);
     assert_eq!(c.product.repository, "example-org/acme");
     assert_eq!(
-        c.release.angles[0].assignee.as_deref(),
+        c.release.as_ref().unwrap().angles[0].assignee.as_deref(),
         Some("reviewer-handle")
     );
     assert_eq!(
-        c.release.angles[0].notes.as_deref(),
+        c.release.as_ref().unwrap().angles[0].notes.as_deref(),
         Some(".spl-asdlc/angles/security.md")
     );
-    assert_eq!(c.release.angles[1].assignee, None);
+    assert_eq!(c.release.as_ref().unwrap().angles[1].assignee, None);
 }
 
 #[test]
@@ -213,7 +237,7 @@ fn a_multi_component_product_names_its_version_component_and_gate_record() {
         "[release]\ncomponents = [\"app\", \"website\"]\nversion_component = \"app\"\ngate_record = \"docs/releases/v{version}.md\"\n",
     );
     let c = Config::parse(&ok).expect("complete multi-component shape");
-    assert!(c.release.multi_component());
+    assert!(c.release.as_ref().unwrap().multi_component());
 }
 
 #[test]
@@ -334,14 +358,14 @@ fn no_qa_angle() -> String {
 #[test]
 fn a_release_with_no_qa_angle_is_written_explicitly_and_needs_no_coordinator() {
     let c = Config::parse(&no_qa_angle()).unwrap();
-    assert!(c.release.angles.is_empty());
-    assert!(c.release.coordinators.is_empty());
+    assert!(c.release.as_ref().unwrap().angles.is_empty());
+    assert!(c.release.as_ref().unwrap().coordinators.is_empty());
     let with = no_qa_angle().replace(
         "angles = []\n",
         "angles = []\ncoordinators = [\"coordinator-login\"]\n",
     );
     assert_eq!(
-        Config::parse(&with).unwrap().release.coordinators,
+        Config::parse(&with).unwrap().release.unwrap().coordinators,
         vec!["coordinator-login"],
         "a coordinator named anyway is read"
     );
@@ -380,8 +404,8 @@ fn a_release_with_no_qa_angle_reads_the_same_through_the_overlay() {
     );
     assert_ne!(overlay, OVERLAY);
     let c = merged(&repository, &overlay).unwrap();
-    assert!(c.release.angles.is_empty());
-    assert!(c.release.coordinators.is_empty());
+    assert!(c.release.as_ref().unwrap().angles.is_empty());
+    assert!(c.release.as_ref().unwrap().coordinators.is_empty());
 }
 
 #[test]
@@ -440,7 +464,7 @@ fn a_human_go_policy_needs_the_owner_github_login() {
         "tracker_user = \"owner-handle\"\ngithub_login = \"owner-login\"",
     );
     assert_eq!(
-        Config::parse(&ok).unwrap().release.go_policy,
+        Config::parse(&ok).unwrap().release.unwrap().go_policy,
         GoPolicy::Human
     );
 }
@@ -587,18 +611,73 @@ fn a_bad_release_value_does_not_hide_the_owner_requirement() {
 fn the_nits_grouping_is_shared_or_per_nit_and_nothing_else() {
     let per_nit = MINIMAL.replace("[release]\n", "[release]\nnits = \"per-nit\"\n");
     assert_eq!(
-        Config::parse(&per_nit).unwrap().release.nits,
+        Config::parse(&per_nit).unwrap().release.unwrap().nits,
         NitsGrouping::PerNit
     );
     let shared = MINIMAL.replace("[release]\n", "[release]\nnits = \"shared\"\n");
     assert_eq!(
-        Config::parse(&shared).unwrap().release.nits,
+        Config::parse(&shared).unwrap().release.unwrap().nits,
         NitsGrouping::Shared
     );
     let other = MINIMAL.replace("[release]\n", "[release]\nnits = \"none\"\n");
     assert_refused_with(
         &other,
         "release.nits: \"none\" is not one of \"shared\", \"per-nit\"",
+    );
+}
+
+// ---- without a release cycle (spec 05, spec 08 `[release]`) ----
+
+/// MINIMAL without its `[release]` section.
+fn without_release(text: &str) -> String {
+    let release = "[release]\nrelease_please_authors = [\"app/release-app\"]\ncoordinators = [\"coordinator-login\"]\n\n[[release.angles]]\nkey = \"security\"\n";
+    assert!(
+        text.contains(release),
+        "MINIMAL carries its [release] section"
+    );
+    text.replace(release, "")
+}
+
+#[test]
+fn without_a_release_section_the_file_is_valid_and_no_release_key_is_required() {
+    let c = Config::parse(&without_release(MINIMAL)).unwrap();
+    assert_eq!(c.release, None, "no section, no release cycle");
+    // What the PR pass still reads gets the defaults of the release keys.
+    assert_eq!(c.registry_path(), "docs/business-rules.md");
+    assert_eq!(c.release_machinery(), ("release/", "autorelease: pending"));
+    let with = Config::parse(MINIMAL).unwrap();
+    assert!(with.release.is_some(), "the section is the release cycle");
+    // A section present is judged in full, as before.
+    assert_refused_with(
+        &MINIMAL.replace("release_please_authors = [\"app/release-app\"]\n", ""),
+        "release.release_please_authors: is required",
+    );
+}
+
+#[test]
+fn release_keys_of_an_overlay_without_a_release_section_are_refused() {
+    let neutral = NEUTRAL.replace("[[release.angles]]\nkey = \"security\"\n", "");
+    let overlay = OVERLAY.replace(
+        "[release]\nrelease_please_authors = [\"app/release-app\"]\ncoordinators = [\"coordinator-login\"]\n",
+        "",
+    );
+    let c = merged(&neutral, &overlay).unwrap();
+    assert_eq!(c.release, None);
+    assert_eq!(c, Config::parse(&without_release(MINIMAL)).unwrap());
+    // The overlay never creates the section: its release keys would
+    // complete nothing, and the bridge would read a release cycle the
+    // repository did not choose.
+    assert_merge_refused_with(
+        &neutral,
+        OVERLAY,
+        "spl-asdlc.instance.toml: release: spl-asdlc.toml has no [release] section (the project has no release cycle)",
+    );
+    assert_merge_refused_with(
+        &neutral,
+        &format!(
+            "{overlay}\n[[release.angles]]\nkey = \"security\"\nassignee = \"reviewer-handle\"\n"
+        ),
+        "has no [release] section",
     );
 }
 
@@ -712,7 +791,7 @@ fn an_angle_assignee_and_the_channels_are_set_in_one_file_only() {
     );
     let c = merged(NEUTRAL, &format!("{overlay}{channel}")).unwrap();
     assert_eq!(
-        c.release.angles[0].assignee.as_deref(),
+        c.release.as_ref().unwrap().angles[0].assignee.as_deref(),
         Some("reviewer-handle")
     );
     assert_eq!(c.notify.len(), 1);
@@ -731,7 +810,7 @@ fn the_coordinator_assignees_are_instance_keys_set_in_one_file_only() {
         );
     let c = merged(NEUTRAL, &overlay).unwrap();
     assert_eq!(
-        c.release.coordinator_assignee.as_deref(),
+        c.release.as_ref().unwrap().coordinator_assignee.as_deref(),
         Some("coordinator-handle")
     );
     assert_eq!(
@@ -747,7 +826,11 @@ fn the_coordinator_assignees_are_instance_keys_set_in_one_file_only() {
         c.review.coordinator_assignee.as_deref(),
         Some("coordinator-handle")
     );
-    assert_eq!(c.release.coordinator_assignee, None, "none by default");
+    assert_eq!(
+        c.release.as_ref().unwrap().coordinator_assignee,
+        None,
+        "none by default"
+    );
     let both = NEUTRAL.replace(
         "[review]\n",
         "[review]\ncoordinator_assignee = \"another-handle\"\n",

@@ -26,6 +26,12 @@ pub const SCHEMA_VERSION: i64 = 1;
 /// Default file name, at the root of the repository.
 pub const FILE_NAME: &str = "spl-asdlc.toml";
 
+/// Defaults of `[release]` keys the PR pass reads too, with or without a
+/// release cycle (spec 08, `[release]`).
+pub const DEFAULT_REGISTRY_PATH: &str = "docs/business-rules.md";
+pub const DEFAULT_BRANCH_PREFIX: &str = "release/";
+pub const DEFAULT_RELEASE_PR_LABEL: &str = "autorelease: pending";
+
 /// Canonical statuses of a work item (`docs/spec/03-vocabulary.md`).
 pub const CANONICAL_STATUSES: [&str; 9] = [
     "Triage",
@@ -53,7 +59,11 @@ pub struct Config {
     pub product: Product,
     pub owner: Owner,
     pub tracker: Tracker,
-    pub release: Release,
+    /// The release cycle (`docs/spec/05-release-cycle.md`); `None` when the
+    /// file has no `[release]` section: the project has no release cycle, the
+    /// bridge does nothing release-related, and a merged ticket whose every
+    /// box is ticked is Done (spec 05, "Without a release cycle").
+    pub release: Option<Release>,
     pub review: Review,
     pub bridge: Bridge,
     pub notify: Vec<Notify>,
@@ -358,6 +368,27 @@ impl Source {
 }
 
 impl Config {
+    /// The business-rule registry (`docs/spec/02-business-rules.md`) the
+    /// PR pass's guard reads: `release.registry_path`, or its default when
+    /// the project has no release cycle.
+    pub fn registry_path(&self) -> &str {
+        self.release
+            .as_ref()
+            .map_or(DEFAULT_REGISTRY_PATH, |r| r.registry_path.as_str())
+    }
+
+    /// The release branch prefix and the release-please label by which the
+    /// PR pass leaves the release machinery's PRs alone (spec 04 §8): the
+    /// configured ones, or their defaults when the project has no release
+    /// cycle, so that a PR shaped like a release PR is never squashed.
+    pub fn release_machinery(&self) -> (&str, &str) {
+        self.release
+            .as_ref()
+            .map_or((DEFAULT_BRANCH_PREFIX, DEFAULT_RELEASE_PR_LABEL), |r| {
+                (r.branch_prefix.as_str(), r.release_pr_label.as_str())
+            })
+    }
+
     /// Read and validate a file on disk, merged with its instance overlay
     /// when one is beside it ([`instance_path`]).
     pub fn load(path: &Path) -> Result<Config, ConfigErrors> {
@@ -617,7 +648,9 @@ impl Validator {
         let human_go = raw.release.as_ref().and_then(|r| r.go_policy.as_deref()) == Some("human");
         let product = self.product(raw.product);
         let tracker = self.tracker(raw.tracker);
-        let release = self.release(raw.release, product.as_ref());
+        // No `[release]` section: no release cycle, and none of its keys
+        // is required (spec 08).
+        let release = raw.release.map(|r| self.release(r, product.as_ref()));
         let review = self.review(raw.review);
         let owner = self.owner(raw.owner, human_go);
         let bridge = self.bridge(raw.bridge);
@@ -626,7 +659,10 @@ impl Validator {
             product: product?,
             owner: owner?,
             tracker: tracker?,
-            release: release?,
+            release: match release {
+                None => None,
+                Some(r) => Some(r?),
+            },
             review: review?,
             bridge,
             notify,
@@ -779,15 +815,7 @@ impl Validator {
         out
     }
 
-    fn release(
-        &mut self,
-        raw: Option<raw::RawRelease>,
-        product: Option<&Product>,
-    ) -> Option<Release> {
-        let Some(raw) = raw else {
-            self.err("release", "the [release] table is required");
-            return None;
-        };
+    fn release(&mut self, raw: raw::RawRelease, product: Option<&Product>) -> Option<Release> {
         let product_name = product.map(|p| p.name.as_str()).unwrap_or("product");
 
         let candidate_tag = raw
@@ -807,7 +835,9 @@ impl Validator {
             &[("{version}", 1), ("{rc}", 0)],
         );
 
-        let branch_prefix = raw.branch_prefix.unwrap_or_else(|| "release/".to_string());
+        let branch_prefix = raw
+            .branch_prefix
+            .unwrap_or_else(|| DEFAULT_BRANCH_PREFIX.to_string());
         if !branch_prefix.ends_with('/')
             || branch_prefix.len() < 2
             || branch_prefix.chars().any(char::is_whitespace)
@@ -874,7 +904,7 @@ impl Validator {
         }
         let release_pr_label = self
             .optional("release.release_pr_label", raw.release_pr_label)
-            .unwrap_or_else(|| "autorelease: pending".to_string());
+            .unwrap_or_else(|| DEFAULT_RELEASE_PR_LABEL.to_string());
         let release_please_authors = self.list(
             "release.release_please_authors",
             raw.release_please_authors,
@@ -898,7 +928,7 @@ impl Validator {
         );
         let registry_path = self
             .optional("release.registry_path", raw.registry_path)
-            .unwrap_or_else(|| "docs/business-rules.md".to_string());
+            .unwrap_or_else(|| DEFAULT_REGISTRY_PATH.to_string());
         let business_rule_paths = self.list(
             "release.business_rule_paths",
             raw.business_rule_paths,

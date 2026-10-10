@@ -17,8 +17,14 @@
 //! checked, with an open PR not yet in review, is In Review; and only a
 //! ticket with nothing open, every box checked and a PR merged goes To
 //! Deploy.
+//!
+//! A project without a release cycle (no `[release]` section,
+//! `docs/spec/05-release-cycle.md`, "Without a release cycle") has nothing
+//! to deploy to: merging is delivering, so [`delivered`] judges at once the
+//! ticket the rules put To Deploy, by the Done gate the closure would use.
 
 use super::contract;
+use super::done_gate::{self, ClosureVerdict, DoneGate};
 use super::vocabulary::Status;
 
 /// An open PR of the ticket, as the bridge sees it.
@@ -72,6 +78,12 @@ pub enum Why {
     NothingMerged,
     /// Every box checked, a PR merged, nothing open.
     Complete,
+    /// No release cycle: every box checked, a PR merged, nothing open; the
+    /// merge delivered it.
+    Delivered,
+    /// No release cycle: delivered, but its own `## Post deploy` boxes wait
+    /// to be verified in production.
+    AwaitsPostDeploy,
 }
 
 impl Why {
@@ -100,6 +112,14 @@ impl Why {
             }
             Why::Complete => {
                 "the release closure moves it to `Done` once every box of its contract is checked."
+                    .to_string()
+            }
+            Why::Delivered => {
+                "the project has no release cycle, so the merge delivered it: every box of its contract is checked."
+                    .to_string()
+            }
+            Why::AwaitsPostDeploy => {
+                "the project has no release cycle, so the merge delivered it; its `## Post deploy` boxes are verified in production through its validation sub-task, and the bridge moves it to `Done` once they are all checked."
                     .to_string()
             }
         }
@@ -131,6 +151,30 @@ pub fn decide(f: &Facts) -> Option<(Status, Why)> {
         return Some((Status::InProgress, Why::NothingMerged));
     }
     Some((Status::ToDeploy, Why::Complete))
+}
+
+/// Where a ticket the rules put To Deploy goes when the project has no
+/// release cycle: the merge delivered it, so it is judged at once by the
+/// Done gate (its boxes and its duplicates', REQ-MERGE-064), as the closure
+/// judges a shipped ticket (`05-release-cycle.md` §11): every box checked →
+/// Done; only its own `## Post deploy` boxes open → Post Deploy, verified in
+/// production through its validation sub-task (fail closed: never Done
+/// before they are checked); a box of a duplicate open → In Progress.
+/// `None` when the contract could not be read in full: nothing is written.
+pub fn delivered(id: &str, gate: &DoneGate) -> Option<(Status, Why)> {
+    if gate.unreadable_reason.is_some() {
+        return None;
+    }
+    Some(
+        match done_gate::closure_verdict(id, Some(Status::ToDeploy), gate) {
+            ClosureVerdict::Done => (Status::Done, Why::Delivered),
+            ClosureVerdict::PostDeploy => (Status::PostDeploy, Why::AwaitsPostDeploy),
+            ClosureVerdict::Reopen => (
+                Status::InProgress,
+                Why::BoxesOpen(gate.open_items.iter().map(|b| b.line.clone()).collect()),
+            ),
+        },
+    )
 }
 
 #[cfg(test)]
@@ -256,6 +300,53 @@ mod tests {
             }),
             None
         );
+    }
+
+    // ---- without a release cycle ----
+
+    fn gate(members: &[(&str, &str)]) -> DoneGate {
+        let members: Vec<done_gate::ContractMember> = members
+            .iter()
+            .map(|(id, description)| done_gate::ContractMember {
+                id: id.to_string(),
+                description: description.to_string(),
+            })
+            .collect();
+        done_gate::evaluate(&members, None)
+    }
+
+    #[test]
+    fn without_a_release_cycle_a_complete_ticket_is_delivered_done() {
+        assert_eq!(
+            delivered(
+                "ABC-1",
+                &gate(&[("ABC-1", "## Acceptance criteria\n- [x] a\n")])
+            ),
+            Some((Status::Done, Why::Delivered))
+        );
+    }
+
+    #[test]
+    fn without_a_release_cycle_post_deploy_boxes_wait_in_post_deploy() {
+        assert_eq!(
+            delivered("ABC-1", &gate(&[("ABC-1", ALL)])),
+            Some((Status::PostDeploy, Why::AwaitsPostDeploy)),
+            "fail closed: never Done before the post-deploy boxes are checked"
+        );
+    }
+
+    #[test]
+    fn without_a_release_cycle_a_duplicates_open_box_sends_the_ticket_back() {
+        let g = gate(&[
+            ("ABC-1", "## Acceptance criteria\n- [x] a\n"),
+            ("ABC-2", "## Acceptance criteria\n- [ ] b\n"),
+        ]);
+        assert_eq!(
+            delivered("ABC-1", &g),
+            Some((Status::InProgress, Why::BoxesOpen(vec!["- [ ] b".into()])))
+        );
+        let unreadable = done_gate::evaluate(&[], Some("relations cut".into()));
+        assert_eq!(delivered("ABC-1", &unreadable), None);
     }
 
     #[test]
