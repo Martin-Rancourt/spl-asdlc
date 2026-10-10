@@ -12,6 +12,7 @@ pub mod fake;
 pub use crate::http;
 mod rest;
 pub mod types;
+pub(crate) mod zip;
 
 pub use rest::RestGitHub;
 pub use types::*;
@@ -91,6 +92,10 @@ pub trait GitHub {
     ) -> Read<Vec<WorkflowRun>>;
     fn run_jobs(&self, repo: &RepoSlug, run_id: u64) -> Read<Vec<Job>>;
     fn run_artifacts(&self, repo: &RepoSlug, run_id: u64) -> Read<Vec<Artifact>>;
+    /// The text of `path` inside the artifact `artifact_id`, read from its
+    /// zip: `NotFound` when the zip holds no such file; a zip that cannot be
+    /// downloaded or read is unreadable.
+    fn artifact_file(&self, repo: &RepoSlug, artifact_id: u64, path: &str) -> Read<String>;
 
     // ---- writes ----
 

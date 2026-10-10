@@ -112,6 +112,9 @@ impl GitHub for DryGitHub<'_> {
     fn run_artifacts(&self, repo: &RepoSlug, run_id: u64) -> Read<Vec<github::Artifact>> {
         self.inner.run_artifacts(repo, run_id)
     }
+    fn artifact_file(&self, repo: &RepoSlug, artifact_id: u64, path: &str) -> Read<String> {
+        self.inner.artifact_file(repo, artifact_id, path)
+    }
 
     fn merge_pull(
         &self,
@@ -293,9 +296,12 @@ impl Tracker for DryTracker<'_> {
     }
     fn create_item(&self, item: &NewItem) -> TResult<Item> {
         self.intents.push(format!(
-            "tracker: create \"{}\" [{}]{}",
+            "tracker: create \"{}\" [{}]{}{}",
             item.title,
             item.status,
+            item.priority
+                .map(|p| format!(" priority {p}"))
+                .unwrap_or_default(),
             item.parent
                 .as_ref()
                 .map(|p| format!(" under {p}"))
