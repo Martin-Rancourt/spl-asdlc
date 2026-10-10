@@ -18,7 +18,7 @@ Fast, on the diff, with several angles and one coordinator. The volume is tens o
     1. **The review rule** has priority: another PR of the ticket in review (its round open, not sent back) keeps or puts the ticket **In Review**, and that PR's review → deploy cycle runs in full; a PR of the ticket the coordinator sent back (changes requested at its head) puts it **In Progress**.
     2. **The completeness rule**: with no PR in review, a ticket whose boxes are not all ticked (every box of its description under any heading, the `## Post deploy` section set apart; a ticket that declares no box is not complete) goes back **In Progress**. An implementer resumes; its next PR brings the ticket to In Review again, until every box is ticked.
     3. **An open PR on a complete ticket** (REQ-MERGE-028, kept below the two rules): the ticket is **In Review** while that PR waits for its review.
-    4. Otherwise, a PR of the ticket merged: **To Deploy**; none merged (a PR closed without merge): **In Progress**.
+    4. Otherwise, a PR of the ticket merged: **To Deploy** (in a project without a release cycle, **Done**, or Post Deploy while its own `## Post deploy` boxes wait: `05-release-cycle.md`, "Without a release cycle"); none merged (a PR closed without merge): **In Progress**.
 
     A ticket in Post Deploy is not reopened. When the ticket of an open PR could not be read, it may be this ticket's: nothing but "another PR is in review" can be said, so the bridge writes nothing and decides at the next tick.
 

@@ -152,7 +152,9 @@ fn files(
         }
         Err(e) => check("spl-asdlc.toml", Verdict::Missing, e.to_string()),
     });
-    let registry = &config.release.registry_path;
+    // The PR pass's business-rule guard reads it, with or without a release
+    // cycle.
+    let registry = config.registry_path();
     out.push(match read(registry) {
         Ok(text) => {
             let dup = business_rules::duplicate_registry_ids(&text);
@@ -196,9 +198,25 @@ fn files(
             ),
         });
     }
+    // Without a release cycle, the release-only checks are skipped: the
+    // project carries none of these files (spec 05, "Without a release
+    // cycle").
+    let Some(release) = &config.release else {
+        out.push(check(
+            "release cycle",
+            Verdict::Ok,
+            "none (no [release] section: a merged ticket is Done; the release-please files and the release workflows are not checked)",
+        ));
+        return out;
+    };
+    out.push(check(
+        "release cycle",
+        Verdict::Ok,
+        format!("[release], {} angle(s)", release.angles.len()),
+    ));
     for path in [
-        &config.release.release_please_config,
-        &config.release.release_please_manifest,
+        &release.release_please_config,
+        &release.release_please_manifest,
     ] {
         let path = path.as_str();
         out.push(match read(path) {
@@ -210,10 +228,10 @@ fn files(
         });
     }
     for wf in [
-        &config.release.cut_workflow,
-        &config.release.gate_workflow,
-        &config.release.gate_rerun_workflow,
-        &config.release.release_please_workflow,
+        &release.cut_workflow,
+        &release.gate_workflow,
+        &release.gate_rerun_workflow,
+        &release.release_please_workflow,
     ] {
         let path = format!(".github/workflows/{wf}");
         out.push(match read(&path) {
@@ -306,18 +324,16 @@ fn tracker_checks(config: &Config, tracker: &dyn Tracker) -> Vec<Check> {
 /// and each round's `coordinator_assignee`.
 fn participants(config: &Config) -> Vec<(String, &str)> {
     let mut out = Vec::new();
-    for (table, angles, coordinator) in [
-        (
-            "release",
-            &config.release.angles,
-            &config.release.coordinator_assignee,
-        ),
-        (
-            "review",
-            &config.review.angles,
-            &config.review.coordinator_assignee,
-        ),
-    ] {
+    let release = config
+        .release
+        .as_ref()
+        .map(|r| ("release", &r.angles, &r.coordinator_assignee));
+    let review = Some((
+        "review",
+        &config.review.angles,
+        &config.review.coordinator_assignee,
+    ));
+    for (table, angles, coordinator) in [release, review].into_iter().flatten() {
         for a in angles {
             if let Some(name) = &a.assignee {
                 out.push((format!("{table}.angles.{}.assignee", a.key), name.as_str()));
@@ -381,7 +397,7 @@ mod tests {
             id: "u-coordinator".into(),
             name: "coordinator-handle".into(),
         });
-        c.release.coordinator_assignee = Some("nobody-known".into());
+        c.release.as_mut().unwrap().coordinator_assignee = Some("nobody-known".into());
         let checks = run(&c, None, &g, &t, "workstation");
         let by = |n: &str| {
             checks
@@ -422,6 +438,53 @@ mod tests {
             c.to_string()
                 .starts_with("workflow release-cut.yml: missing")
         }));
+        assert!(
+            checks
+                .iter()
+                .any(|c| c.to_string() == "release cycle: ok — [release], 2 angle(s)"),
+            "{checks:#?}"
+        );
+    }
+
+    #[test]
+    fn without_a_release_section_the_release_checks_are_skipped() {
+        let mut c = config();
+        c.release = None;
+        let g = FakeGitHub::new();
+        let repo = RepoSlug::parse("example-org/acme").unwrap();
+        g.state
+            .borrow_mut()
+            .default_branch
+            .insert(repo, "main".into());
+        let t = FakeTracker::default();
+        let checks = run(&c, None, &g, &t, "workstation");
+        let cycle = checks
+            .iter()
+            .find(|c| c.name == "release cycle")
+            .unwrap_or_else(|| panic!("{checks:#?}"));
+        assert!(
+            cycle.to_string().starts_with("release cycle: ok — none"),
+            "{cycle}"
+        );
+        for skipped in [
+            "release-please-config.json",
+            ".release-please-manifest.json",
+        ] {
+            assert!(
+                checks.iter().all(|c| c.name != skipped),
+                "{skipped}: {checks:#?}"
+            );
+        }
+        assert!(
+            checks.iter().all(|c| !c.name.starts_with("workflow ")),
+            "{checks:#?}"
+        );
+        assert!(
+            checks.iter().all(|c| !c.name.starts_with("release.")),
+            "no release participant: {checks:#?}"
+        );
+        // The PR pass's business-rule guard still reads the registry.
+        assert!(checks.iter().any(|c| c.name == "business-rules"));
     }
 
     #[test]

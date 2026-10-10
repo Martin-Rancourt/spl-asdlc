@@ -147,6 +147,7 @@ Every other key is the method's shape and stays in the repository's file, where 
 1. Each file is first read alone: not valid TOML, an unknown key, a value of the wrong type is an error with its line (rule 6). In the overlay, a key that is not an instance key is an error ("not an instance key"), with its line.
 2. A key set in both files is an error, never an override, whatever the two values are: a silent override would let a file outside review hide a reviewed setting (BR-ASDLC-014). So is an angle's `assignee` set in both, and `[[notify]]` tables in both.
 3. Required keys and every rule above are checked on the merged result; each error names the file its value comes from.
+4. The overlay never creates the `[release]` section: a release key in the overlay (a login, a participant, an angle's `assignee`) while the repository's file has no `[release]` section is an error, since the project chose no release cycle and the key would complete nothing.
 
 **Where it is found.** Every command that takes `--file` takes `--instance <path>`. Without `--instance`, the overlay is the sibling of the `--file` when there is one, and there is none otherwise: `spl-asdlc.instance.toml` beside a file named `spl-asdlc.toml`, `<stem>.instance.toml` beside any other (`acme.toml` → `acme.instance.toml`), so that two configurations in one directory never share an overlay. A named `--instance` that does not exist is an error; nothing at the sibling's path only means no overlay, while something there that is not a readable file (a directory, a dangling link) is an error. `tick`, which takes several `--file`, accepts `--instance` only with a single `--file` and refuses it otherwise: each configuration's overlay is then its sibling. A host that hands the bridge a configuration path (the Livela runner) gets the sibling the same way. `doctor` reports `instance overlay` (the path read, or `none`) and judges the repository's file at the default branch merged with that overlay. The overlay is never committed: this repository's `.gitignore` lists `spl-asdlc.instance.toml`, and a project that keeps an overlay beside a checkout does the same.
 
@@ -183,6 +184,8 @@ The configuration maps no status: the tracker names each canonical status (`03-v
 
 ### `[release]`
 
+The section is optional, and so is the release cycle it configures (`05-release-cycle.md`, "Without a release cycle"): without it, none of the keys below is read or required, `release.release_please_authors`, `release.coordinators` and `[[release.angles]]` included, and a merged ticket whose every box is ticked is Done. Three defaults still serve the PR review: its business-rule guard reads the registry at `docs/business-rules.md` (`release.registry_path`), and the PR pass leaves alone a PR whose head branch starts with `release/` or that carries the `autorelease: pending` label (`release.branch_prefix`, `release.release_pr_label`), so that a PR shaped like the release machinery is never squashed. Present, the section is the release cycle and every row below applies; adding it later switches to the full cycle at the next tick, with no migration.
+
 | Key | Default | Meaning | Fail-closed |
 |---|---|---|---|
 | `release.candidate_tag` | `<product>-v{version}-rc.{rc}` | RC tag pattern. | Placeholders wrong: file invalid. |
@@ -197,12 +200,12 @@ The configuration maps no status: the tracker names each canonical status (`03-v
 | `release.version_component` | none; required with components | The component whose release ends the cycle; merged last. | Missing, or not a component: file invalid. |
 | `release.gate_record` | none; required with components | Path of the gate record (`{version}` once) the deployment reads. | Missing with components: file invalid. |
 | `release.release_pr_label` | `autorelease: pending` | Label that identifies release-please PRs. | — |
-| `release.release_please_authors` | required | GitHub logins allowed to author release-please PRs (`<slug>[bot]` and `app/<slug>` are both accepted at run time). | A release-shaped PR by anyone else is ignored and logged, never merged. |
+| `release.release_please_authors` | required with `[release]` | GitHub logins allowed to author release-please PRs (`<slug>[bot]` and `app/<slug>` are both accepted at run time). | A release-shaped PR by anyone else is ignored and logged, never merged. |
 | `release.bookkeeping_paths` | `[]` | Files allowed to differ between the latest RC and the release branch tip (release-please manifest, changelog, version files). | Empty: the RC must equal the tip exactly; anything else is a tip gap and the GO is false. |
 | `release.registry_path` | `docs/business-rules.md` | The business-rule registry (`02-business-rules.md`). | Unreadable at the judged ref: the guard fails closed. |
 | `release.business_rule_paths` | `["docs/business-rules.md", "**/business-rules.md"]` | Paths whose change the brief singles out as "business rules touched". | — |
 | `release.stagnation_hours` | `2` | A GO false for longer than this is reported once. | Not a positive integer: file invalid. |
-| `release.coordinators` | required | GitHub logins whose approval at the head SHA lets the bridge merge an angle PR. | No approval by one of them: the angle PR is not merged. |
+| `release.coordinators` | required with `[release]` | GitHub logins whose approval at the head SHA lets the bridge merge an angle PR. | No approval by one of them: the angle PR is not merged. |
 | `release.coordinator_assignee` | none | The tracker participant (an agent the tracker serves, like an angle's `assignee`) who receives the consolidation item of each candidate, assigned when the bridge creates it (`05-release-cycle.md` §3); an existing consolidation item is never reassigned. | Absent, or unknown to the tracker: the item is created unassigned; `doctor` reports an unknown participant. |
 | `release.escalation_label` | `blocked-by-human` | Label added to the release issue when it waits for the owner. | — |
 | `release.auto_candidate` | `false` | When true the bridge dispatches the next RC itself once a pass is merged; otherwise the coordinator does. | — |
@@ -213,7 +216,7 @@ The configuration maps no status: the tracker names each canonical status (`03-v
 | `release.release_please_workflow` | `release-please.yml` | Workflow redispatched once when release-please's PR is stale. | — |
 | `release.release_please_config` | `release-please-config.json` | release-please's configuration (its `config-file`), read at the release PR's head for each component's changelog path. | Unreadable for a multi-component product: a note gap, the GO is false. |
 | `release.release_please_manifest` | `.release-please-manifest.json` | release-please's manifest (its `manifest-file`). | — |
-| `[[release.angles]]` | at least one required | `key` (required), `title` (default `<Key> review`), `assignee` (participant hint), `notes` (path). | No angle: file invalid — a release with no angle would compute its GO from nobody. An `assignee` unknown to the tracker: the angle item is created unassigned; `doctor` reports it. |
+| `[[release.angles]]` | at least one required with `[release]` | `key` (required), `title` (default `<Key> review`), `assignee` (participant hint), `notes` (path). | No angle: file invalid — a release with no angle would compute its GO from nobody. An `assignee` unknown to the tracker: the angle item is created unassigned; `doctor` reports it. |
 
 ### `[review]`
 

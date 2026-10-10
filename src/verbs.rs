@@ -6,6 +6,7 @@
 use serde_json::json;
 
 use crate::action_log::ActionLog;
+use crate::config::Release;
 use crate::github::{CompareStatus, MergeMethod};
 use crate::method::release::findings::{self, RequalifyStep};
 use crate::method::release::go::{AngleState, GoDecision};
@@ -27,9 +28,21 @@ pub struct Cycle {
     pub branch: Option<String>,
 }
 
+/// The `[release]` section, or why a release verb has nothing to act on: a
+/// project without one has no release cycle (spec 05, "Without a release
+/// cycle").
+pub fn release_cycle<'a>(t: &Tick<'a>) -> Result<&'a Release, String> {
+    t.config.release.as_ref().ok_or_else(|| {
+        format!(
+            "{} has no release cycle: its configuration has no [release] section",
+            t.config.product.name
+        )
+    })
+}
+
 /// Read the cycle in flight; nothing is created.
 pub fn cycle(t: &Tick) -> Result<Cycle, String> {
-    let shape = Shape::of(&t.config.product.name, &t.config.release);
+    let shape = Shape::of(&t.config.product.name, release_cycle(t)?);
     let (candidate, _) = release::newest(t, &shape)?.ok_or("no release candidate tag")?;
     let item = release::find_release_item(t, &shape, candidate.version)?
         .ok_or("no release item yet: the next tick creates it")?;
@@ -73,7 +86,7 @@ pub fn status(t: &Tick) -> Result<(Cycle, GoDecision), String> {
             let state = if merged.iter().any(|p| mine(&p.head_ref)) {
                 AngleState::Merged
             } else if let Some(pr) = open.iter().find(|p| mine(&p.head_ref)) {
-                let path = report::report_path(&t.config.release.record, &c.tag, &angle);
+                let path = report::report_path(&release::section(t).record, &c.tag, &angle);
                 match t.github.file(&t.repo, &path, &pr.head_sha) {
                     Ok(text) if report::validate(&text, &c.tag, &angle).is_ok() => {
                         AngleState::InReview
@@ -106,10 +119,11 @@ pub fn status(t: &Tick) -> Result<(Cycle, GoDecision), String> {
 /// `release cut [--open]`: dispatch the cut workflow, for a new cycle from
 /// the default branch or for the next candidate on the release branch.
 pub fn cut(t: &Tick, log: &mut ActionLog, open: bool) -> Result<String, String> {
-    let shape = Shape::of(&t.config.product.name, &t.config.release);
+    let cfg = release_cycle(t)?;
+    let shape = Shape::of(&t.config.product.name, cfg);
     let branches: Vec<String> = t
         .github
-        .branches(&t.repo, &t.config.release.branch_prefix)
+        .branches(&t.repo, &cfg.branch_prefix)
         .map_err(|e| e.to_string())?
         .into_iter()
         .filter(|b| shape.is_release_branch(&b.name))
@@ -134,7 +148,7 @@ pub fn cut(t: &Tick, log: &mut ActionLog, open: bool) -> Result<String, String> 
             _ => return Err(format!("several release branches: {}", branches.join(", "))),
         }
     };
-    let workflow = &t.config.release.cut_workflow;
+    let workflow = &cfg.cut_workflow;
     let mut report = Report::default();
     t.act(
         log,
@@ -172,7 +186,7 @@ pub fn close(
     if reason.trim().is_empty() {
         return Err("a waiver needs a reason".into());
     }
-    let shape = Shape::of(&t.config.product.name, &t.config.release);
+    let shape = Shape::of(&t.config.product.name, release_cycle(t)?);
     let v = crate::method::release::shape::Version::parse(version).ok_or("not a version")?;
     let item =
         release::find_release_item(t, &shape, v)?.ok_or("no release item for this version")?;
@@ -234,6 +248,7 @@ pub fn requalify(
     reason: &str,
     who: &str,
 ) -> Result<String, String> {
+    release_cycle(t)?;
     let item = t.tracker.get(key).map_err(|e| e.to_string())?;
     let from =
         severity_of(&item).ok_or_else(|| format!("{key} is not a finding ticket of a release"))?;

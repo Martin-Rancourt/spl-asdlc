@@ -71,10 +71,10 @@ fn config_check_accepts_the_configuration_template() {
 fn the_configuration_template_names_the_example_callers() {
     let c = Config::parse(&read(TOML)).unwrap();
     for wf in [
-        &c.release.cut_workflow,
-        &c.release.gate_workflow,
-        &c.release.gate_rerun_workflow,
-        &c.release.release_please_workflow,
+        &c.release.as_ref().unwrap().cut_workflow,
+        &c.release.as_ref().unwrap().gate_workflow,
+        &c.release.as_ref().unwrap().gate_rerun_workflow,
+        &c.release.as_ref().unwrap().release_please_workflow,
     ] {
         assert!(
             root().join("docs/setup/examples").join(wf).is_file(),

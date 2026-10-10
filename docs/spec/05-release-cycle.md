@@ -2,6 +2,8 @@
 
 Exhaustive, on the whole project, in release candidates. The bridge coordinates; agents and humans do the QA on branches; the GO is computed.
 
+The cycle is optional: a project without a `[release]` section in its configuration has none ("Without a release cycle", below).
+
 ## Invariants
 
 1. **A human opens a cycle.** The cut is a `workflow_dispatch` of the `release-cut` workflow: it creates the release branch `release/<YYYY-MM-DD-HH-MM>-utc` from `main`, refuses when a release branch is already in flight, and pushes the first RC tag, annotated with the release class. Nothing else happens in CI.
@@ -33,3 +35,12 @@ Posted by the bridge on the release issue once per RC, once that RC's gate is gr
 - Release angles with assignee hints; the tracker participant who receives the consolidation item (`release.coordinator_assignee`, optional); `max_rc_passes` (default 2); the policy for later passes (`full` | `gate-and-coordinator`); GO policy (`computed` | `human`); the nits grouping (`shared` | `per-nit`), chosen for the tracker.
 - Publication and deployment steps (inputs of `release-publish`); the deployment truth (`deployed: production` labels by component).
 - Notification channels for the release note.
+
+## Without a release cycle
+
+A project before its first release adopts the method without the cycle: its configuration has no `[release]` section (`08-configuration.md`). The absence of the section is the choice; there is no mode to set, and the layer is added later by adding the section.
+
+1. **The bridge does nothing release-related.** No release pass and no closure run: no release issue, no release label, no angle of a candidate, no gate read, no release note. The release verbs (`release cut`, `status`, `close`, `requalify`, `abandon`) answer that the project has no release cycle and write nothing; `doctor` reports `release cycle: none` and skips the release-only checks (release-please's files, the release workflows, the release participants).
+2. **Merging is delivering.** A ticket the state rules of `04-pr-review.md` §10 put **To Deploy** at a merge, or when another of its PRs closes without merge, is judged at once by the Done gate the closure uses (§11, its boxes and its duplicates'): every box ticked → **Done**; only its own `## Post deploy` boxes open → **Post Deploy**, labelled and given its urgent validation sub-task as at the closure, and the post-deploy validation (§11) moves it to **Done** once they are checked; a box of a duplicate open → **In Progress**. This is fail-closed: a ticket that declares a check in production is never Done before that check is ticked, and a contract that cannot be read in full writes nothing (the next tick retries).
+3. **What the PR review reads stays.** The business-rule guard of a PR reads the registry at `docs/business-rules.md`, and the PR pass leaves alone a PR shaped like the release machinery (a head branch under `release/`, the `autorelease: pending` label, §8 of `04-pr-review.md`): the defaults of `release.registry_path`, `release.branch_prefix` and `release.release_pr_label`.
+4. **Adding `[release]` later** switches to the full cycle from the next tick, with no migration: tickets already Done stay Done, and the next merge puts its ticket To Deploy, waiting for a release. Removing the section moves no ticket either: one already in To Deploy stays there until someone moves it.

@@ -164,7 +164,18 @@ pub(super) fn merge(
         );
         m.put("tracker", "team_keys", t.team_keys.map(Value::from));
     }
-    if let Some(r) = raw.release {
+    // No `[release]` in the repository's file is the choice of no release
+    // cycle: the overlay never creates the section, whose keys would then
+    // complete nothing (spec 08, `[release]`).
+    if raw.release.is_some() && !m.repository.contains_key("release") {
+        m.refuse(
+            "release",
+            format!(
+                "{} has no [release] section (the project has no release cycle): the overlay's release keys complete nothing; remove them, or add [release] to the repository's file",
+                m.repository_label
+            ),
+        );
+    } else if let Some(r) = raw.release {
         m.put("release", "coordinators", r.coordinators.map(Value::from));
         m.put(
             "release",
@@ -223,6 +234,7 @@ fn instance_keys_only(overlay: &Source) -> Result<BTreeMap<String, usize>, Confi
             }
             continue;
         };
+        lines.insert(name.to_string(), line(k.span()));
         // A table written as another type is refused by its type, below.
         let DeValue::Table(inner) = v.get_ref() else {
             continue;

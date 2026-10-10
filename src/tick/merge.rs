@@ -144,7 +144,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> Pass {
         }
     };
     prs.sort_by_key(|p| p.number);
-    let release = &t.config.release;
+    let (branch_prefix, release_pr_label) = t.config.release_machinery();
     let coordinators = &t.config.review.coordinators;
     let mut open = OpenPrs {
         known: true,
@@ -156,9 +156,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> Pass {
             report.out_of_time = true;
             return Pass::default();
         }
-        if review::excluded_from_merge_pass(&pr, &release.branch_prefix, &release.release_pr_label)
-            .is_some()
-        {
+        if review::excluded_from_merge_pass(&pr, branch_prefix, release_pr_label).is_some() {
             continue;
         }
         let link = link::ticket_item(&pr, t.tracker, t.config.tracker.link_fallback);
@@ -226,7 +224,6 @@ fn one(
     open: &OpenPrs,
 ) -> Option<Candidate> {
     let object = format!("pr#{}", pr.number);
-    let release = &t.config.release;
 
     // ---- the ticket ----
     let ticket = match link {
@@ -418,7 +415,7 @@ fn one(
             &ticket.description,
             &registry,
             files.as_deref(),
-            &release.registry_path,
+            t.config.registry_path(),
         );
         if !gate.ok() {
             say_once(
@@ -431,7 +428,7 @@ fn one(
                     ("ticket", &ticket.key),
                     ("head", texts::short(&pr.head_sha)),
                 ],
-                &business_rules::refusal(&gate, &ticket.key, &release.registry_path),
+                &business_rules::refusal(&gate, &ticket.key, t.config.registry_path()),
             );
             return None;
         }
@@ -746,9 +743,10 @@ fn reopen_for_open_pr(
 
 /// A merged PR's ticket goes where the state rules say (spec 04 §10,
 /// BR-ASDLC-008): In Review while another of its PRs is in review, In
-/// Progress while a box of its contract is open, otherwise To Deploy; never
-/// backwards past the merge (REQ-MERGE-062 as the spec corrects it, never
-/// Done). The merge comment records it, once.
+/// Progress while a box of its contract is open, otherwise To Deploy, or,
+/// without a release cycle, Done (Post Deploy while its own `## Post
+/// deploy` boxes wait); never backwards past the merge (REQ-MERGE-062 as the
+/// spec corrects it). The merge comment records it, once.
 pub fn after_merge(
     t: &Tick,
     log: &mut ActionLog,
@@ -788,24 +786,27 @@ pub fn after_merge(
             );
             return;
         };
-        if state != Some(to) {
-            let moved = t.act(
+        let (to, why) = match delivered(t, ticket, to, why) {
+            Ok(d) => d,
+            Err(e) => {
+                t.unreadable(report, &object, format!("its contract: {e}"));
+                return;
+            }
+        };
+        // The comment records the transition: without it, the sweep
+        // retries the status at the next tick.
+        if state != Some(to)
+            && !set_state(
+                t,
                 log,
                 report,
                 &object,
-                &format!("status {to}"),
+                ticket,
+                to,
                 json!({"merged_pr": pr.url, "next": why.next()}),
-                || {
-                    t.tracker
-                        .set_status(&ticket.key, to, None)
-                        .map_err(|e| e.to_string())
-                },
-            );
-            // The comment records the transition: without it, the sweep
-            // retries the status at the next tick.
-            if moved.is_none() {
-                return;
-            }
+            )
+        {
+            return;
         }
         state = Some(to);
         next = why.next();
@@ -824,6 +825,57 @@ pub fn after_merge(
         }
         Err(e) => t.unreadable(report, &object, format!("the ticket's comments: {e}")),
     }
+}
+
+/// Without a release cycle (no `[release]`, `docs/spec/05-release-cycle.md`,
+/// "Without a release cycle") merging is delivering: a ticket the state
+/// rules put To Deploy goes where the Done gate says
+/// ([`ticket_state::delivered`]). With a release cycle, or for any other
+/// state, the rules' answer stands. `Err` when the contract could not be
+/// read in full: nothing is written, the next tick retries.
+pub fn delivered(
+    t: &Tick,
+    ticket: &Item,
+    to: Status,
+    why: ticket_state::Why,
+) -> Result<(Status, ticket_state::Why), String> {
+    if to != Status::ToDeploy || t.config.release.is_some() {
+        return Ok((to, why));
+    }
+    let gate = super::closure::contract_gate(t, ticket)?;
+    ticket_state::delivered(&ticket.key, &gate).ok_or_else(|| {
+        gate.unreadable_reason
+            .unwrap_or_else(|| "it could not be read in full".to_string())
+    })
+}
+
+/// Write the status the state rules gave a ticket whose PR resolved; whether
+/// it is in place. Post Deploy (only without a release cycle, at a merge)
+/// gets its index label first and its validation sub-task after, as at the
+/// closure (BR-ASDLC-003): a replay writes none of them again.
+pub fn set_state(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    object: &str,
+    ticket: &Item,
+    to: Status,
+    inputs: serde_json::Value,
+) -> bool {
+    if to == Status::PostDeploy && !super::post_deploy::watch(t, log, report, ticket) {
+        return false;
+    }
+    let moved = t
+        .act(log, report, object, &format!("status {to}"), inputs, || {
+            t.tracker
+                .set_status(&ticket.key, to, None)
+                .map_err(|e| e.to_string())
+        })
+        .is_some();
+    if moved && to == Status::PostDeploy {
+        super::post_deploy::ensure_sub_task(t, log, report, ticket);
+    }
+    moved
 }
 
 /// Whether the bridge already recorded this merge on the ticket.
@@ -846,7 +898,7 @@ pub fn any_merge_recorded(t: &Tick, key: &str) -> Result<bool, String> {
 }
 
 fn read_registry(t: &Tick, head: &str) -> Registry {
-    let path = &t.config.release.registry_path;
+    let path = t.config.registry_path();
     match t.github.file(&t.repo, path, head) {
         Ok(text) => Registry::Ids(business_rules::registry_ids(&text)),
         Err(e) if e.is_not_found() => match t.github.commit(&t.repo, head) {
