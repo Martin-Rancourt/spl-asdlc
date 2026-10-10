@@ -43,12 +43,53 @@ impl Default for UreqTransport {
     fn default() -> Self {
         let config = ureq::Agent::config_builder()
             .http_status_as_error(false)
+            // Callers must examine redirects before following them.  In
+            // particular, artifact downloads deliberately make their second
+            // request without an API credential; an implicit redirect here
+            // would bypass that boundary.
+            .max_redirects(0)
             .timeout_global(Some(Duration::from_secs(60)))
             .user_agent(concat!("spl-asdlc/", env!("CARGO_PKG_VERSION")))
             .build();
         UreqTransport {
             agent: ureq::Agent::new_with_config(config),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HttpRequest, Transport, UreqTransport};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    #[test]
+    fn real_transport_returns_redirects_for_the_caller_to_validate() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 1024];
+            let _ = stream.read(&mut request).unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1/next\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+        });
+
+        let response = UreqTransport::default()
+            .send(HttpRequest {
+                method: "GET",
+                url: format!("http://{address}/redirect"),
+                headers: vec![],
+                body: None,
+            })
+            .unwrap();
+
+        assert_eq!(response.status, 302);
+        server.join().unwrap();
     }
 }
 

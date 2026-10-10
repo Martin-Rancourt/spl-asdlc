@@ -1,0 +1,30 @@
+{
+  "schema": "spl-asdlc/qa-report/1",
+  "candidate": "v0.2.0-rc.1",
+  "angle": "security",
+  "reviewer": "Ben",
+  "verdict": "go-with-note",
+  "checked": [
+    "Identity and privilege: src/github/auth.rs and src/github/rest.rs credential minting, token cache, GitHub API host boundary, and tracker authorization paths",
+    "Data and privileged capability: configuration secret references, artifact ZIP size and integrity handling, and action log filesystem boundaries",
+    "Input and cost: CLI/config parsing, GitHub response limits, artifact extraction limit, pagination limits, and shell interpolation guards",
+    "Ingress and response: HTTP transport redirect behaviour, API and artifact request headers, error handling, and response body limits",
+    "Delivery chain: candidate workflows, explicit job permissions, pinned actions, reusable-workflow secret declarations, and workflow_run auto-rerun trust boundary",
+    "cargo test --locked --lib (677 passed)",
+    "cargo test --locked --test workflows (164 passed)",
+    "cargo test --locked was attempted but this host's Cargo 1.99.0 failed to define CARGO_BIN_EXE_spl-asdlc for the pre-existing own_config and setup_files integration tests; suite failures are left to the release gate"
+  ],
+  "findings": [
+    {
+      "id": "security-1",
+      "severity": "blocker",
+      "summary": "The real HTTP transport followed redirects implicitly, bypassing callers' redirect validation boundary.",
+      "anchor": "src/http.rs:46",
+      "evidence": "ureq defaults to ten automatic redirects; artifact_file removes the API credential only in its explicit redirect path, which the real transport could previously skip.",
+      "fixed_in_branch": true,
+      "testable": true,
+      "proposed_test": "http::tests::real_transport_returns_redirects_for_the_caller_to_validate",
+      "ticket": null
+    }
+  ]
+}
