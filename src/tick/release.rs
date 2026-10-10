@@ -5,16 +5,21 @@
 //! 2. the candidate's record (comment and `## Candidates` line), the
 //!    embarked tickets labelled; once the candidate's gate is green, and
 //!    never before, the angle sub-items and the consolidation item of the
-//!    candidate, then the brief (BR-ASDLC-004); a candidate with no QA
-//!    angle (`release.angles = []`) gets the brief alone; a red gate whose automatic
-//!    rerun settled gets its urgent gate-fix ticket, which a later green
-//!    gate closes (BR-ASDLC-016);
-//! 3. the angle PRs: merged into the release branch when approved, green and
-//!    carrying a valid report; the findings of a merged report filed;
+//!    candidate, the consolidation item blocked by every angle sub-item,
+//!    then the brief (BR-ASDLC-004, BR-ASDLC-020); a candidate with no QA
+//!    angle (`release.angles = []`) gets the brief alone; the consolidation item of
+//!    an older candidate Done; a red gate whose automatic rerun settled gets
+//!    its urgent gate-fix ticket, which a later green gate closes
+//!    (BR-ASDLC-016);
+//! 3. the angle PRs: each sub-item follows its PR (In Progress, In Review,
+//!    back In Progress on changes requested); merged into the release
+//!    branch when approved, green and carrying a valid report, the sub-item
+//!    Done; the findings of a merged report filed;
 //! 4. the GO, and on GO the release-please PR merged;
 //! 5. otherwise the HOLD said once, the escalation when the passes are
 //!    spent, the stagnation notice;
-//! 6. once the release is published: the closure (`closure.rs`).
+//! 6. once the release is published: the consolidation items Done, then the
+//!    closure (`closure.rs`).
 //!
 //! Points the specification leaves open are not settled here; each waits,
 //! as `docs/open-points.md` lists them (the human GO, a raised `max_rc_passes`).
@@ -117,6 +122,12 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
         return false;
     }
     if let Some(published) = published {
+        // The release published ends every overall review of the cycle
+        // (BR-ASDLC-020); the closure stays the fallback.
+        match t.tracker.children(&item.key) {
+            Ok(children) => end_consolidations(t, log, report, &children, None),
+            Err(e) => t.unreadable(report, &item.key, format!("children: {e}")),
+        }
         closure::close(t, log, report, &shape, &candidate, &item, &published);
         return false;
     }
@@ -207,16 +218,26 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
             }
         },
         Round::Open => open_round(t, log, report, &item, &candidate, &branch, &label, &offered)
+            .map(|(children, _)| children)
             .unwrap_or_default(),
         Round::Brief(b) => {
-            // The round first, the brief last (REQ-REL-046).
-            let opened = open_round(t, log, report, &item, &candidate, &branch, &label, &offered);
-            if opened.is_some() {
-                post_brief(t, log, report, &item, &candidate, &b);
+            // The round first, its relations, the brief last (REQ-REL-046).
+            // A relation not written holds the brief, fail-closed: the brief
+            // is what starts the angles' work, and a consolidation item not
+            // yet blocked by them could be served first. The next tick lays
+            // the relations, then posts the brief.
+            match open_round(t, log, report, &item, &candidate, &branch, &label, &offered) {
+                Some((children, true)) => {
+                    post_brief(t, log, report, &item, &candidate, &b);
+                    children
+                }
+                Some((children, false)) => children,
+                None => Vec::new(),
             }
-            opened.unwrap_or_default()
         }
     };
+    // A newer candidate tagged ends the overall review of the older ones.
+    end_consolidations(t, log, report, &children, Some(&candidate.tag));
 
     let mut merged = false;
     let angle_prs = match t.github.open_pulls(&t.repo, Some(&branch)) {
@@ -769,8 +790,12 @@ fn qa_round(
 }
 
 /// The angle sub-items and the consolidation item of the candidate,
-/// created when missing (spec 05 §3, §4). Returns the release item's
-/// children after the creations, or `None` when they could not be read.
+/// created when missing (spec 05 §3, §4), the consolidation item blocked by
+/// every angle sub-item of the candidate (BR-ASDLC-020; written right after
+/// the items, repaired at every later tick; one that fails is reported and
+/// retried). Returns the release item's children after the creations, with
+/// `false` when a relation could not be read or written (the brief then
+/// waits), or `None` when the children could not be read.
 #[allow(clippy::too_many_arguments)]
 fn open_round(
     t: &Tick,
@@ -781,7 +806,7 @@ fn open_round(
     branch: &str,
     label: &str,
     offered: &[String],
-) -> Option<Vec<Item>> {
+) -> Option<(Vec<Item>, bool)> {
     let release = section(t).ok()?;
     let mut children = match t.tracker.children(&item.key) {
         Ok(c) => c,
@@ -838,17 +863,84 @@ fn open_round(
             &format!("{product} {v} (rc.{})", c.rc),
             texts::Consolidating::Candidate,
         );
-        let assignee = release
-            .coordinator_assignee
-            .as_ref()
-            .and_then(|a| t.tracker.user(a).ok());
+        let assignee = coordinator(t);
         if let Some(created) =
             create_child(t, log, report, &item.key, &title, &body, label, assignee)
         {
             children.push(created);
         }
     }
-    Some(children)
+    let blocked = block_consolidation(t, log, report, &children, &c.tag);
+    Some((children, blocked))
+}
+
+/// The candidate's consolidation item, while open, is blocked by every
+/// angle sub-item of the candidate (BR-ASDLC-020), through the same
+/// relation as a PR round's (BR-ASDLC-018): it is served only once every
+/// angle PR is merged. A relation already there is not written again; one
+/// that could not be read or written is reported and retried next tick, and
+/// `false` is returned so that the brief waits for it.
+fn block_consolidation(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    children: &[Item],
+    candidate: &str,
+) -> bool {
+    let want = Some(BridgeItem::Consolidation {
+        scope: candidate.to_string(),
+    });
+    let Some(consolidation) = children.iter().find(|ch| {
+        !ch.state.is_resolved() && texts::bridge_item(&ch.description, ch.parent.as_deref()) == want
+    }) else {
+        return true;
+    };
+    let angles: Vec<String> = children
+        .iter()
+        .filter(|ch| angle_of(ch, candidate).is_some())
+        .map(|ch| ch.key.clone())
+        .collect();
+    super::merge::block_consolidation(t, log, report, &consolidation.key, &angles)
+}
+
+/// The consolidation items of the release item ended by a later fact
+/// (BR-ASDLC-020): every one but the `current` candidate's goes Done, since
+/// a newer candidate was tagged (the overall review cut it); with no
+/// `current`, the release is published and every one goes Done. The
+/// cycle's closure still closes what is left (spec 05 §11).
+fn end_consolidations(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    children: &[Item],
+    current: Option<&str>,
+) {
+    for ch in children {
+        let Some(BridgeItem::Consolidation { scope }) =
+            texts::bridge_item(&ch.description, ch.parent.as_deref())
+        else {
+            continue;
+        };
+        if ch.state.is_resolved() || Some(scope.as_str()) == current {
+            continue;
+        }
+        let why = match current {
+            Some(newer) => format!("status Done (newer candidate {newer})"),
+            None => "status Done (release published)".to_string(),
+        };
+        t.act(
+            log,
+            report,
+            &ch.key,
+            &why,
+            json!({"candidate": scope}),
+            || {
+                t.tracker
+                    .set_status(&ch.key, Status::Done, None)
+                    .map_err(|e| e.to_string())
+            },
+        );
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1303,6 +1395,15 @@ fn angle_pr(
     let Ok(release) = section(t) else {
         return AngleState::InReview;
     };
+    let required = match t.github.required_checks(&t.repo, branch) {
+        Ok(r) => r,
+        Err(e) => {
+            t.unreadable(report, &object, e);
+            return AngleState::InReview;
+        }
+    };
+    let green = checks::pr_state(pr, &required.contexts) == CheckState::Green;
+    follow_angle_pr(t, log, report, pr, sub, angle, green);
     let path = report::report_path(&release.record, &c.tag, angle);
     let valid = match t.github.file(&t.repo, &path, &pr.head_sha) {
         Ok(text) => report::validate(&text, &c.tag, angle).map_err(|e| e.join("; ")),
@@ -1348,14 +1449,7 @@ fn angle_pr(
     let Approval::Qualified { by } = review::pr_approval(pr, &release.coordinators) else {
         return AngleState::InReview;
     };
-    let required = match t.github.required_checks(&t.repo, branch) {
-        Ok(r) => r,
-        Err(e) => {
-            t.unreadable(report, &object, e);
-            return AngleState::InReview;
-        }
-    };
-    if checks::pr_state(pr, &required.contexts) != CheckState::Green {
+    if !green {
         return AngleState::InReview;
     }
     match review::branch_state(pr) {
@@ -1412,6 +1506,98 @@ fn angle_pr(
         },
     );
     AngleState::Merged
+}
+
+/// A release angle sub-item follows its open angle PR as a ticket follows
+/// its PR (BR-ASDLC-020): In Progress when the PR appears, In Review once it
+/// is ready with its required checks green, back In Progress when a
+/// configured coordinator requests changes at its head; Done comes from the
+/// merge. In Review assigns `release.coordinator_assignee`, who is then
+/// served the PR's review; sent back, the item goes to its angle's
+/// `assignee`, or to nobody (taken by role); both in the status's own write,
+/// an unset or unknown coordinator leaving the assignee as it is. Only a PR
+/// that names its sub-item drives it (the link the merge reads too), and
+/// one that does not is told once per head which key to name; a status
+/// already right is not written again.
+fn follow_angle_pr(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    pr: &PullRequest,
+    sub: &Item,
+    angle: &str,
+    green: bool,
+) {
+    if !prs::names_sub_item(pr, &sub.key) {
+        // Neither driven nor merged until it does: said once per head.
+        super::merge::say_once(
+            t,
+            log,
+            report,
+            pr,
+            "angle-unnamed",
+            &[("pr", &pr.url), ("head", texts::short(&pr.head_sha))],
+            &format!(
+                "This angle PR names no sub-item, so the bridge neither follows nor merges it: name \
+                 `{}` in its title or description (`docs/agents/review-release.md`, step 5).",
+                sub.key
+            ),
+        );
+        return;
+    }
+    let facts = prs::AnglePrFacts {
+        draft: pr.draft,
+        green,
+        sent_back: section(t)
+            .is_ok_and(|r| review::changes_requested_at_head(pr, &r.coordinators).is_some()),
+    };
+    let Some(to) = prs::angle_item_status(sub.state.status, facts) else {
+        return;
+    };
+    // Who is served, in the same write as the status: the coordinator to
+    // review the PR; its angle again when the coordinator sent it back
+    // (nobody named: taken by role); untouched when the work starts.
+    let assignee: Option<Option<crate::tracker::User>> = match to {
+        Status::InReview => coordinator(t).map(Some),
+        Status::InProgress if facts.sent_back => Some(angle_assignee(t, angle)),
+        _ => None,
+    };
+    let who = match &assignee {
+        None => String::new(),
+        Some(None) => ", unassigned".to_string(),
+        Some(Some(u)) => format!(", assigned to {}", u.name),
+    };
+    t.act(
+        log,
+        report,
+        &sub.key,
+        &format!("status {to}{who} (angle PR)"),
+        json!({"pr": pr.url, "head": pr.head_sha}),
+        || {
+            t.tracker
+                .set_status(&sub.key, to, assignee.as_ref().map(Option::as_ref))
+                .map_err(|e| e.to_string())
+        },
+    );
+}
+
+/// The participant `release.coordinator_assignee` names, when the tracker
+/// knows it (`doctor` reports one it does not).
+fn coordinator(t: &Tick) -> Option<crate::tracker::User> {
+    let name = section(t).ok()?.coordinator_assignee.as_ref()?;
+    t.tracker.user(name).ok()
+}
+
+/// The configured assignee of a release angle, when the tracker knows it.
+fn angle_assignee(t: &Tick, angle: &str) -> Option<crate::tracker::User> {
+    let name = section(t)
+        .ok()?
+        .angles
+        .iter()
+        .find(|a| a.key == angle)?
+        .assignee
+        .as_ref()?;
+    t.tracker.user(name).ok()
 }
 
 /// The findings of every angle PR of the candidate merged into the release

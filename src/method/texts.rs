@@ -262,7 +262,10 @@ pub fn release_angle_item(
          changes standing, has its required checks green and is up to date with `{branch}`. A report that is missing or \
          invalid is said in a comment here and the PR is not merged. An item still open when the cycle closes is closed \
          with the release.\n\n\
-         ## Context\n- Candidate: `{candidate}`\n- Release label: `{label}`\n- Project notes: {notes}\n- The brief is on the release item.\n\n\
+         ## Context\n- Candidate: `{candidate}`\n- Release label: `{label}`\n- Project notes: {notes}\n- The brief is on the release item.\n\
+         - This item follows your PR: `In Progress` once it appears; `In Review` once it is ready with its checks green, \
+         assigned to the coordinator who reviews it; back `In Progress` when the coordinator requests changes, assigned to \
+         this angle's assignee again (or to nobody); `Done` when the bridge merges it after the coordinator's approval.\n\n\
          {protocol}",
         marker = marker("angle", &[("scope", candidate), ("angle", &angle.key)]),
         key = angle.key,
@@ -537,12 +540,21 @@ pub enum Consolidating {
 }
 
 /// The consolidation item of a PR review or of a release candidate, with
-/// the consolidation protocol embedded (BR-ASDLC-015).
+/// the consolidation protocol embedded (BR-ASDLC-015). A candidate's is the
+/// overall review (BR-ASDLC-020): served once every angle PR of the
+/// candidate is merged, its item blocked by every angle sub-item; the
+/// coordinator reviewed each angle PR as it came, this item reads them
+/// together.
 pub fn consolidation_item(scope: &str, title_of: &str, of: Consolidating) -> (String, String) {
     let title = format!("Consolidation — {title_of}");
-    let (part, criteria, closes, job) = match of {
+    let (goal, non_goals, criteria, closes, job) = match of {
         Consolidating::PullRequest => (
-            "For a PR review",
+            format!(
+                "Consolidate every angle of {scope} as the protocol below describes it (`## Protocol`, its part \
+                 \"For a PR review\"): confirm or reject each finding exactly once, with a reason for every rejection, \
+                 apply the retained fixes, and approve."
+            ),
+            "- New findings beyond what a fix requires.",
             "- [ ] Every finding is confirmed or rejected in its thread.\n\
              - [ ] The retained fixes are commits of the branch.\n- [ ] The approval is submitted at the head.",
             "Nothing you set closes this item: its PR does. The bridge sets it Done when it merges the PR, which it does \
@@ -554,21 +566,29 @@ pub fn consolidation_item(scope: &str, title_of: &str, of: Consolidating) -> (St
             protocol::Job::PrConsolidation,
         ),
         Consolidating::Candidate => (
-            "For a release candidate",
-            "- [ ] Every finding of every angle PR is confirmed or rejected in its thread.\n\
-             - [ ] Every report is checked valid against the schema below.\n\
-             - [ ] Every angle PR whose fixes are right and whose report is valid is approved at its head.",
-            "Nothing you set closes this item: the bridge closes it (Done), with the release's other sub-items, when it \
-             closes the cycle once the release is published, deployed and merged back. The bridge merges each angle PR you approve \
-             at its head (with a valid report and its checks green); the GO is computed from the facts, never declared.",
+            format!(
+                "The overall review of candidate `{scope}`, as the protocol below describes it (`## Protocol`, its part \
+                 \"For a release candidate\", the overall review), once every angle PR of the candidate is merged: read \
+                 every merged report together, confirm or reject each non-blocking finding in a comment on its ticket, \
+                 with a reason for every rejection, check that nothing falls between the angles, then tag the next \
+                 candidate (the cut workflow, action `candidate`) unless the project automates it."
+            ),
+            "- Reviewing an angle PR: the coordinator reviews each one as it comes, before the bridge merges it.\n\
+             - Filing tickets: the bridge creates them from the merged reports.\n- Declaring the GO: the bridge computes it.",
+            "- [ ] Every merged report of the candidate is read, with the others.\n\
+             - [ ] Every non-blocking finding is confirmed or rejected on its ticket, with a reason for every rejection.\n\
+             - [ ] What falls between the angles is checked, and said on the release item.\n\
+             - [ ] The next candidate is tagged, or the project's automation tags it.",
+            "Nothing you set closes this item. It is served once every angle sub-item of the candidate is resolved, \
+             that is once the bridge merged every angle PR, since it is blocked by each of them. The bridge sets it Done \
+             when a newer candidate is tagged, or when the release is published; the cycle's closure closes it \
+             otherwise. The GO is computed from the facts, never declared.",
             protocol::Job::ReleaseConsolidation,
         ),
     };
     let body = format!(
-        "{marker}\n\n## Goal\nConsolidate every angle of {scope} as the protocol below describes it (`## Protocol`, its \
-         part \"{part}\"): confirm or reject each finding exactly once, with a reason for every rejection, apply the \
-         retained fixes, and approve.\n\n\
-         ## Non-goals\n- New findings beyond what a fix requires.\n\n\
+        "{marker}\n\n## Goal\n{goal}\n\n\
+         ## Non-goals\n{non_goals}\n\n\
          ## Acceptance criteria\n{criteria}\n\n\
          ## Business rules\n{absence}\n\n\
          ## What closes this item\n{closes}\n\n\

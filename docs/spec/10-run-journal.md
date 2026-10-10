@@ -23,9 +23,9 @@ Driven by <who>. Gestures outside the method: <n>, listed below.
 - <time> — cut (dispatch), RC1 tagged, class <routine|sensible>
 - <time> — release issue created by the bridge
 - <time> — gate green on RC1
-- <time> — angle sub-items and brief created by the bridge (once the gate is green)
-- <time> — angle PRs: <angle> (go), <angle> (hold: 1 blocker fixed in branch), …
-- <time> — angle PRs merged, RC2 tagged, gate green
+- <time> — angle sub-items, consolidation item (blocked by them) and brief created by the bridge (once the gate is green)
+- <time> — angle PRs: <angle> (go), <angle> (hold: 1 blocker fixed in branch), …, each reviewed by the coordinator as it came
+- <time> — angle PRs merged; overall review by the coordinator; RC2 tagged, gate green
 - <time> — GO computed; release-please PR merged by the bridge
 - <time> — published; components deployed; merge-back merged
 - <time> — closure: <n> tickets Done, <n> Post Deploy, <n> back In Progress; release note sent (<channels>)

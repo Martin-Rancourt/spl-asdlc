@@ -214,6 +214,27 @@ fn a_suite_name_from_the_evidence_pack_cannot_forge_a_marker() {
 }
 
 #[test]
+fn the_release_consolidation_item_is_the_overall_review_after_every_angle() {
+    // BR-ASDLC-020.
+    let (title, body) = consolidation_item(
+        "acme-v1.2.0-rc.1",
+        "acme v1.2.0 (rc.1)",
+        Consolidating::Candidate,
+    );
+    assert_eq!(title, "Consolidation — acme v1.2.0 (rc.1)");
+    assert!(crate::method::contract::missing_from_contract(&body).is_empty());
+    assert_eq!(
+        bridge_item(&body, Some("ABC-1")),
+        Some(BridgeItem::Consolidation {
+            scope: "acme-v1.2.0-rc.1".into()
+        })
+    );
+    assert!(body.contains("once every angle PR of the candidate is merged"));
+    assert!(body.contains("the coordinator reviews each one as it comes"));
+    assert!(body.contains("tag the next candidate"));
+}
+
+#[test]
 fn the_post_deploy_validation_sub_task_is_a_contract_marked_as_the_bridges() {
     let (title, body) = post_deploy_validation_item(
         "ABC-5",
@@ -663,7 +684,10 @@ fn a_consolidation_item_embeds_the_consolidation_protocol_and_says_what_closes_i
     assert!(rc.contains(&embedded(protocol::CONSOLIDATE)), "{rc}");
     assert!(rc.contains("its part \"For a release candidate\""), "{rc}");
     assert!(rc.contains("\"schema\": \"spl-asdlc/qa-report/1\""), "{rc}");
-    assert!(rc.contains("when it closes the cycle"), "{rc}");
+    assert!(
+        rc.contains("The bridge sets it Done when a newer candidate is tagged"),
+        "{rc}"
+    );
 }
 
 #[test]

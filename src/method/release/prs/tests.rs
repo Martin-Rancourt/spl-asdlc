@@ -320,3 +320,60 @@ fn two_trusted_release_prs_refuse_the_merge() {
     let prs = [release_pr(1), release_pr(2)];
     assert!(release_please_pr(&prs, BASE, &authors(), LABEL).is_err());
 }
+
+// ---- BR-ASDLC-020 ----
+
+fn facts(draft: bool, green: bool, sent_back: bool) -> AnglePrFacts {
+    AnglePrFacts {
+        draft,
+        green,
+        sent_back,
+    }
+}
+
+#[test]
+fn an_angle_item_follows_its_pr_through_the_normal_flow() {
+    let draft = facts(true, false, false);
+    let ready = facts(false, true, false);
+    let red = facts(false, false, false);
+    let sent_back = facts(false, true, true);
+    assert_eq!(
+        angle_item_status(Some(Status::Ready), draft),
+        Some(Status::InProgress),
+        "the PR appearing starts the work"
+    );
+    assert_eq!(
+        angle_item_status(Some(Status::Ready), ready),
+        Some(Status::InReview)
+    );
+    assert_eq!(
+        angle_item_status(Some(Status::InProgress), ready),
+        Some(Status::InReview)
+    );
+    assert_eq!(angle_item_status(Some(Status::InProgress), draft), None);
+    assert_eq!(angle_item_status(Some(Status::InProgress), red), None);
+    assert_eq!(
+        angle_item_status(Some(Status::InReview), sent_back),
+        Some(Status::InProgress)
+    );
+    assert_eq!(
+        angle_item_status(Some(Status::InProgress), sent_back),
+        None,
+        "sent back, it stays with its angle until the head moves"
+    );
+    assert_eq!(
+        angle_item_status(Some(Status::InReview), red),
+        None,
+        "red checks alone do not send it back"
+    );
+    for s in [
+        Status::Triage,
+        Status::Backlog,
+        Status::ToDeploy,
+        Status::Done,
+        Status::Canceled,
+    ] {
+        assert_eq!(angle_item_status(Some(s), ready), None, "{s}");
+    }
+    assert_eq!(angle_item_status(None, ready), None);
+}
