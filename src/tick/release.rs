@@ -181,16 +181,22 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
             }
         },
         Round::Open => open_round(t, log, report, &item, &candidate, &branch, &label, &offered)
+            .map(|(children, _)| children)
             .unwrap_or_default(),
         Round::Brief(b) => {
             // The round first, its relations, the brief last (REQ-REL-046).
-            // A relation not written is reported and retried at the next
-            // tick; it does not hold the brief, which the angles need.
-            let opened = open_round(t, log, report, &item, &candidate, &branch, &label, &offered);
-            if opened.is_some() {
-                post_brief(t, log, report, &item, &candidate, &b);
+            // A relation not written holds the brief, fail-closed: the brief
+            // is what starts the angles' work, and a consolidation item not
+            // yet blocked by them could be served first. The next tick lays
+            // the relations, then posts the brief.
+            match open_round(t, log, report, &item, &candidate, &branch, &label, &offered) {
+                Some((children, true)) => {
+                    post_brief(t, log, report, &item, &candidate, &b);
+                    children
+                }
+                Some((children, false)) => children,
+                None => Vec::new(),
             }
-            opened.unwrap_or_default()
         }
     };
     // A newer candidate tagged ends the overall review of the older ones.
@@ -720,8 +726,9 @@ fn qa_round(
 /// created when missing (spec 05 §3, §4), the consolidation item blocked by
 /// every angle sub-item of the candidate (BR-ASDLC-020; written right after
 /// the items, repaired at every later tick; one that fails is reported and
-/// retried). Returns the release item's children after the creations, or
-/// `None` when they could not be read.
+/// retried). Returns the release item's children after the creations, with
+/// `false` when a relation could not be read or written (the brief then
+/// waits), or `None` when the children could not be read.
 #[allow(clippy::too_many_arguments)]
 fn open_round(
     t: &Tick,
@@ -732,7 +739,7 @@ fn open_round(
     branch: &str,
     label: &str,
     offered: &[String],
-) -> Option<Vec<Item>> {
+) -> Option<(Vec<Item>, bool)> {
     let mut children = match t.tracker.children(&item.key) {
         Ok(c) => c,
         Err(e) => {
@@ -795,36 +802,37 @@ fn open_round(
             children.push(created);
         }
     }
-    block_consolidation(t, log, report, &children, &c.tag);
-    Some(children)
+    let blocked = block_consolidation(t, log, report, &children, &c.tag);
+    Some((children, blocked))
 }
 
 /// The candidate's consolidation item, while open, is blocked by every
 /// angle sub-item of the candidate (BR-ASDLC-020), through the same
 /// relation as a PR round's (BR-ASDLC-018): it is served only once every
 /// angle PR is merged. A relation already there is not written again; one
-/// that could not be read or written is reported and retried next tick.
+/// that could not be read or written is reported and retried next tick, and
+/// `false` is returned so that the brief waits for it.
 fn block_consolidation(
     t: &Tick,
     log: &mut ActionLog,
     report: &mut Report,
     children: &[Item],
     candidate: &str,
-) {
+) -> bool {
     let want = Some(BridgeItem::Consolidation {
         scope: candidate.to_string(),
     });
     let Some(consolidation) = children.iter().find(|ch| {
         !ch.state.is_resolved() && texts::bridge_item(&ch.description, ch.parent.as_deref()) == want
     }) else {
-        return;
+        return true;
     };
     let angles: Vec<String> = children
         .iter()
         .filter(|ch| angle_of(ch, candidate).is_some())
         .map(|ch| ch.key.clone())
         .collect();
-    super::merge::block_consolidation(t, log, report, &consolidation.key, &angles);
+    super::merge::block_consolidation(t, log, report, &consolidation.key, &angles)
 }
 
 /// The consolidation items of the release item ended by a later fact

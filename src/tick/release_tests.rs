@@ -2869,7 +2869,7 @@ fn the_release_consolidation_item_is_blocked_by_every_angle_of_its_candidate_onc
 }
 
 #[test]
-fn a_release_relation_that_cannot_be_written_is_reported_and_retried() {
+fn a_release_relation_that_cannot_be_written_holds_the_brief_until_it_is_laid() {
     let w = World::new();
     w.tracker.fail_writes_starting_with("relate");
     let r = w.tick();
@@ -2877,12 +2877,21 @@ fn a_release_relation_that_cannot_be_written_is_reported_and_retried() {
     assert_eq!(w.round(CAND).len(), 3, "the items are created");
     let consolidation = w.consolidation(CAND);
     assert!(w.blockers(&consolidation.key).is_empty());
+    assert!(
+        w.briefs(CAND).is_empty(),
+        "fail-closed: no brief while the consolidation is not blocked by its angles"
+    );
     w.tracker.state.borrow_mut().failing_writes.clear();
     let r = w.tick();
     assert!(r.ok(), "{r:?}");
     assert_eq!(w.blockers(&consolidation.key), w.angle_keys(CAND));
-    assert_eq!(w.briefs(CAND).len(), 1, "the brief, once");
+    assert_eq!(
+        w.briefs(CAND).len(),
+        1,
+        "the brief, once the relations are laid"
+    );
     w.quiet();
+    assert_eq!(w.briefs(CAND).len(), 1, "the brief, once");
 }
 
 #[test]
