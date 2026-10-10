@@ -331,6 +331,34 @@ pub struct RequiredChecks {
     pub strict: bool,
 }
 
+/// A ruleset that applies to a repository (its own or an organisation's),
+/// as GitHub returns it by id. Its bypass list is not read: an App's token
+/// sees it empty without admin rights.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ruleset {
+    pub id: u64,
+    pub name: String,
+    /// `branch`, `tag` or `push`.
+    pub target: String,
+    /// `active`, `evaluate` or `disabled`; only `active` enforces anything.
+    pub enforcement: String,
+    /// `conditions.ref_name.include`: fnmatch patterns on full refs
+    /// (`refs/heads/…`, `refs/tags/…`), `~DEFAULT_BRANCH` or `~ALL`.
+    pub include: Vec<String>,
+    /// `conditions.ref_name.exclude`, the same syntax.
+    pub exclude: Vec<String>,
+    /// The type of each rule (`deletion`, `update`, `required_status_checks`, …).
+    pub rules: BTreeSet<String>,
+    /// The contexts its `required_status_checks` rules require.
+    pub required_checks: BTreeSet<String>,
+}
+
+impl Ruleset {
+    pub fn is_active(&self) -> bool {
+        self.enforcement == "active"
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Release {
     pub tag: String,
