@@ -26,6 +26,21 @@ struct World {
     github: FakeGitHub,
     tracker: FakeTracker,
     signal: Recorder,
+    /// The action log the ticks of this world append to, as a host's.
+    log_path: std::path::PathBuf,
+}
+
+impl Drop for World {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.log_path);
+    }
+}
+
+/// A log file no other test writes.
+fn log_file() -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!("spl-asdlc-tick-{}-{n}.jsonl", std::process::id()))
 }
 
 impl World {
@@ -59,6 +74,7 @@ impl World {
             github,
             tracker: FakeTracker::new("ABC"),
             signal: Recorder::default(),
+            log_path: log_file(),
         }
     }
 
@@ -74,8 +90,14 @@ impl World {
             deadline: None,
             dry_run,
         };
-        let mut log = ActionLog::in_memory();
+        // A dry run keeps its log in memory, as the command line does.
+        let mut log = if dry_run {
+            ActionLog::in_memory()
+        } else {
+            ActionLog::at(self.log_path.clone())
+        };
         let report = run(&t, &mut log);
+        log.flush().unwrap();
         (report, log)
     }
 
@@ -169,12 +191,9 @@ fn a_green_pr_with_a_complete_contract_opens_a_review_round_then_nothing_more() 
     );
     assert!(log.entries().iter().all(|e| e.outcome == Outcome::Done));
 
-    // The same facts, a second tick: nothing written, nothing logged.
-    let before = (w.tracker.writes().len(), w.github_writes().len());
-    let (report, log) = w.tick(false);
-    assert!(report.ok(), "{report:?}");
-    assert!(log.entries().is_empty(), "{:?}", log.entries());
-    assert_eq!((w.tracker.writes().len(), w.github_writes().len()), before);
+    // The same facts, a second tick: nothing written; the log notes once
+    // why the PR waits.
+    quiet(&w);
 }
 
 // ---- BR-ASDLC-015: an item carries its protocol, frozen at creation ----
@@ -895,9 +914,18 @@ fn all_in(items: &[crate::tracker::Item], status: Status) -> bool {
     items.iter().all(|i| i.state.status == Some(status))
 }
 
-/// A second tick on unchanged facts writes nothing, anywhere.
+/// A second tick on unchanged facts writes nothing, anywhere, but the
+/// action log's note of why a PR waits when that is new; a third, nothing
+/// at all.
 fn quiet(w: &World) {
     let before = (w.tracker.writes().len(), w.github_writes().len());
+    let (report, log) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert!(
+        log.entries().iter().all(|e| e.outcome == Outcome::Waiting),
+        "{:?}",
+        log.entries()
+    );
     let (report, log) = w.tick(false);
     assert!(report.ok(), "{report:?}");
     assert!(log.entries().is_empty(), "{:?}", log.entries());
@@ -1176,6 +1204,207 @@ fn an_unreadable_ticket_of_another_pr_holds_the_state_after_a_merge() {
     );
 }
 
+// ---- SID-1008: an App's login, never a person's; why a PR waits ----
+//
+// Authors are as the bridge reads them: an App in the REST spelling
+// (`bot()`), a person bare.
+
+/// Whether the PR merges on one approval by `author` with `configured` as
+/// the only coordinator; the report when it does not.
+fn merges_on(configured: &str, author: &str) -> Result<(), Report> {
+    let mut w = World::new();
+    w.config.review.coordinators = vec![configured.to_string()];
+    let mut pr = in_review(&w, 7);
+    // Every angle reported (BR-ASDLC-018): only the approval is in question.
+    pr.reviews = angle_reviews(&w, &pr);
+    pr.reviews
+        .push(review(author, "APPROVED", &pr.head_sha, "ok"));
+    w.open(pr);
+    let (report, _) = w.tick(false);
+    if w.github_writes()
+        .contains(&"merge example-org/acme#7 at head-7 squash".to_string())
+    {
+        Ok(())
+    } else {
+        Err(report)
+    }
+}
+
+#[test]
+fn a_coordinator_apps_approval_merges_and_a_person_of_its_name_does_not() {
+    for configured in [
+        bot("coord-app"),
+        bot("COORD-APP"),
+        "app/Coord-App".to_string(),
+    ] {
+        assert_eq!(
+            merges_on(&configured, &bot("coord-app")),
+            Ok(()),
+            "{configured}"
+        );
+        let held = merges_on(&configured, "coord-app").expect_err("a person is not the App");
+        assert_eq!(
+            held.waiting_lines(),
+            vec!["waiting: pr#7 no coordinator approval at head-7 (approvals from: coord-app)"]
+        );
+    }
+    assert_eq!(merges_on("coord", "Coord"), Ok(()), "a person, case folded");
+    assert!(
+        merges_on("coord-app", &bot("coord-app")).is_err(),
+        "a bare login is a person, never the App"
+    );
+}
+
+#[test]
+fn only_the_coordinator_apps_own_request_for_changes_sends_the_ticket_back() {
+    for (author, sent_back) in [(bot("Coord-App"), true), ("coord-app".to_string(), false)] {
+        let mut w = World::new();
+        w.config.review.coordinators = vec![bot("coord-app")];
+        let mut pr = in_review(&w, 7);
+        pr.reviews = vec![review(&author, "CHANGES_REQUESTED", &pr.head_sha, "redo")];
+        w.open(pr);
+        w.tick(false);
+        let (report, _) = w.tick(false);
+        if sent_back {
+            assert_eq!(
+                w.tracker.item("ABC-7").state.status,
+                Some(Status::InProgress),
+                "{author}"
+            );
+            assert_eq!(
+                report.waiting_lines(),
+                vec![format!(
+                    "waiting: pr#7 {author} requested changes at head-7: the implementer's turn"
+                )]
+            );
+        } else {
+            assert_eq!(
+                w.tracker.item("ABC-7").state.status,
+                Some(Status::InReview),
+                "a person of the App's name sends nothing back"
+            );
+            assert_eq!(
+                report.waiting_lines(),
+                vec!["waiting: pr#7 no coordinator approval at head-7 (no approval at this head)"]
+            );
+        }
+    }
+}
+
+#[test]
+fn a_ticketless_app_is_recognised_however_the_configuration_spells_it() {
+    for configured in [
+        "dependabot".to_string(),
+        bot("Dependabot"),
+        "app/dependabot".to_string(),
+    ] {
+        let mut w = World::new();
+        w.config.review.ticketless_authors = vec![configured.clone()];
+        let pr = app_pr(7, "dependabot");
+        w.open(pr.clone());
+        w.tick(false);
+        assert!(pr_ticket(&w, &pr).is_some(), "configured {configured}");
+    }
+}
+
+#[test]
+fn a_pr_without_its_coordinators_approval_says_why_at_every_tick_and_logs_it_once() {
+    let w = World::new();
+    let mut pr = in_review(&w, 7);
+    pr.reviews = vec![
+        review("dev-agent", "APPROVED", &pr.head_sha, "ok"),
+        review(&bot("qa-app"), "APPROVED", &pr.head_sha, "ok"),
+    ];
+    w.open(pr.clone());
+    let writes = (w.tracker.writes().len(), w.github_writes().len());
+    let line = format!(
+        "waiting: pr#7 no coordinator approval at head-7 (approvals from: dev-agent, {})",
+        bot("qa-app")
+    );
+    let (report, log) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(report.waiting_lines(), vec![line.clone()]);
+    let notes: Vec<_> = log.entries().iter().collect();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert_eq!(notes[0].outcome, Outcome::Waiting);
+    assert_eq!(notes[0].object, "pr#7");
+    assert_eq!(notes[0].inputs["head"], "head-7");
+    assert!(crate::action_log::describe(notes[0]).ends_with(&format!(
+        "pr#7: waiting — {}",
+        line.trim_start_matches("waiting: pr#7 ")
+    )));
+
+    // The same reason at the same head: said again, logged no more.
+    let (report, log) = w.tick(false);
+    assert_eq!(report.waiting_lines(), vec![line]);
+    assert!(log.entries().is_empty(), "{:?}", log.entries());
+
+    // Another reason: logged again.
+    pr.reviews = vec![review("coordinator-login", "APPROVED", "older", "ok")];
+    w.open(pr.clone());
+    let (report, log) = w.tick(false);
+    assert_eq!(
+        report.waiting_lines(),
+        vec![
+            "waiting: pr#7 no coordinator approval at head-7: coordinator-login approved older, \
+             an older head (no approval at this head)"
+                .to_string()
+        ]
+    );
+    assert_eq!(log.entries().len(), 1);
+    assert_eq!(
+        (w.tracker.writes().len(), w.github_writes().len()),
+        writes,
+        "waiting writes nothing to GitHub or the tracker"
+    );
+
+    // A dry run says it too, and keeps nothing.
+    let (report, log) = w.tick(true);
+    assert_eq!(report.waiting.len(), 1);
+    assert!(log.entries().is_empty(), "{:?}", log.entries());
+}
+
+#[test]
+fn a_held_pr_says_what_holds_it() {
+    let w = World::new();
+    let mut draft = green(pull_request(7));
+    draft.draft = true;
+    w.ticket("ABC-7", Status::InProgress, &draft);
+    w.open(draft);
+    let mut red = green(pull_request(8));
+    red.checks[0].conclusion = Some("FAILURE".into());
+    w.ticket("ABC-8", Status::InProgress, &red);
+    w.open(red);
+    let silent = green(pull_request(9));
+    w.ticket("ABC-9", Status::Backlog, &silent);
+    w.open(silent);
+    let (report, _) = w.tick(false);
+    assert_eq!(
+        report.waiting_lines(),
+        vec![
+            "waiting: pr#7 it is a draft",
+            "waiting: pr#8 checks are red at head-8 (`required-check`)",
+            "waiting: pr#9 its ticket ABC-9 is Backlog, not In Progress or In Review",
+        ]
+    );
+}
+
+#[test]
+fn a_ready_pr_left_for_the_next_tick_says_so() {
+    let w = World::new();
+    let prs: Vec<PullRequest> = [7, 8].into_iter().map(|n| in_review(&w, n)).collect();
+    for pr in prs {
+        w.open(approved(&w, pr));
+    }
+    let (report, _) = w.tick(false);
+    assert_eq!(
+        report.waiting_lines(),
+        vec![
+            "waiting: pr#8 ready, but a PR was merged this tick: one merge per repository per tick"
+        ]
+    );
+}
+
 // ---- BR-ASDLC-018: the consolidation starts only after its angles ----
 
 /// The round's consolidation item and its angle sub-items, by key.
@@ -1298,6 +1527,14 @@ fn an_approval_while_an_angle_is_open_does_not_merge_and_says_why_once() {
         .collect();
     assert_eq!(said.len(), 1, "{writes:?}");
     assert!(angles.iter().all(|a| said[0].contains(a.as_str())));
+    assert_eq!(
+        report.waiting_lines(),
+        vec![format!(
+            "waiting: pr#7 its angle reviews are still open ({}): the approval at head-7 does not count yet",
+            angles.join(", ")
+        )],
+        "the tick's report says why it waits (SID-1008)"
+    );
     quiet(&w);
 
     // The angles report: the same approval now counts.

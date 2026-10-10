@@ -376,8 +376,8 @@ const PULL_FRAGMENT: &str = "fragment Pull on PullRequest {
   mergeable mergeStateStatus additions deletions createdAt updatedAt mergedAt
   mergedBy { __typename login }
   mergeCommit { oid }
-  reviews(first: 100) { pageInfo { hasNextPage } nodes { author { login } state body commit { oid } submittedAt } }
-  reviewThreads(first: 100) { pageInfo { hasNextPage } nodes { isResolved isOutdated path comments(first: 1) { nodes { author { login } body } } } }
+  reviews(first: 100) { pageInfo { hasNextPage } nodes { author { __typename login } state body commit { oid } submittedAt } }
+  reviewThreads(first: 100) { pageInfo { hasNextPage } nodes { isResolved isOutdated path comments(first: 1) { nodes { author { __typename login } body } } } }
   commits(last: 1) { nodes { commit { oid statusCheckRollup { contexts(first: 100) {
     pageInfo { hasNextPage }
     nodes {
@@ -546,7 +546,7 @@ fn pull_from_gql(v: &Value) -> Result<PullRequest, String> {
     let reviews = review_nodes
         .iter()
         .map(|r| Review {
-            author: r["author"]["login"].as_str().map(str::to_string),
+            author: actor_gql(&r["author"]).map(|a| a.login),
             body: str_of(r, "body"),
             state: str_of(r, "state"),
             commit_sha: r["commit"]["oid"].as_str().map(str::to_string),
@@ -565,7 +565,7 @@ fn pull_from_gql(v: &Value) -> Result<PullRequest, String> {
                 resolved: t["isResolved"].as_bool().unwrap_or(false),
                 outdated: t["isOutdated"].as_bool().unwrap_or(false),
                 path: opt_str(t, "path"),
-                first_author: first["author"]["login"].as_str().map(str::to_string),
+                first_author: actor_gql(&first["author"]).map(|a| a.login),
                 first_body: str_of(first, "body"),
             }
         })

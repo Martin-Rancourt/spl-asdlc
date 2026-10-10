@@ -106,6 +106,9 @@ pub fn pass_with(host: &Host, config: &Config, github: &dyn GitHub) -> PassOutco
     if let Err(e) = &flushed {
         message.push_str(&format!("; the action log could not be written: {e}"));
     }
+    for line in report.waiting_lines() {
+        message.push_str(&format!("\n{repo}: {line}"));
+    }
     PassOutcome {
         ok: report.ok() && flushed.is_ok(),
         message,

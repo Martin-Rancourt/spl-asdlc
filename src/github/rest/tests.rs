@@ -470,6 +470,44 @@ fn open_pulls_parse_checks_reviews_threads_and_say_what_was_cut() {
     assert!(body.contains(r#""base":"main""#));
 }
 
+/// The login REST and the UI show for an App.
+fn bot(slug: &str) -> String {
+    format!("{slug}[bot]")
+}
+
+#[test]
+fn an_app_reviewing_is_named_in_the_rest_spelling() {
+    // GraphQL names an App by its bare slug; the bridge reads it as REST
+    // and the UI show it, and a human as they are.
+    let node = pull_node(12)
+        .replace(
+            r#""author":{"login":"coordinator-login"}"#,
+            r#""author":{"__typename":"Bot","login":"coord-app"}"#,
+        )
+        .replace(
+            r#""author":{"login":"reviewer"}"#,
+            r#""author":{"__typename":"User","login":"reviewer"}"#,
+        );
+    assert!(node.contains(r#""__typename":"User""#), "the fixture moved");
+    let (gh, t) = client();
+    t.on(
+        "POST",
+        &url("/graphql"),
+        200,
+        &format!(
+            r#"{{"data":{{"repository":{{"pullRequests":{{"totalCount":1,"pageInfo":{{"hasNextPage":false,"endCursor":null}},"nodes":[{node}]}}}}}}}}"#
+        ),
+    );
+    let pulls = gh.open_pulls(&repo(), None).unwrap();
+    let p = &pulls[0];
+    assert_eq!(p.reviews[0].author, Some(bot("coord-app")));
+    assert_eq!(p.threads[0].first_author.as_deref(), Some("reviewer"));
+    assert!(
+        t.bodies()[0].contains("nodes { author { __typename login } state"),
+        "the query asks what the review's author is"
+    );
+}
+
 #[test]
 fn open_pulls_follow_the_cursor() {
     let (gh, t) = client();

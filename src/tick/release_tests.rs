@@ -687,6 +687,34 @@ fn a_green_gate_whose_evidence_cannot_be_read_opens_nothing() {
 }
 
 #[test]
+fn a_release_coordinator_app_approves_and_a_person_of_its_name_does_not() {
+    // (configured, the review's author as read, merged)
+    for (configured, author, merged) in [
+        (bot("coord-app"), bot("Coord-App"), true),
+        ("app/coord-app".to_string(), bot("coord-app"), true),
+        (bot("coord-app"), "coord-app".to_string(), false),
+        ("coord-app".to_string(), bot("coord-app"), false),
+    ] {
+        let mut w = World::new();
+        w.config.release.coordinators = vec![configured.clone()];
+        w.tick();
+        let mut pr = w.angle_pr(30, "security", &report_json("security", ""));
+        pr.reviews[0].author = Some(author.clone());
+        w.open_on_branch(vec![pr.clone()]);
+        w.tick();
+        assert_eq!(
+            w.github.writes().contains(&format!(
+                "merge example-org/acme#30 at {} merge",
+                pr.head_sha
+            )),
+            merged,
+            "configured {configured}, reviewed by {author}: {:?}",
+            w.github.writes()
+        );
+    }
+}
+
+#[test]
 fn an_approved_angle_pr_with_a_valid_report_is_merged_and_its_findings_filed_once() {
     let w = World::new();
     w.tick();
