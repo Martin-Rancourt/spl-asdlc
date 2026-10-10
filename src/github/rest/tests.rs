@@ -142,6 +142,93 @@ fn the_required_checks_are_read_for_the_branch_asked() {
     );
 }
 
+// ---- rulesets (spl-asdlc doctor) ----
+
+const RULESETS: &str = "/repos/example-org/acme/rulesets?includes_parents=true&per_page=100";
+
+#[test]
+fn each_ruleset_is_read_by_id_with_its_conditions_and_rules() {
+    let (gh, t) = client();
+    t.on(
+        "GET",
+        &url(RULESETS),
+        200,
+        r#"[{"id":11,"name":"release","target":"branch","enforcement":"active"},{"id":12,"name":"tags","target":"tag","enforcement":"evaluate"}]"#,
+    );
+    t.on(
+        "GET",
+        &url("/repos/example-org/acme/rulesets/11?"),
+        200,
+        r#"{"id":11,"name":"release","target":"branch","enforcement":"active","conditions":{"ref_name":{"include":["refs/heads/release/**"],"exclude":[]}},"rules":[{"type":"pull_request","parameters":{}},{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true,"required_status_checks":[{"context":"required-check"}]}}],"bypass_actors":[]}"#,
+    );
+    t.on(
+        "GET",
+        &url("/repos/example-org/acme/rulesets/12?"),
+        200,
+        r#"{"id":12,"name":"tags","target":"tag","enforcement":"evaluate","conditions":{"ref_name":{"include":["refs/tags/*-rc.*"],"exclude":["refs/tags/v1"]}},"rules":[{"type":"update"},{"type":"deletion"}]}"#,
+    );
+    let r = gh.rulesets(&repo()).unwrap();
+    assert_eq!(r.len(), 2);
+    assert_eq!(r[0].include, vec!["refs/heads/release/**"]);
+    assert!(r[0].is_active());
+    assert_eq!(
+        r[0].rules.iter().cloned().collect::<Vec<_>>(),
+        vec!["pull_request", "required_status_checks"]
+    );
+    assert_eq!(
+        r[0].required_checks.iter().cloned().collect::<Vec<_>>(),
+        vec!["required-check"]
+    );
+    assert_eq!(r[1].target, "tag");
+    assert!(!r[1].is_active());
+    assert_eq!(r[1].exclude, vec!["refs/tags/v1"]);
+    assert!(r[1].rules.contains("update") && r[1].rules.contains("deletion"));
+}
+
+#[test]
+fn rulesets_that_cannot_be_read_whole_are_unreadable() {
+    // The list itself.
+    for status in [404, 403, 500] {
+        let (gh, t) = client();
+        t.on("GET", &url(RULESETS), status, "{}");
+        let err = gh.rulesets(&repo()).unwrap_err();
+        assert!(matches!(err, ReadError::Unreadable { .. }), "{err:?}");
+    }
+    // One ruleset of the list.
+    let listed = r#"[{"id":11,"name":"main","target":"branch","enforcement":"active"}]"#;
+    let one = url("/repos/example-org/acme/rulesets/11?");
+    for (status, body) in [
+        (404, "{}"),
+        (500, "{}"),
+        (200, r#"{"id":11,"name":"main","target":"branch"}"#),
+        (
+            200,
+            r#"{"id":11,"name":"main","target":"branch","enforcement":"active","rules":[{"parameters":{}}]}"#,
+        ),
+        (
+            200,
+            r#"{"id":11,"name":"main","target":"branch","enforcement":"active","conditions":{"ref_name":{"include":[7]}}}"#,
+        ),
+        (
+            200,
+            r#"{"id":11,"name":"main","target":"branch","enforcement":"active","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":null}},"rules":[]}"#,
+        ),
+        (
+            200,
+            r#"{"id":11,"name":"main","target":"branch","enforcement":"active","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}},"rules":null}"#,
+        ),
+    ] {
+        let (gh, t) = client();
+        t.on("GET", &url(RULESETS), 200, listed);
+        t.on("GET", &one, status, body);
+        let err = gh.rulesets(&repo()).unwrap_err();
+        assert!(
+            matches!(err, ReadError::Unreadable { .. }),
+            "{body}: {err:?}"
+        );
+    }
+}
+
 // ---- files at a ref (REQ-MERGE-040) ----
 
 #[test]
@@ -381,6 +468,44 @@ fn open_pulls_parse_checks_reviews_threads_and_say_what_was_cut() {
         "the base filter is sent"
     );
     assert!(body.contains(r#""base":"main""#));
+}
+
+/// The login REST and the UI show for an App.
+fn bot(slug: &str) -> String {
+    format!("{slug}[bot]")
+}
+
+#[test]
+fn an_app_reviewing_is_named_in_the_rest_spelling() {
+    // GraphQL names an App by its bare slug; the bridge reads it as REST
+    // and the UI show it, and a human as they are.
+    let node = pull_node(12)
+        .replace(
+            r#""author":{"login":"coordinator-login"}"#,
+            r#""author":{"__typename":"Bot","login":"coord-app"}"#,
+        )
+        .replace(
+            r#""author":{"login":"reviewer"}"#,
+            r#""author":{"__typename":"User","login":"reviewer"}"#,
+        );
+    assert!(node.contains(r#""__typename":"User""#), "the fixture moved");
+    let (gh, t) = client();
+    t.on(
+        "POST",
+        &url("/graphql"),
+        200,
+        &format!(
+            r#"{{"data":{{"repository":{{"pullRequests":{{"totalCount":1,"pageInfo":{{"hasNextPage":false,"endCursor":null}},"nodes":[{node}]}}}}}}}}"#
+        ),
+    );
+    let pulls = gh.open_pulls(&repo(), None).unwrap();
+    let p = &pulls[0];
+    assert_eq!(p.reviews[0].author, Some(bot("coord-app")));
+    assert_eq!(p.threads[0].first_author.as_deref(), Some("reviewer"));
+    assert!(
+        t.bodies()[0].contains("nodes { author { __typename login } state"),
+        "the query asks what the review's author is"
+    );
 }
 
 #[test]

@@ -71,6 +71,40 @@ fn a_release_pr_of_another_author_is_never_merged() {
     assert_eq!(lookup.refused, vec![1]);
 }
 
+/// The login REST and the UI show for an App.
+fn bot_login(slug: &str) -> String {
+    format!("{slug}[bot]")
+}
+
+#[test]
+fn a_configured_app_is_trusted_however_the_configuration_spells_it() {
+    // The author as read: an App in the REST spelling. A list of Apps reads
+    // a bare slug as the App too.
+    let author = bot_login("release-app");
+    for configured in [
+        bot_login("release-app"),
+        bot_login("RELEASE-APP"),
+        "app/Release-App".to_string(),
+        "release-app".to_string(),
+    ] {
+        let mut pr = release_pr(1);
+        pr.author = bot(&author);
+        assert!(
+            trusted_author(&pr, std::slice::from_ref(&configured)),
+            "configured {configured}, authored by {author}"
+        );
+        // `review.ticketless_authors` is matched the same way.
+        pr.author = Some(Actor {
+            login: "release-app".into(),
+            is_bot: false,
+        });
+        assert!(
+            !trusted_author(&pr, &[configured]),
+            "a human account never qualifies"
+        );
+    }
+}
+
 #[test]
 fn a_human_lookalike_is_refused() {
     let mut human = release_pr(1);

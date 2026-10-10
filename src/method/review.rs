@@ -11,7 +11,7 @@ use serde_json::Value;
 use super::glob;
 use super::vocabulary::NEEDS_REVIEW_LABEL;
 use crate::config;
-use crate::github::{Mergeable, PullRequest, Review};
+use crate::github::{Mergeable, PullRequest, Review, login_key, same_login};
 
 static RELEASE_PLEASE_TITLE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)^chore(\(.*\))?:\s*release\b").unwrap());
@@ -281,28 +281,14 @@ pub fn pr_approval(pr: &PullRequest, approvers: &[String]) -> Approval {
 /// decided it): per login, only the latest `APPROVED` or `CHANGES_REQUESTED`
 /// counts — a `COMMENTED` review never cancels an approval; a standing
 /// `CHANGES_REQUESTED` of any approver blocks; an approval qualifies only on
-/// the current head. Logins compare case-insensitively; reviews are oldest
-/// first.
+/// the current head. Logins compare as [`same_login`] does (exact but for
+/// case: a configured App never matches a person of its name, a bare login
+/// never an App); reviews are oldest first.
 pub fn approval(reviews: &[Review], approvers: &[String], head_sha: &str) -> Approval {
-    let approver = |login: &str| approvers.iter().any(|a| a.eq_ignore_ascii_case(login));
-    let mut latest: Vec<(String, &Review)> = Vec::new();
-    for r in reviews {
-        let Some(login) = r.author.as_deref().filter(|l| !l.is_empty()) else {
-            continue;
-        };
-        let state = r.state.to_ascii_uppercase();
-        if state != "APPROVED" && state != "CHANGES_REQUESTED" {
-            continue;
-        }
-        let key = login.to_ascii_lowercase();
-        match latest.iter_mut().find(|(k, _)| *k == key) {
-            Some(entry) => entry.1 = r,
-            None => latest.push((key, r)),
-        }
-    }
+    let approver = |login: &str| approvers.iter().any(|a| same_login(a, login));
     let mut stale = None;
     let mut qualified = None;
-    for (_, r) in &latest {
+    for r in latest_stateful(reviews) {
         let login = r.author.clone().unwrap_or_default();
         if !approver(&login) {
             continue;
@@ -321,6 +307,53 @@ pub fn approval(reviews: &[Review], approvers: &[String], head_sha: &str) -> App
         (None, Some((by, sha))) => Approval::Stale { by, sha },
         (None, None) => Approval::Missing,
     }
+}
+
+/// The latest `APPROVED` or `CHANGES_REQUESTED` review of each login (case
+/// folded; an App and a person of its name are two reviewers), in the order
+/// the logins first reviewed. Reviews are oldest first.
+pub fn latest_stateful(reviews: &[Review]) -> Vec<&Review> {
+    let mut latest: Vec<(String, &Review)> = Vec::new();
+    for r in reviews {
+        let Some(login) = r.author.as_deref().filter(|l| !l.is_empty()) else {
+            continue;
+        };
+        let state = r.state.to_ascii_uppercase();
+        if state != "APPROVED" && state != "CHANGES_REQUESTED" {
+            continue;
+        }
+        let key = login_key(login);
+        match latest.iter_mut().find(|(k, _)| *k == key) {
+            Some(entry) => entry.1 = r,
+            None => latest.push((key, r)),
+        }
+    }
+    latest.into_iter().map(|(_, r)| r).collect()
+}
+
+/// Who approves the head as it stands, counted or not: the logins whose
+/// latest stateful review approves `head_sha`, as GitHub spelt them (what a
+/// PR that waits for its approval reports).
+pub fn approvals_at_head<'a>(reviews: &'a [Review], head_sha: &str) -> Vec<&'a str> {
+    latest_stateful(reviews)
+        .into_iter()
+        .filter(|r| {
+            r.state.eq_ignore_ascii_case("APPROVED") && r.commit_sha.as_deref() == Some(head_sha)
+        })
+        .filter_map(|r| r.author.as_deref())
+        .collect()
+}
+
+/// A standing request for changes from one of `approvers` on the current
+/// head, and whose: the PR stays with its implementer until the head moves.
+pub fn changes_requested_at_head(pr: &PullRequest, approvers: &[String]) -> Option<String> {
+    latest_stateful(&pr.reviews).into_iter().find_map(|r| {
+        let login = r.author.as_deref()?;
+        (approvers.iter().any(|a| same_login(a, login))
+            && r.state.eq_ignore_ascii_case("CHANGES_REQUESTED")
+            && r.commit_sha.as_deref() == Some(pr.head_sha.as_str()))
+        .then(|| login.to_string())
+    })
 }
 
 /// Review threads still open on the PR; `None` when GitHub cut the list
