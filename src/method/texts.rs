@@ -346,6 +346,140 @@ pub fn pr_ticket(number: u64, title: &str, author: &str, pr_url: &str) -> (Strin
     (title, body)
 }
 
+/// The marker of the gate-fix ticket of a candidate whose gate is red.
+pub fn gate_fix_marker(candidate: &str) -> String {
+    marker("gate-fix", &[("candidate", candidate)])
+}
+
+/// The candidate a gate-fix ticket was opened for, read off its marker.
+pub fn gate_fix_candidate(description: &str) -> Option<String> {
+    static GATE_FIX: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"spl-asdlc:gate-fix candidate=([^\s`>]+)").unwrap());
+    GATE_FIX.captures(description).map(|c| c[1].to_string())
+}
+
+/// The facts of a red gate the gate-fix ticket carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RedGateFacts<'a> {
+    pub release: &'a str,
+    pub candidate: &'a str,
+    pub sha: &'a str,
+    pub branch: &'a str,
+    pub conclusion: &'a str,
+    pub run_url: &'a str,
+    /// The failed suites of the evidence pack, or why it could not be read.
+    pub suites: Result<Vec<String>, String>,
+    /// Why the red is taken as final although no automatic rerun was seen
+    /// (the bounded wait ran out), when that is the case.
+    pub rerun_unseen: Option<&'a str>,
+}
+
+/// At most this many failed suites are named one by one.
+const SUITES_SHOWN: usize = 30;
+
+/// The gate-fix ticket the bridge opens when a candidate's gate is red and
+/// its automatic rerun settled (BR-ASDLC-016): served to an implementer by
+/// role, a complete contract whose goal is the gate green on the release
+/// branch.
+pub fn gate_fix_ticket(f: &RedGateFacts) -> (String, String) {
+    // Suite names and read errors come from the evidence pack and from
+    // GitHub: one line each, no marker, no backtick that closes a span.
+    let code = |s: &str| inert(s).replace('`', "'");
+    let title = format!("Make the gate green — {}", code(f.candidate));
+    let (criterion, found) = match &f.suites {
+        Ok(suites) if suites.is_empty() => (
+            format!(
+                "- [ ] The step that failed outside the suites (every suite passed: see the gate run {}) is fixed on `{}`.",
+                f.run_url, f.branch
+            ),
+            "none: every suite passed, a step outside the suites failed".to_string(),
+        ),
+        Ok(suites) => {
+            let mut names: Vec<String> = suites
+                .iter()
+                .take(SUITES_SHOWN)
+                .map(|s| format!("`{}`", code(s)))
+                .collect();
+            if suites.len() > SUITES_SHOWN {
+                names.push(format!("and {} more", suites.len() - SUITES_SHOWN));
+            }
+            let names = names.join(", ");
+            (
+                format!(
+                    "- [ ] Each failing suite passes on `{}`: {names}.",
+                    f.branch
+                ),
+                names,
+            )
+        }
+        Err(why) => (
+            format!(
+                "- [ ] The suites that failed in the gate run {} (unknown here: the evidence pack could not be read) pass on `{}`.",
+                f.run_url, f.branch
+            ),
+            format!(
+                "unknown: the evidence pack could not be read ({})",
+                inert(why)
+            ),
+        ),
+    };
+    let body = format!(
+        "{marker}\n\n## Goal\nMake the release gate green on the release branch `{branch}`. The gate run of the \
+         candidate `{candidate}` concluded `{conclusion}` ({run_url}) after its automatic rerun of known flakes, if \
+         any, had settled: fix what the failure needs on `{branch}`, through a PR whose base is `{branch}` \
+         (`docs/agents/implement.md` step 2), so that the gate of the next candidate is green.\n\n\
+         ## Non-goals\n- No new feature.\n- No change beyond what the failure needs.\n\
+         - Cutting the next candidate: the coordinator does it through the cut workflow (or the bridge, when \
+         `auto_candidate = true`).\n\n\
+         ## Acceptance criteria\n{criterion}\n\n\
+         ## Business rules\n{absence}\n\n\
+         ## Context\n- Release: {release}\n- Candidate: `{candidate}` at `{sha12}`\n- Gate run: {run_url}\n\
+         - Failing suites (`{suites_file}` of the evidence pack `{pack}`): {found}\n{unseen}\
+         - This ticket follows the flow of any ticket: To Deploy at its fix's merge, Done at the release's \
+         closure. The gate of the next candidate is the verification: when it is green and no PR of this ticket \
+         was merged yet, the bridge closes it (Done, with a comment naming that candidate); when it is red, the \
+         bridge opens a new gate-fix ticket for that candidate.",
+        marker = gate_fix_marker(f.candidate),
+        branch = f.branch,
+        candidate = code(f.candidate),
+        conclusion = code(f.conclusion),
+        run_url = f.run_url,
+        release = f.release,
+        sha12 = short(f.sha),
+        suites_file = crate::method::release::gate::SUITES_FILE,
+        pack = crate::method::release::gate::evidence_artifact(f.sha),
+        absence = crate::method::business_rules::ABSENCE_DECLARATION,
+        unseen = f
+            .rerun_unseen
+            .map(|why| format!(
+                "- Automatic rerun: {}; check the rerun workflow.\n",
+                inert(why)
+            ))
+            .unwrap_or_default(),
+    );
+    (title, body)
+}
+
+/// The comment of the bridge closing a gate-fix ticket: the gate is green on
+/// a newer candidate (or on the same one, rerun by hand).
+pub fn gate_fix_closed_comment(candidate: &str, green: &str, run_url: &str) -> String {
+    let why = if green == candidate {
+        format!("the gate of `{candidate}` this ticket was opened for is green now ({run_url})")
+    } else {
+        format!(
+            "the gate of the newer candidate `{green}` is green ({run_url}): the red gate of `{candidate}` this \
+             ticket was opened for is superseded"
+        )
+    };
+    format!(
+        "Done: {why}, so the bridge closes this ticket.\n\n{}",
+        marker(
+            "gate-fix-closed",
+            &[("candidate", candidate), ("green", green)]
+        )
+    )
+}
+
 /// The marker of the validation sub-task of a ticket in Post Deploy.
 pub fn post_deploy_validation_marker(parent: &str) -> String {
     marker("post-deploy-validation", &[("parent", parent)])

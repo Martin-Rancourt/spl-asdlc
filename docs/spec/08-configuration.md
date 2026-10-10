@@ -34,6 +34,8 @@ escalation_label = "blocked-by-human"
 auto_candidate = false
 cut_workflow = "release-cut.yml"
 gate_workflow = "release-gate.yml"
+gate_rerun_workflow = "release-gate-auto-rerun.yml"
+gate_rerun_wait_minutes = 30
 release_please_workflow = "release-please.yml"
 release_please_config = "release-please-config.json"
 release_please_manifest = ".release-please-manifest.json"
@@ -206,6 +208,8 @@ The configuration maps no status: the tracker names each canonical status (`03-v
 | `release.auto_candidate` | `false` | When true the bridge dispatches the next RC itself once a pass is merged; otherwise the coordinator does. | — |
 | `release.cut_workflow` | `release-cut.yml` | Workflow the bridge dispatches for `release cut`. | Not a file name: file invalid; absent on GitHub: the dispatch fails and says so. |
 | `release.gate_workflow` | `release-gate.yml` | Workflow whose run on the RC tag is the gate. | No run on the tag: the gate is not green. |
+| `release.gate_rerun_workflow` | `release-gate-auto-rerun.yml` | Workflow whose `workflow_run` of a red gate reruns it once (a runner abort, known flakes); the bridge opens a red gate's gate-fix ticket once this run of the gate's first attempt completed, or once `gate_rerun_wait_minutes` passed with no such run (`05-release-cycle.md` §3). | Not a file name: file invalid; its runs unreadable: no gate-fix ticket yet, said at each tick; absent on GitHub: said at each tick, and read as no run, so the bounded wait opens the ticket; never run for the gate run: the bounded wait opens the ticket. |
+| `release.gate_rerun_wait_minutes` | `30` | How long after a red gate run completed the bridge waits for a run of `gate_rerun_workflow` to show up; past it with none visible, it opens the gate-fix ticket anyway, saying no rerun was seen (the rerun workflow may be absent or broken). A rerun run that showed up and is still running keeps the wait (`05-release-cycle.md` §3). | Not a positive integer: file invalid. |
 | `release.release_please_workflow` | `release-please.yml` | Workflow redispatched once when release-please's PR is stale. | — |
 | `release.release_please_config` | `release-please-config.json` | release-please's configuration (its `config-file`), read at the release PR's head for each component's changelog path. | Unreadable for a multi-component product: a note gap, the GO is false. |
 | `release.release_please_manifest` | `.release-please-manifest.json` | release-please's manifest (its `manifest-file`). | — |

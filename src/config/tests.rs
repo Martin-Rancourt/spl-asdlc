@@ -72,6 +72,8 @@ fn a_minimal_file_gets_every_documented_default() {
     assert!(!c.release.auto_candidate);
     assert!(c.release.bookkeeping_paths.is_empty());
     assert_eq!(c.release.gate_workflow, "release-gate.yml");
+    assert_eq!(c.release.gate_rerun_workflow, "release-gate-auto-rerun.yml");
+    assert_eq!(c.release.gate_rerun_wait_minutes, 30);
     assert_eq!(c.release.angles[0].title, "Security review");
     assert_eq!(c.review.merge_method, MergeMethod::Squash);
     assert!(c.review.require_up_to_date);
@@ -351,6 +353,10 @@ fn non_positive_counts_are_refused_never_defaulted_silently() {
     assert_refused_with(
         &MINIMAL.replace("[release]\n", "[release]\nmax_rc_passes = 0\n"),
         "release.max_rc_passes: must be a positive integer, got 0",
+    );
+    assert_refused_with(
+        &MINIMAL.replace("[release]\n", "[release]\ngate_rerun_wait_minutes = 0\n"),
+        "release.gate_rerun_wait_minutes: must be a positive integer, got 0",
     );
     assert_refused_with(
         &format!("{MINIMAL}\n[bridge]\npoll_minutes = -5\n"),
