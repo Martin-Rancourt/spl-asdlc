@@ -2,7 +2,7 @@
   "schema": "spl-asdlc/qa-report/1",
   "candidate": "v0.2.0-rc.2",
   "angle": "security",
-  "reviewer": "SID-1029",
+  "reviewer": "SID-1027",
   "verdict": "go",
   "checked": [
     "Candidate identity: annotated tag v0.2.0-rc.2 at 9e2117fcd35ff4deaace63319c80508fdb5a9bb5; release class sensible; tag is the release branch head",
@@ -12,7 +12,7 @@
     "Ingress and response: HTTP TLS transport, explicit redirect handling, API/artifact request headers, redacted credential errors, and error response handling",
     "Delivery chain: candidate workflows, least-privilege job permissions, pinned third-party actions, reusable-workflow secret declarations, and workflow_run default-branch trust boundary",
     "cargo test --locked --lib (677 passed)",
-    "Release-gate run 38088838481 for the candidate completed successfully",
+    "The candidate release-gate workflow completed successfully",
     "cargo test --locked was attempted locally; Cargo 1.99.0 did not define CARGO_BIN_EXE_spl-asdlc for pre-existing own_config and setup_files integration tests. This host-specific result is not treated as a security finding; the candidate release gate passed its declared suite."
   ],
   "findings": []
