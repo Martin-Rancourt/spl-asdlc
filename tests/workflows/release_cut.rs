@@ -634,6 +634,105 @@ fn the_version_is_the_components_in_the_pr_against_this_base() {
     }
 }
 
+/// release-please's single-component body, as it opens it.
+fn single_body(version: &str) -> String {
+    format!(
+        ":robot: I have created a release *beep* *boop*\n---\n\n\n## [{version}](https://github.com/OWNER/REPO/compare/v0.1.0...v{version}) (2026-10-11)\n\n\n### Features\n\n* a feature ([abc1234](https://github.com/OWNER/REPO/commit/abc1234))\n"
+    )
+}
+
+#[test]
+fn the_cut_and_the_bridge_read_the_same_staged_version() {
+    let (repo, _origin) = cycle(true);
+    let head = format!("release-please--branches--{BRANCH}");
+    let own = format!("{head}--components--acme");
+    let other = format!("{head}--components--website");
+    let single = single_body("0.2.0");
+    let cases: [(String, &str, &str, Option<&str>); 9] = [
+        // Single component: the title, `pull-request-title-pattern` naming it.
+        (
+            format!("chore({BRANCH}): release acme 0.2.0"),
+            &single,
+            &head,
+            Some("0.2.0"),
+        ),
+        (
+            format!("chore({BRANCH}): release ACME 0.2.0"),
+            "",
+            &head,
+            Some("0.2.0"),
+        ),
+        // Single component, a title that does not name it: the heading.
+        (
+            format!("chore({BRANCH}): release 0.2.0"),
+            &single,
+            &head,
+            Some("0.2.0"),
+        ),
+        (
+            format!("chore({BRANCH}): release 0.2.0"),
+            &single,
+            &own,
+            Some("0.2.0"),
+        ),
+        // Another component's PR never names the candidate.
+        (
+            format!("chore({BRANCH}): release website 3.0.0"),
+            &single,
+            &other,
+            None,
+        ),
+        // Multi-component: the summary, unchanged.
+        (
+            format!("chore: release {BRANCH}"),
+            "<details><summary>website: 9.9.9</summary>\n\n## [9.9.9](x)\n</details>\n<details><summary>acme: 1.5.0</summary>\n\n## [1.5.0](x)\n</details>",
+            &head,
+            Some("1.5.0"),
+        ),
+        (
+            format!("chore: release {BRANCH}"),
+            "<details><summary>website: 9.9.9</summary>\n\n## [9.9.9](x)\n</details>",
+            &head,
+            None,
+        ),
+        (
+            "chore: release webacme 7.0.0".into(),
+            "<summary>acme : 1.6.0</summary>",
+            "x",
+            Some("1.6.0"),
+        ),
+        ("chore: release main".into(), "", &head, None),
+    ];
+    for (title, body, head, want) in cases {
+        let bridge = spl_asdlc::method::release::notes::staged_version(&title, body, head, "acme");
+        assert_eq!(
+            bridge.map(|v| v.to_string()).as_deref(),
+            want,
+            "bridge: {title}"
+        );
+        let stubs = Scratch::new("stubs");
+        gh_prs(
+            &stubs.0,
+            &format!("[{}]", pr(&title, body, head)),
+            "[]",
+            false,
+        );
+        let r = version(&repo, &stubs.0, "open", BRANCH);
+        match want {
+            Some(v) => {
+                ok(&r);
+                assert_eq!(
+                    r.output("version").as_deref(),
+                    Some(v),
+                    "cut: {title}: {}",
+                    r.log
+                );
+            }
+            None => refused(&r, "no open release PR names 'acme'"),
+        }
+    }
+}
+
 #[test]
 fn another_components_release_pr_never_names_the_candidate() {
     let (repo, _origin) = cycle(true);

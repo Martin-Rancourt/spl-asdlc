@@ -931,6 +931,32 @@ fn the_go_computed_merges_the_release_pr_and_nothing_else() {
 }
 
 #[test]
+fn a_single_component_release_pr_stages_its_version_in_its_title_and_its_heading() {
+    let body = ":robot: I have created a release *beep* *boop*\n---\n\n\n## [1.2.0](https://github.com/OWNER/REPO/compare/acme-v1.1.0...acme-v1.2.0) (2026-10-11)\n\n\n### Features\n\n* m1\n";
+    for title in [
+        format!("chore({BRANCH}): release acme 1.2.0"),
+        format!("chore({BRANCH}): release 1.2.0"),
+    ] {
+        let w = World::new();
+        w.tick();
+        all_angles_merged(&w);
+        let mut rp = release_pr(&w, "1.2.0");
+        rp.title = title.clone();
+        rp.body = body.into();
+        w.open_on_branch(vec![rp.clone()]);
+        w.tick();
+        assert!(
+            w.github.writes().contains(&format!(
+                "merge example-org/acme#40 at {} squash",
+                rp.head_sha
+            )),
+            "{title}: {:?}",
+            w.github.writes()
+        );
+    }
+}
+
+#[test]
 fn a_release_pr_staging_another_version_is_no_go() {
     let w = World::new();
     w.tick();

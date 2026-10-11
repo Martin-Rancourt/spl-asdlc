@@ -589,16 +589,27 @@ jobs:
             # An installation that has not labelled its PRs yet.
             jq '[.[] | select((.headRefName // "") | startswith("release-please--"))]' "$work/all" > "$work/prs"
           fi
-          # The first X.Y.Z after the component's own name, in a title first,
-          # then in a body: another component's PR never names the candidate.
+          # The bridge's own reading (`notes::staged_version`), so the cut and
+          # the GO agree: the first X.Y.Z right after the component's name
+          # (a whole name, any case), in a title first, then in a body; else,
+          # in a body with no <summary> (one component's note), its first
+          # `## [X.Y.Z]` heading, unless the head is another component's.
+          # Another component's PR never names the candidate.
           version="$(jq -r --arg c "$COMPONENT" '
-            def versions($c): . as $s
-              | [ ($s | indices($c))[]
+            def versions: ascii_downcase as $s | ($c | ascii_downcase) as $n
+              | [ ($s | indices($n))[]
                   | select(. == 0 or (($s[(. - 1):.]) | test("[A-Za-z0-9_.@/-]") | not))
-                  | ($s[(. + ($c | length)):]
+                  | ($s[(. + ($n | length)):]
                      | capture("^(?:[[:space:]]+|[[:space:]]*:[[:space:]]*)(?<v>[0-9]+\\.[0-9]+\\.[0-9]+)")
                      | .v) ];
-            ([.[] | (.title // "") | versions($c)[]] + [.[] | (.body // "") | versions($c)[]]) | .[0] // ""
+            def heading: (.body // "") as $b | (.headRefName // "") as $h
+              | ($h | index("--components--")) as $i
+              | select(($b | contains("<summary>") | not)
+                  and ($i == null or ($h[($i + 14):] | ascii_downcase) == ($c | ascii_downcase)))
+              | [$b | match("(?:^|\n)## \\[(?<v>[0-9]+\\.[0-9]+\\.[0-9]+)\\]"; "g") | .captures[0].string][0] // empty;
+            ([.[] | (.title // "") | versions[]]
+              + [.[] | (.body // "") | versions[]]
+              + [.[] | heading]) | .[0] // ""
           ' "$work/prs")"
           if [ -n "$version" ]; then
             echo "Version: $version (staged by release-please against $BRANCH)."

@@ -2050,8 +2050,8 @@ fn release_prs(
                 ),
                 Some(pr) => {
                     let note = coverage(pr, c.version, "CHANGELOG.md");
-                    let staged = notes::staged_version(&pr.body, &cfg.product.name)
-                        .or_else(|| notes::staged_version(&pr.title, &cfg.product.name));
+                    let staged =
+                        notes::staged_version(&pr.title, &pr.body, &pr.head_ref, &cfg.product.name);
                     let version_gaps = match staged {
                         Some(v) if v == c.version => Vec::new(),
                         Some(v) => vec![format!(

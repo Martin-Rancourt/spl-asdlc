@@ -226,18 +226,80 @@ fn a_candidate_of_another_version_is_not_judged_against_this_release() {
     );
 }
 
+const HEAD: &str = "release-please--branches--release/2026-10-10-16-54-utc";
+
+/// release-please's single-component body, as it opens it.
+fn single_body(version: &str) -> String {
+    format!(
+        ":robot: I have created a release *beep* *boop*\n---\n\n\n## [{version}](https://github.com/OWNER/REPO/compare/v0.1.0...v{version}) (2026-10-11)\n\n\n### Features\n\n* a feature ([abc1234](https://github.com/OWNER/REPO/commit/abc1234))\n"
+    )
+}
+
 #[test]
-fn the_staged_version_is_read_off_the_body() {
+fn the_multi_component_staged_version_is_read_off_the_summary() {
     let body = "<details><summary>other: 9.9.9</summary></details>\n<details><summary>acme: 0.4.92</summary>";
-    assert_eq!(staged_version(body, "acme"), Some(v("0.4.92")));
-    assert_eq!(staged_version(body, "ACME"), Some(v("0.4.92")));
+    let title = "chore: release release/x";
+    assert_eq!(staged_version(title, body, HEAD, "acme"), Some(v("0.4.92")));
+    assert_eq!(staged_version(title, body, HEAD, "ACME"), Some(v("0.4.92")));
     assert_eq!(
-        staged_version("chore: release main", "acme"),
+        staged_version("chore: release main", "", HEAD, "acme"),
         None,
         "an unreadable version is a mismatch"
     );
     assert_eq!(
-        staged_version("<summary>  acme :  1.2.3</summary>", "acme"),
+        staged_version("", "<summary>  acme :  1.2.3</summary>", HEAD, "acme"),
         Some(v("1.2.3"))
+    );
+    assert_eq!(
+        staged_version(
+            title,
+            "<summary>other: 9.9.9</summary>\n\n## [9.9.9](x)",
+            HEAD,
+            "acme"
+        ),
+        None,
+        "a body with summaries names no version by its headings"
+    );
+}
+
+#[test]
+fn the_single_component_staged_version_is_read_off_the_title_then_the_heading() {
+    let title = "chore(release/2026-10-10-16-54-utc): release acme 0.2.0";
+    // The title wins over the body.
+    assert_eq!(
+        staged_version(title, &single_body("0.1.9"), HEAD, "acme"),
+        Some(v("0.2.0"))
+    );
+    assert_eq!(
+        staged_version(title, "", HEAD, "ACME"),
+        Some(v("0.2.0")),
+        "the product matches in any case"
+    );
+    // A title that does not name the product: the body's first heading.
+    for title in [
+        "chore(release/2026-10-10-16-54-utc): release 0.2.0",
+        "chore: release webacme 7.0.0",
+    ] {
+        assert_eq!(
+            staged_version(title, &single_body("0.2.0"), HEAD, "acme"),
+            Some(v("0.2.0")),
+            "{title}"
+        );
+    }
+    let own = format!("{HEAD}--components--acme");
+    assert_eq!(
+        staged_version("chore: release 0.2.0", &single_body("0.2.0"), &own, "acme"),
+        Some(v("0.2.0"))
+    );
+    let other = format!("{HEAD}--components--website");
+    assert_eq!(
+        staged_version(
+            "chore: release website 3.0.0",
+            &single_body("3.0.0"),
+            &other,
+            "acme"
+        ),
+        None,
+        "another component's PR never names the version"
     );
 }
