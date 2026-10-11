@@ -653,6 +653,14 @@ fn the_publication_calls_the_three_stages_and_always_closes() {
             "{id}"
         );
     }
+    // The latest candidate's own QA reports, as the configuration renders them.
+    let release = template().release.unwrap();
+    let verify = &publish["jobs"]["verify"]["with"];
+    assert_eq!(verify["qa-record"].as_str(), Some(release.record.as_str()));
+    let angles: Vec<String> =
+        serde_json::from_str(verify["qa-angles"].as_str().expect("qa-angles")).unwrap();
+    let keys_of: Vec<String> = release.angles.iter().map(|a| a.key.clone()).collect();
+    assert_eq!(angles, keys_of);
     // The project's job sits between verify and the ledger.
     let own = &publish["jobs"]["publish"];
     assert_eq!(own["needs"].as_str(), Some("verify"));

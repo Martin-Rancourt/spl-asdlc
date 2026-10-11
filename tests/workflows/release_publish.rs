@@ -236,6 +236,8 @@ fn candidate(repo: &Repo, env: &[(&str, &str)]) -> Ran {
         ("COMPONENTS", "[]"),
         ("BOOKKEEPING", BOOKKEEPING),
         ("GATE_RECORD", ""),
+        ("QA_RECORD", ".spl-asdlc/qa/{candidate}/"),
+        ("QA_ANGLES", "[]"),
         ("DEFAULT_BRANCH", "main"),
     ];
     for (k, v) in env {
@@ -307,6 +309,154 @@ fn an_empty_bookkeeping_list_demands_the_candidate_exactly() {
     assert_eq!(r.code, 1, "{}", r.log);
     let r = candidate(&repo, &[("BOOKKEEPING", "not json")]);
     assert_eq!(r.code, 1, "{}", r.log);
+}
+
+const ANGLES: &str = r#"["security", "product"]"#;
+
+#[test]
+fn the_qa_inputs_reach_the_script_through_its_environment() {
+    let step = step(&doc(), "verify", "candidate");
+    assert_eq!(
+        step["env"]["QA_RECORD"].as_str(),
+        Some("${{ inputs.qa-record }}")
+    );
+    assert_eq!(
+        step["env"]["QA_ANGLES"].as_str(),
+        Some("${{ inputs.qa-angles }}")
+    );
+    assert!(!run_body(&step).contains("inputs.qa-"));
+    let inputs = &doc()["on"]["workflow_call"]["inputs"];
+    // As spec 08's `release.record`; no angle, no exemption.
+    assert_eq!(
+        inputs["qa-record"]["default"].as_str(),
+        Some(".spl-asdlc/qa/{candidate}/")
+    );
+    assert_eq!(inputs["qa-angles"]["default"].as_str(), Some("[]"));
+}
+
+#[test]
+fn the_latest_candidates_own_qa_reports_may_follow_it() {
+    let repo = cycle();
+    release(
+        &repo,
+        "acme-v1.2.0",
+        &[
+            ("CHANGELOG.md", "## 1.2.0\n"),
+            (".spl-asdlc/qa/acme-v1.2.0-rc.10/security.json", "{}\n"),
+            (".spl-asdlc/qa/acme-v1.2.0-rc.10/product.json", "{}\n"),
+        ],
+    );
+    let r = candidate(&repo, &[("QA_ANGLES", ANGLES)]);
+    assert_eq!(r.code, 0, "{}", r.log);
+    assert_eq!(r.output("rc-tag").as_deref(), Some("acme-v1.2.0-rc.10"));
+    // The record directory as spec 08 renders it, with or without its slash.
+    let r = candidate(
+        &repo,
+        &[
+            ("QA_ANGLES", ANGLES),
+            ("QA_RECORD", ".spl-asdlc/qa/{candidate}"),
+        ],
+    );
+    assert_eq!(r.code, 0, "{}", r.log);
+    // Without the angles, the reports are a delta like any other.
+    let r = candidate(&repo, &[]);
+    assert_eq!(r.code, 1, "{}", r.log);
+    assert!(
+        r.log
+            .contains("  .spl-asdlc/qa/acme-v1.2.0-rc.10/security.json"),
+        "{}",
+        r.log
+    );
+    // An angle that is not configured is not exempted.
+    let r = candidate(&repo, &[("QA_ANGLES", r#"["security"]"#)]);
+    assert_eq!(r.code, 1, "{}", r.log);
+    assert!(
+        r.log
+            .contains("  .spl-asdlc/qa/acme-v1.2.0-rc.10/product.json"),
+        "{}",
+        r.log
+    );
+    assert!(
+        !r.log
+            .contains("  .spl-asdlc/qa/acme-v1.2.0-rc.10/security.json"),
+        "{}",
+        r.log
+    );
+}
+
+#[test]
+fn an_earlier_candidates_qa_report_is_not_bookkeeping() {
+    let repo = cycle();
+    release(
+        &repo,
+        "acme-v1.2.0",
+        &[
+            ("CHANGELOG.md", "## 1.2.0\n"),
+            (".spl-asdlc/qa/acme-v1.2.0-rc.9/security.json", "{}\n"),
+        ],
+    );
+    let r = candidate(&repo, &[("QA_ANGLES", ANGLES)]);
+    assert_eq!(r.code, 1, "{}", r.log);
+    assert!(
+        r.log
+            .contains("  .spl-asdlc/qa/acme-v1.2.0-rc.9/security.json"),
+        "{}",
+        r.log
+    );
+    assert!(r.log.contains("Cut a new RC"), "{}", r.log);
+    assert_eq!(r.output("rc-tag"), None);
+}
+
+#[test]
+fn a_code_change_beside_the_qa_reports_is_refused() {
+    let repo = cycle();
+    release(
+        &repo,
+        "acme-v1.2.0",
+        &[
+            ("CHANGELOG.md", "## 1.2.0\n"),
+            (".spl-asdlc/qa/acme-v1.2.0-rc.10/security.json", "{}\n"),
+            ("src/lib.rs", "pub fn f() -> u8 { 3 }\n"),
+        ],
+    );
+    let r = candidate(&repo, &[("QA_ANGLES", ANGLES)]);
+    assert_eq!(r.code, 1, "{}", r.log);
+    assert!(r.log.contains("  src/lib.rs"), "{}", r.log);
+    assert!(
+        !r.log
+            .contains("  .spl-asdlc/qa/acme-v1.2.0-rc.10/security.json"),
+        "{}",
+        r.log
+    );
+    assert_eq!(r.output("rc-tag"), None);
+}
+
+#[test]
+fn malformed_qa_inputs_are_refused() {
+    let repo = cycle();
+    release(&repo, "acme-v1.2.0", &[("CHANGELOG.md", "## 1.2.0\n")]);
+    for angles in [
+        "not json",
+        r#""security""#,
+        r#"["Security"]"#,
+        r#"["../security"]"#,
+        "[\"security\\nsrc/lib.rs\"]",
+        "[1]",
+    ] {
+        let r = candidate(&repo, &[("QA_ANGLES", angles)]);
+        assert_eq!(r.code, 1, "{angles}: {}", r.log);
+        assert!(r.log.contains("qa-angles"), "{angles}: {}", r.log);
+    }
+    for record in [
+        "",
+        ".spl-asdlc/qa/",
+        ".spl-asdlc/{candidate}/{candidate}/",
+        ".spl-asdlc/qa/{candidate}/\nsrc",
+    ] {
+        let r = candidate(&repo, &[("QA_ANGLES", ANGLES), ("QA_RECORD", record)]);
+        assert_eq!(r.code, 1, "{record:?}: {}", r.log);
+        assert!(r.log.contains("qa-record"), "{record:?}: {}", r.log);
+    }
 }
 
 #[test]

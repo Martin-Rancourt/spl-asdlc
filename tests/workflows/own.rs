@@ -558,6 +558,26 @@ fn the_publication_verifies_builds_the_binaries_and_always_closes() {
             "Cargo.lock".to_string(),
         ])
     );
+    // The latest candidate's own QA reports: the record directory and the
+    // release angles of this repository's spl-asdlc.toml.
+    let config: toml::Table =
+        toml::from_str(&std::fs::read_to_string(root().join("spl-asdlc.toml")).unwrap()).unwrap();
+    let release = config["release"].as_table().unwrap();
+    let record = release
+        .get("record")
+        .and_then(toml::Value::as_str)
+        .unwrap_or(".spl-asdlc/qa/{candidate}/");
+    assert_eq!(verify["qa-record"].as_str(), Some(record));
+    let angles: Vec<&str> = release["angles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        json(verify["qa-angles"].as_str().unwrap(), "qa-angles"),
+        serde_json::json!(angles)
+    );
     // The bridge's App, by its slug.
     assert_eq!(verify["go-merger-login"].as_str(), Some("spl-asdlc"));
 

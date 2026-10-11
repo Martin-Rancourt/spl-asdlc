@@ -67,6 +67,10 @@ jobs:
       # and the crate's version (the rust release type bumps Cargo.toml and
       # Cargo.lock).
       bookkeeping-paths: '[".release-please-manifest.json", "CHANGELOG.md", "Cargo.toml", "Cargo.lock"]'
+      # The candidate's own QA reports, which land after it: spl-asdlc.toml's
+      # record directory (the default) and its release angles.
+      qa-record: .spl-asdlc/qa/{candidate}/
+      qa-angles: '["security"]'
       # The slug of the bridge's App. The release-please PR must have been
       # merged by this App or by a person (spec 09); any other bot is no GO.
       go-merger-login: spl-asdlc

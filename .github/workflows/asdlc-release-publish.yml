@@ -40,6 +40,8 @@ name: asdlc-release-publish
 #         candidate-tag: acme-v{version}-rc.{rc}
 #         release-tag-pattern: acme-v{version}
 #         bookkeeping-paths: '[".release-please-manifest.json", "CHANGELOG.md"]'
+#         qa-record: .spl-asdlc/qa/{candidate}/
+#         qa-angles: '["security", "product"]'
 #         go-merger-login: <the App's slug>
 #     publish:                                # the project's own job(s)
 #       needs: verify
@@ -107,6 +109,17 @@ on:
         description: The gate record path, `{version}` once (spec 08 `release.gate_record`); an allowed delta too.
         type: string
         default: ''
+      qa-record:
+        description: The directory of the angle reports, `{candidate}` once (spec 08 `release.record`).
+        type: string
+        default: '.spl-asdlc/qa/{candidate}/'
+      qa-angles:
+        description: >-
+          JSON array of the release QA angle keys (spec 08 `[[release.angles]]`). The
+          latest candidate's report of each, `<qa-record>/<angle>.json` with `{candidate}`
+          its tag, is an allowed delta, as the GO allows it; `[]` allows none.
+        type: string
+        default: '[]'
       gate-workflow:
         description: The file name of the gate workflow (spec 08 `release.gate_workflow`).
         type: string
@@ -320,6 +333,8 @@ jobs:
           COMPONENTS: ${{ inputs.components }}
           BOOKKEEPING: ${{ inputs.bookkeeping-paths }}
           GATE_RECORD: ${{ inputs.gate-record }}
+          QA_RECORD: ${{ inputs.qa-record }}
+          QA_ANGLES: ${{ inputs.qa-angles }}
           DEFAULT_BRANCH: ${{ inputs.default-branch }}
         shell: bash
         run: |
@@ -345,6 +360,16 @@ jobs:
           if ! jq -e 'type == "array"' > /dev/null 2>&1 <<< "$COMPONENTS"; then
             refuse "components is not a JSON array."
           fi
+          if ! jq -e 'type == "array" and all(.[]; type == "string" and test("^[a-z0-9][a-z0-9-]*$"))' \
+                > /dev/null 2>&1 <<< "$QA_ANGLES"; then
+            refuse "qa-angles is not a JSON array of angle keys (lower-case letters, digits and hyphens)."
+          fi
+          case "$QA_RECORD" in
+            *$'\n'* | *$'\r'*) refuse "qa-record holds a line break." ;;
+            *'{candidate}'*'{candidate}'*) refuse "qa-record '$QA_RECORD' must hold {candidate} once." ;;
+            *'{candidate}'*) ;;
+            *) refuse "qa-record '$QA_RECORD' must hold {candidate} once." ;;
+          esac
           multi="$(jq 'length > 0' <<< "$COMPONENTS")"
 
           candidate_re="^$(to_regex "$CANDIDATE_PATTERN")\$"
@@ -410,8 +435,9 @@ jobs:
             refuse "the commit under deploy ($HEAD_SHA) is not the commit behind $RELEASE_TAG ($RELEASE_SHA)."
           fi
 
-          # REQ-CI-078: only release-please bookkeeping, and the gate record the
-          # bridge lands before the release PRs, may differ from the RC.
+          # REQ-CI-078: only release-please bookkeeping, the gate record the
+          # bridge lands before the release PRs and the candidate's own QA
+          # reports may differ from the RC.
           jq -r '.[]' <<< "$BOOKKEEPING" > "$work/allowed"
           if [ -n "$GATE_RECORD" ]; then
             case "$GATE_RECORD" in
@@ -421,6 +447,16 @@ jobs:
             esac
             printf '%s\n' "$GATE_RECORD" | sed "s/{version}/$RC_VERSION/" >> "$work/allowed"
           fi
+          # The latest candidate's report of each angle, `<record>/<angle>.json`,
+          # which the GO allows too: the last pass's reports land after its
+          # candidate by construction. They are rendered for RC_TAG only, so an
+          # earlier candidate's report is a delta like any other.
+          qa_dir="${QA_RECORD%%"{candidate}"*}${RC_TAG}${QA_RECORD#*"{candidate}"}"
+          while [[ "$qa_dir" == */ ]]; do qa_dir="${qa_dir%/}"; done
+          jq -r '.[]' <<< "$QA_ANGLES" > "$work/angles"
+          while IFS= read -r angle; do
+            printf '%s/%s.json\n' "$qa_dir" "$angle" >> "$work/allowed"
+          done < "$work/angles"
           if ! git diff --no-renames --name-only "$RC_SHA" "$RELEASE_SHA" > "$work/changed"; then
             refuse "git diff $RC_TAG $RELEASE_TAG failed: what changed since the candidate is not established."
           fi
