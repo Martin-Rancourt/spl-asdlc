@@ -693,6 +693,20 @@ pub fn first_pass_angles(
 /// the tickets of the team that are past the merge get the release label
 /// (spec 05 §2, the brief: "found by commit → PR → linked ticket").
 pub fn embarked(t: &Tick, shape: &Shape, c: &Candidate) -> Result<Vec<(String, Vec<u64>)>, String> {
+    Ok(embarked_items(t, shape, c)?.tickets)
+}
+
+/// What a candidate embarks: its tickets, each with its PRs in the range,
+/// and apart, the bridge's own sub-items linked to those PRs (the angle and
+/// consolidation items of their review rounds), which are not tickets: never
+/// labelled, never in the brief or the note, never judged (spec 05 §11).
+#[derive(Debug, Default)]
+pub struct Embarked {
+    pub tickets: Vec<(String, Vec<u64>)>,
+    pub sub_items: Vec<String>,
+}
+
+pub fn embarked_items(t: &Tick, shape: &Shape, c: &Candidate) -> Result<Embarked, String> {
     let tags = t
         .github
         .tags(&t.repo, shape.release_tag_prefix())
@@ -705,14 +719,14 @@ pub fn embarked(t: &Tick, shape: &Shape, c: &Candidate) -> Result<Vec<(String, V
                 .map_err(|e| e.to_string())?
                 .commits
         }
-        None => return Ok(Vec::new()),
+        None => return Ok(Embarked::default()),
     };
     let team = t.tracker.team_key().map_err(|e| e.to_string())?;
     let mut keys = t.config.tracker.team_keys.clone();
     if keys.is_empty() {
         keys.push(team);
     }
-    let mut out: Vec<(String, Vec<u64>)> = Vec::new();
+    let mut out = Embarked::default();
     for commit in commits {
         let pulls = t
             .github
@@ -729,17 +743,26 @@ pub fn embarked(t: &Tick, shape: &Shape, c: &Candidate) -> Result<Vec<(String, V
         {
             continue;
         }
-        for key in t
+        let linked: Vec<String> = t
             .tracker
             .items_linked_to_pr(&pr.url)
             .map_err(|e| e.to_string())?
-        {
-            if !keys.iter().any(|k| key.starts_with(&format!("{k}-"))) {
-                continue;
+            .into_iter()
+            .filter(|key| keys.iter().any(|k| key.starts_with(&format!("{k}-"))))
+            .collect();
+        // The PR's review round items are linked to it beside its ticket:
+        // recognised as in the PR pass (by marker, or by a parent linked to
+        // the same PR), they are set apart.
+        let split = super::link::split_linked(t.tracker, linked).map_err(|e| e.to_string())?;
+        for sub in split.sub_items {
+            if !out.sub_items.contains(&sub.key) {
+                out.sub_items.push(sub.key);
             }
-            match out.iter_mut().find(|(k, _)| *k == key) {
+        }
+        for ticket in split.tickets {
+            match out.tickets.iter_mut().find(|(k, _)| *k == ticket.key) {
                 Some((_, prs)) => prs.push(pr.number),
-                None => out.push((key, vec![pr.number])),
+                None => out.tickets.push((ticket.key, vec![pr.number])),
             }
         }
     }

@@ -47,7 +47,24 @@ pub fn ticket_item(
 /// its structure: an item whose parent is another of the linked items is a
 /// sub-item of that item (an angle or consolidation item of its round), not
 /// a second ticket.
-fn real_items(tracker: &dyn Tracker, mut keys: Vec<String>) -> TResult<Vec<Item>> {
+fn real_items(tracker: &dyn Tracker, keys: Vec<String>) -> TResult<Vec<Item>> {
+    Ok(split_linked(tracker, keys)?.tickets)
+}
+
+/// The items linked to one PR, split into tickets and the bridge's own
+/// sub-items.
+#[derive(Debug, Default)]
+pub struct LinkedItems {
+    pub tickets: Vec<Item>,
+    /// The angle and consolidation items of the PR's review rounds.
+    pub sub_items: Vec<Item>,
+}
+
+/// Read the items linked to one PR (`keys`) and split them by the rules of
+/// [`real_items`]: an item with a bridge marker, or whose parent is another
+/// of the linked items, is a sub-item of the bridge, never a ticket. A key
+/// that names no item is dropped; any other failed read is an error.
+pub fn split_linked(tracker: &dyn Tracker, mut keys: Vec<String>) -> TResult<LinkedItems> {
     keys.sort();
     keys.dedup();
     let mut items = Vec::new();
@@ -60,13 +77,11 @@ fn real_items(tracker: &dyn Tracker, mut keys: Vec<String>) -> TResult<Vec<Item>
         }
     }
     let linked: Vec<String> = items.iter().map(|i| i.key.clone()).collect();
-    Ok(items
-        .into_iter()
-        .filter(|item| {
-            texts::bridge_item(&item.description, item.parent.as_deref()).is_none()
-                && !item.parent.as_ref().is_some_and(|p| linked.contains(p))
-        })
-        .collect())
+    let (sub_items, tickets) = items.into_iter().partition(|item| {
+        texts::bridge_item(&item.description, item.parent.as_deref()).is_some()
+            || item.parent.as_ref().is_some_and(|p| linked.contains(p))
+    });
+    Ok(LinkedItems { tickets, sub_items })
 }
 
 #[cfg(test)]

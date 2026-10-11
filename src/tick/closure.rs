@@ -26,7 +26,7 @@ use crate::tracker::{Item, TResult};
 
 use super::merge::{for_tracker, tracker_said};
 use super::post_deploy;
-use super::release::{Candidate, embarked};
+use super::release::{Candidate, embarked, embarked_items};
 use super::{Report, Tick};
 
 pub fn close(
@@ -64,19 +64,26 @@ pub fn close(
     // What this release shipped, ticket by ticket (its PRs in the range): a
     // ticket whose latest merged PR is not among them waits for the release
     // that ships it (several PRs per ticket, spec 04 §10).
-    let shipped: std::collections::BTreeMap<String, Vec<u64>> = match embarked(t, shape, c) {
-        Ok(k) => k.into_iter().collect(),
-        Err(e) => {
-            t.unreadable(report, &object, format!("the shipped tickets: {e}"));
-            return;
-        }
-    };
+    let (shipped, sub_items): (std::collections::BTreeMap<String, Vec<u64>>, Vec<String>) =
+        match embarked_items(t, shape, c) {
+            Ok(e) => (e.tickets.into_iter().collect(), e.sub_items),
+            Err(e) => {
+                t.unreadable(report, &object, format!("the shipped tickets: {e}"));
+                return;
+            }
+        };
     let registry = read_registry(t, &published.tag);
     let mut result = CloseResult::default();
     for m in &members {
         if !t.in_time() {
             report.out_of_time = true;
             return;
+        }
+        // The review round items of a PR are the bridge's, not tickets, even
+        // when they carry the release label (an older bridge labelled them):
+        // never judged, archived with the cycle once resolved.
+        if round_item(m, item, &sub_items) {
+            continue;
         }
         judge_member(
             t,
@@ -207,6 +214,9 @@ fn archive_resolved(
             Resolved::ReleaseChild
         } else if m.title == nits {
             Resolved::Nits
+        } else if round_item(m, release, &[]) {
+            // A review round item an older bridge labelled with the release.
+            Resolved::ReviewRound
         } else {
             Resolved::Embarked
         };
@@ -244,6 +254,9 @@ fn archive_resolved(
             resolved.push(m.key.clone());
         }
     }
+    // A round item met both as a member and under its ticket is archived
+    // once.
+    resolved.retain(|k| !rounds.contains(k));
     for key in rounds.iter().chain(&resolved) {
         if !t.in_time() {
             report.out_of_time = true;
@@ -380,6 +393,19 @@ fn ready_to_close(
         }
     }
     Ok(None)
+}
+
+/// Whether a member of the release is a review round item of a PR (an angle
+/// or consolidation item under a ticket): by its marker, or, as the PR pass
+/// recognises it, linked to an embarked PR beside its parent (`sub_items`).
+/// The release item's own children are not: the closure closes them.
+fn round_item(m: &Item, release: &Item, sub_items: &[String]) -> bool {
+    m.parent.as_deref() != Some(release.key.as_str())
+        && (sub_items.contains(&m.key)
+            || matches!(
+                texts::bridge_item(&m.description, m.parent.as_deref()),
+                Some(BridgeItem::Angle { .. } | BridgeItem::Consolidation { .. })
+            ))
 }
 
 /// The release item's children and every item carrying the release label.

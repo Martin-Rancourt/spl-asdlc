@@ -3272,6 +3272,119 @@ fn a_dry_run_of_the_closure_prints_the_archives() {
     }
 }
 
+// ---- the bridge's own sub-items are not embarked tickets (spec 05 §11) ----
+
+/// The review round of `ABC-5` on PR 5 (`ABC-21` the angle item, `ABC-22`
+/// the consolidation item, whose marker an agent dropped), linked to the PR
+/// beside its ticket, in `status`, with the release label an older bridge
+/// gave them when `labelled`.
+fn linked_round(w: &World, status: Status, labelled: bool) {
+    review_round(w, "ABC-5", ["ABC-21", "ABC-22"], status);
+    w.tracker.restyle("ABC-22", |d| {
+        d.lines().skip(1).collect::<Vec<_>>().join("\n")
+    });
+    assert_eq!(
+        texts::bridge_item(&w.tracker.item("ABC-22").description, Some("ABC-5")),
+        None
+    );
+    for key in ["ABC-21", "ABC-22"] {
+        w.tracker.link(key, PR5);
+        if labelled {
+            w.tracker.add_label(key, LABEL).unwrap();
+        }
+    }
+}
+
+#[test]
+fn the_review_round_items_of_an_embarked_pr_are_neither_labelled_nor_briefed() {
+    let w = World::new();
+    linked_round(&w, Status::ToDeploy, false);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(w.tracker.item("ABC-5").labels.contains(&LABEL.to_string()));
+    for key in ["ABC-21", "ABC-22"] {
+        assert!(
+            w.tracker.item(key).labels.is_empty(),
+            "{key} is the bridge's, not an embarked ticket"
+        );
+    }
+    let brief = &w.briefs(CAND)[0];
+    assert!(brief.contains("ABC-5"), "{brief}");
+    assert!(
+        !brief.contains("ABC-21") && !brief.contains("ABC-22"),
+        "{brief}"
+    );
+}
+
+#[test]
+fn the_closure_judges_the_ticket_and_never_reopens_its_labelled_round_items() {
+    let w = World::new();
+    // Linear moved the items linked to the merged PR to To Deploy; their
+    // boxes are never ticked, angle items close by review.
+    linked_round(&w, Status::ToDeploy, true);
+    w.tick();
+    publish(&w);
+    let before = w.tracker.writes().len();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.tracker.item("ABC-5").state.status,
+        Some(Status::Done),
+        "the ticket is judged"
+    );
+    let writes = &w.tracker.writes()[before..];
+    for key in ["ABC-21", "ABC-22"] {
+        assert_eq!(
+            w.tracker.item(key).state.status,
+            Some(Status::ToDeploy),
+            "{key} is not reopened"
+        );
+        assert!(
+            !writes
+                .iter()
+                .any(|l| l.contains(&format!(" {key} ")) || l.ends_with(&format!(" {key}"))),
+            "nothing written on {key}: {writes:?}"
+        );
+    }
+    let release = w.release_item();
+    let closure = w
+        .tracker
+        .comments(&release.key)
+        .unwrap()
+        .into_iter()
+        .find(|c| c.body.contains("spl-asdlc:closure"))
+        .expect("the closure comment");
+    assert!(
+        !closure.body.contains("ABC-21") && !closure.body.contains("ABC-22"),
+        "{}",
+        closure.body
+    );
+}
+
+#[test]
+fn labelled_round_items_resolved_are_archived_once_with_the_cycle() {
+    let w = World::new();
+    linked_round(&w, Status::Done, true);
+    w.tick();
+    publish(&w);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(w.tracker.item("ABC-5").state.status, Some(Status::Done));
+    for key in ["ABC-21", "ABC-22", "ABC-5"] {
+        assert!(w.tracker.item(key).archived, "{key} is archived");
+    }
+    let done = archives(&w);
+    for key in ["ABC-21", "ABC-22"] {
+        assert_eq!(
+            done.iter()
+                .filter(|l| **l == format!("archive {key}"))
+                .count(),
+            1,
+            "{key} once: {done:?}"
+        );
+    }
+}
+
 // ---- spec 05 §3 and BR-ASDLC-020: the coordinator receives the
 // consolidation item; the angle items in the normal flow, the consolidation
 // as the overall review ----
