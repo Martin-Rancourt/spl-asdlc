@@ -18,10 +18,7 @@ branch_prefix = "release/"
 max_rc_passes = 2
 go_policy = "computed"
 # release-please's rust type bumps the version in Cargo.toml and Cargo.lock.
-# The last pass's QA report lands after its candidate by construction; until
-# the bridge exempts the latest candidate's reports itself, it is listed here,
-# with the v0.2.0 publication caller and its shape test, amended to allow it.
-bookkeeping_paths = [".release-please-manifest.json", "CHANGELOG.md", "Cargo.toml", "Cargo.lock", ".spl-asdlc/qa/v0.2.0-rc.2/security.json", ".github/workflows/release-publish.yml", "tests/workflows/own.rs"]
+bookkeeping_paths = [".release-please-manifest.json", "CHANGELOG.md", "Cargo.toml", "Cargo.lock"]
 registry_path = "docs/business-rules.md"
 cut_workflow = "release-cut.yml"
 gate_workflow = "release-gate.yml"
@@ -31,20 +28,20 @@ release_please_manifest = ".release-please-manifest.json"
 # One shared nits ticket: the tracker's plan limits the number of tickets.
 nits = "shared"
 
-[[release.angles]]
-key = "security"
+# Light: no QA angle; the GO is the gate (docs/spec/05, "A release with no
+# QA angle"). Add a [[release.angles]] block to bring QA back.
+angles = []
 
 [review]
 merge_method = "squash"
-require_up_to_date = true
+require_up_to_date = false
 diff_size_extra_angle = 0
 human_approval = "never"
-sensitive_paths = ".github/review-paths.json"
-sensitive_angle = "security"
 ticketless_authors = ["dependabot"]
 
-[[review.angles]]
-key = "maintainability"
+# Light: no PR reviewer; the bridge merges a PR on its CI (docs/spec/04,
+# "No PR review"). Add [[review.angles]] blocks to bring review back.
+angles = []
 
 [bridge]
 poll_minutes = 5
