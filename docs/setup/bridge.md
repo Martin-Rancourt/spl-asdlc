@@ -29,6 +29,7 @@ Secrets come from the environment or from the host's secret store; never from th
 - One JSON line per action taken or tried (when, repository, object, action, inputs, outcome), appended.
 - Default place: `$XDG_STATE_HOME/spl-asdlc/<owner>-<repo>.jsonl` (or `~/.local/state/…`, or `%LOCALAPPDATA%\spl-asdlc\…`); `--log` sets another path.
 - A pass with nothing to do writes nothing, not even the file.
+- On unix the log is private to the bridge's account: the file is created `0600` and a directory the bridge creates for it `0700`; an existing log file with wider permissions is narrowed to `0600` at the next write. An existing directory is left as it is.
 - The log is an audit trail, not the bridge's memory: the bridge decides from what GitHub and the tracker show. Losing the file costs nothing but the history.
 
 **Verify**: `spl-asdlc doctor --file <spl-asdlc.toml>` reports the identities it writes with, the repository it serves, the instance overlay it read (`instance overlay: ok — <path>`, or `none`), what reviews a PR (`PR review: ok — none — …` for a project with no PR review), and each point of this procedure as `ok`, `missing` or `invalid`; the repository's `spl-asdlc.toml` at the default branch is judged merged with that overlay.
