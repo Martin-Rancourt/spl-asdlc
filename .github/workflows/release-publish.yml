@@ -68,9 +68,10 @@ jobs:
       # Cargo.lock).
       bookkeeping-paths: '[".release-please-manifest.json", "CHANGELOG.md", "Cargo.toml", "Cargo.lock"]'
       # The candidate's own QA reports, which land after it: spl-asdlc.toml's
-      # record directory (the default) and its release angles.
+      # record directory (the default) and its release angles (none: the
+      # light setup has no release QA angle).
       qa-record: .spl-asdlc/qa/{candidate}/
-      qa-angles: '["security"]'
+      qa-angles: '[]'
       # The slug of the bridge's App. The release-please PR must have been
       # merged by this App or by a person (spec 09); any other bot is no GO.
       go-merger-login: spl-asdlc
