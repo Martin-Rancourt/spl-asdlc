@@ -369,6 +369,53 @@ pub fn changes_requested_at_head(pr: &PullRequest, approvers: &[String]) -> Opti
     })
 }
 
+/// A request for changes standing from a reviewer outside the approvers
+/// (an angle's reviewer, a passer-by): GitHub keeps it blocking the merge,
+/// whatever the head, until it is dismissed or its author reviews again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StandingChanges<'a> {
+    /// As GitHub spelt it.
+    pub login: &'a str,
+    /// An App (`<slug>[bot]` once normalised, [`login_key`]): the bridge may
+    /// dismiss its review under a coordinator's approval at the head; a
+    /// person's, never.
+    pub app: bool,
+    /// Every `CHANGES_REQUESTED` review of that login still standing (not
+    /// dismissed), oldest first.
+    pub reviews: Vec<&'a Review>,
+}
+
+/// The requests for changes standing besides the approvers' own, which
+/// [`approval`] already weighs: one per login whose latest stateful review
+/// asks for changes, at any head, in the order the logins first reviewed.
+pub fn standing_changes_requested<'a>(
+    reviews: &'a [Review],
+    approvers: &[String],
+) -> Vec<StandingChanges<'a>> {
+    latest_stateful(reviews)
+        .into_iter()
+        .filter(|r| r.state.eq_ignore_ascii_case("CHANGES_REQUESTED"))
+        .filter_map(|r| {
+            let login = r.author.as_deref()?;
+            if approvers.iter().any(|a| same_login(a, login)) {
+                return None;
+            }
+            let key = login_key(login);
+            Some(StandingChanges {
+                login,
+                app: key.ends_with("[bot]"),
+                reviews: reviews
+                    .iter()
+                    .filter(|o| {
+                        o.state.eq_ignore_ascii_case("CHANGES_REQUESTED")
+                            && o.author.as_deref().is_some_and(|a| login_key(a) == key)
+                    })
+                    .collect(),
+            })
+        })
+        .collect()
+}
+
 /// Review threads still open on the PR; `None` when GitHub cut the list
 /// (an unresolved thread may hide in what was not read).
 pub fn unresolved_threads(pr: &PullRequest) -> Option<usize> {

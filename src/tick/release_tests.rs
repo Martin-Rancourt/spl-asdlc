@@ -266,6 +266,7 @@ impl World {
         pr.head_ref = format!("qa/{CAND}/{angle}");
         pr.body = format!("Angle {angle}, sub-item {}", sub.key);
         pr.reviews = vec![Review {
+            id: None,
             author: Some("coordinator-login".into()),
             body: "ok".into(),
             state: "APPROVED".into(),
@@ -741,6 +742,54 @@ fn a_release_coordinator_app_approves_and_a_person_of_its_name_does_not() {
             "configured {configured}, reviewed by {author}: {:?}",
             w.github.writes()
         );
+    }
+}
+
+#[test]
+fn an_angle_pr_dismisses_an_apps_superseded_request_for_changes_and_a_person_holds_it() {
+    // (author of the earlier request for changes, merged)
+    for (author, merged) in [(bot("angle-app"), true), ("passer-by".to_string(), false)] {
+        let w = World::new();
+        w.tick();
+        let mut pr = w.angle_pr(30, "security", &report_json("security", ""));
+        pr.reviews.insert(
+            0,
+            Review {
+                id: Some(51),
+                author: Some(author.clone()),
+                body: "redo".into(),
+                state: "CHANGES_REQUESTED".into(),
+                commit_sha: Some("older".into()),
+                submitted_at: None,
+            },
+        );
+        w.open_on_branch(vec![pr.clone()]);
+        let report = w.tick();
+        let writes = w.github.writes();
+        let merge = format!("merge example-org/acme#30 at {} merge", pr.head_sha);
+        let dismissal = writes
+            .iter()
+            .position(|l| l.starts_with("dismiss-review example-org/acme#30 51: "));
+        assert_eq!(writes.contains(&merge), merged, "{author}: {writes:?}");
+        assert_eq!(dismissal.is_some(), merged, "{author}: {writes:?}");
+        if merged {
+            let at = writes.iter().position(|l| *l == merge).unwrap();
+            assert!(dismissal.unwrap() < at, "{writes:?}");
+            assert!(writes[dismissal.unwrap()].contains(&format!(
+                "coordinator-login approved this PR at its head `{}`",
+                pr.head_sha
+            )));
+        } else {
+            assert!(
+                report.waiting_lines().contains(
+                    &"waiting: pr#30 changes requested by passer-by (a person; the bridge never dismisses it)"
+                        .to_string()
+                ),
+                "{:?}",
+                report.waiting_lines()
+            );
+            assert_eq!(w.sub_item("security").state.status, Some(Status::InReview));
+        }
     }
 }
 
@@ -3182,6 +3231,7 @@ impl World {
 
 fn coordinator(state: &str, head: &str) -> Review {
     Review {
+        id: None,
         author: Some("coordinator-login".into()),
         body: "consolidated".into(),
         state: state.into(),

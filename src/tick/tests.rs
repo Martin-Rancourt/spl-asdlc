@@ -143,6 +143,7 @@ fn green(mut pr: PullRequest) -> PullRequest {
 
 fn review(author: &str, state: &str, sha: &str, body: &str) -> Review {
     Review {
+        id: None,
         author: Some(author.into()),
         body: body.into(),
         state: state.into(),
@@ -2097,4 +2098,189 @@ fn adding_a_release_section_later_switches_to_the_full_flow_and_leaves_done_tick
     assert_eq!(w.tracker.item("ABC-8").state.status, Some(Status::ToDeploy));
     assert!(merge_comment(&w, "ABC-8", &second).contains("state: To Deploy"));
     quiet(&w);
+}
+
+// ---- spec 04 §6: a request for changes the coordinator's approval supersedes ----
+
+/// A standing request for changes, with the id GitHub gave it.
+fn changes(author: &str, id: u64, sha: &str) -> Review {
+    Review {
+        id: Some(id),
+        ..review(author, "CHANGES_REQUESTED", sha, "redo")
+    }
+}
+
+/// A PR In Review whose every angle reported and whose coordinator
+/// approved at the head, after `earlier` asked for changes on an older head.
+fn approved_after(w: &World, earlier: Review) -> PullRequest {
+    let pr = in_review(w, 7);
+    let mut pr = approved(w, pr);
+    pr.reviews.insert(0, earlier);
+    w.open(pr.clone());
+    pr
+}
+
+#[test]
+fn an_apps_request_for_changes_superseded_by_the_coordinators_approval_is_dismissed_then_merged() {
+    let w = World::new();
+    approved_after(&w, changes(&bot("angle-app"), 41, "older"));
+    let (report, log) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    let writes = w.github_writes();
+    let dismissed = writes
+        .iter()
+        .position(|l| l.starts_with("dismiss-review example-org/acme#7 41: "))
+        .expect("the App's review is dismissed");
+    let merged = writes
+        .iter()
+        .position(|l| l == "merge example-org/acme#7 at head-7 squash")
+        .expect("then the PR is merged");
+    assert!(dismissed < merged, "{writes:?}");
+    assert!(
+        writes[dismissed].contains("coordinator-login approved this PR at its head `head-7`"),
+        "the message names the approval and the head: {}",
+        writes[dismissed]
+    );
+    let entry = log
+        .entries()
+        .iter()
+        .find(|e| e.action.starts_with("dismiss"))
+        .expect("the action log records the dismissal");
+    assert_eq!(
+        entry.action,
+        format!("dismiss review of {}", bot("angle-app"))
+    );
+    assert_eq!(entry.inputs["review"], 41);
+    assert_eq!(entry.inputs["approved_by"], "coordinator-login");
+    assert_eq!(entry.outcome, Outcome::Done);
+}
+
+#[test]
+fn a_dismissal_is_not_repeated_when_the_merge_is_refused() {
+    let w = World::new();
+    approved_after(&w, changes(&bot("angle-app"), 41, "older"));
+    w.github
+        .fail_writes_starting_with("merge example-org/acme#7", Some(405), "not now");
+    let (report, _) = w.tick(false);
+    assert!(!report.ok());
+    w.github.state.borrow_mut().failing_writes.clear();
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    let writes = w.github_writes();
+    assert_eq!(
+        writes
+            .iter()
+            .filter(|l| l.starts_with("dismiss-review"))
+            .count(),
+        1,
+        "{writes:?}"
+    );
+    assert!(writes.contains(&"merge example-org/acme#7 at head-7 squash".to_string()));
+}
+
+#[test]
+fn a_persons_request_for_changes_holds_the_merge_and_is_never_dismissed() {
+    let w = World::new();
+    let mut pr = approved_after(&w, changes("passer-by", 42, "older"));
+    // An App's request beside it is not dismissed either: nothing merges.
+    pr.reviews
+        .insert(0, changes(&bot("angle-app"), 41, "older"));
+    w.open(pr);
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(
+        report.waiting_lines(),
+        vec![
+            "waiting: pr#7 changes requested by passer-by (a person; the bridge never dismisses it)"
+        ]
+    );
+    let writes = w.github_writes();
+    assert!(
+        !writes
+            .iter()
+            .any(|l| l.starts_with("dismiss-review") || l.starts_with("merge")),
+        "{writes:?}"
+    );
+    quiet(&w);
+}
+
+#[test]
+fn without_the_coordinators_approval_at_the_head_nothing_is_dismissed() {
+    let w = World::new();
+    let mut pr = in_review(&w, 7);
+    pr.reviews = angle_reviews(&w, &pr);
+    pr.reviews
+        .insert(0, changes(&bot("angle-app"), 41, "older"));
+    pr.reviews
+        .push(review("coordinator-login", "APPROVED", "older", "ok"));
+    w.open(pr);
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    let writes = w.github_writes();
+    assert!(
+        !writes
+            .iter()
+            .any(|l| l.starts_with("dismiss-review") || l.starts_with("merge")),
+        "{writes:?}"
+    );
+    assert!(
+        report.waiting_lines()[0].starts_with("waiting: pr#7 no coordinator approval at head-7"),
+        "{:?}",
+        report.waiting_lines()
+    );
+}
+
+#[test]
+fn a_dry_run_prints_the_dismissals_before_the_merge() {
+    let w = World::new();
+    approved_after(&w, changes(&bot("angle-app"), 41, "older"));
+    let before = (w.tracker.writes().len(), w.github_writes().len());
+    let intents = crate::dry::Intents::default();
+    let gh = crate::dry::DryGitHub {
+        inner: &w.github,
+        intents: &intents,
+    };
+    let tr = crate::dry::DryTracker {
+        inner: &w.tracker,
+        intents: &intents,
+    };
+    let sig = crate::dry::DrySignal { intents: &intents };
+    let t = Tick {
+        config: &w.config,
+        repo: repo(),
+        github: &gh,
+        tracker: &tr,
+        signal: &sig,
+        github_login: bot("spl-asdlc"),
+        now: crate::github::Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
+        deadline: None,
+        dry_run: true,
+    };
+    let mut log = ActionLog::in_memory();
+    run(&t, &mut log);
+    assert_eq!(
+        (w.tracker.writes().len(), w.github_writes().len()),
+        before,
+        "a dry run writes nothing"
+    );
+    let lines: Vec<String> = log
+        .entries()
+        .iter()
+        .map(crate::action_log::describe)
+        .collect();
+    let want = format!(
+        "pr#7 ABC-7: dismiss review of {} — would do",
+        bot("angle-app")
+    );
+    assert!(lines.iter().any(|l| l.contains(&want)), "{lines:#?}");
+    let intents = intents.lines();
+    let dismissal = intents
+        .iter()
+        .position(|l| l.starts_with("github example-org/acme: dismiss review 41 on #7: "))
+        .expect("the dry run prints the dismissal");
+    let merge = intents
+        .iter()
+        .position(|l| l == "github example-org/acme: merge #7 at head-7 (squash)")
+        .expect("then the merge");
+    assert!(dismissal < merge, "{intents:?}");
 }

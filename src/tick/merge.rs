@@ -47,6 +47,97 @@ pub struct Candidate {
     /// PR with no angle, which merges with no round and no approval (spec 04
     /// §11).
     pub approved_by: Option<String>,
+    /// The Apps' requests for changes that approval supersedes, dismissed
+    /// right before the merge (spec 04 §6).
+    pub dismiss: Vec<Dismissal>,
+}
+
+/// A review the bridge dismisses right before a merge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dismissal {
+    pub id: u64,
+    pub login: String,
+}
+
+/// Why a person's standing request for changes holds the PR, if one
+/// stands besides the coordinators' own: the bridge never dismisses it.
+pub fn held_by_a_person(pr: &PullRequest, coordinators: &[String]) -> Option<String> {
+    let people: Vec<&str> = review::standing_changes_requested(&pr.reviews, coordinators)
+        .into_iter()
+        .filter(|s| !s.app)
+        .map(|s| s.login)
+        .collect();
+    match people.as_slice() {
+        [] => None,
+        [one] => Some(format!(
+            "changes requested by {one} (a person; the bridge never dismisses it)"
+        )),
+        many => Some(format!(
+            "changes requested by {} (people; the bridge never dismisses them)",
+            many.join(", ")
+        )),
+    }
+}
+
+/// The requests for changes standing besides the coordinators' on a PR a
+/// coordinator approved at its head (spec 04 §6): an App's is superseded by
+/// that approval and returned, to be dismissed right before the merge; a
+/// person's holds the PR, and `Err` says why it waits.
+pub fn superseded(pr: &PullRequest, coordinators: &[String]) -> Result<Vec<Dismissal>, String> {
+    if let Some(why) = held_by_a_person(pr, coordinators) {
+        return Err(why);
+    }
+    let mut out = Vec::new();
+    for s in review::standing_changes_requested(&pr.reviews, coordinators) {
+        for r in s.reviews {
+            let Some(id) = r.id else {
+                return Err(format!(
+                    "changes requested by {} (an App, but GitHub gave no id to dismiss its review)",
+                    s.login
+                ));
+            };
+            out.push(Dismissal {
+                id,
+                login: s.login.to_string(),
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Dismiss the reviews a coordinator's approval at the head supersedes
+/// (spec 04 §6), each logged, its message naming the approval and the head.
+/// Whether every one was dismissed: the merge waits otherwise, and the next
+/// tick dismisses what still stands.
+pub fn dismiss(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    object: &str,
+    pr: &PullRequest,
+    approved_by: &str,
+    dismissals: &[Dismissal],
+) -> bool {
+    let message = format!(
+        "Dismissed by the bridge before the merge: {approved_by} approved this PR at its head \
+         `{}`, which supersedes this request for changes from an App (`docs/spec/04-pr-review.md` §6).",
+        pr.head_sha
+    );
+    dismissals.iter().all(|d| {
+        t.act(
+            log,
+            report,
+            object,
+            &format!("dismiss review of {}", d.login),
+            json!({"review": d.id, "author": d.login, "approved_by": approved_by, "head": pr.head_sha}),
+            || {
+                t.github
+                    .dismiss_review(&t.repo, pr.number, d.id, &message)
+                    .map_err(|e| e.to_string())
+            },
+        )
+        .is_some()
+    })
 }
 
 /// What the pass found: the PRs ready to merge, and the open PRs of each
@@ -617,6 +708,16 @@ fn one(
             return None;
         }
     };
+    // Another reviewer's standing request for changes: a person's holds the
+    // PR; an App's is superseded by the approval at the head and dismissed
+    // at the merge (spec 04 §6).
+    let dismiss = match superseded(&pr, &t.config.review.coordinators) {
+        Ok(d) => d,
+        Err(why) => {
+            t.wait(report, &pr, why);
+            return None;
+        }
+    };
     // The consolidation starts only after its angles (BR-ASDLC-018): an
     // approval given while an angle sub-item of the round is open does not
     // count, even when a dispatcher ignored the blocking relation.
@@ -679,6 +780,7 @@ fn one(
         pr,
         ticket,
         approved_by: Some(by),
+        dismiss,
     })
 }
 
@@ -710,6 +812,12 @@ fn unreviewed(
             _ => {}
         }
     }
+    // No approval supersedes anything here: a person's request for changes
+    // holds the PR, an App's is left to GitHub.
+    if let Some(why) = held_by_a_person(&pr, coordinators) {
+        t.wait(report, &pr, why);
+        return None;
+    }
     if !plan.holds.is_empty() {
         return None;
     }
@@ -732,10 +840,12 @@ fn unreviewed(
         pr,
         ticket,
         approved_by: None,
+        dismiss: Vec::new(),
     })
 }
 
-/// Merge the first candidate: pinned to its head, then the branch deleted,
+/// Merge the first candidate: the Apps' requests for changes its approval
+/// supersedes dismissed first, pinned to its head, then the branch deleted,
 /// the PR's review round closed and the ticket where the state rules put it
 /// (spec 04 §6, §10). Returns whether a merge happened.
 pub fn merge(
@@ -759,6 +869,11 @@ pub fn merge(
             json!({"head": pr.head_sha, "approved_by": null, "review": "none: no angle for this PR", "base": pr.base_ref}),
         ),
     };
+    if let Some(by) = &c.approved_by {
+        if !dismiss(t, log, report, &object, pr, by, &c.dismiss) {
+            return false;
+        }
+    }
     let merged = t.act(log, report, &object, &action, inputs, || {
         match t
             .github

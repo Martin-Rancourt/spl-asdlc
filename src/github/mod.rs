@@ -143,4 +143,13 @@ pub trait GitHub {
         inputs: &[(String, String)],
     ) -> Write<()>;
     fn request_reviewers(&self, repo: &RepoSlug, number: u64, logins: &[String]) -> Write<()>;
+    /// Dismiss a review of a PR (REST `dismissals`), with the message GitHub
+    /// shows in its place.
+    fn dismiss_review(
+        &self,
+        repo: &RepoSlug,
+        number: u64,
+        review_id: u64,
+        message: &str,
+    ) -> Write<()>;
 }

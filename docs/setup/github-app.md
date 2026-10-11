@@ -4,8 +4,9 @@ One App per organisation or account, named after the product's service identity 
 
 **Create** (Settings → Developer settings → GitHub Apps → New):
 - Name: the service identity. Homepage: the product's repository. Webhook: off (the bridge polls).
-- Repository permissions: Contents **read and write** (branches, tags, merges, files), Pull requests **read and write** (reviews, comments, labels, merges), Checks **read**, Commit statuses **read**, Actions **read and write** (dispatch the cut, read runs and artifacts), Administration **read** (the required status checks of classic branch protection: without it the bridge cannot tell which checks are required and merges nothing), Metadata **read**, Workflows **read and write** only if the App must push workflow files (the bootstrap does; a running installation does not).
+- Repository permissions: Contents **read and write** (branches, tags, merges, files), Pull requests **read and write** (reviews, comments, labels, merges, and the dismissal of an App's request for changes the coordinator's approval supersedes), Checks **read**, Commit statuses **read**, Actions **read and write** (dispatch the cut, read runs and artifacts), Administration **read** (the required status checks of classic branch protection: without it the bridge cannot tell which checks are required and merges nothing), Metadata **read**, Workflows **read and write** only if the App must push workflow files (the bootstrap does; a running installation does not).
 - Where can it be installed: only this account.
+- If a branch protection restricts who may dismiss pull request reviews, list the App there: otherwise an App's superseded request for changes cannot be dismissed and the PR waits (`docs/spec/04-pr-review.md` §6).
 - Generate a private key; store it where the bridge runs and as the repository secret the workflows read. Note the App id and the installation id.
 
 **Install** on each repository that adopts the method (Install App → select repositories). A repository that is not in the installation is invisible to the bridge and the workflows fail at token minting.

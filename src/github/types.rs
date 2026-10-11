@@ -296,6 +296,9 @@ pub enum CheckKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Review {
+    /// GitHub's id of the review (REST `id`, GraphQL `databaseId`): what a
+    /// dismissal names. `None` when GitHub did not give it.
+    pub id: Option<u64>,
     pub author: Option<String>,
     /// The review's own text (an angle names its sub-item there).
     pub body: String,

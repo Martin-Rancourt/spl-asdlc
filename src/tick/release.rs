@@ -1531,6 +1531,19 @@ fn angle_pr(
         }
         BranchState::Current => {}
     }
+    // As for any PR (spec 04 §6): a person's standing request for changes
+    // holds it; an App's is superseded by the approval at the head and
+    // dismissed right before the merge.
+    let dismissals = match super::merge::superseded(pr, &release.coordinators) {
+        Ok(d) => d,
+        Err(why) => {
+            t.wait(report, pr, why);
+            return AngleState::InReview;
+        }
+    };
+    if !super::merge::dismiss(t, log, report, &object, pr, &by, &dismissals) {
+        return AngleState::InReview;
+    }
     let done = t.act(
         log,
         report,

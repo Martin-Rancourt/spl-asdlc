@@ -223,6 +223,18 @@ impl GitHub for DryGitHub<'_> {
         ));
         Ok(())
     }
+    fn dismiss_review(
+        &self,
+        repo: &RepoSlug,
+        number: u64,
+        review_id: u64,
+        message: &str,
+    ) -> Write<()> {
+        self.intents.push(format!(
+            "github {repo}: dismiss review {review_id} on #{number}: {message}"
+        ));
+        Ok(())
+    }
 }
 
 pub struct DryTracker<'a> {

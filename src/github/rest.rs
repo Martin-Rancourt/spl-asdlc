@@ -376,7 +376,7 @@ const PULL_FRAGMENT: &str = "fragment Pull on PullRequest {
   mergeable mergeStateStatus additions deletions createdAt updatedAt mergedAt
   mergedBy { __typename login }
   mergeCommit { oid }
-  reviews(first: 100) { pageInfo { hasNextPage } nodes { author { __typename login } state body commit { oid } submittedAt } }
+  reviews(first: 100) { pageInfo { hasNextPage } nodes { databaseId author { __typename login } state body commit { oid } submittedAt } }
   reviewThreads(first: 100) { pageInfo { hasNextPage } nodes { isResolved isOutdated path comments(first: 1) { nodes { author { __typename login } body } } } }
   commits(last: 1) { nodes { commit { oid statusCheckRollup { contexts(first: 100) {
     pageInfo { hasNextPage }
@@ -546,6 +546,7 @@ fn pull_from_gql(v: &Value) -> Result<PullRequest, String> {
     let reviews = review_nodes
         .iter()
         .map(|r| Review {
+            id: r["databaseId"].as_u64(),
             author: actor_gql(&r["author"]).map(|a| a.login),
             body: str_of(r, "body"),
             state: str_of(r, "state"),
@@ -1603,6 +1604,24 @@ impl GitHub for RestGitHub {
             &format!("/repos/{repo}/pulls/{number}/requested_reviewers"),
             Some(json!({"reviewers": logins})),
             &[201],
+        )
+        .map(|_| ())
+    }
+
+    fn dismiss_review(
+        &self,
+        repo: &RepoSlug,
+        number: u64,
+        review_id: u64,
+        message: &str,
+    ) -> Write<()> {
+        self.write(
+            repo,
+            &format!("dismissal of review {review_id} on PR #{number}"),
+            "PUT",
+            &format!("/repos/{repo}/pulls/{number}/reviews/{review_id}/dismissals"),
+            Some(json!({"message": message, "event": "DISMISS"})),
+            &[200],
         )
         .map(|_| ())
     }

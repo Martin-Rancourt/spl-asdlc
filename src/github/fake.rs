@@ -563,6 +563,24 @@ impl GitHub for FakeGitHub {
             logins.join(", ")
         ))
     }
+
+    fn dismiss_review(
+        &self,
+        repo: &RepoSlug,
+        number: u64,
+        review_id: u64,
+        message: &str,
+    ) -> Write<()> {
+        self.record(format!(
+            "dismiss-review {repo}#{number} {review_id}: {message}"
+        ))?;
+        self.with_open_pull(repo, number, |p| {
+            for r in p.reviews.iter_mut().filter(|r| r.id == Some(review_id)) {
+                r.state = "DISMISSED".into();
+            }
+        });
+        Ok(())
+    }
 }
 
 /// A plain open PR for tests: green-less (no checks), no review, on `main`.
