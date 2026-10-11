@@ -33,7 +33,7 @@ impl TickLock {
     /// holds it. The file and its directory are created when missing.
     pub fn try_acquire(path: &Path) -> io::Result<Option<TickLock>> {
         if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-            std::fs::create_dir_all(dir)?;
+            crate::action_log::private_dir(dir)?;
         }
         let file = OpenOptions::new()
             .create(true)
@@ -121,5 +121,38 @@ mod tests {
         let lock = TickLock::try_acquire(&path).unwrap().expect("the lock");
         assert_eq!(lock.path(), path);
         assert!(path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lock_then_log_flush_keeps_the_log_directory_private() {
+        use crate::action_log::{ActionLog, Outcome};
+        use crate::github::{RepoSlug, Timestamp};
+        use serde_json::json;
+        use std::os::unix::fs::PermissionsExt;
+
+        let log = scratch("private/nested/acme.jsonl");
+        let _ = std::fs::remove_dir_all(log.parent().unwrap());
+        let _lock = TickLock::try_acquire(&TickLock::beside(&log))
+            .unwrap()
+            .expect("the lock");
+        let mut action_log = ActionLog::at(log.clone());
+        action_log.record(
+            Timestamp::parse("2026-10-11T00:00:00Z").unwrap(),
+            &RepoSlug::parse("acme/widget").unwrap(),
+            "pr#1",
+            "merge",
+            json!({}),
+            Outcome::Done,
+        );
+        action_log.flush().unwrap();
+        assert_eq!(
+            std::fs::metadata(log.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
     }
 }

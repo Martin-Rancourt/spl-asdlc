@@ -19,7 +19,7 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::github::{RepoSlug, Timestamp};
 
@@ -210,7 +210,7 @@ impl ActionLog {
 
 /// Create `dir` and its missing parents, private to the bridge's account
 /// (0700 on unix). A directory that exists is left as it is.
-fn private_dir(dir: &Path) -> io::Result<()> {
+pub(crate) fn private_dir(dir: &Path) -> io::Result<()> {
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
