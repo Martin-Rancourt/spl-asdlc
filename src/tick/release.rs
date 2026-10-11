@@ -849,7 +849,8 @@ fn qa_round(
 }
 
 /// The angle sub-items and the consolidation item of the candidate,
-/// created when missing (spec 05 §3, §4), the consolidation item blocked by
+/// created when missing (spec 05 §3, §4; a child found by its marker or by
+/// its exact title is not missing), the consolidation item blocked by
 /// every angle sub-item of the candidate (BR-ASDLC-020; written right after
 /// the items, repaired at every later tick; one that fails is reported and
 /// retried). Returns the release item's children after the creations, with
@@ -880,12 +881,6 @@ fn open_round(
         if !offered.contains(&angle.key) {
             continue;
         }
-        if children
-            .iter()
-            .any(|ch| angle_of(ch, &c.tag).as_deref() == Some(angle.key.as_str()))
-        {
-            continue;
-        }
         let line = AngleLine {
             key: angle.key.clone(),
             title: angle.title.clone(),
@@ -903,6 +898,13 @@ fn open_round(
             label,
             angle.notes.as_deref(),
         );
+        // Found by its marker or by its exact title (REQ-REL-048): a marker
+        // an agent edited does not make the item invisible.
+        if children.iter().any(|ch| {
+            angle_of(ch, &c.tag).as_deref() == Some(angle.key.as_str()) || ch.title == title
+        }) {
+            continue;
+        }
         let assignee = angle.assignee.as_ref().and_then(|a| t.tracker.user(a).ok());
         if let Some(created) =
             create_child(t, log, report, &item.key, &title, &body, label, assignee)
@@ -910,18 +912,19 @@ fn open_round(
             children.push(created);
         }
     }
+    let (title, body) = texts::consolidation_item(
+        &c.tag,
+        &format!("{product} {v} (rc.{})", c.rc),
+        texts::Consolidating::Candidate,
+    );
     let consolidated = children.iter().any(|ch| {
         texts::bridge_item(&ch.description, ch.parent.as_deref())
             == Some(BridgeItem::Consolidation {
                 scope: c.tag.clone(),
             })
+            || ch.title == title
     });
     if !offered.is_empty() && !consolidated {
-        let (title, body) = texts::consolidation_item(
-            &c.tag,
-            &format!("{product} {v} (rc.{})", c.rc),
-            texts::Consolidating::Candidate,
-        );
         let assignee = coordinator(t);
         if let Some(created) =
             create_child(t, log, report, &item.key, &title, &body, label, assignee)

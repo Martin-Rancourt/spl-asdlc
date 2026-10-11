@@ -267,6 +267,7 @@ fn tick(
     err: &mut dyn Write,
 ) -> ExitCode {
     use crate::action_log::{self, ActionLog};
+    use crate::lock::TickLock;
     if instance.is_some() && files.len() > 1 {
         let _ = writeln!(
             err,
@@ -287,6 +288,50 @@ fn tick(
                 continue;
             }
         };
+        let env = crate::host::process_env;
+        // One tick at a time per repository (spec 07 invariant 8), beside
+        // its action log. The dry run writes nothing and takes no lock.
+        let log_file = if dry_run {
+            None
+        } else {
+            match log_path
+                .clone()
+                .or_else(|| ActionLog::default_path(&c.repo, &env))
+            {
+                Some(p) => Some(p),
+                None => {
+                    let _ = writeln!(err, "no state directory is known: pass --log <file>");
+                    return ExitCode::from(2);
+                }
+            }
+        };
+        let _lock = match &log_file {
+            Some(p) => {
+                let lock_path = TickLock::beside(p);
+                match TickLock::try_acquire(&lock_path) {
+                    Ok(Some(l)) => Some(l),
+                    Ok(None) => {
+                        let _ = writeln!(
+                            out,
+                            "{}",
+                            crate::lock::already_running(&c.repo.to_string(), &lock_path)
+                        );
+                        continue;
+                    }
+                    Err(e) => {
+                        let _ = writeln!(
+                            err,
+                            "{}: the tick lock {} could not be taken: {e}",
+                            c.repo,
+                            lock_path.display()
+                        );
+                        code = ExitCode::from(2);
+                        continue;
+                    }
+                }
+            }
+            None => None,
+        };
         let tracker_name = crate::tracker::Tracker::identity(&c.tracker)
             .map(|u| u.name)
             .unwrap_or_else(|e| format!("unknown ({e})"));
@@ -303,7 +348,6 @@ fn tick(
                 ""
             }
         );
-        let env = crate::host::process_env;
         let signal = crate::job::channels(&c.config, &env);
         let intents = crate::dry::Intents::default();
         let dry_github = crate::dry::DryGitHub {
@@ -330,19 +374,9 @@ fn tick(
             deadline: None,
             dry_run,
         };
-        let mut log = if dry_run {
-            ActionLog::in_memory()
-        } else {
-            match log_path
-                .clone()
-                .or_else(|| ActionLog::default_path(&c.repo, &env))
-            {
-                Some(p) => ActionLog::at(p),
-                None => {
-                    let _ = writeln!(err, "no state directory is known: pass --log <file>");
-                    return ExitCode::from(2);
-                }
-            }
+        let mut log = match log_file {
+            Some(p) => ActionLog::at(p),
+            None => ActionLog::in_memory(),
         };
         let report = crate::tick::run(&t, &mut log);
         // A waiting note is said by the report's own line below.

@@ -5,7 +5,10 @@
 //! log, and answers ok or failed with one line for the host's job log.
 //!
 //! A pass that does nothing writes nothing: no fact, no log line, no file
-//! (invariant 7). Only the host records a failed pass.
+//! (invariant 7) but the empty lock file beside the action log, which keeps
+//! a second pass on the same repository from running while one runs
+//! (invariant 8): that second pass does nothing and says so. Only the host
+//! records a failed pass.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -13,6 +16,7 @@ use std::time::{Duration, Instant};
 use crate::action_log::ActionLog;
 use crate::config::Config;
 use crate::github::{GitHub, RepoSlug, Timestamp};
+use crate::lock::TickLock;
 use crate::notify::{Channels, Signal};
 use crate::tick::{self, Tick};
 use crate::tracker::Tracker;
@@ -75,6 +79,34 @@ pub fn pass_with(host: &Host, config: &Config, github: &dyn GitHub) -> PassOutco
     let Some(repo) = RepoSlug::parse(&config.product.repository) else {
         return PassOutcome::failed("product.repository is not <owner>/<repo>");
     };
+    let path = host
+        .log_path
+        .clone()
+        .or_else(|| ActionLog::default_path(&repo, host.env));
+    // One tick at a time (invariant 8), taken before anything is read. A
+    // pass with no state directory keeps its log in memory and has no file
+    // to lock.
+    let _lock = match &path {
+        Some(p) => {
+            let lock_path = TickLock::beside(p);
+            match TickLock::try_acquire(&lock_path) {
+                Ok(Some(l)) => Some(l),
+                Ok(None) => {
+                    return PassOutcome {
+                        ok: true,
+                        message: crate::lock::already_running(&repo.to_string(), &lock_path),
+                    };
+                }
+                Err(e) => {
+                    return PassOutcome::failed(format!(
+                        "{repo}: the tick lock {} could not be taken: {e}",
+                        lock_path.display()
+                    ));
+                }
+            }
+        }
+        None => None,
+    };
     let login = match github.identity() {
         Ok(i) => i.login(),
         Err(e) => return PassOutcome::failed(format!("GitHub identity: {e}")),
@@ -92,10 +124,6 @@ pub fn pass_with(host: &Host, config: &Config, github: &dyn GitHub) -> PassOutco
         deadline: host.budget.map(|b| started + b),
         dry_run: false,
     };
-    let path = host
-        .log_path
-        .clone()
-        .or_else(|| ActionLog::default_path(&repo, host.env));
     let mut log = match path {
         Some(p) => ActionLog::at(p),
         None => ActionLog::in_memory(),
@@ -188,6 +216,44 @@ mod tests {
         assert!(out.ok, "{out:?}");
         assert!(!log.exists(), "no heartbeat");
         assert!(tracker.writes().is_empty());
+    }
+
+    /// A tick already running (a timer and a run by hand overlapping): the
+    /// second pass reads nothing, writes nothing, and says why. Its GitHub
+    /// knows no identity, so a pass that went on would fail.
+    #[cfg(unix)]
+    #[test]
+    fn a_second_tick_while_the_lock_is_held_does_nothing() {
+        let (config, path) = spec_config();
+        let log = path.with_file_name("locked.jsonl");
+        let _ = std::fs::remove_file(&log);
+        let held = TickLock::try_acquire(&TickLock::beside(&log))
+            .unwrap()
+            .expect("the first tick's lock");
+        let tracker = FakeTracker::default();
+        let host = Host {
+            config_path: &path,
+            tracker: &tracker,
+            budget: None,
+            log_path: Some(log.clone()),
+            env: &|_| None,
+        };
+        let github = FakeGitHub::new();
+        let out = pass_with(&host, &config, &github);
+        assert!(out.ok, "{out:?}");
+        assert!(
+            out.message.contains("a tick is already running"),
+            "{}",
+            out.message
+        );
+        assert!(tracker.writes().is_empty());
+        assert!(github.writes().is_empty());
+        assert!(!log.exists(), "no log line");
+
+        drop(held);
+        let out = pass_with(&host, &config, &github);
+        assert!(!out.ok, "the lock released, the pass runs: {out:?}");
+        assert!(out.message.contains("GitHub identity"), "{}", out.message);
     }
 
     /// A host hands the bridge the repository's file only: the overlay

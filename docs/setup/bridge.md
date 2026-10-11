@@ -23,12 +23,13 @@ Secrets come from the environment or from the host's secret store; never from th
 - `spl-asdlc tick --file <spl-asdlc.toml>` runs one pass over the configuration's repository; repeat `--file` for several repositories. `--instance <file>` names the overlay of a single `--file`; with several, it is refused and each file's overlay is the one beside it.
 - It first prints under which names it writes, then one line per action, then a summary.
 - `--dry-run` reads for real and writes nothing: it prints each action as `would do` and each write it would make.
+- One tick at a time per repository: a tick that finds another one running on the same repository (a timer and a run by hand overlapping) does nothing, says `a tick is already running`, and exits 0. The lock is an empty file beside the action log, `<log>.jsonl.lock`, held for the tick's duration and released by the system when the process ends, even on a crash (`flock`; Windows has none, so there the host's scheduler must not overlap two ticks). A dry run takes no lock.
 - Exit codes: 0 when the pass is clean, 1 when an action failed or a read could not be done (each is retried at the next tick), 2 when the bridge could not start (invalid configuration, missing credentials).
 
 **Action log**
 - One JSON line per action taken or tried (when, repository, object, action, inputs, outcome), appended.
 - Default place: `$XDG_STATE_HOME/spl-asdlc/<owner>-<repo>.jsonl` (or `~/.local/state/…`, or `%LOCALAPPDATA%\spl-asdlc\…`); `--log` sets another path.
-- A pass with nothing to do writes nothing, not even the file.
+- A pass with nothing to do writes nothing, not even the file (the lock file beside it apart, which stays empty).
 - On unix the log is private to the bridge's account: the file is created `0600` and a directory the bridge creates for it `0700`; an existing log file with wider permissions is narrowed to `0600` at the next write. An existing directory is left as it is.
 - The log is an audit trail, not the bridge's memory: the bridge decides from what GitHub and the tracker show. Losing the file costs nothing but the history.
 

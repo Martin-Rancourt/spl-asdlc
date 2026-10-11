@@ -3452,6 +3452,31 @@ fn the_release_consolidation_item_is_blocked_by_every_angle_of_its_candidate_onc
     w.quiet();
 }
 
+/// An agent edited the markers away: the items are found by their exact
+/// titles among the release item's children and never created twice
+/// (REQ-REL-048).
+#[test]
+fn a_round_item_whose_marker_was_mangled_is_found_by_its_title_and_not_recreated() {
+    let w = World::new();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let round = w.round(CAND);
+    assert_eq!(round.len(), 3, "two angles and the consolidation item");
+    for item in &round {
+        let mangled = item.description.replace("spl-asdlc:", "spl-asdlc :");
+        w.tracker.update_description(&item.key, &mangled).unwrap();
+    }
+    assert!(w.round(CAND).is_empty(), "no marker is readable any more");
+    let release = w.release_item().key;
+    let children = w.tracker.children(&release).unwrap().len();
+    let (_, writes) = w.writes_of_a_tick();
+    assert!(
+        !writes.iter().any(|l| l.starts_with("create")),
+        "{writes:?}"
+    );
+    assert_eq!(w.tracker.children(&release).unwrap().len(), children);
+}
+
 #[test]
 fn a_release_relation_that_cannot_be_written_holds_the_brief_until_it_is_laid() {
     let w = World::new();

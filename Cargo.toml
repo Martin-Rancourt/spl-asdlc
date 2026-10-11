@@ -36,6 +36,11 @@ time = { version = "0.3", features = ["parsing", "formatting", "macros"] }
 toml = "1.1"
 ureq = { version = "3.4", default-features = false, features = ["rustls", "gzip"] }
 
+# The tick's lock (`flock`, src/lock.rs); already in the tree through the
+# TLS and crypto crates.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 rand = "0.8"
 # The workflow shape tests parse the shipped YAML (tests/workflows/).

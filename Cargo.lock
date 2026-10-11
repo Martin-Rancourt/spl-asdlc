@@ -1114,6 +1114,7 @@ dependencies = [
  "crc32fast",
  "flate2",
  "jsonwebtoken",
+ "libc",
  "rand",
  "regex",
  "rsa",

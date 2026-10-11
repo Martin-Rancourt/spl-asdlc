@@ -1543,6 +1543,44 @@ fn a_relation_that_cannot_be_written_holds_the_round_and_is_retried() {
     quiet(&w);
 }
 
+/// A round cut short, then an agent edited the markers of its items away:
+/// they are found by their exact titles among the ticket's children and
+/// never created twice (REQ-REL-048).
+#[test]
+fn a_round_item_whose_marker_was_mangled_is_found_by_its_title_and_not_recreated() {
+    let w = World::new();
+    let pr = green(pull_request(7));
+    w.ticket("ABC-7", Status::InProgress, &pr);
+    w.open(pr.clone());
+    // Neither linked to the PR nor related: the next tick opens the round
+    // again.
+    w.tracker.fail_writes_starting_with("link");
+    w.tracker.fail_writes_starting_with("relate");
+    let (report, _) = w.tick(false);
+    assert!(!report.ok(), "the round is cut short");
+    let created = children_of(&w, "ABC-7");
+    assert!(created.len() > 1, "the angles and the consolidation item");
+    for item in &created {
+        let mangled = item.description.replace("spl-asdlc:", "spl-asdlc :");
+        crate::tracker::Tracker::update_description(&w.tracker, &item.key, &mangled).unwrap();
+    }
+    w.tracker.state.borrow_mut().failing_writes.clear();
+    let before = w.tracker.writes().len();
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    let writes = w.tracker.writes()[before..].to_vec();
+    assert!(
+        !writes.iter().any(|l| l.starts_with("create")),
+        "{writes:?}"
+    );
+    assert_eq!(children_of(&w, "ABC-7").len(), created.len());
+    assert_eq!(
+        w.tracker.item("ABC-7").state.status,
+        Some(Status::InReview),
+        "the round opens with the items it found: {writes:?}"
+    );
+}
+
 #[test]
 fn an_approval_while_an_angle_is_open_does_not_merge_and_says_why_once() {
     let w = World::new();

@@ -1221,11 +1221,14 @@ fn enter_review(
             return;
         }
     };
-    let existing = |want: &BridgeItem| {
+    // A child is found by its marker or by its exact title (REQ-REL-048):
+    // a marker an agent edited does not make the item invisible.
+    let existing = |want: &BridgeItem, title: &str| {
         children
             .iter()
             .find(|c| {
                 texts::bridge_item(&c.description, c.parent.as_deref()).as_ref() == Some(want)
+                    || c.title == title
             })
             .map(|c| c.key.clone())
     };
@@ -1260,27 +1263,27 @@ fn enter_review(
             scope: scope.clone(),
             angle: angle.clone(),
         };
-        let key = match existing(&want) {
+        let notes = t
+            .config
+            .review
+            .angles
+            .iter()
+            .find(|a| a.key == *angle)
+            .and_then(|a| a.notes.as_deref());
+        let (title, body) = texts::review_angle_item(
+            &ticket.key,
+            &pr.url,
+            &pr.head_sha,
+            angle,
+            notes,
+            &plan.reasons,
+        );
+        let key = match existing(&want, &title) {
             Some(k) => {
                 relink(&k, &format!("{angle} review"), log, report);
                 k
             }
             None => {
-                let notes = t
-                    .config
-                    .review
-                    .angles
-                    .iter()
-                    .find(|a| a.key == *angle)
-                    .and_then(|a| a.notes.as_deref());
-                let (title, body) = texts::review_angle_item(
-                    &ticket.key,
-                    &pr.url,
-                    &pr.head_sha,
-                    angle,
-                    notes,
-                    &plan.reasons,
-                );
                 let assignee = hint(t, &t.config.review.angles, angle);
                 match create(
                     t,
@@ -1303,17 +1306,17 @@ fn enter_review(
     let want = BridgeItem::Consolidation {
         scope: scope.clone(),
     };
-    let consolidation = match existing(&want) {
+    let (title, body) = texts::consolidation_item(
+        &scope,
+        &format!("{} ({})", ticket.key, texts::short(&pr.head_sha)),
+        texts::Consolidating::PullRequest,
+    );
+    let consolidation = match existing(&want, &title) {
         Some(k) => {
             relink(&k, "consolidation", log, report);
             k
         }
         None => {
-            let (title, body) = texts::consolidation_item(
-                &scope,
-                &format!("{} ({})", ticket.key, texts::short(&pr.head_sha)),
-                texts::Consolidating::PullRequest,
-            );
             // Its coordinator, at creation only: an existing consolidation
             // item is never reassigned (someone may have taken it).
             let assignee = t
