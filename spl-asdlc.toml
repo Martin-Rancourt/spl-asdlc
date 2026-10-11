@@ -20,8 +20,8 @@ go_policy = "computed"
 # release-please's rust type bumps the version in Cargo.toml and Cargo.lock.
 # The last pass's QA report lands after its candidate by construction; until
 # the bridge exempts the latest candidate's reports itself, it is listed here,
-# with the v0.2.0 publication caller that had to allow it too.
-bookkeeping_paths = [".release-please-manifest.json", "CHANGELOG.md", "Cargo.toml", "Cargo.lock", ".spl-asdlc/qa/v0.2.0-rc.2/security.json", ".github/workflows/release-publish.yml"]
+# with the v0.2.0 publication caller and its shape test, amended to allow it.
+bookkeeping_paths = [".release-please-manifest.json", "CHANGELOG.md", "Cargo.toml", "Cargo.lock", ".spl-asdlc/qa/v0.2.0-rc.2/security.json", ".github/workflows/release-publish.yml", "tests/workflows/own.rs"]
 registry_path = "docs/business-rules.md"
 cut_workflow = "release-cut.yml"
 gate_workflow = "release-gate.yml"
