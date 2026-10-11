@@ -65,6 +65,15 @@ pub struct Report {
     pub waiting: Vec<Waiting>,
 }
 
+/// What became of a notice ([`Tick::notify`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Notice {
+    /// Sent through every channel that takes its event.
+    Sent,
+    /// No configured channel takes its event: nothing to send.
+    NoChannel,
+}
+
 /// A PR the merge pass holds, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Waiting {
@@ -147,6 +156,35 @@ impl Tick<'_> {
                 None
             }
         }
+    }
+
+    /// Send a notice through the channels that take `event` (spec 07,
+    /// "Notices"). No configured channel takes it: nothing to send, which
+    /// is not a failure and writes nothing here (the caller's tracker or PR
+    /// comment is the record, and marks the notice done). A channel that
+    /// takes it and fails is a failure: logged, retried at the next tick.
+    /// `None` when it failed.
+    pub fn notify(
+        &self,
+        log: &mut ActionLog,
+        report: &mut Report,
+        object: &str,
+        event: &str,
+        inputs: Value,
+        text: &str,
+    ) -> Option<Notice> {
+        if !self.signal.takes(event) {
+            return Some(Notice::NoChannel);
+        }
+        self.act(
+            log,
+            report,
+            object,
+            &format!("notify {event}"),
+            inputs,
+            || self.signal.signal(event, text).map(|_| ()),
+        )
+        .map(|()| Notice::Sent)
     }
 
     /// A decision that could not be taken because a read failed: nothing is

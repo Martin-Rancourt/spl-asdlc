@@ -1421,6 +1421,91 @@ fn publish(w: &World) {
 }
 
 #[test]
+fn a_release_note_no_channel_takes_is_done_once_and_never_retried() {
+    let w = World {
+        signal: Recorder {
+            no_channel: true,
+            ..Recorder::default()
+        },
+        ..World::new()
+    };
+    w.tick();
+    let release = w.release_item();
+    publish(&w);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(w.signal.sent.borrow().is_empty());
+    let said = |w: &World| {
+        w.tracker
+            .comments(&release.key)
+            .unwrap()
+            .iter()
+            .filter(|c| c.body.contains("has nothing to send"))
+            .count()
+    };
+    assert_eq!(said(&w), 1);
+    assert_eq!(
+        w.tracker.item(&release.key).state.status,
+        Some(Status::Done),
+        "the cycle closes"
+    );
+    let before = (w.tracker.writes().len(), w.github.writes().len());
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        (w.tracker.writes().len(), w.github.writes().len()),
+        before,
+        "{:?}",
+        &w.tracker.writes()[before.0..]
+    );
+    assert_eq!(said(&w), 1);
+}
+
+#[test]
+fn a_failing_channel_is_retried_and_the_note_restyled_is_not_rewritten() {
+    let w = World::new();
+    w.tick();
+    let release = w.release_item();
+    publish(&w);
+    let failing = World {
+        signal: Recorder {
+            fail: true,
+            ..Recorder::default()
+        },
+        ..w
+    };
+    let describe = format!("describe {}", release.key);
+    let r = failing.tick();
+    assert!(
+        r.failures.iter().any(|f| f.contains("notify release-note")),
+        "{r:?}"
+    );
+    assert!(failing.tracker.writes().contains(&describe));
+    // Linear's normalised form of the note: `*` bullets, blank lines.
+    failing
+        .tracker
+        .restyle(&release.key, |d| d.replace("\n- ", "\n\n* "));
+    let restyled = failing.tracker.item(&release.key).description;
+    assert!(restyled.contains("\n* **ABC-5**"), "{restyled}");
+    let before = failing.tracker.writes().len();
+    let r = failing.tick();
+    assert!(
+        r.failures.iter().any(|f| f.contains("notify release-note")),
+        "retried: {r:?}"
+    );
+    assert!(
+        !failing.tracker.writes()[before..].contains(&describe),
+        "{:?}",
+        &failing.tracker.writes()[before..]
+    );
+    assert_eq!(failing.tracker.item(&release.key).description, restyled);
+    assert_ne!(
+        failing.tracker.item(&release.key).state.status,
+        Some(Status::Done)
+    );
+}
+
+#[test]
 fn a_reopened_ticket_is_said_once_while_the_closure_retries() {
     let w = World::new();
     w.tracker.seed(

@@ -144,20 +144,39 @@ pub fn pass_with(host: &Host, config: &Config, github: &dyn GitHub) -> PassOutco
 }
 
 /// The notification channels of a configuration. Channels that cannot be
-/// built (an unset secret) make every notice fail: logged, retried, never
-/// marked sent.
+/// built (an unset secret) make every notice they take fail: logged,
+/// retried, never marked sent. An event no configured channel takes has
+/// nothing to send, built or not.
 pub fn channels(config: &Config, env: &dyn Fn(&str) -> Option<String>) -> Box<dyn Signal> {
     match Channels::from_config(&config.notify, env) {
         Ok(c) => Box::new(c),
-        Err(e) => Box::new(Unavailable(e)),
+        Err(error) => Box::new(Unavailable {
+            error,
+            events: config
+                .notify
+                .iter()
+                .flat_map(|n| n.events.iter().cloned())
+                .collect(),
+        }),
     }
 }
 
-struct Unavailable(String);
+struct Unavailable {
+    error: String,
+    /// The events the configured channels take.
+    events: Vec<String>,
+}
 
 impl Signal for Unavailable {
     fn signal(&self, event: &str, _text: &str) -> Result<Vec<String>, String> {
-        Err(format!("no channel for `{event}`: {}", self.0))
+        if !self.takes(event) {
+            return Ok(Vec::new());
+        }
+        Err(format!("no channel for `{event}`: {}", self.error))
+    }
+
+    fn takes(&self, event: &str) -> bool {
+        self.events.iter().any(|e| e == event)
     }
 }
 
@@ -182,6 +201,22 @@ mod tests {
         )
         .unwrap();
         (spec_example::config(), path)
+    }
+
+    #[test]
+    fn a_channel_not_built_fails_its_events_only() {
+        let mut config = crate::config::spec_example::config();
+        config.notify[0].events = vec!["escalation".into()];
+        // The secrets are not on the host: the channel cannot be built.
+        let signal = channels(&config, &|_| None);
+        assert!(signal.takes("escalation"));
+        assert!(signal.signal("escalation", "x").is_err());
+        assert!(!signal.takes("release-note"));
+        assert!(signal.signal("release-note", "x").unwrap().is_empty());
+        config.notify.clear();
+        let none = channels(&config, &|_| None);
+        assert!(!none.takes("release-note"));
+        assert!(none.signal("release-note", "x").unwrap().is_empty());
     }
 
     fn quiet_github() -> FakeGitHub {

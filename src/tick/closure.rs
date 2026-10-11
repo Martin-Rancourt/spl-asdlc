@@ -15,6 +15,7 @@ use crate::action_log::ActionLog;
 use crate::github::{CompareStatus, Release};
 use crate::method::business_rules::{self, Registry};
 use crate::method::done_gate::{self, DuplicateNode};
+use crate::method::markdown;
 use crate::method::release::closure::{self, Action, CloseResult, Judgement, Member, Resolved};
 use crate::method::release::findings;
 use crate::method::release::note::{self, TicketEntry};
@@ -27,7 +28,7 @@ use crate::tracker::{Item, TResult};
 use super::merge::{for_tracker, tracker_said};
 use super::post_deploy;
 use super::release::{Candidate, embarked, embarked_items};
-use super::{Report, Tick};
+use super::{Notice, Report, Tick};
 
 pub fn close(
     t: &Tick,
@@ -650,7 +651,9 @@ fn release_note(
     }
     let block = note::block(&c.tag, &tickets, &[], Some(&published.body));
     let description = for_tracker(t, &note::splice(&item.description, &block));
-    if description != item.description {
+    // Compared as the tracker stores it: a description it restyled (its
+    // own bullets, blank lines) is not rewritten at every tick.
+    if !markdown::same_stored(&description, &item.description) {
         t.act(
             log,
             report,
@@ -672,37 +675,35 @@ fn release_note(
         None,
     );
     let text = format!("{head}\n\n{block}");
-    let sent = t.act(
+    let (said, action) = match t.notify(
         log,
         report,
         &item.key,
-        "notify release-note",
+        "release-note",
         json!({"tag": published.tag}),
-        || t.signal.signal("release-note", &text).map(|_| ()),
-    );
-    if sent.is_none() {
-        return false;
-    }
-    let body = for_tracker(
-        t,
-        &format!(
-            "The release note of {} was sent.\n\n{marker}",
-            published.tag
+        &text,
+    ) {
+        None => return false,
+        Some(Notice::Sent) => (
+            format!("The release note of {} was sent.", published.tag),
+            "comment note sent",
         ),
-    );
-    t.act(
-        log,
-        report,
-        &item.key,
-        "comment note sent",
-        json!({}),
-        || {
-            t.tracker
-                .comment(&item.key, &body)
-                .map(|_| ())
-                .map_err(|e| e.to_string())
-        },
-    )
+        // Nothing to send is done, said once here, never retried.
+        Some(Notice::NoChannel) => (
+            format!(
+                "The release note of {} has nothing to send: no notification channel takes `release-note`. This item carries it.",
+                published.tag
+            ),
+            "comment note sent: no channel takes release-note",
+        ),
+    };
+    let body = for_tracker(t, &format!("{said}\n\n{marker}"));
+    t.act(log, report, &item.key, action, json!({}), || {
+        t.tracker
+            .comment(&item.key, &body)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    })
     .is_some()
 }
 

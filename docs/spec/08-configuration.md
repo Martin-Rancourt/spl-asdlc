@@ -255,4 +255,4 @@ The section is optional, and so is the release cycle it configures (`05-release-
 | `notify.kind` | required | The channel; this build ships `telegram`. | A channel the build does not ship: file invalid. |
 | `notify.target` | required | Reference to the destination (chat id, address, webhook). | Not a reference: file invalid; unset on the host: the notice is not sent, logged as an error, retried. |
 | `notify.token` | required for `telegram` | Reference to the channel's credential. | As `target`. |
-| `notify.events` | required | Any of `release-note`, `escalation`, `stagnation`, `stuck-pr`, `blind-pass`. | Unknown event: file invalid. |
+| `notify.events` | required | Any of `release-note`, `escalation`, `stagnation`, `stuck-pr`, `blind-pass`. An event no channel takes has nothing to send: its comment is the notice, never a failure (spec 07, "What it sends"). | Unknown event: file invalid. |

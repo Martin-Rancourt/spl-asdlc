@@ -235,9 +235,44 @@ pub fn clip_words(text: &str, max: usize) -> String {
     format!("{} …", cut.trim_end_matches([' ', ',', ';', ':']))
 }
 
+/// Whether two texts are the same markdown once a tracker stored one of
+/// them. A tracker rewrites what it keeps (Linear turns `- ` and `+ ` list
+/// bullets into `* `, adds or drops blank lines, trims trailing spaces), so
+/// a description differing only in that is not written again: the write
+/// would change nothing the tracker keeps and come back restyled.
+pub fn same_stored(a: &str, b: &str) -> bool {
+    fn lines(text: &str) -> impl Iterator<Item = String> + '_ {
+        text.lines()
+            .map(str::trim_end)
+            .filter(|l| !l.is_empty())
+            .map(|l| {
+                let rest = l.trim_start();
+                let indent = &l[..l.len() - rest.len()];
+                match rest.strip_prefix(['-', '+']) {
+                    Some(item) if item.starts_with(' ') => format!("{indent}*{item}"),
+                    _ => l.to_string(),
+                }
+            })
+    }
+    lines(a).eq(lines(b))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_text_restyled_by_the_tracker_is_the_same_text() {
+        let written = "## Release note\n- **ABC-1** — one\n+ two\n\n\n---\n";
+        let stored = "## Release note\n\n* **ABC-1** — one  \n\n* two\n\n---";
+        assert!(same_stored(written, stored));
+        assert!(!same_stored(
+            written,
+            "## Release note\n* **ABC-1** — one\n"
+        ));
+        assert!(!same_stored("-not a bullet", "*not a bullet"));
+        assert!(!same_stored("- one", "* two"));
+    }
 
     #[test]
     fn completion_checklist_items_reads_a_box_under_any_heading() {

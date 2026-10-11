@@ -2721,14 +2721,8 @@ fn escalate(
         return;
     }
     let text = texts::escalation_comment(&c.tag, c.rc, max, &d.blockers, moved);
-    let sent = t.act(
-        log,
-        report,
-        &item.key,
-        "notify escalation",
-        json!({}),
-        || t.signal.signal("escalation", &text).map(|_| ()),
-    );
+    // With no channel for it, the comment alone is the notice.
+    let sent = t.notify(log, report, &item.key, "escalation", json!({}), &text);
     if sent.is_some() {
         let body = for_tracker(t, &text);
         t.act(
@@ -2787,14 +2781,8 @@ fn stagnation(
         &item.key,
         &item.url,
     );
-    let sent = t.act(
-        log,
-        report,
-        &item.key,
-        "notify stagnation",
-        json!({}),
-        || t.signal.signal("stagnation", &text).map(|_| ()),
-    );
+    // With no channel for it, the comment alone is the notice.
+    let sent = t.notify(log, report, &item.key, "stagnation", json!({}), &text);
     if sent.is_some() {
         let body = for_tracker(t, &format!("{text}\n\n{marker}"));
         t.act(
