@@ -194,11 +194,25 @@ pub fn candidate_log_line(candidate: &str, class: &str, previous: Option<&str>) 
     }
 }
 
-/// Append a line to the `## Candidates` section, once.
-pub fn append_candidate(description: &str, line: &str) -> String {
-    if description.contains(line) {
-        return description.to_string();
+/// The candidate a line of the `## Candidates` log names: its first inline
+/// code, after a list bullet of any kind (`-`, `*`, `+`). A tracker
+/// rewrites the markdown it stores (Linear turns `- ` into `* `, spaces the
+/// items with blank lines), so a line is found again by its tag, never by
+/// its exact text.
+fn listed_candidate(line: &str) -> Option<&str> {
+    let rest = line.trim().strip_prefix(['-', '*', '+'])?;
+    if !rest.starts_with(char::is_whitespace) {
+        return None;
     }
+    let rest = rest.trim_start().strip_prefix('`')?;
+    rest.split_once('`').map(|(tag, _)| tag)
+}
+
+/// Append `line`, the log line of `candidate`, to the `## Candidates`
+/// section, unless a line of the section already names `candidate`
+/// (whatever its bullet, blank lines or trailing spaces): the description
+/// comes back unchanged then.
+pub fn append_candidate(description: &str, candidate: &str, line: &str) -> String {
     let lines: Vec<&str> = description.lines().collect();
     match lines
         .iter()
@@ -210,6 +224,12 @@ pub fn append_candidate(description: &str, line: &str) -> String {
                 .position(|l| l.starts_with("## "))
                 .map(|i| h + 1 + i)
                 .unwrap_or(lines.len());
+            if lines[h + 1..end]
+                .iter()
+                .any(|l| listed_candidate(l) == Some(candidate))
+            {
+                return description.to_string();
+            }
             let mut body: Vec<&str> = lines[h + 1..end]
                 .iter()
                 .copied()

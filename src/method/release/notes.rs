@@ -211,17 +211,37 @@ pub fn suggested_entries(missing: &[CommitSummary], repo_url: Option<&str>) -> V
         .collect()
 }
 
-/// The version release-please stages for `product`: the first
-/// `<summary>product: X.Y.Z` line of the PR body whose product matches
-/// (case-insensitive), or `None` (a mismatch by construction).
-pub fn staged_version(body: &str, product: &str) -> Option<Version> {
-    static SUMMARY: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"<summary>\s*([A-Za-z0-9_.@/-]+)\s*:\s*(\d+\.\d+\.\d+)").unwrap()
-    });
-    SUMMARY
-        .captures_iter(body)
-        .find(|c| c[1].eq_ignore_ascii_case(product))
-        .and_then(|c| Version::parse(&c[2]))
+/// The version release-please stages for `product` in one release PR, or
+/// `None` (a mismatch by construction). The cut workflow reads it the same
+/// way (`asdlc-release-cut.yml`, "Read the staged version"), so the version
+/// the cut names and the version the GO checks come from one reading:
+///
+/// 1. the first `X.Y.Z` right after the product's name, matched as a whole
+///    name and case-insensitively, then blanks or a colon: in the title
+///    (`chore(<branch>): release <product> X.Y.Z`), else in the body (the
+///    multi-component `<summary><product>: X.Y.Z</summary>`);
+/// 2. else, in a body with no `<summary>` (one component's note), the first
+///    `## [X.Y.Z]` heading, unless the head is another component's
+///    (`release-please--branches--<target>--components--<other>`).
+pub fn staged_version(title: &str, body: &str, head: &str, product: &str) -> Option<Version> {
+    static HEADING: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?:^|\n)## \[([0-9]+\.[0-9]+\.[0-9]+)\]").unwrap());
+    let named = Regex::new(&format!(
+        r"(?:^|[^A-Za-z0-9_.@/-])(?i:{})(?:\s+|\s*:\s*)([0-9]+\.[0-9]+\.[0-9]+)",
+        regex::escape(product)
+    ))
+    .ok()?;
+    let by_name = |s: &str| named.captures(s).and_then(|c| Version::parse(&c[1]));
+    if let Some(v) = by_name(title).or_else(|| by_name(body)) {
+        return Some(v);
+    }
+    let another_components = head
+        .split_once("--components--")
+        .is_some_and(|(_, c)| !c.eq_ignore_ascii_case(product));
+    if body.contains("<summary>") || another_components {
+        return None;
+    }
+    HEADING.captures(body).and_then(|c| Version::parse(&c[1]))
 }
 
 #[cfg(test)]

@@ -58,7 +58,12 @@ jobs:
       release-tag-pattern: acme-v{version}
       # As `[release] bookkeeping_paths` in spl-asdlc.toml.
       bookkeeping-paths: '[".release-please-manifest.json", "CHANGELOG.md"]'
-      # The slug of the bridge's App, which must have merged the release-please PR.
+      # As `[release] record` and the keys of `[[release.angles]]`: the latest
+      # candidate's own QA reports may land after it. `[]` with no QA angle.
+      qa-record: .spl-asdlc/qa/{candidate}/
+      qa-angles: '["security", "product"]'
+      # The slug of the bridge's App. The release-please PR must have been
+      # merged by this App or by a person (spec 09); any other bot is no GO.
       go-merger-login: example-app
 
   # The project's own job: publish and deploy the verified commit. Its

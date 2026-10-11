@@ -9,7 +9,7 @@ Every angle of a release QA commits one report in its branch, in `.spl-asdlc/qa/
   "schema": "spl-asdlc/qa-report/1",
   "candidate": "<rc tag>",
   "angle": "<angle key>",
-  "reviewer": "<participant id or name as the tracker knows it>",
+  "item": "<the key of the angle sub-item this report answers, e.g. ABC-123>",
   "verdict": "go | go-with-note | hold",
   "checked": ["<what was actually examined: paths, suites run, scenarios exercised>"],
   "findings": [
@@ -27,6 +27,8 @@ Every angle of a release QA commits one report in its branch, in `.spl-asdlc/qa/
   ]
 }
 ```
+
+`item` names the angle sub-item, never the reviewer: a report is committed to the repository, which carries no instance data (BR-ASDLC-001), and the tracker already knows who holds the sub-item. The bridge reads the reviewer from the tracker when it needs one, never from the report. A report merged before `item` existed carries a `reviewer` field instead; the bridge still accepts it and ignores the field.
 
 ## Rules
 

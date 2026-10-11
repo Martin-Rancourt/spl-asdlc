@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use super::shape::{Shape, Version};
-use crate::github::{PullRequest, same_app};
+use crate::github::{PullRequest, same_app, same_login};
 use crate::method::review::is_release_please_shaped;
 use crate::method::vocabulary::{DEPLOYED_LABEL, Status};
 
@@ -65,6 +65,55 @@ pub fn release_please_pr<'a>(
     }
     out.pr = trusted.first().copied();
     Ok(out)
+}
+
+/// The release-please PR whose merge made the release commit `sha`, as the
+/// publication finds its GO (REQ-CI-079): merged into a release branch
+/// (`branch_prefix`), shaped like release-please's, its merge commit the
+/// release commit. `None` unless exactly one is.
+pub fn go_pull<'a>(
+    merged: &'a [PullRequest],
+    sha: &str,
+    branch_prefix: &str,
+    label: &str,
+) -> Option<&'a PullRequest> {
+    let mut found = merged.iter().filter(|p| {
+        p.merge_commit_sha.as_deref() == Some(sha)
+            && !branch_prefix.is_empty()
+            && p.base_ref.starts_with(branch_prefix)
+            && is_release_please_shaped(p, label)
+    });
+    let first = found.next()?;
+    found.next().is_none().then_some(first)
+}
+
+/// Who merged the release PR, as the closure records it (spec 09): the
+/// bridge on its computed GO, or a human in GitHub, which the publication
+/// accepts as well. `bridge_login` is the bridge's own GitHub login.
+pub fn go_merger_line(tag: &str, pr: Option<&PullRequest>, bridge_login: &str) -> String {
+    let Some(pr) = pr else {
+        return format!(
+            "No release-please PR merged into a release branch made the commit of `{tag}`: who gave the GO is not recorded."
+        );
+    };
+    match &pr.merged_by {
+        Some(a) if same_login(bridge_login, &a.login) => format!(
+            "GO: the release PR {} was merged by the bridge, on its computed GO.",
+            pr.url
+        ),
+        Some(a) if !a.is_bot => format!(
+            "GO: the release PR {} was merged by `{}`, a human, in GitHub (spec 09); the publication accepted it as the GO.",
+            pr.url, a.login
+        ),
+        Some(a) => format!(
+            "GO: the release PR {} was merged by `{}`, an App that is not the bridge.",
+            pr.url, a.login
+        ),
+        None => format!(
+            "GO: the release PR {} was merged; who merged it could not be read.",
+            pr.url
+        ),
+    }
 }
 
 /// The `(candidate, angle)` of an angle branch `qa/<candidate>/<angle>`.

@@ -1,7 +1,9 @@
 //! Notifications (`docs/spec/05-release-cycle.md` §12, REQ-REL-094/095):
 //! signals sent where a human reads them, never the only record (the
-//! tracker comment is). A notice with no channel configured, or a send that
-//! fails, is an error the caller logs and retries; it is never marked sent.
+//! tracker comment is). A notice no configured channel takes has nothing to
+//! send: done, never a failure. A send through a channel that takes it and
+//! fails (or cannot be built) is an error the caller logs and retries; it is
+//! never marked sent.
 
 pub mod telegram;
 
@@ -38,7 +40,8 @@ pub fn fit(text: &str, n: &dyn Notifier) -> String {
 /// record of what it would send.
 pub trait Signal {
     /// Send `text` to every channel subscribed to `event`; the names of the
-    /// channels it reached, or an error naming those it did not.
+    /// channels it reached (none when no channel takes it: nothing to send),
+    /// or an error naming those it did not.
     fn signal(&self, event: &str, text: &str) -> Result<Vec<String>, String>;
 
     /// Whether any channel takes `event`; an event nobody subscribed to is
@@ -112,9 +115,9 @@ impl Channels {
             .count()
     }
 
-    /// Send `text` to every channel subscribed to `event`. No channel at all
-    /// is an error (the notice is not sent, so it must not be marked sent);
-    /// one failing channel fails the notice.
+    /// Send `text` to every channel subscribed to `event`. No channel takes
+    /// it: nothing to send, no channel named, not a failure (a project may
+    /// configure none); one failing channel fails the notice.
     pub fn notify(&self, event: &str, text: &str) -> Result<Vec<String>, String> {
         let targets: Vec<&Box<dyn Notifier>> = self
             .channels
@@ -122,9 +125,6 @@ impl Channels {
             .filter(|(e, _)| e.iter().any(|x| x == event))
             .map(|(_, n)| n)
             .collect();
-        if targets.is_empty() {
-            return Err(format!("no notification channel takes `{event}`"));
-        }
         let mut sent = Vec::new();
         let mut failed = Vec::new();
         for n in targets {
@@ -147,12 +147,21 @@ pub struct Recorder {
     pub sent: std::cell::RefCell<Vec<String>>,
     pub fail: bool,
     pub max: usize,
+    /// No channel is configured: no event is taken, nothing is sent.
+    pub no_channel: bool,
 }
 
 impl Signal for Recorder {
     fn signal(&self, event: &str, text: &str) -> Result<Vec<String>, String> {
+        if self.no_channel {
+            return Ok(Vec::new());
+        }
         self.send(&format!("[{event}] {text}"))?;
         Ok(vec![self.name()])
+    }
+
+    fn takes(&self, _event: &str) -> bool {
+        !self.no_channel
     }
 }
 
@@ -196,13 +205,15 @@ mod tests {
     use std::rc::Rc;
 
     #[test]
-    fn a_notice_with_no_channel_is_an_error_never_a_success() {
+    fn a_notice_no_channel_takes_has_nothing_to_send_and_is_no_failure() {
         let c = Channels::new(vec![]);
-        assert!(
-            c.notify("release-note", "x")
-                .unwrap_err()
-                .contains("no notification channel takes `release-note`")
-        );
+        assert!(!c.takes("release-note"));
+        assert_eq!(c.notify("release-note", "x").unwrap(), Vec::<String>::new());
+        let other = Rc::new(Recorder::default());
+        let c = Channels::new(vec![(vec!["escalation".into()], Box::new(other.clone()))]);
+        assert!(!c.takes("release-note"));
+        assert!(c.notify("release-note", "x").unwrap().is_empty());
+        assert!(other.sent.borrow().is_empty());
     }
 
     #[test]

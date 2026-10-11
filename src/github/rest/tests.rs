@@ -415,7 +415,7 @@ fn pull_node(number: u64) -> String {
         "labels":{{"pageInfo":{{"hasNextPage":false}},"nodes":[{{"name":"needs-review"}}]}},
         "mergeable":"CONFLICTING","mergeStateStatus":"DIRTY","additions":10,"deletions":2,
         "createdAt":"2026-10-05T10:00:00Z","updatedAt":"2026-10-05T11:00:00Z","mergedAt":null,"mergedBy":null,"mergeCommit":null,
-        "reviews":{{"pageInfo":{{"hasNextPage":false}},"nodes":[{{"author":{{"login":"coordinator-login"}},"state":"APPROVED","commit":{{"oid":"h{number}"}},"submittedAt":"2026-10-05T11:00:00Z"}}]}},
+        "reviews":{{"pageInfo":{{"hasNextPage":false}},"nodes":[{{"databaseId":7,"author":{{"login":"coordinator-login"}},"state":"APPROVED","commit":{{"oid":"h{number}"}},"submittedAt":"2026-10-05T11:00:00Z"}}]}},
         "reviewThreads":{{"pageInfo":{{"hasNextPage":true}},"nodes":[{{"isResolved":false,"isOutdated":false,"path":"src/x.rs","comments":{{"nodes":[{{"author":{{"login":"reviewer"}},"body":"blocker: x"}}]}}}}]}},
         "commits":{{"nodes":[{{"commit":{{"oid":"h{number}","statusCheckRollup":{{"contexts":{{"pageInfo":{{"hasNextPage":false}},"nodes":[
             {{"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-10-05T10:01:00Z","detailsUrl":"https://github.com/example-org/acme/actions/runs/1/job/2","checkSuite":{{"workflowRun":{{"workflow":{{"name":"Checks"}}}}}}}},
@@ -460,6 +460,7 @@ fn open_pulls_parse_checks_reviews_threads_and_say_what_was_cut() {
     assert_eq!(p.checks[2].kind, CheckKind::Status);
     assert_eq!(p.checks[2].conclusion.as_deref(), Some("FAILURE"));
     assert_eq!(p.reviews[0].commit_sha.as_deref(), Some("h12"));
+    assert_eq!(p.reviews[0].id, Some(7), "a dismissal names it");
     assert!(!p.threads[0].resolved);
     assert_eq!(p.truncated, vec!["reviewThreads"]);
     let body = &t.bodies()[0];
@@ -503,7 +504,7 @@ fn an_app_reviewing_is_named_in_the_rest_spelling() {
     assert_eq!(p.reviews[0].author, Some(bot("coord-app")));
     assert_eq!(p.threads[0].first_author.as_deref(), Some("reviewer"));
     assert!(
-        t.bodies()[0].contains("nodes { author { __typename login } state"),
+        t.bodies()[0].contains("nodes { databaseId author { __typename login } state"),
         "the query asks what the review's author is"
     );
 }
@@ -636,6 +637,31 @@ fn a_refused_merge_carries_its_status() {
         .unwrap_err();
     assert_eq!(err.status, Some(409));
     assert!(err.detail.contains("Head branch was modified"));
+}
+
+#[test]
+fn a_dismissal_names_its_review_and_says_why() {
+    let (gh, t) = client();
+    t.on(
+        "PUT",
+        &url("/repos/example-org/acme/pulls/12/reviews/41/dismissals"),
+        200,
+        r#"{"id":41,"state":"DISMISSED"}"#,
+    );
+    gh.dismiss_review(&repo(), 12, 41, "superseded").unwrap();
+    let body: Value = serde_json::from_str(&t.bodies()[0]).unwrap();
+    assert_eq!(body, json!({"message": "superseded", "event": "DISMISS"}));
+    let (gh, t) = client();
+    t.on(
+        "PUT",
+        &url("/repos/example-org/acme/pulls/12/reviews/41/dismissals"),
+        403,
+        r#"{"message":"Resource not accessible by integration"}"#,
+    );
+    let err = gh
+        .dismiss_review(&repo(), 12, 41, "superseded")
+        .unwrap_err();
+    assert_eq!(err.status, Some(403));
 }
 
 #[test]

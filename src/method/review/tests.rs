@@ -312,6 +312,7 @@ fn reviewed_paths_are_named_five_then_counted() {
 
 fn review(login: &str, state: &str, sha: &str) -> Review {
     Review {
+        id: None,
         body: String::new(),
         author: Some(login.into()),
         state: state.into(),
@@ -401,6 +402,7 @@ fn a_dismissed_or_pending_review_changes_nothing() {
 #[test]
 fn a_review_without_a_login_is_ignored() {
     let reviews = [Review {
+        id: None,
         body: String::new(),
         author: None,
         state: "CHANGES_REQUESTED".into(),
@@ -570,4 +572,46 @@ fn a_cut_review_list_never_qualifies() {
     ));
     pr.truncated = vec!["reviews".into()];
     assert_eq!(pr_approval(&pr, &s(&["coord"])), Approval::Unreadable);
+}
+
+// ---- the requests for changes besides the approvers' (spec 04 §6) ----
+
+#[test]
+fn the_requests_for_changes_standing_besides_the_approvers_are_told_app_or_person() {
+    let app = bot("Angle-App");
+    let mut first = review(&app, "CHANGES_REQUESTED", "h0");
+    first.id = Some(1);
+    let mut second = review(&bot("angle-app"), "CHANGES_REQUESTED", "h1");
+    second.id = Some(2);
+    let reviews = [
+        first,
+        review("coord", "CHANGES_REQUESTED", "h1"),
+        review("passer-by", "CHANGES_REQUESTED", "h0"),
+        second,
+        review("lifted", "CHANGES_REQUESTED", "h0"),
+        review("lifted", "APPROVED", "h1"),
+        review("gone", "DISMISSED", "h0"),
+    ];
+    let standing = standing_changes_requested(&reviews, &s(&["coord"]));
+    let told: Vec<(&str, bool, Vec<Option<u64>>)> = standing
+        .iter()
+        .map(|c| (c.login, c.app, c.reviews.iter().map(|r| r.id).collect()))
+        .collect();
+    assert_eq!(
+        told,
+        vec![
+            // Every standing review of the App, whatever its spelling.
+            (bot("angle-app").as_str(), true, vec![Some(1), Some(2)]),
+            ("passer-by", false, vec![None]),
+        ],
+        "an approver's own is the approval's to weigh; a later approval lifts a request"
+    );
+    assert!(
+        standing_changes_requested(
+            &[review(&bot("coord"), "CHANGES_REQUESTED", "h1")],
+            &s(&["coord"])
+        )[0]
+        .app,
+        "an App of a person approver's name is not that approver"
+    );
 }

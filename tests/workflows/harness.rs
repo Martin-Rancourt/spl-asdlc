@@ -43,11 +43,10 @@ pub fn load(path: &Path) -> Yaml {
     docs.remove(0)
 }
 
+/// The path relative to the repository root, in `/` form on every platform:
+/// the tests compare it with `/`-separated paths.
 pub fn relative(path: &Path) -> String {
-    path.strip_prefix(root())
-        .unwrap_or(path)
-        .display()
-        .to_string()
+    spl_asdlc::method::glob::repo_path(path.strip_prefix(root()).unwrap_or(path))
 }
 
 pub fn workflow(rel: &str) -> Yaml {

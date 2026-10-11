@@ -26,7 +26,7 @@ fn env(stubs: &Path, extra: &[(&'static str, &str)]) -> Vec<(&'static str, Strin
         ("BRANCH_PREFIX", "release/".into()),
         ("DEFAULT_BRANCH", "main".into()),
         ("GH_REPO", "example-org/acme".into()),
-        ("POLL_INTERVAL", "0".into()),
+        ("AUTOMATIC", "false".into()),
     ];
     for (k, v) in extra {
         e.retain(|(key, _)| key != k);
@@ -77,6 +77,12 @@ fn preflight(extra: &[(&'static str, &str)]) -> Ran {
         ("DEFAULT_BRANCH", "main".into()),
         ("CLASS_PATHS_FILE", ".github/review-paths.json".into()),
         ("MANIFEST_FILE", ".release-please-manifest.json".into()),
+        // A dispatch: the `workflow_run` fields are empty.
+        ("EVENT_NAME", "workflow_dispatch".into()),
+        ("REPOSITORY", "example-org/acme".into()),
+        ("RUN_BRANCH", String::new()),
+        ("RUN_REPOSITORY", String::new()),
+        ("RUN_CONCLUSION", String::new()),
     ];
     for (k, v) in extra {
         e.retain(|(key, _)| key != k);
@@ -293,33 +299,22 @@ fn modified_tracked_files_refuse_the_cut() {
     );
 }
 
-// -------------------------------------------- open: push, wait for the run
+// ------------------------------- open: push and end; release-please on the tip
 
-/// A `gh` that answers `run list` from `rows` (one JSON per call, the last
-/// one repeated), through the caller's own `--jq` filter.
-fn gh_runs(stubs: &Path, rows: &[&str], fail: bool) {
-    let mut cases = String::new();
-    for (i, row) in rows.iter().enumerate() {
-        cases.push_str(&format!("    {}) json='{}' ;;\n", i + 1, row));
-    }
-    let last = rows.last().copied().unwrap_or("[]");
+/// A `gh` that answers `run list` with `row` (JSON), through the caller's own
+/// `--jq` filter; `fail` makes it fail.
+fn gh_runs(stubs: &Path, row: &str, fail: bool) {
     stub(
         stubs,
         "gh",
         &format!(
             r#"if [ "{fail}" = true ]; then echo "HTTP 401: Bad credentials" >&2; exit 1; fi
-counter="$(dirname "$0")/runs.n"
-n=$(( $(cat "$counter" 2>/dev/null || echo 0) + 1 ))
-echo "$n" > "$counter"
 filter=''
 while [ $# -gt 0 ]; do
   if [ "$1" = --jq ]; then filter="$2"; fi
   shift
 done
-case "$n" in
-{cases}    *) json='{last}' ;;
-esac
-printf '%s' "$json" | jq -r "$filter""#
+printf '%s' '{row}' | jq -r "$filter""#
         ),
     );
 }
@@ -339,45 +334,37 @@ fn open_step(repo: &Repo, stubs: &Path, branch: &str) -> Ran {
 }
 
 #[test]
-fn open_pushes_the_branch_and_waits_on_the_run_however_long() {
-    let (repo, origin) = cycle(false);
+fn open_pushes_the_branch_and_ends_without_waiting_for_release_please() {
+    let (repo, _origin) = cycle(false);
     let stubs = Scratch::new("stubs");
+    // A `gh` that would answer "still running" forever: never asked.
     gh_runs(
         &stubs.0,
-        &[
-            "[]",
-            r#"[{"status":"queued","conclusion":null,"url":"https://example.test/runs/7"}]"#,
-            r#"[{"status":"in_progress","conclusion":"","url":"https://example.test/runs/7"}]"#,
-            r#"[{"status":"completed","conclusion":"success","url":"https://example.test/runs/7"}]"#,
-        ],
+        r#"[{"status":"queued","conclusion":null,"url":"u"}]"#,
         false,
     );
     let r = open_step(&repo, &stubs.0, BRANCH);
     ok(&r);
-    assert_eq!(
-        r.output("release-run-url").as_deref(),
-        Some("https://example.test/runs/7")
-    );
+    assert_eq!(r.output("branch").as_deref(), Some(BRANCH));
     // The branch is on origin, at the default branch's tip.
     let remote = repo.git(&["ls-remote", "--heads", "origin", BRANCH]);
     assert!(
         remote.starts_with(&repo.git(&["rev-parse", "main"])),
         "{remote}"
     );
-    let _ = origin;
-    let gh = calls(&stubs.0, "gh");
-    assert_eq!(gh.len(), 4, "{gh:?}");
-    for c in &gh {
-        assert!(
-            c.starts_with(&format!(
-                "run list --workflow release-please.yml --branch {BRANCH} --limit 1 "
-            )),
-            "{c}"
-        );
-    }
+    assert!(calls(&stubs.0, "gh").is_empty(), "open calls no gh");
+    // It says how the first candidate is cut, and where a dispatch goes.
+    assert!(r.log.contains("workflow_run"), "{}", r.log);
     assert!(
-        !gh.iter().any(|c| c.starts_with("workflow run")),
-        "the cut never dispatches release-please"
+        r.log
+            .contains(&format!("--ref {BRANCH} -f action=candidate")),
+        "{}",
+        r.log
+    );
+    assert!(r.log.contains("never on main"), "{}", r.log);
+    assert!(
+        r.log
+            .contains(&format!("git push origin --delete {BRANCH}"))
     );
 }
 
@@ -389,11 +376,6 @@ fn a_leftover_local_branch_of_the_same_minute_does_not_break_open() {
     repo.commit("more");
     repo.git(&["push", "-q", "origin", "main"]);
     let stubs = Scratch::new("stubs");
-    gh_runs(
-        &stubs.0,
-        &[r#"[{"status":"completed","conclusion":"success","url":"u"}]"#],
-        false,
-    );
     ok(&open_step(&repo, &stubs.0, BRANCH));
     assert_eq!(
         repo.git(&["rev-parse", BRANCH]),
@@ -401,40 +383,166 @@ fn a_leftover_local_branch_of_the_same_minute_does_not_break_open() {
     );
 }
 
+fn tip_step(repo: &Repo, stubs: &Path, automatic: bool) -> Ran {
+    exec(
+        "cut",
+        "release-please",
+        repo,
+        stubs,
+        &[
+            ("BRANCH", BRANCH),
+            ("RP_WORKFLOW", "release-please.yml"),
+            ("AUTOMATIC", if automatic { "true" } else { "false" }),
+        ],
+    )
+}
+
+const NOT_YET: [&str; 3] = [
+    "[]",
+    r#"[{"status":"queued","conclusion":null,"url":"https://example.test/runs/7"}]"#,
+    r#"[{"status":"in_progress","conclusion":"","url":"https://example.test/runs/7"}]"#,
+];
+
 #[test]
-fn a_failed_release_please_run_refuses_now_and_leaves_the_branch() {
-    let (repo, _origin) = cycle(false);
+fn a_candidate_needs_release_please_on_its_tip_and_reads_it_once() {
+    let (repo, _origin) = cycle(true);
+    let head = repo.git(&["rev-parse", "HEAD"]);
     let stubs = Scratch::new("stubs");
     gh_runs(
         &stubs.0,
-        &[r#"[{"status":"completed","conclusion":"failure","url":"https://example.test/runs/9"}]"#],
+        r#"[{"status":"completed","conclusion":"success","url":"https://example.test/runs/7"}]"#,
         false,
     );
-    let r = open_step(&repo, &stubs.0, BRANCH);
-    refused(&r, "did not succeed on");
-    assert!(r.log.contains("https://example.test/runs/9"), "{}", r.log);
-    assert!(r.log.contains("left in place"), "{}", r.log);
-    assert!(
-        r.log
-            .contains(&format!("git push origin --delete {BRANCH}"))
+    let r = tip_step(&repo, &stubs.0, false);
+    ok(&r);
+    assert_eq!(r.output("proceed").as_deref(), Some("true"));
+    assert_eq!(
+        r.output("release-run-url").as_deref(),
+        Some("https://example.test/runs/7")
     );
+    let gh = calls(&stubs.0, "gh");
+    assert_eq!(gh.len(), 1, "{gh:?}");
     assert!(
-        !repo
-            .git(&["ls-remote", "--heads", "origin", BRANCH])
-            .is_empty()
+        gh[0].starts_with(&format!(
+            "run list --workflow release-please.yml --branch {BRANCH} --commit {head} --limit 1 "
+        )),
+        "{}",
+        gh[0]
     );
 }
 
 #[test]
-fn a_broken_run_listing_refuses_now_instead_of_waiting() {
-    let (repo, _origin) = cycle(false);
+fn a_candidate_dispatched_before_release_please_ran_fails_fast_and_says_what_to_do() {
+    let (repo, _origin) = cycle(true);
+    for row in NOT_YET {
+        let stubs = Scratch::new("stubs");
+        gh_runs(&stubs.0, row, false);
+        let r = tip_step(&repo, &stubs.0, false);
+        refused(&r, "release-please.yml");
+        assert!(r.log.contains("does not wait"), "{}", r.log);
+        assert!(
+            r.log
+                .contains(&format!("--ref {BRANCH} -f action=candidate")),
+            "{}",
+            r.log
+        );
+        assert_eq!(calls(&stubs.0, "gh").len(), 1, "one read, no wait");
+        assert_ne!(r.output("proceed").as_deref(), Some("true"));
+    }
+    // A failed run: no staged version to trust.
     let stubs = Scratch::new("stubs");
-    gh_runs(&stubs.0, &["[]"], true);
-    let r = open_step(&repo, &stubs.0, BRANCH);
+    gh_runs(
+        &stubs.0,
+        r#"[{"status":"completed","conclusion":"failure","url":"https://example.test/runs/9"}]"#,
+        false,
+    );
+    let r = tip_step(&repo, &stubs.0, false);
+    refused(&r, "did not succeed");
+    assert!(r.log.contains("https://example.test/runs/9"), "{}", r.log);
+    // An unreadable listing is never "not run".
+    let stubs = Scratch::new("stubs");
+    gh_runs(&stubs.0, "[]", true);
+    let r = tip_step(&repo, &stubs.0, false);
     refused(&r, "gh run list failed");
     assert!(r.log.contains("Bad credentials"), "{}", r.log);
     assert!(r.log.contains("gh auth status"), "{}", r.log);
-    assert_eq!(calls(&stubs.0, "gh").len(), 1);
+}
+
+#[test]
+fn the_automatic_cut_leaves_a_tip_release_please_has_not_finished_to_its_own_run() {
+    let (repo, _origin) = cycle(true);
+    for row in NOT_YET {
+        let stubs = Scratch::new("stubs");
+        gh_runs(&stubs.0, row, false);
+        let r = tip_step(&repo, &stubs.0, true);
+        ok(&r);
+        assert_eq!(r.output("proceed").as_deref(), Some("false"), "{row}");
+        assert!(
+            r.log.contains("::notice title=Nothing to cut::"),
+            "{}",
+            r.log
+        );
+    }
+    let stubs = Scratch::new("stubs");
+    gh_runs(
+        &stubs.0,
+        r#"[{"status":"completed","conclusion":"cancelled","url":"u"}]"#,
+        false,
+    );
+    let r = tip_step(&repo, &stubs.0, true);
+    ok(&r);
+    assert_eq!(r.output("proceed").as_deref(), Some("false"));
+    assert!(
+        r.log.contains("::warning title=Nothing to cut::"),
+        "{}",
+        r.log
+    );
+    // Not being able to read stays red, automatic or not.
+    let stubs = Scratch::new("stubs");
+    gh_runs(&stubs.0, "[]", true);
+    refused(&tip_step(&repo, &stubs.0, true), "gh run list failed");
+}
+
+#[test]
+fn the_automatic_cut_ends_green_when_the_cycle_is_gone_or_elsewhere() {
+    let automatic = |repo: &Repo, dispatched: &str| {
+        let stubs = Scratch::new("stubs");
+        exec(
+            "cut",
+            "cycle",
+            repo,
+            &stubs.0,
+            &[
+                ("ACTION", "candidate"),
+                ("AUTOMATIC", "true"),
+                ("DISPATCHED_REF", dispatched),
+            ],
+        )
+    };
+    // The branch was deleted by the close: nothing to cut.
+    let (repo, _origin) = cycle(false);
+    let r = automatic(&repo, BRANCH);
+    ok(&r);
+    assert_eq!(r.output("proceed").as_deref(), Some("false"));
+    assert!(r.output("branch").is_none());
+    // release-please ran on another branch than the one in flight.
+    let (repo, _origin) = cycle(true);
+    let r = automatic(&repo, "release/2026-10-01-08-30-utc");
+    ok(&r);
+    assert_eq!(r.output("proceed").as_deref(), Some("false"));
+    // On the branch in flight: proceed.
+    let r = automatic(&repo, BRANCH);
+    ok(&r);
+    assert_eq!(r.output("proceed").as_deref(), Some("true"));
+    assert_eq!(r.output("branch").as_deref(), Some(BRANCH));
+    // A broken invariant stays red.
+    repo.git(&[
+        "push",
+        "-q",
+        "origin",
+        "main:refs/heads/release/2026-10-08-09-00-utc",
+    ]);
+    refused(&automatic(&repo, BRANCH), "Several release branches");
 }
 
 // ------------------------------------------------------- the staged version
@@ -458,18 +566,19 @@ esac"#,
     }
 }
 
-fn version(repo: &Repo, stubs: &Path, action: &str, branch: &str) -> Ran {
+/// The version step of a candidate, dispatched or `automatic`.
+fn version(repo: &Repo, stubs: &Path, automatic: bool) -> Ran {
     exec(
         "cut",
         "version",
         repo,
         stubs,
         &[
-            ("ACTION", action),
-            ("BRANCH", branch),
+            ("ACTION", "candidate"),
+            ("AUTOMATIC", if automatic { "true" } else { "false" }),
+            ("BRANCH", BRANCH),
             ("COMPONENT", "acme"),
             ("PR_LABEL", "autorelease: pending"),
-            ("RUN_URL", "https://example.test/runs/7"),
             ("MANIFEST_FILE", ".release-please-manifest.json"),
             ("MANIFEST_KEY", "."),
         ],
@@ -515,12 +624,111 @@ fn the_version_is_the_components_in_the_pr_against_this_base() {
     for (one, want) in cases {
         let stubs = Scratch::new("stubs");
         gh_prs(&stubs.0, &format!("[{one}]"), "[]", false);
-        let r = version(&repo, &stubs.0, "open", BRANCH);
+        let r = version(&repo, &stubs.0, false);
         ok(&r);
         assert_eq!(r.output("version").as_deref(), Some(want), "{}", r.log);
         for c in calls(&stubs.0, "gh") {
             assert!(c.contains(&format!("--base {BRANCH} ")), "{c}");
             assert!(!c.contains("--head"), "{c}");
+        }
+    }
+}
+
+/// release-please's single-component body, as it opens it.
+fn single_body(version: &str) -> String {
+    format!(
+        ":robot: I have created a release *beep* *boop*\n---\n\n\n## [{version}](https://github.com/OWNER/REPO/compare/v0.1.0...v{version}) (2026-10-11)\n\n\n### Features\n\n* a feature ([abc1234](https://github.com/OWNER/REPO/commit/abc1234))\n"
+    )
+}
+
+#[test]
+fn the_cut_and_the_bridge_read_the_same_staged_version() {
+    let (repo, _origin) = cycle(true);
+    let head = format!("release-please--branches--{BRANCH}");
+    let own = format!("{head}--components--acme");
+    let other = format!("{head}--components--website");
+    let single = single_body("0.2.0");
+    let cases: [(String, &str, &str, Option<&str>); 9] = [
+        // Single component: the title, `pull-request-title-pattern` naming it.
+        (
+            format!("chore({BRANCH}): release acme 0.2.0"),
+            &single,
+            &head,
+            Some("0.2.0"),
+        ),
+        (
+            format!("chore({BRANCH}): release ACME 0.2.0"),
+            "",
+            &head,
+            Some("0.2.0"),
+        ),
+        // Single component, a title that does not name it: the heading.
+        (
+            format!("chore({BRANCH}): release 0.2.0"),
+            &single,
+            &head,
+            Some("0.2.0"),
+        ),
+        (
+            format!("chore({BRANCH}): release 0.2.0"),
+            &single,
+            &own,
+            Some("0.2.0"),
+        ),
+        // Another component's PR never names the candidate.
+        (
+            format!("chore({BRANCH}): release website 3.0.0"),
+            &single,
+            &other,
+            None,
+        ),
+        // Multi-component: the summary, unchanged.
+        (
+            format!("chore: release {BRANCH}"),
+            "<details><summary>website: 9.9.9</summary>\n\n## [9.9.9](x)\n</details>\n<details><summary>acme: 1.5.0</summary>\n\n## [1.5.0](x)\n</details>",
+            &head,
+            Some("1.5.0"),
+        ),
+        (
+            format!("chore: release {BRANCH}"),
+            "<details><summary>website: 9.9.9</summary>\n\n## [9.9.9](x)\n</details>",
+            &head,
+            None,
+        ),
+        (
+            "chore: release webacme 7.0.0".into(),
+            "<summary>acme : 1.6.0</summary>",
+            "x",
+            Some("1.6.0"),
+        ),
+        ("chore: release main".into(), "", &head, None),
+    ];
+    for (title, body, head, want) in cases {
+        let bridge = spl_asdlc::method::release::notes::staged_version(&title, body, head, "acme");
+        assert_eq!(
+            bridge.map(|v| v.to_string()).as_deref(),
+            want,
+            "bridge: {title}"
+        );
+        let stubs = Scratch::new("stubs");
+        gh_prs(
+            &stubs.0,
+            &format!("[{}]", pr(&title, body, head)),
+            "[]",
+            false,
+        );
+        let r = version(&repo, &stubs.0, false);
+        match want {
+            Some(v) => {
+                ok(&r);
+                assert_eq!(
+                    r.output("version").as_deref(),
+                    Some(v),
+                    "cut: {title}: {}",
+                    r.log
+                );
+            }
+            None => refused(&r, "names 'acme'"),
         }
     }
 }
@@ -540,13 +748,13 @@ fn another_components_release_pr_never_names_the_candidate() {
         "release-please--branches--release/x--components--acme",
     );
     gh_prs(&stubs.0, &format!("[{other},{mine}]"), "[]", false);
-    let r = version(&repo, &stubs.0, "open", BRANCH);
+    let r = version(&repo, &stubs.0, false);
     assert_eq!(r.output("version").as_deref(), Some("1.7.0"), "{}", r.log);
     let stubs = Scratch::new("stubs");
     gh_prs(&stubs.0, &format!("[{other}]"), "[]", false);
     refused(
-        &version(&repo, &stubs.0, "open", BRANCH),
-        "no open release PR names 'acme'",
+        &version(&repo, &stubs.0, false),
+        "No open release PR against release/2026-10-07-12-00-utc names 'acme'",
     );
 }
 
@@ -561,7 +769,7 @@ fn an_unlabelled_release_pr_is_found_by_its_head_prefix() {
         "release-please--branches--release/x",
     );
     gh_prs(&stubs.0, "[]", &format!("[{unrelated},{rp}]"), false);
-    let r = version(&repo, &stubs.0, "open", BRANCH);
+    let r = version(&repo, &stubs.0, false);
     assert_eq!(r.output("version").as_deref(), Some("2.0.0"), "{}", r.log);
     let gh = calls(&stubs.0, "gh");
     assert_eq!(gh.len(), 2, "{gh:?}");
@@ -569,25 +777,63 @@ fn an_unlabelled_release_pr_is_found_by_its_head_prefix() {
 }
 
 #[test]
-fn open_without_a_staged_version_refuses_and_names_the_run() {
+fn a_first_candidate_without_a_staged_version_refuses_and_says_how_to_abandon() {
     let (repo, _origin) = cycle(true);
     let stubs = Scratch::new("stubs");
     gh_prs(&stubs.0, "[]", "[]", false);
-    let r = version(&repo, &stubs.0, "open", BRANCH);
-    refused(&r, "https://example.test/runs/7");
+    let r = version(&repo, &stubs.0, false);
+    refused(&r, "no candidate of this cycle exists");
     assert!(r.log.contains("Most likely nothing is staged"), "{}", r.log);
-    assert!(r.log.contains("left in place"), "{}", r.log);
+    assert!(
+        r.log
+            .contains(&format!("git push origin --delete {BRANCH}"))
+    );
+}
+
+#[test]
+fn the_automatic_cut_never_takes_a_version_no_release_pr_stages() {
+    let (repo, _origin) = cycle(true);
+    // Nothing staged, a candidate of this cycle, a published version: never
+    // a cut, never red.
+    for tags in [&[][..], &["acme-v1.1.0-rc.1"][..], &["acme-v1.1.0"][..]] {
+        for t in tags {
+            repo.git(&["tag", t]);
+        }
+        let stubs = Scratch::new("stubs");
+        gh_prs(&stubs.0, "[]", "[]", false);
+        let r = version(&repo, &stubs.0, true);
+        ok(&r);
+        assert_eq!(r.output("proceed").as_deref(), Some("false"), "{tags:?}");
+        assert!(r.output("version").is_none(), "{tags:?}");
+        assert!(
+            r.log.contains("::warning title=Nothing to cut::"),
+            "{}",
+            r.log
+        );
+    }
+    // A staged version proceeds.
+    let stubs = Scratch::new("stubs");
+    let staged = pr(
+        "chore: release acme 1.2.0",
+        "",
+        "release-please--branches--x",
+    );
+    gh_prs(&stubs.0, &format!("[{staged}]"), "[]", false);
+    let r = version(&repo, &stubs.0, true);
+    ok(&r);
+    assert_eq!(r.output("version").as_deref(), Some("1.2.0"));
+    assert_eq!(r.output("proceed").as_deref(), Some("true"));
 }
 
 #[test]
 fn a_failed_pr_read_refuses_instead_of_falling_back() {
     let (repo, _origin) = cycle(true);
     repo.git(&["tag", "acme-v1.1.0-rc.1"]);
-    for action in ["open", "candidate"] {
+    for automatic in [false, true] {
         let stubs = Scratch::new("stubs");
         gh_prs(&stubs.0, "[]", "[]", true);
         refused(
-            &version(&repo, &stubs.0, action, BRANCH),
+            &version(&repo, &stubs.0, automatic),
             "Could not read the open release PRs",
         );
     }
@@ -611,7 +857,7 @@ fn a_candidate_without_a_pr_reuses_the_cycles_newest_unpublished_version() {
     ]);
     let stubs = Scratch::new("stubs");
     gh_prs(&stubs.0, "[]", "[]", false);
-    let r = version(&repo, &stubs.0, "candidate", BRANCH);
+    let r = version(&repo, &stubs.0, false);
     ok(&r);
     // 1.10.0 > 1.1.0: numeric, not textual.
     assert_eq!(r.output("version").as_deref(), Some("1.10.0"), "{}", r.log);
@@ -620,7 +866,7 @@ fn a_candidate_without_a_pr_reuses_the_cycles_newest_unpublished_version() {
     let stubs = Scratch::new("stubs");
     gh_prs(&stubs.0, "[]", "[]", false);
     refused(
-        &version(&repo, &stubs.0, "candidate", BRANCH),
+        &version(&repo, &stubs.0, false),
         "is already published (acme-v1.10.0)",
     );
 }
@@ -649,6 +895,7 @@ fn a_dry_run_of_open_estimates_the_version_from_the_manifest_and_calls_nothing()
     );
     ok(&r);
     assert_eq!(r.output("version").as_deref(), Some("1.2.3"));
+    assert_eq!(r.output("proceed").as_deref(), Some("true"));
     assert!(r.log.contains("estimate"), "{}", r.log);
     assert!(calls(&stubs.0, "gh").is_empty());
 }
@@ -723,6 +970,32 @@ fn the_class_is_computed_from_the_reviewed_paths_the_candidate_carries() {
             Some(format!("touches the reviewed path {path}"))
         );
     }
+}
+
+#[test]
+fn the_automatic_cut_tags_only_the_first_candidate_of_a_staged_version() {
+    let (repo, _o) = delta("docs/a.md");
+    let r = compute(&repo, &[("AUTOMATIC", "true")]);
+    ok(&r);
+    assert_eq!(r.output("tag").as_deref(), Some("acme-v1.1.0-rc.1"));
+    assert_eq!(r.output("proceed").as_deref(), Some("true"));
+    // Once rc.1 exists on origin, the next one is a dispatch, never automatic.
+    repo.git(&["tag", "acme-v1.1.0-rc.1"]);
+    repo.git(&["push", "-q", "origin", "acme-v1.1.0-rc.1"]);
+    repo.git(&["tag", "-d", "acme-v1.1.0-rc.1"]);
+    let r = compute(&repo, &[("AUTOMATIC", "true")]);
+    ok(&r);
+    assert_eq!(r.output("proceed").as_deref(), Some("false"));
+    assert!(r.output("tag").is_none(), "{}", r.outputs);
+    assert!(
+        r.log
+            .contains("::notice title=Nothing to cut::acme-v1.1.0-rc.1 exists")
+    );
+    assert!(r.log.contains("acme-v1.1.0-rc.2"), "{}", r.log);
+    let r = compute(&repo, &[]);
+    ok(&r);
+    assert_eq!(r.output("tag").as_deref(), Some("acme-v1.1.0-rc.2"));
+    assert_eq!(r.output("proceed").as_deref(), Some("true"));
 }
 
 #[test]
@@ -1160,18 +1433,124 @@ fn every_push_is_made_with_the_app_token_and_nothing_dispatches_release_please()
         Some("${{ inputs.default-branch }}")
     );
     let text = std::fs::read_to_string(crate::harness::root().join(CUT)).unwrap();
-    for forbidden in [
-        "workflow run",
-        "dispatches",
-        "GITHUB_TOKEN }}",
-        "github.token",
-    ] {
-        let hits: Vec<&str> = text
-            .lines()
-            .filter(|l| !l.trim_start().starts_with('#') && l.contains(forbidden))
-            .collect();
+    let code = || text.lines().filter(|l| !l.trim_start().starts_with('#'));
+    for forbidden in ["dispatches", "GITHUB_TOKEN }}", "github.token"] {
+        let hits: Vec<&str> = code().filter(|l| l.contains(forbidden)).collect();
         assert!(hits.is_empty(), "{forbidden}: {hits:?}");
     }
+    // `gh workflow run` only inside a message (a quoted string) that says
+    // how to dispatch the cut, never called.
+    let called: Vec<&str> = code()
+        .filter(|l| {
+            l.match_indices("workflow run")
+                .any(|(i, _)| l[..i].matches('"').count() % 2 == 0)
+        })
+        .collect();
+    assert!(called.is_empty(), "{called:?}");
+}
+
+#[test]
+fn open_ends_at_the_push_and_a_candidate_reads_release_please_once() {
+    let doc = workflow(CUT);
+    let ids: Vec<String> = doc["jobs"]["cut"]["steps"]
+        .as_vec()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["id"].as_str().map(str::to_string))
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "app-token",
+            "cycle",
+            "open",
+            "release-please",
+            "version",
+            "candidate",
+            "tag"
+        ]
+    );
+    // `open` calls no gh: it only says how to dispatch.
+    let open = run_body(&step(&doc, "cut", "open"));
+    for line in open.lines().map(str::trim) {
+        assert!(
+            line.starts_with('#') || line.starts_with("echo ") || !line.contains("gh "),
+            "{line}"
+        );
+    }
+    let check = step(&doc, "cut", "release-please");
+    assert_eq!(
+        check["if"].as_str(),
+        Some("inputs.action == 'candidate' && steps.cycle.outputs.proceed == 'true'")
+    );
+    let body = run_body(&check);
+    let reads: Vec<&str> = body
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("if ! gh run list "))
+        .collect();
+    assert_eq!(reads.len(), 1, "{body}");
+    assert!(!body.contains("sleep") && !body.contains("while"), "{body}");
+    // Each step after the cycle goes on only on its predecessor's word.
+    assert_eq!(
+        step(&doc, "cut", "version")["if"].as_str(),
+        Some(
+            "steps.release-please.outputs.proceed == 'true' || (inputs.action == 'open' && inputs.dry-run)"
+        )
+    );
+    assert_eq!(
+        step(&doc, "cut", "candidate")["if"].as_str(),
+        Some("steps.version.outputs.proceed == 'true'")
+    );
+    // The automatic cut is the caller's `workflow_run`, read from the event.
+    assert_eq!(
+        doc["jobs"]["cut"]["env"]["AUTOMATIC"].as_str(),
+        Some("${{ github.event_name == 'workflow_run' }}")
+    );
+    assert_eq!(
+        step(&doc, "cut", "cycle")["env"]["DISPATCHED_REF"].as_str(),
+        Some(
+            "${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.ref_name }}"
+        )
+    );
+}
+
+// ---------------------------------------------- preflight of the automatic cut
+
+fn automatic_preflight(extra: &[(&'static str, &str)]) -> Ran {
+    let mut e: Vec<(&'static str, &str)> = vec![
+        ("ACTION", "candidate"),
+        ("EVENT_NAME", "workflow_run"),
+        ("REPOSITORY", "example-org/acme"),
+        ("RUN_BRANCH", BRANCH),
+        ("RUN_REPOSITORY", "example-org/acme"),
+        ("RUN_CONCLUSION", "success"),
+    ];
+    for (k, v) in extra {
+        e.retain(|(key, _)| key != k);
+        e.push((k, v));
+    }
+    preflight(&e)
+}
+
+#[test]
+fn the_automatic_cut_follows_a_successful_release_please_run_of_this_repository_only() {
+    ok(&automatic_preflight(&[]));
+    for (extra, words) in [
+        (("ACTION", "open"), "never 'open'"),
+        (("RUN_REPOSITORY", "someone/fork"), "of 'someone/fork'"),
+        (("RUN_BRANCH", "main"), "not on a release branch"),
+        (("RUN_BRANCH", "feat/release/x"), "not on a release branch"),
+        (("RUN_BRANCH", "release/"), "not on a release branch"),
+        (("RUN_CONCLUSION", "failure"), "concluded 'failure'"),
+    ] {
+        refused(&automatic_preflight(&[extra]), words);
+    }
+    // A dispatch never reads the run's fields.
+    ok(&preflight(&[
+        ("EVENT_NAME", "workflow_dispatch"),
+        ("RUN_BRANCH", "main"),
+    ]));
 }
 
 #[test]
@@ -1183,9 +1562,10 @@ fn a_dry_run_creates_and_pushes_nothing() {
     );
     assert_eq!(
         step(&doc, "cut", "tag")["if"].as_str(),
-        Some("!inputs.dry-run")
+        Some("!inputs.dry-run && steps.candidate.outputs.proceed == 'true'")
     );
-    // The job outputs come from the tag step only: empty on a dry run.
+    // The job outputs come from the tag step (or, for the branch, the open
+    // step), both skipped on a dry run: empty then.
     for (k, v) in doc["jobs"]["cut"]["outputs"].as_hash().unwrap() {
         let v = v.as_str().unwrap();
         let k = k.as_str().unwrap();
@@ -1194,6 +1574,10 @@ fn a_dry_run_creates_and_pushes_nothing() {
             "{k}: {v}"
         );
     }
+    assert_eq!(
+        doc["jobs"]["cut"]["outputs"]["branch"].as_str(),
+        Some("${{ steps.tag.outputs.branch || steps.open.outputs.branch }}")
+    );
     let (repo, _o) = delta("docs/a.md");
     let r = compute(&repo, &[("DRY_RUN", "true")]);
     ok(&r);

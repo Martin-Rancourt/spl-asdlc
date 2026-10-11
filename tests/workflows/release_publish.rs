@@ -236,6 +236,8 @@ fn candidate(repo: &Repo, env: &[(&str, &str)]) -> Ran {
         ("COMPONENTS", "[]"),
         ("BOOKKEEPING", BOOKKEEPING),
         ("GATE_RECORD", ""),
+        ("QA_RECORD", ".spl-asdlc/qa/{candidate}/"),
+        ("QA_ANGLES", "[]"),
         ("DEFAULT_BRANCH", "main"),
     ];
     for (k, v) in env {
@@ -307,6 +309,154 @@ fn an_empty_bookkeeping_list_demands_the_candidate_exactly() {
     assert_eq!(r.code, 1, "{}", r.log);
     let r = candidate(&repo, &[("BOOKKEEPING", "not json")]);
     assert_eq!(r.code, 1, "{}", r.log);
+}
+
+const ANGLES: &str = r#"["security", "product"]"#;
+
+#[test]
+fn the_qa_inputs_reach_the_script_through_its_environment() {
+    let step = step(&doc(), "verify", "candidate");
+    assert_eq!(
+        step["env"]["QA_RECORD"].as_str(),
+        Some("${{ inputs.qa-record }}")
+    );
+    assert_eq!(
+        step["env"]["QA_ANGLES"].as_str(),
+        Some("${{ inputs.qa-angles }}")
+    );
+    assert!(!run_body(&step).contains("inputs.qa-"));
+    let inputs = &doc()["on"]["workflow_call"]["inputs"];
+    // As spec 08's `release.record`; no angle, no exemption.
+    assert_eq!(
+        inputs["qa-record"]["default"].as_str(),
+        Some(".spl-asdlc/qa/{candidate}/")
+    );
+    assert_eq!(inputs["qa-angles"]["default"].as_str(), Some("[]"));
+}
+
+#[test]
+fn the_latest_candidates_own_qa_reports_may_follow_it() {
+    let repo = cycle();
+    release(
+        &repo,
+        "acme-v1.2.0",
+        &[
+            ("CHANGELOG.md", "## 1.2.0\n"),
+            (".spl-asdlc/qa/acme-v1.2.0-rc.10/security.json", "{}\n"),
+            (".spl-asdlc/qa/acme-v1.2.0-rc.10/product.json", "{}\n"),
+        ],
+    );
+    let r = candidate(&repo, &[("QA_ANGLES", ANGLES)]);
+    assert_eq!(r.code, 0, "{}", r.log);
+    assert_eq!(r.output("rc-tag").as_deref(), Some("acme-v1.2.0-rc.10"));
+    // The record directory as spec 08 renders it, with or without its slash.
+    let r = candidate(
+        &repo,
+        &[
+            ("QA_ANGLES", ANGLES),
+            ("QA_RECORD", ".spl-asdlc/qa/{candidate}"),
+        ],
+    );
+    assert_eq!(r.code, 0, "{}", r.log);
+    // Without the angles, the reports are a delta like any other.
+    let r = candidate(&repo, &[]);
+    assert_eq!(r.code, 1, "{}", r.log);
+    assert!(
+        r.log
+            .contains("  .spl-asdlc/qa/acme-v1.2.0-rc.10/security.json"),
+        "{}",
+        r.log
+    );
+    // An angle that is not configured is not exempted.
+    let r = candidate(&repo, &[("QA_ANGLES", r#"["security"]"#)]);
+    assert_eq!(r.code, 1, "{}", r.log);
+    assert!(
+        r.log
+            .contains("  .spl-asdlc/qa/acme-v1.2.0-rc.10/product.json"),
+        "{}",
+        r.log
+    );
+    assert!(
+        !r.log
+            .contains("  .spl-asdlc/qa/acme-v1.2.0-rc.10/security.json"),
+        "{}",
+        r.log
+    );
+}
+
+#[test]
+fn an_earlier_candidates_qa_report_is_not_bookkeeping() {
+    let repo = cycle();
+    release(
+        &repo,
+        "acme-v1.2.0",
+        &[
+            ("CHANGELOG.md", "## 1.2.0\n"),
+            (".spl-asdlc/qa/acme-v1.2.0-rc.9/security.json", "{}\n"),
+        ],
+    );
+    let r = candidate(&repo, &[("QA_ANGLES", ANGLES)]);
+    assert_eq!(r.code, 1, "{}", r.log);
+    assert!(
+        r.log
+            .contains("  .spl-asdlc/qa/acme-v1.2.0-rc.9/security.json"),
+        "{}",
+        r.log
+    );
+    assert!(r.log.contains("Cut a new RC"), "{}", r.log);
+    assert_eq!(r.output("rc-tag"), None);
+}
+
+#[test]
+fn a_code_change_beside_the_qa_reports_is_refused() {
+    let repo = cycle();
+    release(
+        &repo,
+        "acme-v1.2.0",
+        &[
+            ("CHANGELOG.md", "## 1.2.0\n"),
+            (".spl-asdlc/qa/acme-v1.2.0-rc.10/security.json", "{}\n"),
+            ("src/lib.rs", "pub fn f() -> u8 { 3 }\n"),
+        ],
+    );
+    let r = candidate(&repo, &[("QA_ANGLES", ANGLES)]);
+    assert_eq!(r.code, 1, "{}", r.log);
+    assert!(r.log.contains("  src/lib.rs"), "{}", r.log);
+    assert!(
+        !r.log
+            .contains("  .spl-asdlc/qa/acme-v1.2.0-rc.10/security.json"),
+        "{}",
+        r.log
+    );
+    assert_eq!(r.output("rc-tag"), None);
+}
+
+#[test]
+fn malformed_qa_inputs_are_refused() {
+    let repo = cycle();
+    release(&repo, "acme-v1.2.0", &[("CHANGELOG.md", "## 1.2.0\n")]);
+    for angles in [
+        "not json",
+        r#""security""#,
+        r#"["Security"]"#,
+        r#"["../security"]"#,
+        "[\"security\\nsrc/lib.rs\"]",
+        "[1]",
+    ] {
+        let r = candidate(&repo, &[("QA_ANGLES", angles)]);
+        assert_eq!(r.code, 1, "{angles}: {}", r.log);
+        assert!(r.log.contains("qa-angles"), "{angles}: {}", r.log);
+    }
+    for record in [
+        "",
+        ".spl-asdlc/qa/",
+        ".spl-asdlc/{candidate}/{candidate}/",
+        ".spl-asdlc/qa/{candidate}/\nsrc",
+    ] {
+        let r = candidate(&repo, &[("QA_ANGLES", ANGLES), ("QA_RECORD", record)]);
+        assert_eq!(r.code, 1, "{record:?}: {}", r.log);
+        assert!(r.log.contains("qa-record"), "{record:?}: {}", r.log);
+    }
 }
 
 #[test]
@@ -513,10 +663,16 @@ fn associated(number: u64, base: &str, head: &str, merge_sha: &str) -> String {
     )
 }
 
-fn merged_by(login: &str) -> String {
+/// The PR as REST reads it, merged by `login`, an account of `kind`
+/// (`Bot`, `User`, `Organization`, or empty when GitHub gave none).
+fn merged_as(login: &str, kind: &str) -> String {
     format!(
-        r#"{{"number": 42, "merged": true, "merged_by": {{"login": "{login}"}}, "base": {{"ref": "release/2026-10-01-10-00-utc"}}}}"#
+        r#"{{"number": 42, "merged": true, "merged_by": {{"login": "{login}", "type": "{kind}"}}, "base": {{"ref": "release/2026-10-01-10-00-utc"}}}}"#
     )
+}
+
+fn merged_by(login: &str) -> String {
+    merged_as(login, "Bot")
 }
 
 const SLUG: &str = "the-bridge";
@@ -540,19 +696,66 @@ fn the_go_is_the_release_please_pr_merged_by_the_app_in_either_login_form() {
         assert_eq!(r.code, 0, "{input}: {}", r.log);
         assert_eq!(r.output("release-pr-number").as_deref(), Some("42"));
         assert_eq!(r.output("go-merged-by").as_deref(), Some(bot.as_str()));
+        assert_eq!(r.output("go-merged-by-kind").as_deref(), Some("app"));
         assert_eq!(
             r.output("release-branch").as_deref(),
             Some("release/2026-10-01-10-00-utc")
         );
         assert_eq!(r.output("verified").as_deref(), Some("true"));
-        assert!(read(&dir.0, "summary").contains("GO: #42"));
+        let summary = read(&dir.0, "summary");
+        assert!(summary.contains("GO: #42"), "{summary}");
+        assert!(summary.contains("(the bridge's App)"), "{summary}");
     }
     let (r, _d) = go(SLUG, Some(&pulls), Some(&merged_by(&format!("app/{SLUG}"))));
     assert_eq!(r.code, 0, "{}", r.log);
 }
 
+/// Spec 09 (BR-ASDLC-021): a human with write access may merge the
+/// release-please PR in GitHub instead of the bridge; the rulesets decide
+/// who may, the workflow does not. The merge is the GO either way, and the
+/// outputs and the summary say it was a human.
 #[test]
-fn a_release_pr_merged_by_anyone_else_is_no_go() {
+fn a_release_pr_merged_by_a_human_is_the_go_and_says_so() {
+    let pulls = format!(
+        "[{}]",
+        associated(
+            42,
+            "release/2026-10-01-10-00-utc",
+            "release-please--branches--release/2026-10-01-10-00-utc",
+            "abc"
+        )
+    );
+    let (r, dir) = go(SLUG, Some(&pulls), Some(&merged_as("owner-login", "User")));
+    assert_eq!(r.code, 0, "{}", r.log);
+    assert_eq!(r.output("release-pr-number").as_deref(), Some("42"));
+    assert_eq!(r.output("go-merged-by").as_deref(), Some("owner-login"));
+    assert_eq!(r.output("go-merged-by-kind").as_deref(), Some("human"));
+    assert_eq!(
+        r.output("release-branch").as_deref(),
+        Some("release/2026-10-01-10-00-utc")
+    );
+    assert_eq!(r.output("verified").as_deref(), Some("true"));
+    let summary = read(&dir.0, "summary");
+    assert!(
+        summary.contains(
+            "GO: #42 merged into `release/2026-10-01-10-00-utc` by `owner-login` (a human)."
+        ),
+        "{summary}"
+    );
+    // The job and the workflow both expose who and which kind.
+    let d = doc();
+    assert_eq!(
+        d["jobs"]["verify"]["outputs"]["go-merged-by-kind"].as_str(),
+        Some("${{ steps.go.outputs.go-merged-by-kind }}")
+    );
+    assert_eq!(
+        d["on"]["workflow_call"]["outputs"]["go-merged-by-kind"]["value"].as_str(),
+        Some("${{ jobs.verify.outputs.go-merged-by-kind }}")
+    );
+}
+
+#[test]
+fn a_release_pr_merged_by_another_bot_or_nobody_readable_is_no_go() {
     let pulls = format!(
         "[{}]",
         associated(
@@ -562,21 +765,28 @@ fn a_release_pr_merged_by_anyone_else_is_no_go() {
             "abc"
         )
     );
-    for login in [
-        "owner-login".to_string(),
-        format!("{SLUG}-{}[bot]", "impostor"),
-        format!("{}[bot]", "other-app"),
-        String::new(),
+    for (login, kind) in [
+        // Another App, one whose name merely starts like the bridge's, and
+        // the Actions token: a token a CI job holds is never the GO.
+        (format!("{SLUG}-{}[bot]", "impostor"), "Bot"),
+        (format!("{}[bot]", "other-app"), "Bot"),
+        (format!("{}[bot]", "github-actions"), "Bot"),
+        // A login with no account type, or one that is not a person.
+        ("owner-login".to_string(), ""),
+        ("example-org".to_string(), "Organization"),
+        (String::new(), "User"),
+        (String::new(), ""),
     ] {
-        let (r, _d) = go(SLUG, Some(&pulls), Some(&merged_by(&login)));
-        assert_eq!(r.code, 1, "{login}: {}", r.log);
+        let (r, _d) = go(SLUG, Some(&pulls), Some(&merged_as(&login, kind)));
+        assert_eq!(r.code, 1, "{login} {kind}: {}", r.log);
         assert!(
             r.log
-                .contains("not by the bridge's App (the-bridge): no GO"),
+                .contains("neither the bridge's App (the-bridge) nor a human account: no GO"),
             "{}",
             r.log
         );
         assert_eq!(r.output("verified"), None);
+        assert_eq!(r.output("go-merged-by-kind"), None);
     }
     let not_merged = r#"{"number": 42, "merged": false, "merged_by": null}"#;
     let (r, _d) = go(SLUG, Some(&pulls), Some(not_merged));
@@ -1397,6 +1607,54 @@ fn a_branch_main_already_holds_is_only_deleted_and_nothing_is_opened_or_merged()
     std::fs::remove_file(dir.0.join("ref")).unwrap();
     let r = mergeback(&dir.0);
     assert_eq!(r.code, 0, "{}", r.log);
+}
+
+/// Spec 09 (BR-ASDLC-021): the merge back is the close stage's automation,
+/// never the only way. A human who merges it in GitHub, while the poll
+/// waits or before the close runs at all, leaves a state the close takes as
+/// done: nothing is merged twice, no second PR is opened, and the closing
+/// guard reads the run green.
+#[test]
+fn a_merge_back_a_human_did_in_github_is_taken_as_done() {
+    // The merge-back PR merged by a human while the poll waited on its
+    // required check: the close merges nothing itself and deletes the branch.
+    let dir = fresh("OPEN|BLOCKED|h1\nMERGED|MERGED|h1\n", "pending\n");
+    let r = mergeback(&dir.0);
+    assert_eq!(r.code, 0, "{}", r.log);
+    assert_eq!(r.output("merged").as_deref(), Some("true"));
+    let c = gh_calls(&dir.0);
+    assert!(position(&c, PUT).is_none(), "{c:?}");
+    assert!(position(&c, DELETE).is_some(), "{c:?}");
+
+    // The release branch merged back by hand (a merge commit) and deleted
+    // before the close ran: nothing is left to merge back, and GitHub is not
+    // asked for a PR.
+    let rem = remote_cycle();
+    rem.repo.git(&["checkout", "-q", "main"]);
+    rem.repo.git(&[
+        "merge",
+        "-q",
+        "--no-ff",
+        "-m",
+        "Merge the release back",
+        BRANCH,
+    ]);
+    rem.repo.git(&["push", "-q", "origin", "main"]);
+    git_at(rem.origin.0.as_path(), &["branch", "-q", "-D", BRANCH]);
+    rem.repo.git(&["checkout", "-q", "--detach", "acme-v1.2.0"]);
+    let dir = Scratch::new("refs");
+    refs_gh(&dir.0, Some("[]"));
+    let r = refs(&dir.0, &rem.repo.dir.0, &[]);
+    assert_eq!(r.code, 0, "{}", r.log);
+    assert_eq!(r.output("branch").as_deref(), Some(""));
+    assert!(
+        r.log.contains("already on main: nothing to merge back"),
+        "{}",
+        r.log
+    );
+    assert!(calls(&dir.0, "gh").is_empty());
+    // The close succeeded with nothing to do: the guard is green.
+    assert_eq!(guard("close", "success", "false", "success").code, 0);
 }
 
 #[test]

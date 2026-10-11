@@ -20,6 +20,11 @@ fn bot(login: &str) -> Option<Actor> {
     })
 }
 
+/// The login GitHub shows for an App.
+fn app(slug: &str) -> String {
+    format!("{slug}[bot]")
+}
+
 fn release_pr(number: u64) -> PullRequest {
     let mut pr = pull_request(number);
     pr.base_ref = BASE.into();
@@ -376,4 +381,59 @@ fn an_angle_item_follows_its_pr_through_the_normal_flow() {
         assert_eq!(angle_item_status(Some(s), ready), None, "{s}");
     }
     assert_eq!(angle_item_status(None, ready), None);
+}
+
+/// Spec 09 (BR-ASDLC-021): the closure records who merged the release PR,
+/// found as the publication finds its GO: exactly the release-please PR whose
+/// merge commit is the release commit.
+#[test]
+fn the_go_pull_is_the_one_release_please_pr_whose_merge_made_the_release() {
+    let merged = |n: u64, sha: &str| {
+        let mut pr = release_pr(n);
+        pr.merge_commit_sha = Some(sha.into());
+        pr
+    };
+    let mut on_main = merged(3, "rel");
+    on_main.base_ref = "main".into();
+    let mut feature = merged(4, "rel");
+    feature.head_ref = "feat/x".into();
+    feature.title = "feat: x".into();
+    feature.labels = Vec::new();
+    let list = vec![merged(1, "other"), merged(2, "rel"), on_main, feature];
+    assert_eq!(
+        go_pull(&list, "rel", "release/", LABEL).map(|p| p.number),
+        Some(2)
+    );
+    assert!(go_pull(&list, "none", "release/", LABEL).is_none());
+    assert!(go_pull(&list, "rel", "", LABEL).is_none());
+    let two = vec![merged(1, "rel"), merged(2, "rel")];
+    assert!(go_pull(&two, "rel", "release/", LABEL).is_none());
+}
+
+#[test]
+fn the_go_merger_line_says_the_bridge_a_human_or_another_app() {
+    let mut pr = release_pr(7);
+    pr.merged_by = bot(&app("bridge-app"));
+    let line = go_merger_line("app-v1.2.3", Some(&pr), &app("bridge-app"));
+    assert!(
+        line.contains("merged by the bridge, on its computed GO"),
+        "{line}"
+    );
+    pr.merged_by = Some(Actor {
+        login: "owner-login".into(),
+        is_bot: false,
+    });
+    let line = go_merger_line("app-v1.2.3", Some(&pr), &app("bridge-app"));
+    assert!(
+        line.contains("by `owner-login`, a human, in GitHub"),
+        "{line}"
+    );
+    pr.merged_by = bot(&app("other-app"));
+    let line = go_merger_line("app-v1.2.3", Some(&pr), &app("bridge-app"));
+    assert!(line.contains("an App that is not the bridge"), "{line}");
+    pr.merged_by = None;
+    let line = go_merger_line("app-v1.2.3", Some(&pr), &app("bridge-app"));
+    assert!(line.contains("could not be read"), "{line}");
+    let line = go_merger_line("app-v1.2.3", None, &app("bridge-app"));
+    assert!(line.contains("is not recorded"), "{line}");
 }

@@ -27,7 +27,11 @@ pub struct Finding {
 pub struct Report {
     pub candidate: String,
     pub angle: String,
-    pub reviewer: String,
+    /// The key of the angle sub-item the report answers (`item`). `None` for
+    /// a report merged before the field existed, which named its `reviewer`
+    /// instead: the tracker knows who holds the sub-item, so the bridge never
+    /// reads a reviewer from a report.
+    pub item: Option<String>,
     pub verdict: Verdict,
     pub checked: Vec<String>,
     pub findings: Vec<Finding>,
@@ -80,10 +84,13 @@ pub fn validate(text_of_file: &str, candidate: &str, angle: &str) -> Result<Repo
         Some(a) if a == angle => {}
         other => errors.push(format!("`angle` must be \"{angle}\", got {other:?}")),
     }
-    let reviewer = text(&v, "reviewer").unwrap_or_else(|| {
-        errors.push("`reviewer` is missing".into());
-        String::new()
-    });
+    // `item` names the angle sub-item, never a person or an agent: a report
+    // is committed to the repository (BR-ASDLC-001). A report merged before
+    // `item` existed carries `reviewer` instead and stays readable.
+    let item = text(&v, "item");
+    if item.is_none() && text(&v, "reviewer").is_none() {
+        errors.push("`item` is missing: name the key of your angle sub-item".into());
+    }
     let verdict = match v
         .get("verdict")
         .and_then(Value::as_str)
@@ -209,7 +216,7 @@ pub fn validate(text_of_file: &str, candidate: &str, angle: &str) -> Result<Repo
         (Some(verdict), true) => Ok(Report {
             candidate: candidate.to_string(),
             angle: angle.to_string(),
-            reviewer,
+            item,
             verdict,
             checked,
             findings,
@@ -224,7 +231,7 @@ mod tests {
 
     fn report(verdict: &str, findings: &str) -> String {
         format!(
-            r#"{{"schema":"spl-asdlc/qa-report/1","candidate":"acme-v1.2.3-rc.1","angle":"security","reviewer":"reviewer-handle",
+            r#"{{"schema":"spl-asdlc/qa-report/1","candidate":"acme-v1.2.3-rc.1","angle":"security","item":"ABC-123",
                "verdict":"{verdict}","checked":["auth routes: grep require_auth, 14/14"],"findings":[{findings}]}}"#
         )
     }
@@ -244,6 +251,31 @@ mod tests {
         let r = check(&report("go", "")).unwrap();
         assert_eq!(r.verdict, Verdict::Go);
         assert!(r.findings.is_empty());
+    }
+
+    #[test]
+    fn a_report_names_its_angle_sub_item() {
+        let r = check(&report("go", "")).unwrap();
+        assert_eq!(r.item.as_deref(), Some("ABC-123"));
+    }
+
+    #[test]
+    fn a_report_merged_with_the_old_reviewer_field_still_parses() {
+        let old =
+            report("go", "").replace(r#""item":"ABC-123""#, r#""reviewer":"reviewer-handle""#);
+        let r = check(&old).unwrap();
+        assert_eq!(r.item, None);
+        assert_eq!(r.verdict, Verdict::Go);
+    }
+
+    #[test]
+    fn a_report_that_names_neither_its_item_nor_a_reviewer_is_refused() {
+        let none = report("go", "").replace(r#""item":"ABC-123","#, "");
+        let errs = check(&none).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.contains("`item` is missing")),
+            "{errs:?}"
+        );
     }
 
     #[test]

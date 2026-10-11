@@ -243,7 +243,9 @@ fn tree(base: &Path, dir: &Path, out: &mut Vec<String>) {
             }
             tree(base, &p, out);
         } else {
-            out.push(p.strip_prefix(base).unwrap().display().to_string());
+            out.push(spl_asdlc::method::glob::repo_path(
+                p.strip_prefix(base).unwrap(),
+            ));
         }
     }
 }
@@ -347,10 +349,7 @@ fn the_release_callers_share_this_repositorys_tag_patterns() {
 #[test]
 fn the_cut_is_dispatched_with_one_input_for_the_crate() {
     let cut = own("release-cut.yml");
-    assert_eq!(
-        keys(&cut["on"]),
-        BTreeSet::from(["workflow_dispatch".to_string()])
-    );
+    crate::examples::check_cut_follows_release_please(&cut, &own("release-please.yml"), "release/");
     for (k, v) in cut["on"]["workflow_dispatch"]["inputs"].as_hash().unwrap() {
         let k = k.as_str().unwrap();
         if k == "action" {
@@ -360,12 +359,8 @@ fn the_cut_is_dispatched_with_one_input_for_the_crate() {
             assert_ne!(v["required"].as_bool(), Some(true), "input {k} is required");
         }
     }
-    // OQ-17: the caller holds the concurrency group, never cancelled.
-    assert_eq!(cut["concurrency"]["group"].as_str(), Some("release-cut"));
-    assert_eq!(
-        cut["concurrency"]["cancel-in-progress"].as_bool(),
-        Some(false)
-    );
+    // OQ-17: the caller holds the concurrency group, never cancelled
+    // (checked with the triggers above).
     let with = &cut["jobs"]["release"]["with"];
     let config = file_json("release-please-config.json");
     let manifest = file_json(".release-please-manifest.json");
@@ -563,12 +558,27 @@ fn the_publication_verifies_builds_the_binaries_and_always_closes() {
             changelog.to_string(),
             "Cargo.toml".to_string(),
             "Cargo.lock".to_string(),
-            // This cycle only: rc.2's own QA report, and the files amended
-            // after it to allow it.
-            ".spl-asdlc/qa/v0.2.0-rc.2/security.json".to_string(),
-            ".github/workflows/release-publish.yml".to_string(),
-            "tests/workflows/own.rs".to_string(),
         ])
+    );
+    // The latest candidate's own QA reports: the record directory and the
+    // release angles of this repository's spl-asdlc.toml.
+    let config: toml::Table =
+        toml::from_str(&std::fs::read_to_string(root().join("spl-asdlc.toml")).unwrap()).unwrap();
+    let release = config["release"].as_table().unwrap();
+    let record = release
+        .get("record")
+        .and_then(toml::Value::as_str)
+        .unwrap_or(".spl-asdlc/qa/{candidate}/");
+    assert_eq!(verify["qa-record"].as_str(), Some(record));
+    let angles: Vec<&str> = release["angles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        json(verify["qa-angles"].as_str().unwrap(), "qa-angles"),
+        serde_json::json!(angles)
     );
     // The bridge's App, by its slug.
     assert_eq!(verify["go-merger-login"].as_str(), Some("spl-asdlc"));

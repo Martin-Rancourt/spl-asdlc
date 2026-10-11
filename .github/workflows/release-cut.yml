@@ -6,9 +6,19 @@ name: release-cut
 # v0.1.0 and release-please-config.json (`include-component-in-tag: false`)
 # make them; the component is the crate, whose version is the manifest's `.`
 # key. The bridge dispatches it with one input, `action`: `open` on the
-# default branch, `candidate` on the release branch in flight. Every other
-# input has a default. Run by hand, `dry_run` prints the plan and pushes
-# nothing.
+# default branch, `candidate` on the release branch in flight (by hand:
+# `gh workflow run release-cut.yml --ref release/<stamp>-utc -f
+# action=candidate`, never `--ref main`). Every other input has a default.
+# Run by hand, `dry_run` prints the plan and pushes nothing.
+#
+# `open` pushes the release branch and ends; the first candidate is cut when
+# the release-please run that push starts has succeeded (`workflow_run`, by
+# the release-please workflow's `name:`), only when no candidate of the
+# staged version exists yet. Nothing waits for another workflow's run: one
+# runner is enough. GitHub runs this file from the default branch on
+# `workflow_run`; the called workflow refuses a run of another repository or
+# off the release branches. The automatic runs have a concurrency group of
+# their own, so that a queued dispatch is never replaced by one.
 
 on:
   workflow_dispatch:
@@ -36,9 +46,13 @@ on:
         description: Print the plan; create, tag and push nothing.
         type: boolean
         default: false
+  workflow_run:
+    workflows: [release-please]
+    types: [completed]
+    branches: ['release/**']
 
 concurrency:
-  group: release-cut
+  group: ${{ github.event_name == 'workflow_run' && 'release-cut-after-release-please' || 'release-cut' }}
   cancel-in-progress: false
 
 permissions:
@@ -46,15 +60,17 @@ permissions:
 
 jobs:
   release:
+    # A failed release-please run is its own signal: nothing to cut on it.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     permissions:
       contents: read
     uses: ./.github/workflows/asdlc-release-cut.yml
     with:
-      action: ${{ inputs.action }}
+      action: ${{ github.event_name == 'workflow_run' && 'candidate' || inputs.action }}
       class: ${{ inputs.class }}
       routine-because: ${{ inputs.routine_because }}
       main-merge-because: ${{ inputs.main_merge_because }}
-      dry-run: ${{ inputs.dry_run }}
+      dry-run: ${{ inputs.dry_run == true }}
       candidate-tag: v{version}-rc.{rc}
       release-tag: v{version}
       component: spl-asdlc

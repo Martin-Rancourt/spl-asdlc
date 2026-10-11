@@ -247,7 +247,7 @@ fn collect(base: &Path, dir: &Path, out: &mut Vec<String>) {
             }
             collect(base, &p, out);
         } else {
-            out.push(p.strip_prefix(base).unwrap().display().to_string());
+            out.push(glob::repo_path(p.strip_prefix(base).unwrap()));
         }
     }
 }

@@ -57,7 +57,8 @@ pub fn cycle(t: &Tick) -> Result<Cycle, String> {
 
 /// `release status`: the GO and its inputs, read-only.
 pub fn status(t: &Tick) -> Result<(Cycle, GoDecision), String> {
-    let record = &release_cycle(t)?.record;
+    let release_cfg = release_cycle(t)?;
+    let record = &release_cfg.record;
     let cy = cycle(t)?;
     let branch = cy
         .branch
@@ -108,6 +109,12 @@ pub fn status(t: &Tick) -> Result<(Cycle, GoDecision), String> {
             (angle, state)
         })
         .collect();
+    // A later pass under the lighter policy: the angles of the first pass.
+    let (states, without_angles) = if !without_angles && release::lighter_pass(release_cfg, c) {
+        release::first_pass_angles(t, &cy.shape, &cy.item, c, &branch, &open)?
+    } else {
+        (states, without_angles)
+    };
     let mut report = Report::default();
     let (decision, _) = release::decide(
         t,

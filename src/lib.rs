@@ -11,6 +11,7 @@ pub mod github;
 pub mod host;
 pub mod http;
 pub mod job;
+pub mod lock;
 pub mod method;
 pub mod notify;
 pub mod tick;

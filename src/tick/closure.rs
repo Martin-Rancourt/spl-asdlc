@@ -15,6 +15,7 @@ use crate::action_log::ActionLog;
 use crate::github::{CompareStatus, Release};
 use crate::method::business_rules::{self, Registry};
 use crate::method::done_gate::{self, DuplicateNode};
+use crate::method::markdown;
 use crate::method::release::closure::{self, Action, CloseResult, Judgement, Member, Resolved};
 use crate::method::release::findings;
 use crate::method::release::note::{self, TicketEntry};
@@ -26,8 +27,8 @@ use crate::tracker::{Item, TResult};
 
 use super::merge::{for_tracker, tracker_said};
 use super::post_deploy;
-use super::release::{Candidate, embarked};
-use super::{Report, Tick};
+use super::release::{Candidate, embarked, embarked_items};
+use super::{Notice, Report, Tick};
 
 pub fn close(
     t: &Tick,
@@ -64,19 +65,26 @@ pub fn close(
     // What this release shipped, ticket by ticket (its PRs in the range): a
     // ticket whose latest merged PR is not among them waits for the release
     // that ships it (several PRs per ticket, spec 04 §10).
-    let shipped: std::collections::BTreeMap<String, Vec<u64>> = match embarked(t, shape, c) {
-        Ok(k) => k.into_iter().collect(),
-        Err(e) => {
-            t.unreadable(report, &object, format!("the shipped tickets: {e}"));
-            return;
-        }
-    };
+    let (shipped, sub_items): (std::collections::BTreeMap<String, Vec<u64>>, Vec<String>) =
+        match embarked_items(t, shape, c) {
+            Ok(e) => (e.tickets.into_iter().collect(), e.sub_items),
+            Err(e) => {
+                t.unreadable(report, &object, format!("the shipped tickets: {e}"));
+                return;
+            }
+        };
     let registry = read_registry(t, &published.tag);
     let mut result = CloseResult::default();
     for m in &members {
         if !t.in_time() {
             report.out_of_time = true;
             return;
+        }
+        // The review round items of a PR are the bridge's, not tickets, even
+        // when they carry the release label (an older bridge labelled them):
+        // never judged, archived with the cycle once resolved.
+        if round_item(m, item, &sub_items) {
+            continue;
         }
         judge_member(
             t,
@@ -92,7 +100,11 @@ pub fn close(
     let marker = texts::marker("closure", &[("tag", &published.tag)]);
     match tracker_said(t, &item.key, &marker) {
         Ok(false) => {
-            let body = for_tracker(t, &format!("{}\n\n{marker}", closure::comment(&result)));
+            let go = go_merger(t, shape, c, published);
+            let body = for_tracker(
+                t,
+                &format!("{}\n\n{go}\n\n{marker}", closure::comment(&result)),
+            );
             t.act(log, report, &object, "comment closure", json!({}), || {
                 t.tracker
                     .comment(&item.key, &body)
@@ -203,6 +215,9 @@ fn archive_resolved(
             Resolved::ReleaseChild
         } else if m.title == nits {
             Resolved::Nits
+        } else if round_item(m, release, &[]) {
+            // A review round item an older bridge labelled with the release.
+            Resolved::ReviewRound
         } else {
             Resolved::Embarked
         };
@@ -240,6 +255,9 @@ fn archive_resolved(
             resolved.push(m.key.clone());
         }
     }
+    // A round item met both as a member and under its ticket is archived
+    // once.
+    resolved.retain(|k| !rounds.contains(k));
     for key in rounds.iter().chain(&resolved) {
         if !t.in_time() {
             report.out_of_time = true;
@@ -266,6 +284,42 @@ fn archive_resolved(
             json!({"release": release.key}),
             || t.tracker.archive(&release.key).map_err(|e| e.to_string()),
         );
+    }
+}
+
+/// Who merged the release PR that made the published release's commit, for
+/// the closure's record (spec 09): the bridge, or a human in GitHub. Read
+/// from the merged PRs around the candidate (the release commit is on the
+/// default branch by now, where GitHub no longer associates it with its
+/// merged PR). A read that fails is said, never guessed, and holds nothing.
+fn go_merger(t: &Tick, shape: &Shape, c: &Candidate, published: &Release) -> String {
+    let label = super::release::section(t)
+        .map(|r| r.release_pr_label.as_str())
+        .unwrap_or_default();
+    let since = c
+        .tagged_at
+        .or(published.published_at)
+        .map(|at| crate::github::Timestamp(at.0 - time::Duration::days(1)));
+    let read = t
+        .github
+        .commit(&t.repo, &published.tag)
+        .map_err(|e| e.to_string())
+        .and_then(|commit| {
+            t.github
+                .merged_pulls(&t.repo, None, since, 500)
+                .map(|merged| (commit.sha, merged))
+                .map_err(|e| e.to_string())
+        });
+    match read {
+        Ok((sha, merged)) => prs::go_merger_line(
+            &published.tag,
+            prs::go_pull(&merged, &sha, &shape.branch_prefix, label),
+            &t.github_login,
+        ),
+        Err(e) => format!(
+            "Who merged the release PR of `{}` could not be read: {e}.",
+            published.tag
+        ),
     }
 }
 
@@ -340,6 +394,19 @@ fn ready_to_close(
         }
     }
     Ok(None)
+}
+
+/// Whether a member of the release is a review round item of a PR (an angle
+/// or consolidation item under a ticket): by its marker, or, as the PR pass
+/// recognises it, linked to an embarked PR beside its parent (`sub_items`).
+/// The release item's own children are not: the closure closes them.
+fn round_item(m: &Item, release: &Item, sub_items: &[String]) -> bool {
+    m.parent.as_deref() != Some(release.key.as_str())
+        && (sub_items.contains(&m.key)
+            || matches!(
+                texts::bridge_item(&m.description, m.parent.as_deref()),
+                Some(BridgeItem::Angle { .. } | BridgeItem::Consolidation { .. })
+            ))
 }
 
 /// The release item's children and every item carrying the release label.
@@ -584,7 +651,9 @@ fn release_note(
     }
     let block = note::block(&c.tag, &tickets, &[], Some(&published.body));
     let description = for_tracker(t, &note::splice(&item.description, &block));
-    if description != item.description {
+    // Compared as the tracker stores it: a description it restyled (its
+    // own bullets, blank lines) is not rewritten at every tick.
+    if !markdown::same_stored(&description, &item.description) {
         t.act(
             log,
             report,
@@ -606,37 +675,35 @@ fn release_note(
         None,
     );
     let text = format!("{head}\n\n{block}");
-    let sent = t.act(
+    let (said, action) = match t.notify(
         log,
         report,
         &item.key,
-        "notify release-note",
+        "release-note",
         json!({"tag": published.tag}),
-        || t.signal.signal("release-note", &text).map(|_| ()),
-    );
-    if sent.is_none() {
-        return false;
-    }
-    let body = for_tracker(
-        t,
-        &format!(
-            "The release note of {} was sent.\n\n{marker}",
-            published.tag
+        &text,
+    ) {
+        None => return false,
+        Some(Notice::Sent) => (
+            format!("The release note of {} was sent.", published.tag),
+            "comment note sent",
         ),
-    );
-    t.act(
-        log,
-        report,
-        &item.key,
-        "comment note sent",
-        json!({}),
-        || {
-            t.tracker
-                .comment(&item.key, &body)
-                .map(|_| ())
-                .map_err(|e| e.to_string())
-        },
-    )
+        // Nothing to send is done, said once here, never retried.
+        Some(Notice::NoChannel) => (
+            format!(
+                "The release note of {} has nothing to send: no notification channel takes `release-note`. This item carries it.",
+                published.tag
+            ),
+            "comment note sent: no channel takes release-note",
+        ),
+    };
+    let body = for_tracker(t, &format!("{said}\n\n{marker}"));
+    t.act(log, report, &item.key, action, json!({}), || {
+        t.tracker
+            .comment(&item.key, &body)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    })
     .is_some()
 }
 

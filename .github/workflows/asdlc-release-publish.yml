@@ -3,9 +3,13 @@ name: asdlc-release-publish
 # The publication of a release (docs/spec/05-release-cycle.md §9;
 # docs/requirements/ci.md, REQ-CI-076..097), as one reusable workflow in three
 # stages: `verify` (the RC's gate was green, only bookkeeping changed since the
-# RC, the release-please PR was merged by the bridge's App), `record-deployed`
-# (the `deployed: production` ledger of a multi-component product) and
-# `close` (the merge back into the default branch, then `closing-guard`).
+# RC, the release-please PR was merged by the bridge's App or by a human),
+# `record-deployed` (the `deployed: production` ledger of a multi-component
+# product) and `close` (the merge back into the default branch, then
+# `closing-guard`). Every stage reads the state GitHub is in, so a step a
+# human did by hand (the release-please PR merged, a label written, the
+# release branch merged back) is taken as done, never refused or redone
+# (docs/spec/09-requalification-and-human-gestures.md).
 #
 # The publication and deployment steps are the project's own jobs, and they
 # sit between the stages: a reusable workflow runs as one job of its caller
@@ -20,7 +24,7 @@ name: asdlc-release-publish
 # full: docs/setup/examples/release-publish.yml):
 #
 #   on:
-#     release: {types: [published]}          # created by the bridge's App
+#     release: {types: [published]}          # created by release-please, as the App
 #     workflow_dispatch:
 #       inputs:
 #         replay: {type: boolean, default: false}   # merge back only, on the branch
@@ -36,6 +40,8 @@ name: asdlc-release-publish
 #         candidate-tag: acme-v{version}-rc.{rc}
 #         release-tag-pattern: acme-v{version}
 #         bookkeeping-paths: '[".release-please-manifest.json", "CHANGELOG.md"]'
+#         qa-record: .spl-asdlc/qa/{candidate}/
+#         qa-angles: '["security", "product"]'
 #         go-merger-login: <the App's slug>
 #     publish:                                # the project's own job(s)
 #       needs: verify
@@ -103,12 +109,25 @@ on:
         description: The gate record path, `{version}` once (spec 08 `release.gate_record`); an allowed delta too.
         type: string
         default: ''
+      qa-record:
+        description: The directory of the angle reports, `{candidate}` once (spec 08 `release.record`).
+        type: string
+        default: '.spl-asdlc/qa/{candidate}/'
+      qa-angles:
+        description: >-
+          JSON array of the release QA angle keys (spec 08 `[[release.angles]]`). The
+          latest candidate's report of each, `<qa-record>/<angle>.json` with `{candidate}`
+          its tag, is an allowed delta, as the GO allows it; `[]` allows none.
+        type: string
+        default: '[]'
       gate-workflow:
         description: The file name of the gate workflow (spec 08 `release.gate_workflow`).
         type: string
         default: release-gate.yml
       go-merger-login:
-        description: The slug of the bridge's App, which must have merged the release-please PR.
+        description: >-
+          The slug of the bridge's App. The release-please PR must have been merged by
+          this App or by a human account (a User); any other bot is no GO.
         type: string
         default: ''
       branch-prefix:
@@ -198,6 +217,9 @@ on:
       go-merged-by:
         description: Who merged it.
         value: ${{ jobs.verify.outputs.go-merged-by }}
+      go-merged-by-kind:
+        description: '`app` when the bridge''s App merged it, `human` when a person did.'
+        value: ${{ jobs.verify.outputs.go-merged-by-kind }}
       verified:
         description: '`true` once every check of verify passed.'
         value: ${{ jobs.verify.outputs.verified }}
@@ -248,6 +270,7 @@ jobs:
       release-branch: ${{ steps.go.outputs.release-branch }}
       release-pr-number: ${{ steps.go.outputs.release-pr-number }}
       go-merged-by: ${{ steps.go.outputs.go-merged-by }}
+      go-merged-by-kind: ${{ steps.go.outputs.go-merged-by-kind }}
       verified: ${{ steps.go.outputs.verified }}
     steps:
       # Before anything is checked out: what this run is asked to publish.
@@ -310,6 +333,8 @@ jobs:
           COMPONENTS: ${{ inputs.components }}
           BOOKKEEPING: ${{ inputs.bookkeeping-paths }}
           GATE_RECORD: ${{ inputs.gate-record }}
+          QA_RECORD: ${{ inputs.qa-record }}
+          QA_ANGLES: ${{ inputs.qa-angles }}
           DEFAULT_BRANCH: ${{ inputs.default-branch }}
         shell: bash
         run: |
@@ -335,6 +360,16 @@ jobs:
           if ! jq -e 'type == "array"' > /dev/null 2>&1 <<< "$COMPONENTS"; then
             refuse "components is not a JSON array."
           fi
+          if ! jq -e 'type == "array" and all(.[]; type == "string" and test("^[a-z0-9][a-z0-9-]*$"))' \
+                > /dev/null 2>&1 <<< "$QA_ANGLES"; then
+            refuse "qa-angles is not a JSON array of angle keys (lower-case letters, digits and hyphens)."
+          fi
+          case "$QA_RECORD" in
+            *$'\n'* | *$'\r'*) refuse "qa-record holds a line break." ;;
+            *'{candidate}'*'{candidate}'*) refuse "qa-record '$QA_RECORD' must hold {candidate} once." ;;
+            *'{candidate}'*) ;;
+            *) refuse "qa-record '$QA_RECORD' must hold {candidate} once." ;;
+          esac
           multi="$(jq 'length > 0' <<< "$COMPONENTS")"
 
           candidate_re="^$(to_regex "$CANDIDATE_PATTERN")\$"
@@ -400,8 +435,9 @@ jobs:
             refuse "the commit under deploy ($HEAD_SHA) is not the commit behind $RELEASE_TAG ($RELEASE_SHA)."
           fi
 
-          # REQ-CI-078: only release-please bookkeeping, and the gate record the
-          # bridge lands before the release PRs, may differ from the RC.
+          # REQ-CI-078: only release-please bookkeeping, the gate record the
+          # bridge lands before the release PRs and the candidate's own QA
+          # reports may differ from the RC.
           jq -r '.[]' <<< "$BOOKKEEPING" > "$work/allowed"
           if [ -n "$GATE_RECORD" ]; then
             case "$GATE_RECORD" in
@@ -411,6 +447,16 @@ jobs:
             esac
             printf '%s\n' "$GATE_RECORD" | sed "s/{version}/$RC_VERSION/" >> "$work/allowed"
           fi
+          # The latest candidate's report of each angle, `<record>/<angle>.json`,
+          # which the GO allows too: the last pass's reports land after its
+          # candidate by construction. They are rendered for RC_TAG only, so an
+          # earlier candidate's report is a delta like any other.
+          qa_dir="${QA_RECORD%%"{candidate}"*}${RC_TAG}${QA_RECORD#*"{candidate}"}"
+          while [[ "$qa_dir" == */ ]]; do qa_dir="${qa_dir%/}"; done
+          jq -r '.[]' <<< "$QA_ANGLES" > "$work/angles"
+          while IFS= read -r angle; do
+            printf '%s/%s.json\n' "$qa_dir" "$angle" >> "$work/allowed"
+          done < "$work/angles"
           if ! git diff --no-renames --name-only "$RC_SHA" "$RELEASE_SHA" > "$work/changed"; then
             refuse "git diff $RC_TAG $RELEASE_TAG failed: what changed since the candidate is not established."
           fi
@@ -487,7 +533,7 @@ jobs:
           echo "$GATE_WORKFLOW on $RC_TAG: success."
           printf -- '- Gate `%s` on `%s`: success.\n' "$GATE_WORKFLOW" "$RC_TAG" >> "$summary"
 
-      - name: The release-please PR was merged by the bridge's App
+      - name: The release-please PR was merged by the bridge's App or by a human
         id: go
         env:
           GH_TOKEN: ${{ github.token }}
@@ -524,7 +570,9 @@ jobs:
 
           # REQ-CI-079: the PR whose merge made the release commit, merged into
           # a release branch from release-please's head. The bridge merges it
-          # only on its computed GO, so the merge is the GO.
+          # only on its computed GO; a human with write access may merge it
+          # instead (spec 09), the rulesets deciding who may. Either merge is
+          # the GO. Any other bot (another App, the Actions token) is not.
           if ! gh api "repos/$REPO/commits/$RELEASE_SHA/pulls" > "$work/pulls"; then
             refuse "the PRs of $RELEASE_TAG's commit could not be read."
           fi
@@ -545,22 +593,30 @@ jobs:
           fi
           merged="$(jq -r '.merged // false' "$work/pull")"
           merged_by="$(jq -r '.merged_by.login // ""' "$work/pull")"
+          merged_by_type="$(jq -r '.merged_by.type // ""' "$work/pull")"
           branch="$(jq -r '.base.ref // ""' "$work/pull")"
           if [ "$merged" != "true" ]; then
             refuse "PR #$number is not merged."
           fi
           merged_by_lower="$(tr '[:upper:]' '[:lower:]' <<< "$merged_by")"
-          if [ "$merged_by_lower" != "$bot_login" ] && [ "$merged_by_lower" != "$app_login" ]; then
-            refuse "PR #$number was merged by '${merged_by:-nobody readable}', not by the bridge's App ($slug): no GO."
+          if [ "$merged_by_lower" = "$bot_login" ] || [ "$merged_by_lower" = "$app_login" ]; then
+            kind=app
+            who="the bridge's App"
+          elif [ -n "$merged_by" ] && [ "$merged_by_type" = "User" ]; then
+            kind=human
+            who="a human"
+          else
+            refuse "PR #$number was merged by '${merged_by:-nobody readable}' (${merged_by_type:-no account type}), neither the bridge's App ($slug) nor a human account: no GO."
           fi
           {
             echo "release-branch=$branch"
             echo "release-pr-number=$number"
             echo "go-merged-by=$merged_by"
+            echo "go-merged-by-kind=$kind"
             echo "verified=true"
           } >> "$out"
-          echo "GO: #$number merged into $branch by $merged_by."
-          printf -- '- GO: #%s merged into `%s` by `%s`.\n' "$number" "$branch" "$merged_by" >> "$summary"
+          echo "GO: #$number merged into $branch by $merged_by ($who)."
+          printf -- '- GO: #%s merged into `%s` by `%s` (%s).\n' "$number" "$branch" "$merged_by" "$who" >> "$summary"
 
   record-deployed:
     name: record-deployed
@@ -573,8 +629,9 @@ jobs:
       recorded: ${{ steps.record.outputs.recorded }}
       skipped: ${{ steps.record.outputs.skipped }}
     steps:
-      # The App writes the label: it is the identity the ledger trusts, and
-      # the job's own token only reads.
+      # The App writes the label, and the job's own token only reads. The
+      # ledger reads the label, not who wrote it: a human who labels a
+      # component's release PR by hand records the same fact.
       - name: Mint the App token
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0

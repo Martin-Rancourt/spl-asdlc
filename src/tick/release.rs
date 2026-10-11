@@ -298,6 +298,19 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
     if merged {
         return true;
     }
+    // A later pass under the lighter policy offers no angle: its GO counts
+    // the angle PRs merged in the first pass (spec 05 §7-8).
+    let (states, without_angles) = if !without_angles && lighter_pass(release, &candidate) {
+        match first_pass_angles(t, &shape, &item, &candidate, &branch, &angle_prs) {
+            Ok(x) => x,
+            Err(e) => {
+                t.unreadable(report, &item.key, e);
+                return false;
+            }
+        }
+    } else {
+        (states, without_angles)
+    };
     let decision = decide(
         t,
         report,
@@ -563,9 +576,7 @@ fn record_candidate(
             let scope = match section(t) {
                 Err(_) => AngleScope::NoQaAngle,
                 Ok(r) if r.angles.is_empty() => AngleScope::NoQaAngle,
-                Ok(r) if c.rc > 1 && r.later_passes == LaterPasses::GateAndCoordinator => {
-                    AngleScope::LighterPass
-                }
+                Ok(r) if lighter_pass(r, c) => AngleScope::LighterPass,
                 Ok(_) => AngleScope::Configured,
             };
             let offered = offered(t, c);
@@ -592,7 +603,7 @@ fn record_candidate(
         Err(e) => t.unreadable(report, &item.key, format!("comments: {e}")),
     }
     let line = texts::candidate_log_line(&c.tag, &c.class, previous);
-    let description = texts::append_candidate(&item.description, &line);
+    let description = texts::append_candidate(&item.description, &c.tag, &line);
     if description != item.description {
         t.act(
             log,
@@ -617,23 +628,85 @@ pub fn without_angles(t: &Tick, item: &Item, c: &Candidate) -> Result<bool, Stri
         || tracker_said(t, &item.key, &texts::no_qa_angle_marker(&c.tag))?)
 }
 
+/// Whether the candidate is a later pass under the lighter policy
+/// (`later_passes = "gate-and-coordinator"`): it offers no angle, and its GO
+/// counts the angles of the first pass (spec 05 §7-8).
+pub fn lighter_pass(release: &Release, c: &Candidate) -> bool {
+    c.rc > 1 && release.later_passes == LaterPasses::GateAndCoordinator
+}
+
 /// The angles offered on this candidate (spec 05 §7, `later_passes`).
 pub fn offered(t: &Tick, c: &Candidate) -> Vec<String> {
     let Ok(release) = section(t) else {
         return Vec::new();
     };
-    if c.rc > u64::from(release.max_rc_passes)
-        || (c.rc > 1 && release.later_passes == LaterPasses::GateAndCoordinator)
-    {
+    if c.rc > u64::from(release.max_rc_passes) || lighter_pass(release, c) {
         return Vec::new();
     }
     release.angles.iter().map(|a| a.key.clone()).collect()
+}
+
+/// The angles a later pass under the lighter policy answers with (spec 05
+/// §7-8, REQ-REL-054): those of the cycle's first candidate, each merged
+/// once its angle PR was merged into the release branch, in review while
+/// that PR is open, missing otherwise. A first candidate recorded with no
+/// QA angle leaves none to count: the second value says so, and the GO then
+/// rests on the gate and the conditions that involve no angle.
+pub fn first_pass_angles(
+    t: &Tick,
+    shape: &Shape,
+    item: &Item,
+    c: &Candidate,
+    branch: &str,
+    open: &[PullRequest],
+) -> Result<(Vec<(String, AngleState)>, bool), String> {
+    let release = section(t)?;
+    let first = shape.candidate_tag(c.version, 1);
+    if tracker_said(t, &item.key, &texts::no_qa_angle_marker(&first))? {
+        return Ok((Vec::new(), true));
+    }
+    let merged = t
+        .github
+        .merged_pulls(&t.repo, Some(branch), None, 500)
+        .map_err(|e| format!("the merged PRs of {branch}: {e}"))?;
+    let of = |p: &PullRequest, angle: &str| {
+        prs::parse_angle_branch(&p.head_ref) == Some((first.clone(), angle.to_string()))
+    };
+    let states = release
+        .angles
+        .iter()
+        .map(|a| {
+            let state = if merged.iter().any(|p| of(p, &a.key)) {
+                AngleState::Merged
+            } else if open.iter().any(|p| of(p, &a.key)) {
+                AngleState::InReview
+            } else {
+                AngleState::NotOffered
+            };
+            (a.key.clone(), state)
+        })
+        .collect();
+    Ok((states, false))
 }
 
 /// The commits of the range, each to its merged PR, each PR to its ticket;
 /// the tickets of the team that are past the merge get the release label
 /// (spec 05 §2, the brief: "found by commit → PR → linked ticket").
 pub fn embarked(t: &Tick, shape: &Shape, c: &Candidate) -> Result<Vec<(String, Vec<u64>)>, String> {
+    Ok(embarked_items(t, shape, c)?.tickets)
+}
+
+/// What a candidate embarks: its tickets, each with its PRs in the range,
+/// and apart, the bridge's own sub-items linked to those PRs (the angle and
+/// consolidation items of their review rounds), which are not tickets: never
+/// labelled, never in the brief or the note, never judged (spec 05 §11).
+#[derive(Debug, Default)]
+pub struct Embarked {
+    pub tickets: Vec<(String, Vec<u64>)>,
+    pub sub_items: Vec<String>,
+}
+
+pub fn embarked_items(t: &Tick, shape: &Shape, c: &Candidate) -> Result<Embarked, String> {
     let tags = t
         .github
         .tags(&t.repo, shape.release_tag_prefix())
@@ -646,14 +719,14 @@ pub fn embarked(t: &Tick, shape: &Shape, c: &Candidate) -> Result<Vec<(String, V
                 .map_err(|e| e.to_string())?
                 .commits
         }
-        None => return Ok(Vec::new()),
+        None => return Ok(Embarked::default()),
     };
     let team = t.tracker.team_key().map_err(|e| e.to_string())?;
     let mut keys = t.config.tracker.team_keys.clone();
     if keys.is_empty() {
         keys.push(team);
     }
-    let mut out: Vec<(String, Vec<u64>)> = Vec::new();
+    let mut out = Embarked::default();
     for commit in commits {
         let pulls = t
             .github
@@ -670,17 +743,26 @@ pub fn embarked(t: &Tick, shape: &Shape, c: &Candidate) -> Result<Vec<(String, V
         {
             continue;
         }
-        for key in t
+        let linked: Vec<String> = t
             .tracker
             .items_linked_to_pr(&pr.url)
             .map_err(|e| e.to_string())?
-        {
-            if !keys.iter().any(|k| key.starts_with(&format!("{k}-"))) {
-                continue;
+            .into_iter()
+            .filter(|key| keys.iter().any(|k| key.starts_with(&format!("{k}-"))))
+            .collect();
+        // The PR's review round items are linked to it beside its ticket:
+        // recognised as in the PR pass (by marker, or by a parent linked to
+        // the same PR), they are set apart.
+        let split = super::link::split_linked(t.tracker, linked).map_err(|e| e.to_string())?;
+        for sub in split.sub_items {
+            if !out.sub_items.contains(&sub.key) {
+                out.sub_items.push(sub.key);
             }
-            match out.iter_mut().find(|(k, _)| *k == key) {
+        }
+        for ticket in split.tickets {
+            match out.tickets.iter_mut().find(|(k, _)| *k == ticket.key) {
                 Some((_, prs)) => prs.push(pr.number),
-                None => out.push((key, vec![pr.number])),
+                None => out.tickets.push((ticket.key, vec![pr.number])),
             }
         }
     }
@@ -790,7 +872,8 @@ fn qa_round(
 }
 
 /// The angle sub-items and the consolidation item of the candidate,
-/// created when missing (spec 05 §3, §4), the consolidation item blocked by
+/// created when missing (spec 05 §3, §4; a child found by its marker or by
+/// its exact title is not missing), the consolidation item blocked by
 /// every angle sub-item of the candidate (BR-ASDLC-020; written right after
 /// the items, repaired at every later tick; one that fails is reported and
 /// retried). Returns the release item's children after the creations, with
@@ -821,12 +904,6 @@ fn open_round(
         if !offered.contains(&angle.key) {
             continue;
         }
-        if children
-            .iter()
-            .any(|ch| angle_of(ch, &c.tag).as_deref() == Some(angle.key.as_str()))
-        {
-            continue;
-        }
         let line = AngleLine {
             key: angle.key.clone(),
             title: angle.title.clone(),
@@ -844,6 +921,13 @@ fn open_round(
             label,
             angle.notes.as_deref(),
         );
+        // Found by its marker or by its exact title (REQ-REL-048): a marker
+        // an agent edited does not make the item invisible.
+        if children.iter().any(|ch| {
+            angle_of(ch, &c.tag).as_deref() == Some(angle.key.as_str()) || ch.title == title
+        }) {
+            continue;
+        }
         let assignee = angle.assignee.as_ref().and_then(|a| t.tracker.user(a).ok());
         if let Some(created) =
             create_child(t, log, report, &item.key, &title, &body, label, assignee)
@@ -851,18 +935,19 @@ fn open_round(
             children.push(created);
         }
     }
+    let (title, body) = texts::consolidation_item(
+        &c.tag,
+        &format!("{product} {v} (rc.{})", c.rc),
+        texts::Consolidating::Candidate,
+    );
     let consolidated = children.iter().any(|ch| {
         texts::bridge_item(&ch.description, ch.parent.as_deref())
             == Some(BridgeItem::Consolidation {
                 scope: c.tag.clone(),
             })
+            || ch.title == title
     });
     if !offered.is_empty() && !consolidated {
-        let (title, body) = texts::consolidation_item(
-            &c.tag,
-            &format!("{product} {v} (rc.{})", c.rc),
-            texts::Consolidating::Candidate,
-        );
         let assignee = coordinator(t);
         if let Some(created) =
             create_child(t, log, report, &item.key, &title, &body, label, assignee)
@@ -1472,6 +1557,19 @@ fn angle_pr(
         }
         BranchState::Current => {}
     }
+    // As for any PR (spec 04 §6): a person's standing request for changes
+    // holds it; an App's is superseded by the approval at the head and
+    // dismissed right before the merge.
+    let dismissals = match super::merge::superseded(pr, &release.coordinators) {
+        Ok(d) => d,
+        Err(why) => {
+            t.wait(report, pr, why);
+            return AngleState::InReview;
+        }
+    };
+    if !super::merge::dismiss(t, log, report, &object, pr, &by, &dismissals) {
+        return AngleState::InReview;
+    }
     let done = t.act(
         log,
         report,
@@ -1975,8 +2073,8 @@ fn release_prs(
                 ),
                 Some(pr) => {
                     let note = coverage(pr, c.version, "CHANGELOG.md");
-                    let staged = notes::staged_version(&pr.body, &cfg.product.name)
-                        .or_else(|| notes::staged_version(&pr.title, &cfg.product.name));
+                    let staged =
+                        notes::staged_version(&pr.title, &pr.body, &pr.head_ref, &cfg.product.name);
                     let version_gaps = match staged {
                         Some(v) if v == c.version => Vec::new(),
                         Some(v) => vec![format!(
@@ -2159,15 +2257,17 @@ pub fn decide(
     // The branch moved past the candidate with more than bookkeeping: fixes
     // no gate and no QA has seen (REQ-REL-070).
     // The gate record is the bridge's own write on the branch, after the
-    // candidate: it is never a gap.
+    // candidate: it is never a gap. Nor is a report of the candidate's own
+    // angles: its angle PR is merged after the candidate by construction,
+    // and the last allowed pass cuts no candidate after it. An earlier
+    // candidate's report is a gap.
     let record = shape.gate_record_path(c.version);
     let tip_gaps = match t.github.compare(&t.repo, &c.sha, branch) {
         Ok(cmp) => {
             let moved: Vec<String> = cmp
                 .files
                 .into_iter()
-                .filter(|f| !release.bookkeeping_paths.iter().any(|b| b == f))
-                .filter(|f| record.as_deref() != Some(f.as_str()))
+                .filter(|f| !bookkeeping(release, record.as_deref(), &c.tag, f))
                 .collect();
             if moved.is_empty() {
                 Vec::new()
@@ -2204,6 +2304,19 @@ pub fn decide(
         policy,
     };
     Some((go::evaluate(&facts), rp))
+}
+
+/// Whether `path` may differ between the candidate and the release branch
+/// tip (REQ-REL-070): a configured bookkeeping path (exact), the gate
+/// record, or the report of one of the candidate's own angles
+/// (`release.record` rendered for `candidate`).
+fn bookkeeping(release: &Release, gate_record: Option<&str>, candidate: &str, path: &str) -> bool {
+    release.bookkeeping_paths.iter().any(|b| b == path)
+        || gate_record == Some(path)
+        || release
+            .angles
+            .iter()
+            .any(|a| report::report_path(&release.record, candidate, &a.key) == path)
 }
 
 /// On GO (spec 05 §9): a single-component product's release PR is merged;
@@ -2516,7 +2629,12 @@ fn hold(
 }
 
 /// When the last allowed pass is spent and something still holds: the
-/// release goes to the owner, once (spec 05 §10).
+/// release goes to the owner, once (spec 05 §10). The hand-off is
+/// idempotent as a whole: the owner assigned before it is explained, the
+/// hold label (created first when the tracker lacks it) written whenever it
+/// is missing while the escalation holds, the comment carrying the marker
+/// posted once. A failed label write costs the label, retried at the next
+/// tick, never the comment.
 fn escalate(
     t: &Tick,
     log: &mut ActionLog,
@@ -2535,43 +2653,58 @@ fn escalate(
         return;
     }
     let marker = texts::marker("qa-escalation", &[("candidate", &c.tag)]);
-    match tracker_said(t, &item.key, &marker) {
-        Ok(false) => {}
-        _ => return,
-    }
-    // Every effect first; the comment that carries the marker last, and only
-    // when they all went through, so that a failed one is retried.
-    let owner = match t.tracker.user(&t.config.owner.tracker_user) {
-        Ok(o) => o,
-        Err(e) => {
-            t.unreadable(
+    let Ok(said) = tracker_said(t, &item.key, &marker) else {
+        return;
+    };
+    // Not yet explained: the owner first, so that the comment never names
+    // a hand-off that did not happen; a failed assignment is retried whole.
+    if !said {
+        let owner = match t.tracker.user(&t.config.owner.tracker_user) {
+            Ok(o) => o,
+            Err(e) => {
+                t.unreadable(
+                    report,
+                    &item.key,
+                    format!("the owner {}: {e}", t.config.owner.tracker_user),
+                );
+                return;
+            }
+        };
+        if item.assignee.as_ref().map(|a| &a.id) != Some(&owner.id)
+            && t.act(
+                log,
                 report,
                 &item.key,
-                format!("the owner {}: {e}", t.config.owner.tracker_user),
-            );
+                "assign the owner",
+                json!({}),
+                || {
+                    t.tracker
+                        .assign(&item.key, Some(&owner))
+                        .map_err(|e| e.to_string())
+                },
+            )
+            .is_none()
+        {
             return;
         }
-    };
-    if item.assignee.as_ref().map(|a| &a.id) != Some(&owner.id)
-        && t.act(
-            log,
-            report,
-            &item.key,
-            "assign the owner",
-            json!({}),
-            || {
-                t.tracker
-                    .assign(&item.key, Some(&owner))
-                    .map_err(|e| e.to_string())
-            },
-        )
-        .is_none()
-    {
-        return;
     }
     let hold_label = &release.escalation_label;
     if !item.labels.iter().any(|l| l == hold_label)
         && t.act(
+            log,
+            report,
+            &item.key,
+            &format!("ensure label {hold_label}"),
+            json!({}),
+            || {
+                t.tracker
+                    .ensure_label(hold_label)
+                    .map_err(|e| e.to_string())
+            },
+        )
+        .is_some()
+    {
+        t.act(
             log,
             report,
             &item.key,
@@ -2582,20 +2715,14 @@ fn escalate(
                     .add_label(&item.key, hold_label)
                     .map_err(|e| e.to_string())
             },
-        )
-        .is_none()
-    {
+        );
+    }
+    if said {
         return;
     }
     let text = texts::escalation_comment(&c.tag, c.rc, max, &d.blockers, moved);
-    let sent = t.act(
-        log,
-        report,
-        &item.key,
-        "notify escalation",
-        json!({}),
-        || t.signal.signal("escalation", &text).map(|_| ()),
-    );
+    // With no channel for it, the comment alone is the notice.
+    let sent = t.notify(log, report, &item.key, "escalation", json!({}), &text);
     if sent.is_some() {
         let body = for_tracker(t, &text);
         t.act(
@@ -2654,14 +2781,8 @@ fn stagnation(
         &item.key,
         &item.url,
     );
-    let sent = t.act(
-        log,
-        report,
-        &item.key,
-        "notify stagnation",
-        json!({}),
-        || t.signal.signal("stagnation", &text).map(|_| ()),
-    );
+    // With no channel for it, the comment alone is the notice.
+    let sent = t.notify(log, report, &item.key, "stagnation", json!({}), &text);
     if sent.is_some() {
         let body = for_tracker(t, &format!("{text}\n\n{marker}"));
         t.act(

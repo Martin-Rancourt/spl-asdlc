@@ -256,21 +256,83 @@ fn the_post_deploy_validation_sub_task_is_a_contract_marked_as_the_bridges() {
 fn the_candidates_log_grows_once_per_candidate() {
     let d = release_description("acme", "1.2.3", "l", &[]);
     let line = candidate_log_line("acme-v1.2.3-rc.1", "routine", None);
-    let once = append_candidate(&d, &line);
-    assert_eq!(append_candidate(&once, &line), once);
+    let once = append_candidate(&d, "acme-v1.2.3-rc.1", &line);
+    assert_eq!(append_candidate(&once, "acme-v1.2.3-rc.1", &line), once);
     let twice = append_candidate(
         &once,
+        "acme-v1.2.3-rc.2",
         &candidate_log_line("acme-v1.2.3-rc.2", "sensible", Some("acme-v1.2.3-rc.1")),
     );
-    let section = twice
+    let section = candidates_section(&twice);
+    assert!(section.contains("first candidate"));
+    assert!(section.contains("after `acme-v1.2.3-rc.1`"));
+}
+
+/// The `## Candidates` section of a description.
+fn candidates_section(description: &str) -> &str {
+    description
         .split("## Candidates")
         .nth(1)
         .unwrap()
         .split("## Scope")
         .next()
-        .unwrap();
-    assert!(section.contains("first candidate"));
-    assert!(section.contains("after `acme-v1.2.3-rc.1`"));
+        .unwrap()
+}
+
+#[test]
+fn a_listed_candidate_is_found_by_its_tag_whatever_the_tracker_did_to_the_markdown() {
+    let rc1 = candidate_log_line("acme-v1.2.3-rc.1", "routine", None);
+    let rc2 = candidate_log_line("acme-v1.2.3-rc.2", "sensible", Some("acme-v1.2.3-rc.1"));
+    let rc3 = candidate_log_line("acme-v1.2.3-rc.3", "routine", Some("acme-v1.2.3-rc.2"));
+    // As Linear stores it: `*` bullets, blank lines between the items and
+    // after the headings, trailing spaces; the other bullets too.
+    for bullet in ["*", "-", "+"] {
+        let stored = format!(
+            "`spl-asdlc:release product=acme version=v1.2.3`\n\n## Goal\n\nDeliver it.\n\n\
+             ## Candidates\n\n{bullet} `acme-v1.2.3-rc.1` — class `routine` — first candidate  \n\n\n\
+             {bullet} `acme-v1.2.3-rc.2` — class `sensible` — after `acme-v1.2.3-rc.1`\t\n\n\
+             ## Scope\n\nThe label `l` groups the release's issues.\n"
+        );
+        assert_eq!(
+            append_candidate(&stored, "acme-v1.2.3-rc.1", &rc1),
+            stored,
+            "{bullet}"
+        );
+        assert_eq!(
+            append_candidate(&stored, "acme-v1.2.3-rc.2", &rc2),
+            stored,
+            "{bullet}"
+        );
+        // A new candidate is still appended, once.
+        let next = append_candidate(&stored, "acme-v1.2.3-rc.3", &rc3);
+        assert_eq!(
+            candidates_section(&next)
+                .matches("`acme-v1.2.3-rc.3`")
+                .count(),
+            1,
+            "{next}"
+        );
+        assert_eq!(append_candidate(&next, "acme-v1.2.3-rc.3", &rc3), next);
+        assert!(next.contains("\n\n## Scope\n"), "{next}");
+    }
+}
+
+#[test]
+fn a_candidate_is_listed_by_its_own_tag_only() {
+    // rc.2's line names rc.1 as its previous candidate: that does not list rc.1.
+    let d = release_description("acme", "1.2.3", "l", &[]);
+    let rc2 = candidate_log_line("acme-v1.2.3-rc.2", "sensible", Some("acme-v1.2.3-rc.1"));
+    let d = append_candidate(&d, "acme-v1.2.3-rc.2", &rc2);
+    let rc1 = candidate_log_line("acme-v1.2.3-rc.1", "routine", None);
+    let d = append_candidate(&d, "acme-v1.2.3-rc.1", &rc1);
+    assert!(candidates_section(&d).contains("first candidate"), "{d}");
+    // A tag is matched whole: rc.1 does not list rc.10.
+    let rc10 = candidate_log_line("acme-v1.2.3-rc.10", "routine", Some("acme-v1.2.3-rc.2"));
+    let d10 = append_candidate(&d, "acme-v1.2.3-rc.10", &rc10);
+    assert!(
+        candidates_section(&d10).contains("`acme-v1.2.3-rc.10` —"),
+        "{d10}"
+    );
 }
 
 #[test]

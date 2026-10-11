@@ -105,7 +105,7 @@ fn report_json(angle: &str, findings: &str) -> String {
         "go"
     };
     format!(
-        r#"{{"schema":"spl-asdlc/qa-report/1","candidate":"{CAND}","angle":"{angle}","reviewer":"reviewer-handle",
+        r#"{{"schema":"spl-asdlc/qa-report/1","candidate":"{CAND}","angle":"{angle}","item":"ABC-123",
            "verdict":"{verdict}","checked":["the whole project"],"findings":[{findings}]}}"#
     )
 }
@@ -266,6 +266,7 @@ impl World {
         pr.head_ref = format!("qa/{CAND}/{angle}");
         pr.body = format!("Angle {angle}, sub-item {}", sub.key);
         pr.reviews = vec![Review {
+            id: None,
             author: Some("coordinator-login".into()),
             body: "ok".into(),
             state: "APPROVED".into(),
@@ -322,6 +323,36 @@ fn the_first_tick_after_the_cut_opens_the_cycle_and_the_second_writes_nothing() 
         "{:?}",
         &w.tracker.writes()[before..]
     );
+}
+
+#[test]
+fn a_tick_against_the_candidates_log_as_linear_stores_it_writes_nothing() {
+    let w = World::new();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let key = w.release_item().key;
+    // Linear's normalised form: `*` bullets, blank lines after the headings
+    // and around the items, trailing spaces.
+    w.tracker.restyle(&key, |d| {
+        d.replace("\n- `", "\n\n* `")
+            .replace("first candidate", "first candidate  ")
+            .replace("## Goal\n", "## Goal\n\n")
+    });
+    let normalised = w.tracker.item(&key).description;
+    assert!(
+        normalised.contains(&format!("* `{CAND}` —")),
+        "{normalised}"
+    );
+    let before = w.tracker.writes().len();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.tracker.writes().len(),
+        before,
+        "{:?}",
+        &w.tracker.writes()[before..]
+    );
+    assert_eq!(w.tracker.item(&key).description, normalised);
 }
 
 const CAND2: &str = "acme-v1.2.0-rc.2";
@@ -715,6 +746,54 @@ fn a_release_coordinator_app_approves_and_a_person_of_its_name_does_not() {
 }
 
 #[test]
+fn an_angle_pr_dismisses_an_apps_superseded_request_for_changes_and_a_person_holds_it() {
+    // (author of the earlier request for changes, merged)
+    for (author, merged) in [(bot("angle-app"), true), ("passer-by".to_string(), false)] {
+        let w = World::new();
+        w.tick();
+        let mut pr = w.angle_pr(30, "security", &report_json("security", ""));
+        pr.reviews.insert(
+            0,
+            Review {
+                id: Some(51),
+                author: Some(author.clone()),
+                body: "redo".into(),
+                state: "CHANGES_REQUESTED".into(),
+                commit_sha: Some("older".into()),
+                submitted_at: None,
+            },
+        );
+        w.open_on_branch(vec![pr.clone()]);
+        let report = w.tick();
+        let writes = w.github.writes();
+        let merge = format!("merge example-org/acme#30 at {} merge", pr.head_sha);
+        let dismissal = writes
+            .iter()
+            .position(|l| l.starts_with("dismiss-review example-org/acme#30 51: "));
+        assert_eq!(writes.contains(&merge), merged, "{author}: {writes:?}");
+        assert_eq!(dismissal.is_some(), merged, "{author}: {writes:?}");
+        if merged {
+            let at = writes.iter().position(|l| *l == merge).unwrap();
+            assert!(dismissal.unwrap() < at, "{writes:?}");
+            assert!(writes[dismissal.unwrap()].contains(&format!(
+                "coordinator-login approved this PR at its head `{}`",
+                pr.head_sha
+            )));
+        } else {
+            assert!(
+                report.waiting_lines().contains(
+                    &"waiting: pr#30 changes requested by passer-by (a person; the bridge never dismisses it)"
+                        .to_string()
+                ),
+                "{:?}",
+                report.waiting_lines()
+            );
+            assert_eq!(w.sub_item("security").state.status, Some(Status::InReview));
+        }
+    }
+}
+
+#[test]
 fn an_approved_angle_pr_with_a_valid_report_is_merged_and_its_findings_filed_once() {
     let w = World::new();
     w.tick();
@@ -852,6 +931,32 @@ fn the_go_computed_merges_the_release_pr_and_nothing_else() {
 }
 
 #[test]
+fn a_single_component_release_pr_stages_its_version_in_its_title_and_its_heading() {
+    let body = ":robot: I have created a release *beep* *boop*\n---\n\n\n## [1.2.0](https://github.com/OWNER/REPO/compare/acme-v1.1.0...acme-v1.2.0) (2026-10-11)\n\n\n### Features\n\n* m1\n";
+    for title in [
+        format!("chore({BRANCH}): release acme 1.2.0"),
+        format!("chore({BRANCH}): release 1.2.0"),
+    ] {
+        let w = World::new();
+        w.tick();
+        all_angles_merged(&w);
+        let mut rp = release_pr(&w, "1.2.0");
+        rp.title = title.clone();
+        rp.body = body.into();
+        w.open_on_branch(vec![rp.clone()]);
+        w.tick();
+        assert!(
+            w.github.writes().contains(&format!(
+                "merge example-org/acme#40 at {} squash",
+                rp.head_sha
+            )),
+            "{title}: {:?}",
+            w.github.writes()
+        );
+    }
+}
+
+#[test]
 fn a_release_pr_staging_another_version_is_no_go() {
     let w = World::new();
     w.tick();
@@ -859,6 +964,87 @@ fn a_release_pr_staging_another_version_is_no_go() {
     w.open_on_branch(vec![release_pr(&w, "1.3.0")]);
     w.tick();
     assert!(!w.github.writes().iter().any(|l| l.starts_with("merge")));
+}
+
+/// Spec 09 (BR-ASDLC-021): a human merges the release-please PR in GitHub
+/// instead of the bridge. The bridge picks up from that state: it merges
+/// nothing and says no GO of its own while the release is not yet out, then
+/// closes the cycle once it is published and merged back, recording who
+/// merged the release PR, and writes nothing more at the next tick.
+#[test]
+fn a_release_pr_merged_by_a_human_is_picked_up_without_a_rewrite_and_recorded_at_closure() {
+    let w = World::new();
+    w.tick();
+    let release = w.release_item();
+    all_angles_merged(&w);
+    let mut rp = release_pr(&w, "1.2.0");
+    rp.state = PrState::Merged;
+    rp.merged_at = Timestamp::parse("2026-10-05T11:50:00Z");
+    rp.merge_commit_sha = Some("rel1".into());
+    rp.merged_by = Some(Actor {
+        login: "owner-login".into(),
+        is_bot: false,
+    });
+    {
+        let mut s = w.github.state.borrow_mut();
+        if let Some(Ok(merged)) = s.merged_pulls.get_mut(&repo()) {
+            merged.push(rp.clone());
+        }
+    }
+    // Merged, not yet published: the bridge neither merges nor claims a GO.
+    let comments_before = w.tracker.comments(&release.key).unwrap().len();
+    w.tick();
+    assert!(
+        !w.github.writes().iter().any(|l| l.starts_with("merge")),
+        "{:?}",
+        w.github.writes()
+    );
+    let comments = w.tracker.comments(&release.key).unwrap();
+    assert!(
+        !comments.iter().any(|c| c.body.contains("GO computed")),
+        "{comments:?}"
+    );
+    assert!(comments.len() >= comments_before);
+
+    // Published and merged back: the closure runs and records the human.
+    publish(&w);
+    w.github.state.borrow_mut().commits.insert(
+        (repo(), "acme-v1.2.0".into()),
+        Ok(Commit {
+            sha: "rel1".into(),
+            message: "chore(release): release acme 1.2.0".into(),
+            committer_date: Timestamp::parse("2026-10-05T11:50:00Z"),
+            parents: vec![],
+        }),
+    );
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.tracker.item(&release.key).state.status,
+        Some(Status::Done)
+    );
+    let closure = w
+        .tracker
+        .comments(&release.key)
+        .unwrap()
+        .into_iter()
+        .find(|c| c.body.contains("spl-asdlc:closure"))
+        .expect("the closure comment");
+    assert!(
+        closure.body.contains(&format!(
+            "the release PR {} was merged by `owner-login`, a human, in GitHub",
+            rp.url
+        )),
+        "{}",
+        closure.body
+    );
+    let before = (w.tracker.writes().len(), w.github.writes().len());
+    w.tick();
+    assert_eq!(
+        (w.tracker.writes().len(), w.github.writes().len()),
+        before,
+        "nothing written twice"
+    );
 }
 
 #[test]
@@ -1053,6 +1239,119 @@ fn a_blocker_requalified_as_should_fix_stops_blocking() {
     );
 }
 
+/// The last allowed candidate answered by every angle with a blocker left:
+/// the tick that files the blocker escalates. The owner is known, the hold
+/// label is not in the tracker yet.
+fn escalating() -> World {
+    let mut w = World::new();
+    w.config.release.as_mut().unwrap().max_rc_passes = 1;
+    w.tracker
+        .state
+        .borrow_mut()
+        .users
+        .push(crate::tracker::User {
+            id: "u-owner".into(),
+            name: "owner-handle".into(),
+        });
+    w.tick();
+    let mut merged = Vec::new();
+    for (n, angle, findings) in [
+        (30, "security", finding("security-1", "blocker")),
+        (31, "product", String::new()),
+    ] {
+        let mut pr = w.angle_pr(n, angle, &report_json(angle, &findings));
+        pr.state = PrState::Merged;
+        pr.merge_commit_sha = Some(format!("merge-of-{n}"));
+        merged.push(pr);
+    }
+    w.github
+        .state
+        .borrow_mut()
+        .merged_pulls
+        .insert(repo(), Ok(merged));
+    w
+}
+
+fn escalation_comments(w: &World) -> usize {
+    let release = w.release_item();
+    w.tracker
+        .comments(&release.key)
+        .unwrap()
+        .iter()
+        .filter(|c| {
+            texts::has_marker(
+                &c.body,
+                &texts::marker("qa-escalation", &[("candidate", CAND)]),
+            )
+        })
+        .count()
+}
+
+#[test]
+fn an_escalation_creates_its_missing_label_before_adding_it() {
+    let w = escalating();
+    assert!(!w.tracker.label_exists("blocked-by-human").unwrap());
+    w.tick();
+    w.tick();
+    let release = w.release_item();
+    let writes = w.tracker.writes();
+    let ensure = writes
+        .iter()
+        .position(|l| l == "ensure-label blocked-by-human")
+        .unwrap_or_else(|| panic!("label created: {writes:?}"));
+    let add = writes
+        .iter()
+        .position(|l| *l == format!("label {} +blocked-by-human", release.key))
+        .unwrap_or_else(|| panic!("label added: {writes:?}"));
+    assert!(ensure < add, "{writes:?}");
+    assert!(release.labels.contains(&"blocked-by-human".to_string()));
+    assert_eq!(
+        release.assignee.map(|a| a.name),
+        Some("owner-handle".to_string())
+    );
+    assert_eq!(escalation_comments(&w), 1);
+    let before = w.tracker.writes().len();
+    w.tick();
+    assert_eq!(
+        w.tracker.writes().len(),
+        before,
+        "escalated once: {:?}",
+        &w.tracker.writes()[before..]
+    );
+}
+
+#[test]
+fn a_failed_label_write_still_explains_once_and_the_label_is_retried() {
+    let w = escalating();
+    w.tracker
+        .fail_writes_starting_with("ensure-label blocked-by-human");
+    w.tick();
+    w.tick();
+    let release = w.release_item();
+    assert!(!release.labels.contains(&"blocked-by-human".to_string()));
+    assert_eq!(
+        release.assignee.map(|a| a.name),
+        Some("owner-handle".to_string())
+    );
+    assert_eq!(escalation_comments(&w), 1, "{:?}", w.tracker.writes());
+    assert_eq!(w.signal.sent.borrow().len(), 1);
+    // The next ticks retry what is missing, the label, and only that.
+    w.tick();
+    assert_eq!(escalation_comments(&w), 1);
+    w.tracker.state.borrow_mut().failing_writes.clear();
+    let before = w.tracker.writes().len();
+    w.tick();
+    assert_eq!(
+        w.tracker.writes()[before..].to_vec(),
+        vec![
+            "ensure-label blocked-by-human".to_string(),
+            format!("label {} +blocked-by-human", release.key),
+        ]
+    );
+    assert_eq!(escalation_comments(&w), 1);
+    assert_eq!(w.signal.sent.borrow().len(), 1);
+}
+
 #[test]
 fn abandoning_merges_the_branch_back_and_cancels_the_release() {
     let w = World::new();
@@ -1118,6 +1417,91 @@ fn publish(w: &World) {
     s.compares.insert(
         (repo(), "acme-v1.2.0".into(), "main".into()),
         cmp(CompareStatus::Ahead, &[], &[]),
+    );
+}
+
+#[test]
+fn a_release_note_no_channel_takes_is_done_once_and_never_retried() {
+    let w = World {
+        signal: Recorder {
+            no_channel: true,
+            ..Recorder::default()
+        },
+        ..World::new()
+    };
+    w.tick();
+    let release = w.release_item();
+    publish(&w);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(w.signal.sent.borrow().is_empty());
+    let said = |w: &World| {
+        w.tracker
+            .comments(&release.key)
+            .unwrap()
+            .iter()
+            .filter(|c| c.body.contains("has nothing to send"))
+            .count()
+    };
+    assert_eq!(said(&w), 1);
+    assert_eq!(
+        w.tracker.item(&release.key).state.status,
+        Some(Status::Done),
+        "the cycle closes"
+    );
+    let before = (w.tracker.writes().len(), w.github.writes().len());
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        (w.tracker.writes().len(), w.github.writes().len()),
+        before,
+        "{:?}",
+        &w.tracker.writes()[before.0..]
+    );
+    assert_eq!(said(&w), 1);
+}
+
+#[test]
+fn a_failing_channel_is_retried_and_the_note_restyled_is_not_rewritten() {
+    let w = World::new();
+    w.tick();
+    let release = w.release_item();
+    publish(&w);
+    let failing = World {
+        signal: Recorder {
+            fail: true,
+            ..Recorder::default()
+        },
+        ..w
+    };
+    let describe = format!("describe {}", release.key);
+    let r = failing.tick();
+    assert!(
+        r.failures.iter().any(|f| f.contains("notify release-note")),
+        "{r:?}"
+    );
+    assert!(failing.tracker.writes().contains(&describe));
+    // Linear's normalised form of the note: `*` bullets, blank lines.
+    failing
+        .tracker
+        .restyle(&release.key, |d| d.replace("\n- ", "\n\n* "));
+    let restyled = failing.tracker.item(&release.key).description;
+    assert!(restyled.contains("\n* **ABC-5**"), "{restyled}");
+    let before = failing.tracker.writes().len();
+    let r = failing.tick();
+    assert!(
+        r.failures.iter().any(|f| f.contains("notify release-note")),
+        "retried: {r:?}"
+    );
+    assert!(
+        !failing.tracker.writes()[before..].contains(&describe),
+        "{:?}",
+        &failing.tracker.writes()[before..]
+    );
+    assert_eq!(failing.tracker.item(&release.key).description, restyled);
+    assert_ne!(
+        failing.tracker.item(&release.key).state.status,
+        Some(Status::Done)
     );
 }
 
@@ -2973,6 +3357,119 @@ fn a_dry_run_of_the_closure_prints_the_archives() {
     }
 }
 
+// ---- the bridge's own sub-items are not embarked tickets (spec 05 §11) ----
+
+/// The review round of `ABC-5` on PR 5 (`ABC-21` the angle item, `ABC-22`
+/// the consolidation item, whose marker an agent dropped), linked to the PR
+/// beside its ticket, in `status`, with the release label an older bridge
+/// gave them when `labelled`.
+fn linked_round(w: &World, status: Status, labelled: bool) {
+    review_round(w, "ABC-5", ["ABC-21", "ABC-22"], status);
+    w.tracker.restyle("ABC-22", |d| {
+        d.lines().skip(1).collect::<Vec<_>>().join("\n")
+    });
+    assert_eq!(
+        texts::bridge_item(&w.tracker.item("ABC-22").description, Some("ABC-5")),
+        None
+    );
+    for key in ["ABC-21", "ABC-22"] {
+        w.tracker.link(key, PR5);
+        if labelled {
+            w.tracker.add_label(key, LABEL).unwrap();
+        }
+    }
+}
+
+#[test]
+fn the_review_round_items_of_an_embarked_pr_are_neither_labelled_nor_briefed() {
+    let w = World::new();
+    linked_round(&w, Status::ToDeploy, false);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(w.tracker.item("ABC-5").labels.contains(&LABEL.to_string()));
+    for key in ["ABC-21", "ABC-22"] {
+        assert!(
+            w.tracker.item(key).labels.is_empty(),
+            "{key} is the bridge's, not an embarked ticket"
+        );
+    }
+    let brief = &w.briefs(CAND)[0];
+    assert!(brief.contains("ABC-5"), "{brief}");
+    assert!(
+        !brief.contains("ABC-21") && !brief.contains("ABC-22"),
+        "{brief}"
+    );
+}
+
+#[test]
+fn the_closure_judges_the_ticket_and_never_reopens_its_labelled_round_items() {
+    let w = World::new();
+    // Linear moved the items linked to the merged PR to To Deploy; their
+    // boxes are never ticked, angle items close by review.
+    linked_round(&w, Status::ToDeploy, true);
+    w.tick();
+    publish(&w);
+    let before = w.tracker.writes().len();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.tracker.item("ABC-5").state.status,
+        Some(Status::Done),
+        "the ticket is judged"
+    );
+    let writes = &w.tracker.writes()[before..];
+    for key in ["ABC-21", "ABC-22"] {
+        assert_eq!(
+            w.tracker.item(key).state.status,
+            Some(Status::ToDeploy),
+            "{key} is not reopened"
+        );
+        assert!(
+            !writes
+                .iter()
+                .any(|l| l.contains(&format!(" {key} ")) || l.ends_with(&format!(" {key}"))),
+            "nothing written on {key}: {writes:?}"
+        );
+    }
+    let release = w.release_item();
+    let closure = w
+        .tracker
+        .comments(&release.key)
+        .unwrap()
+        .into_iter()
+        .find(|c| c.body.contains("spl-asdlc:closure"))
+        .expect("the closure comment");
+    assert!(
+        !closure.body.contains("ABC-21") && !closure.body.contains("ABC-22"),
+        "{}",
+        closure.body
+    );
+}
+
+#[test]
+fn labelled_round_items_resolved_are_archived_once_with_the_cycle() {
+    let w = World::new();
+    linked_round(&w, Status::Done, true);
+    w.tick();
+    publish(&w);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(w.tracker.item("ABC-5").state.status, Some(Status::Done));
+    for key in ["ABC-21", "ABC-22", "ABC-5"] {
+        assert!(w.tracker.item(key).archived, "{key} is archived");
+    }
+    let done = archives(&w);
+    for key in ["ABC-21", "ABC-22"] {
+        assert_eq!(
+            done.iter()
+                .filter(|l| **l == format!("archive {key}"))
+                .count(),
+            1,
+            "{key} once: {done:?}"
+        );
+    }
+}
+
 // ---- spec 05 §3 and BR-ASDLC-020: the coordinator receives the
 // consolidation item; the angle items in the normal flow, the consolidation
 // as the overall review ----
@@ -3039,6 +3536,7 @@ impl World {
 
 fn coordinator(state: &str, head: &str) -> Review {
     Review {
+        id: None,
         author: Some("coordinator-login".into()),
         body: "consolidated".into(),
         state: state.into(),
@@ -3176,6 +3674,31 @@ fn the_release_consolidation_item_is_blocked_by_every_angle_of_its_candidate_onc
     );
     assert_eq!(w.blockers(&consolidation.key), angles);
     w.quiet();
+}
+
+/// An agent edited the markers away: the items are found by their exact
+/// titles among the release item's children and never created twice
+/// (REQ-REL-048).
+#[test]
+fn a_round_item_whose_marker_was_mangled_is_found_by_its_title_and_not_recreated() {
+    let w = World::new();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let round = w.round(CAND);
+    assert_eq!(round.len(), 3, "two angles and the consolidation item");
+    for item in &round {
+        let mangled = item.description.replace("spl-asdlc:", "spl-asdlc :");
+        w.tracker.update_description(&item.key, &mangled).unwrap();
+    }
+    assert!(w.round(CAND).is_empty(), "no marker is readable any more");
+    let release = w.release_item().key;
+    let children = w.tracker.children(&release).unwrap().len();
+    let (_, writes) = w.writes_of_a_tick();
+    assert!(
+        !writes.iter().any(|l| l.starts_with("create")),
+        "{writes:?}"
+    );
+    assert_eq!(w.tracker.children(&release).unwrap().len(), children);
 }
 
 #[test]
@@ -3821,4 +4344,159 @@ fn with_no_qa_angle_the_closure_works_as_today() {
         Some(Status::Done)
     );
     assert_eq!(w.signal.sent.borrow().len(), 1, "the note is sent");
+}
+
+// ---- the candidate's own reports after it, and the lighter later pass ----
+
+/// The example with `[release]` edited as `from` → `to`.
+fn release_config(from: &str, to: &str) -> Config {
+    let text = crate::config::spec_example::repository().replace(from, to);
+    crate::config::spec_example::parse(&text)
+}
+
+impl World {
+    /// The release branch moved past the candidate at `sha` by `files`.
+    fn moved_past(&self, sha: &str, files: &[&str]) {
+        self.github.state.borrow_mut().compares.insert(
+            (repo(), sha.into(), BRANCH.into()),
+            cmp(CompareStatus::Ahead, &["r1"], files),
+        );
+    }
+
+    /// The `release status` decision's tip gaps.
+    fn tip_gaps(&self) -> Vec<String> {
+        crate::verbs::status(&self.tick_ctx()).unwrap().1.tip_gaps
+    }
+}
+
+#[test]
+fn the_last_passs_own_report_after_its_candidate_is_a_go() {
+    // rc.1 is the last allowed pass: its angle reports land on the release
+    // branch after it, and no candidate follows to carry them.
+    let mut w = World::new();
+    w.config = release_config("max_rc_passes = 2", "max_rc_passes = 1");
+    w.tick();
+    all_angles_merged(&w);
+    w.moved_past(
+        "c1",
+        &[
+            &format!(".spl-asdlc/qa/{CAND}/security.json"),
+            &format!(".spl-asdlc/qa/{CAND}/product.json"),
+        ],
+    );
+    let rp = release_pr(&w, "1.2.0");
+    w.open_on_branch(vec![rp.clone()]);
+    assert!(w.tip_gaps().is_empty());
+    let r = w.tick();
+    assert_eq!(
+        w.merges(),
+        vec![format!(
+            "merge example-org/acme#40 at {} squash",
+            rp.head_sha
+        )],
+        "{r:?}"
+    );
+}
+
+#[test]
+fn a_change_beside_the_candidates_report_is_still_a_tip_gap() {
+    let mut w = World::new();
+    w.config = release_config("max_rc_passes = 2", "max_rc_passes = 1");
+    w.tick();
+    all_angles_merged(&w);
+    w.moved_past(
+        "c1",
+        &[&format!(".spl-asdlc/qa/{CAND}/security.json"), "src/a.rs"],
+    );
+    w.open_on_branch(vec![release_pr(&w, "1.2.0")]);
+    assert_eq!(
+        w.tip_gaps(),
+        vec![format!(
+            "{BRANCH} moved past {CAND} (1 file(s)): tag the next candidate"
+        )]
+    );
+    let r = w.tick();
+    assert!(w.merges().is_empty(), "{r:?}");
+}
+
+#[test]
+fn an_earlier_candidates_report_after_the_latest_is_a_tip_gap() {
+    let w = World::new();
+    w.tick();
+    w.cut_rc2();
+    w.gate(vec![
+        gate_run(2, CAND2, "c2", Some("success")),
+        gate_run(1, CAND, "c1", Some("success")),
+    ]);
+    w.tick();
+    w.moved_past("c2", &[&format!(".spl-asdlc/qa/{CAND}/security.json")]);
+    assert_eq!(
+        w.tip_gaps(),
+        vec![format!(
+            "{BRANCH} moved past {CAND2} (1 file(s)): tag the next candidate"
+        )]
+    );
+    w.moved_past("c2", &[&format!(".spl-asdlc/qa/{CAND2}/security.json")]);
+    assert!(w.tip_gaps().is_empty());
+}
+
+#[test]
+fn a_lighter_later_pass_counts_the_first_pass_and_is_a_go_on_a_green_gate() {
+    let mut w = World::new();
+    w.config = release_config(
+        "later_passes = \"full\"",
+        "later_passes = \"gate-and-coordinator\"",
+    );
+    w.tick();
+    all_angles_merged(&w);
+    w.cut_rc2();
+    w.gate(vec![
+        gate_run(2, CAND2, "c2", Some("success")),
+        gate_run(1, CAND, "c1", Some("success")),
+    ]);
+    let rp = release_pr(&w, "1.2.0");
+    w.open_on_branch(vec![rp.clone()]);
+    let (_, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
+    assert!(d.go, "{:?}", d.reasons);
+    let r = w.tick();
+    assert!(
+        w.round(CAND2).is_empty(),
+        "the lighter pass offers no angle"
+    );
+    assert_eq!(
+        w.merges(),
+        vec![format!(
+            "merge example-org/acme#40 at {} squash",
+            rp.head_sha
+        )],
+        "{r:?}"
+    );
+}
+
+#[test]
+fn a_lighter_later_pass_waits_for_an_angle_the_first_pass_did_not_merge() {
+    let mut w = World::new();
+    w.config = release_config(
+        "later_passes = \"full\"",
+        "later_passes = \"gate-and-coordinator\"",
+    );
+    w.tick();
+    let mut security = w.angle_pr(30, "security", &report_json("security", ""));
+    security.state = PrState::Merged;
+    security.merge_commit_sha = Some("merge-of-30".into());
+    w.github
+        .state
+        .borrow_mut()
+        .merged_pulls
+        .insert(repo(), Ok(vec![security]));
+    w.cut_rc2();
+    w.gate(vec![
+        gate_run(2, CAND2, "c2", Some("success")),
+        gate_run(1, CAND, "c1", Some("success")),
+    ]);
+    w.open_on_branch(vec![release_pr(&w, "1.2.0")]);
+    let (_, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
+    assert_eq!(d.reasons, vec!["angles missing: product"]);
+    let r = w.tick();
+    assert!(w.merges().is_empty(), "{r:?}");
 }
