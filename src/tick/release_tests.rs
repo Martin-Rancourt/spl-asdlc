@@ -3965,3 +3965,158 @@ fn with_no_qa_angle_the_closure_works_as_today() {
     );
     assert_eq!(w.signal.sent.borrow().len(), 1, "the note is sent");
 }
+
+// ---- the candidate's own reports after it, and the lighter later pass ----
+
+/// The example with `[release]` edited as `from` → `to`.
+fn release_config(from: &str, to: &str) -> Config {
+    let text = crate::config::spec_example::repository().replace(from, to);
+    crate::config::spec_example::parse(&text)
+}
+
+impl World {
+    /// The release branch moved past the candidate at `sha` by `files`.
+    fn moved_past(&self, sha: &str, files: &[&str]) {
+        self.github.state.borrow_mut().compares.insert(
+            (repo(), sha.into(), BRANCH.into()),
+            cmp(CompareStatus::Ahead, &["r1"], files),
+        );
+    }
+
+    /// The `release status` decision's tip gaps.
+    fn tip_gaps(&self) -> Vec<String> {
+        crate::verbs::status(&self.tick_ctx()).unwrap().1.tip_gaps
+    }
+}
+
+#[test]
+fn the_last_passs_own_report_after_its_candidate_is_a_go() {
+    // rc.1 is the last allowed pass: its angle reports land on the release
+    // branch after it, and no candidate follows to carry them.
+    let mut w = World::new();
+    w.config = release_config("max_rc_passes = 2", "max_rc_passes = 1");
+    w.tick();
+    all_angles_merged(&w);
+    w.moved_past(
+        "c1",
+        &[
+            &format!(".spl-asdlc/qa/{CAND}/security.json"),
+            &format!(".spl-asdlc/qa/{CAND}/product.json"),
+        ],
+    );
+    let rp = release_pr(&w, "1.2.0");
+    w.open_on_branch(vec![rp.clone()]);
+    assert!(w.tip_gaps().is_empty());
+    let r = w.tick();
+    assert_eq!(
+        w.merges(),
+        vec![format!(
+            "merge example-org/acme#40 at {} squash",
+            rp.head_sha
+        )],
+        "{r:?}"
+    );
+}
+
+#[test]
+fn a_change_beside_the_candidates_report_is_still_a_tip_gap() {
+    let mut w = World::new();
+    w.config = release_config("max_rc_passes = 2", "max_rc_passes = 1");
+    w.tick();
+    all_angles_merged(&w);
+    w.moved_past(
+        "c1",
+        &[&format!(".spl-asdlc/qa/{CAND}/security.json"), "src/a.rs"],
+    );
+    w.open_on_branch(vec![release_pr(&w, "1.2.0")]);
+    assert_eq!(
+        w.tip_gaps(),
+        vec![format!(
+            "{BRANCH} moved past {CAND} (1 file(s)): tag the next candidate"
+        )]
+    );
+    let r = w.tick();
+    assert!(w.merges().is_empty(), "{r:?}");
+}
+
+#[test]
+fn an_earlier_candidates_report_after_the_latest_is_a_tip_gap() {
+    let w = World::new();
+    w.tick();
+    w.cut_rc2();
+    w.gate(vec![
+        gate_run(2, CAND2, "c2", Some("success")),
+        gate_run(1, CAND, "c1", Some("success")),
+    ]);
+    w.tick();
+    w.moved_past("c2", &[&format!(".spl-asdlc/qa/{CAND}/security.json")]);
+    assert_eq!(
+        w.tip_gaps(),
+        vec![format!(
+            "{BRANCH} moved past {CAND2} (1 file(s)): tag the next candidate"
+        )]
+    );
+    w.moved_past("c2", &[&format!(".spl-asdlc/qa/{CAND2}/security.json")]);
+    assert!(w.tip_gaps().is_empty());
+}
+
+#[test]
+fn a_lighter_later_pass_counts_the_first_pass_and_is_a_go_on_a_green_gate() {
+    let mut w = World::new();
+    w.config = release_config(
+        "later_passes = \"full\"",
+        "later_passes = \"gate-and-coordinator\"",
+    );
+    w.tick();
+    all_angles_merged(&w);
+    w.cut_rc2();
+    w.gate(vec![
+        gate_run(2, CAND2, "c2", Some("success")),
+        gate_run(1, CAND, "c1", Some("success")),
+    ]);
+    let rp = release_pr(&w, "1.2.0");
+    w.open_on_branch(vec![rp.clone()]);
+    let (_, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
+    assert!(d.go, "{:?}", d.reasons);
+    let r = w.tick();
+    assert!(
+        w.round(CAND2).is_empty(),
+        "the lighter pass offers no angle"
+    );
+    assert_eq!(
+        w.merges(),
+        vec![format!(
+            "merge example-org/acme#40 at {} squash",
+            rp.head_sha
+        )],
+        "{r:?}"
+    );
+}
+
+#[test]
+fn a_lighter_later_pass_waits_for_an_angle_the_first_pass_did_not_merge() {
+    let mut w = World::new();
+    w.config = release_config(
+        "later_passes = \"full\"",
+        "later_passes = \"gate-and-coordinator\"",
+    );
+    w.tick();
+    let mut security = w.angle_pr(30, "security", &report_json("security", ""));
+    security.state = PrState::Merged;
+    security.merge_commit_sha = Some("merge-of-30".into());
+    w.github
+        .state
+        .borrow_mut()
+        .merged_pulls
+        .insert(repo(), Ok(vec![security]));
+    w.cut_rc2();
+    w.gate(vec![
+        gate_run(2, CAND2, "c2", Some("success")),
+        gate_run(1, CAND, "c1", Some("success")),
+    ]);
+    w.open_on_branch(vec![release_pr(&w, "1.2.0")]);
+    let (_, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
+    assert_eq!(d.reasons, vec!["angles missing: product"]);
+    let r = w.tick();
+    assert!(w.merges().is_empty(), "{r:?}");
+}
