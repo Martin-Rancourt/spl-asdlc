@@ -274,6 +274,10 @@ impl Tracker for FakeTracker {
             .collect())
     }
 
+    fn label_exists(&self, name: &str) -> TResult<bool> {
+        Ok(self.state.borrow().labels.iter().any(|l| l == name))
+    }
+
     fn ensure_label(&self, name: &str) -> TResult<()> {
         if self.state.borrow().labels.iter().any(|l| l == name) {
             return Ok(());

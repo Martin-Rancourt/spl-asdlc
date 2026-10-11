@@ -610,6 +610,10 @@ impl Tracker for Linear {
         Ok(keys)
     }
 
+    fn label_exists(&self, name: &str) -> TResult<bool> {
+        Ok(self.label_id(name)?.is_some())
+    }
+
     fn ensure_label(&self, name: &str) -> TResult<()> {
         if self.label_id(name)?.is_some() {
             return Ok(());

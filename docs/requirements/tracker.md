@@ -6,6 +6,7 @@ The tracker operations the bridge needs are the union of REQ-REL-098 (`release.m
 |---|---|---|
 | `identity` | Every write is attributed to the service identity; markers are trusted only in its comments | Unreadable is an error |
 | `team_key`, `status_names` | Embarked tickets are the release team's; `doctor` checks the status table | A status the team lacks refuses the write that needs it |
+| `label_exists` | `doctor` says whether the escalation label is there yet | A tracker whose labels exist by being used (Livela's tags) answers yes |
 | `user` | Assignee hints, the owner, the implementer | Not found and ambiguous are errors, never a guess |
 | `get` | Ticket contract, state, labels, parent, archived flag | Not found vs unreadable kept apart |
 | `relations` | `blocks` both ways (GO, cycle check), `duplicate` both ways (Done gate) | A cut page is flagged, and the Done gate fails closed on it |

@@ -1053,6 +1053,119 @@ fn a_blocker_requalified_as_should_fix_stops_blocking() {
     );
 }
 
+/// The last allowed candidate answered by every angle with a blocker left:
+/// the tick that files the blocker escalates. The owner is known, the hold
+/// label is not in the tracker yet.
+fn escalating() -> World {
+    let mut w = World::new();
+    w.config.release.as_mut().unwrap().max_rc_passes = 1;
+    w.tracker
+        .state
+        .borrow_mut()
+        .users
+        .push(crate::tracker::User {
+            id: "u-owner".into(),
+            name: "owner-handle".into(),
+        });
+    w.tick();
+    let mut merged = Vec::new();
+    for (n, angle, findings) in [
+        (30, "security", finding("security-1", "blocker")),
+        (31, "product", String::new()),
+    ] {
+        let mut pr = w.angle_pr(n, angle, &report_json(angle, &findings));
+        pr.state = PrState::Merged;
+        pr.merge_commit_sha = Some(format!("merge-of-{n}"));
+        merged.push(pr);
+    }
+    w.github
+        .state
+        .borrow_mut()
+        .merged_pulls
+        .insert(repo(), Ok(merged));
+    w
+}
+
+fn escalation_comments(w: &World) -> usize {
+    let release = w.release_item();
+    w.tracker
+        .comments(&release.key)
+        .unwrap()
+        .iter()
+        .filter(|c| {
+            texts::has_marker(
+                &c.body,
+                &texts::marker("qa-escalation", &[("candidate", CAND)]),
+            )
+        })
+        .count()
+}
+
+#[test]
+fn an_escalation_creates_its_missing_label_before_adding_it() {
+    let w = escalating();
+    assert!(!w.tracker.label_exists("blocked-by-human").unwrap());
+    w.tick();
+    w.tick();
+    let release = w.release_item();
+    let writes = w.tracker.writes();
+    let ensure = writes
+        .iter()
+        .position(|l| l == "ensure-label blocked-by-human")
+        .unwrap_or_else(|| panic!("label created: {writes:?}"));
+    let add = writes
+        .iter()
+        .position(|l| *l == format!("label {} +blocked-by-human", release.key))
+        .unwrap_or_else(|| panic!("label added: {writes:?}"));
+    assert!(ensure < add, "{writes:?}");
+    assert!(release.labels.contains(&"blocked-by-human".to_string()));
+    assert_eq!(
+        release.assignee.map(|a| a.name),
+        Some("owner-handle".to_string())
+    );
+    assert_eq!(escalation_comments(&w), 1);
+    let before = w.tracker.writes().len();
+    w.tick();
+    assert_eq!(
+        w.tracker.writes().len(),
+        before,
+        "escalated once: {:?}",
+        &w.tracker.writes()[before..]
+    );
+}
+
+#[test]
+fn a_failed_label_write_still_explains_once_and_the_label_is_retried() {
+    let w = escalating();
+    w.tracker
+        .fail_writes_starting_with("ensure-label blocked-by-human");
+    w.tick();
+    w.tick();
+    let release = w.release_item();
+    assert!(!release.labels.contains(&"blocked-by-human".to_string()));
+    assert_eq!(
+        release.assignee.map(|a| a.name),
+        Some("owner-handle".to_string())
+    );
+    assert_eq!(escalation_comments(&w), 1, "{:?}", w.tracker.writes());
+    assert_eq!(w.signal.sent.borrow().len(), 1);
+    // The next ticks retry what is missing, the label, and only that.
+    w.tick();
+    assert_eq!(escalation_comments(&w), 1);
+    w.tracker.state.borrow_mut().failing_writes.clear();
+    let before = w.tracker.writes().len();
+    w.tick();
+    assert_eq!(
+        w.tracker.writes()[before..].to_vec(),
+        vec![
+            "ensure-label blocked-by-human".to_string(),
+            format!("label {} +blocked-by-human", release.key),
+        ]
+    );
+    assert_eq!(escalation_comments(&w), 1);
+    assert_eq!(w.signal.sent.borrow().len(), 1);
+}
+
 #[test]
 fn abandoning_merges_the_branch_back_and_cancels_the_release() {
     let w = World::new();

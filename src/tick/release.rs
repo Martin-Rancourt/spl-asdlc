@@ -2516,7 +2516,12 @@ fn hold(
 }
 
 /// When the last allowed pass is spent and something still holds: the
-/// release goes to the owner, once (spec 05 §10).
+/// release goes to the owner, once (spec 05 §10). The hand-off is
+/// idempotent as a whole: the owner assigned before it is explained, the
+/// hold label (created first when the tracker lacks it) written whenever it
+/// is missing while the escalation holds, the comment carrying the marker
+/// posted once. A failed label write costs the label, retried at the next
+/// tick, never the comment.
 fn escalate(
     t: &Tick,
     log: &mut ActionLog,
@@ -2535,43 +2540,58 @@ fn escalate(
         return;
     }
     let marker = texts::marker("qa-escalation", &[("candidate", &c.tag)]);
-    match tracker_said(t, &item.key, &marker) {
-        Ok(false) => {}
-        _ => return,
-    }
-    // Every effect first; the comment that carries the marker last, and only
-    // when they all went through, so that a failed one is retried.
-    let owner = match t.tracker.user(&t.config.owner.tracker_user) {
-        Ok(o) => o,
-        Err(e) => {
-            t.unreadable(
+    let Ok(said) = tracker_said(t, &item.key, &marker) else {
+        return;
+    };
+    // Not yet explained: the owner first, so that the comment never names
+    // a hand-off that did not happen; a failed assignment is retried whole.
+    if !said {
+        let owner = match t.tracker.user(&t.config.owner.tracker_user) {
+            Ok(o) => o,
+            Err(e) => {
+                t.unreadable(
+                    report,
+                    &item.key,
+                    format!("the owner {}: {e}", t.config.owner.tracker_user),
+                );
+                return;
+            }
+        };
+        if item.assignee.as_ref().map(|a| &a.id) != Some(&owner.id)
+            && t.act(
+                log,
                 report,
                 &item.key,
-                format!("the owner {}: {e}", t.config.owner.tracker_user),
-            );
+                "assign the owner",
+                json!({}),
+                || {
+                    t.tracker
+                        .assign(&item.key, Some(&owner))
+                        .map_err(|e| e.to_string())
+                },
+            )
+            .is_none()
+        {
             return;
         }
-    };
-    if item.assignee.as_ref().map(|a| &a.id) != Some(&owner.id)
-        && t.act(
-            log,
-            report,
-            &item.key,
-            "assign the owner",
-            json!({}),
-            || {
-                t.tracker
-                    .assign(&item.key, Some(&owner))
-                    .map_err(|e| e.to_string())
-            },
-        )
-        .is_none()
-    {
-        return;
     }
     let hold_label = &release.escalation_label;
     if !item.labels.iter().any(|l| l == hold_label)
         && t.act(
+            log,
+            report,
+            &item.key,
+            &format!("ensure label {hold_label}"),
+            json!({}),
+            || {
+                t.tracker
+                    .ensure_label(hold_label)
+                    .map_err(|e| e.to_string())
+            },
+        )
+        .is_some()
+    {
+        t.act(
             log,
             report,
             &item.key,
@@ -2582,9 +2602,9 @@ fn escalate(
                     .add_label(&item.key, hold_label)
                     .map_err(|e| e.to_string())
             },
-        )
-        .is_none()
-    {
+        );
+    }
+    if said {
         return;
     }
     let text = texts::escalation_comment(&c.tag, c.rc, max, &d.blockers, moved);
