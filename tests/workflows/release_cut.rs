@@ -717,7 +717,7 @@ fn the_cut_and_the_bridge_read_the_same_staged_version() {
             "[]",
             false,
         );
-        let r = version(&repo, &stubs.0, "open", BRANCH);
+        let r = version(&repo, &stubs.0, false);
         match want {
             Some(v) => {
                 ok(&r);
@@ -728,7 +728,7 @@ fn the_cut_and_the_bridge_read_the_same_staged_version() {
                     r.log
                 );
             }
-            None => refused(&r, "no open release PR names 'acme'"),
+            None => refused(&r, "names 'acme'"),
         }
     }
 }
