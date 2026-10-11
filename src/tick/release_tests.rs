@@ -105,7 +105,7 @@ fn report_json(angle: &str, findings: &str) -> String {
         "go"
     };
     format!(
-        r#"{{"schema":"spl-asdlc/qa-report/1","candidate":"{CAND}","angle":"{angle}","reviewer":"reviewer-handle",
+        r#"{{"schema":"spl-asdlc/qa-report/1","candidate":"{CAND}","angle":"{angle}","item":"ABC-123",
            "verdict":"{verdict}","checked":["the whole project"],"findings":[{findings}]}}"#
     )
 }

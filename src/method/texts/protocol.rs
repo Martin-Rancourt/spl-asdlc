@@ -209,6 +209,21 @@ mod tests {
     }
 
     #[test]
+    fn a_release_angle_names_its_sub_item_in_the_report_never_a_person() {
+        let s = section(Job::ReleaseAngle, Some("security"));
+        assert!(
+            s.contains("\"item\": \"<the key of the angle sub-item"),
+            "{s}"
+        );
+        assert!(!s.contains("\"reviewer\":"), "{s}");
+        assert!(
+            s.contains("Its `item` is your sub-item's key")
+                && s.contains("never your name or anyone's"),
+            "{s}"
+        );
+    }
+
+    #[test]
     fn a_project_angle_gets_the_generic_protocol_and_says_the_method_has_no_notes() {
         let s = section(Job::PrAngle, Some("accessibility"));
         assert!(s.contains("### Review a PR from one angle"), "{s}");
