@@ -592,7 +592,7 @@ fn record_candidate(
         Err(e) => t.unreadable(report, &item.key, format!("comments: {e}")),
     }
     let line = texts::candidate_log_line(&c.tag, &c.class, previous);
-    let description = texts::append_candidate(&item.description, &line);
+    let description = texts::append_candidate(&item.description, &c.tag, &line);
     if description != item.description {
         t.act(
             log,

@@ -324,6 +324,36 @@ fn the_first_tick_after_the_cut_opens_the_cycle_and_the_second_writes_nothing() 
     );
 }
 
+#[test]
+fn a_tick_against_the_candidates_log_as_linear_stores_it_writes_nothing() {
+    let w = World::new();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let key = w.release_item().key;
+    // Linear's normalised form: `*` bullets, blank lines after the headings
+    // and around the items, trailing spaces.
+    w.tracker.restyle(&key, |d| {
+        d.replace("\n- `", "\n\n* `")
+            .replace("first candidate", "first candidate  ")
+            .replace("## Goal\n", "## Goal\n\n")
+    });
+    let normalised = w.tracker.item(&key).description;
+    assert!(
+        normalised.contains(&format!("* `{CAND}` —")),
+        "{normalised}"
+    );
+    let before = w.tracker.writes().len();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.tracker.writes().len(),
+        before,
+        "{:?}",
+        &w.tracker.writes()[before..]
+    );
+    assert_eq!(w.tracker.item(&key).description, normalised);
+}
+
 const CAND2: &str = "acme-v1.2.0-rc.2";
 
 impl World {

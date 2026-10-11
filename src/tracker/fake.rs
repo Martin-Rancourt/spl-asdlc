@@ -104,6 +104,15 @@ impl FakeTracker {
         self.state.borrow().items[key].priority
     }
 
+    /// The tracker rewrites the markdown it stores (Linear normalises a
+    /// `- ` bullet to `* `, for one): the item's description becomes `f` of
+    /// it, and no write is recorded.
+    pub fn restyle(&self, key: &str, f: impl FnOnce(&str) -> String) {
+        let mut s = self.state.borrow_mut();
+        let st = s.items.get_mut(key).expect("a seeded item");
+        st.item.description = f(&st.item.description);
+    }
+
     pub fn writes(&self) -> Vec<String> {
         self.state.borrow().writes.clone()
     }
