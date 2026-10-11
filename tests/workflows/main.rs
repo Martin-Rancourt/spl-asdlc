@@ -8,6 +8,8 @@
 //! The lints run everywhere; the executions need `bash`, `git` and `jq`, so
 //! they run on Unix only.
 
+#[cfg(unix)]
+mod config_latest_release;
 mod examples;
 mod harness;
 mod lints;
