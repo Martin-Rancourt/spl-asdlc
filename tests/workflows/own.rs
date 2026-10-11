@@ -347,10 +347,7 @@ fn the_release_callers_share_this_repositorys_tag_patterns() {
 #[test]
 fn the_cut_is_dispatched_with_one_input_for_the_crate() {
     let cut = own("release-cut.yml");
-    assert_eq!(
-        keys(&cut["on"]),
-        BTreeSet::from(["workflow_dispatch".to_string()])
-    );
+    crate::examples::check_cut_follows_release_please(&cut, &own("release-please.yml"), "release/");
     for (k, v) in cut["on"]["workflow_dispatch"]["inputs"].as_hash().unwrap() {
         let k = k.as_str().unwrap();
         if k == "action" {
@@ -360,12 +357,8 @@ fn the_cut_is_dispatched_with_one_input_for_the_crate() {
             assert_ne!(v["required"].as_bool(), Some(true), "input {k} is required");
         }
     }
-    // OQ-17: the caller holds the concurrency group, never cancelled.
-    assert_eq!(cut["concurrency"]["group"].as_str(), Some("release-cut"));
-    assert_eq!(
-        cut["concurrency"]["cancel-in-progress"].as_bool(),
-        Some(false)
-    );
+    // OQ-17: the caller holds the concurrency group, never cancelled
+    // (checked with the triggers above).
     let with = &cut["jobs"]["release"]["with"];
     let config = file_json("release-please-config.json");
     let manifest = file_json(".release-please-manifest.json");

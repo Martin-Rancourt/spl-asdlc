@@ -4,8 +4,8 @@ The method allows exactly these human gestures in a cycle. Each is a verb or a G
 
 | Gesture | How | Effect |
 |---|---|---|
-| **Open a cycle** | `release-cut` workflow dispatch (`open`), or `spl-asdlc release cut --open` which dispatches it | Release branch and first RC; the bridge creates the issue at the next tick |
-| **Tag the next RC** | Same workflow, action `candidate`, or the bridge when the policy automates it | New RC on the release branch |
+| **Open a cycle** | `release-cut` workflow dispatch (`open`), or `spl-asdlc release cut --open` which dispatches it | Release branch; the first RC follows when release-please has run on it (the cut caller's `workflow_run`); the bridge creates the issue at the next tick |
+| **Tag the next RC** | Same workflow, action `candidate`, dispatched on the release branch (never `main`) once release-please has run on its tip, or the bridge when the policy automates it | New RC on the release branch |
 | **Requalify a finding** | `spl-asdlc release requalify <ticket> --severity <blocker|should-fix|nit> --reason "<text>"` | Changes the finding ticket's severity; adds or removes its `blocks` relation to the release issue; records who, when and why on the ticket and on the release issue; the GO is recomputed at the next tick |
 | **Give the GO** (policy `human` only) | Approve on the release issue (a comment `/go` by the owner, or the tracker's approval field when it has one) | Added to the computed conditions; never replaces them |
 | **Take an escalation** | The release issue is assigned to the owner with the hold label (created at the first escalation when the tracker lacks it) and the escalation comment when the passes are exhausted | Requalify, allow one more pass (`max_rc_passes` raised for this cycle in the issue), or abandon |

@@ -286,3 +286,75 @@ fn the_rust_cache_never_cleans_the_cargo_bin_directory() {
         }
     }
 }
+
+/// Why a script polls another workflow's run, if it does: a read of a run
+/// (`gh run list|view`, the runs API) inside a loop or next to a `sleep`, or
+/// a `gh run watch`. On one runner, a job that waits for another run holds
+/// the runner that run needs, and the wait ends at the job's timeout.
+fn polls(body: &str) -> Option<String> {
+    let read = Regex::new(r"gh\s+run\s+(list|view)\b|gh\s+api\b.*actions/runs\b").unwrap();
+    let watch = Regex::new(r"gh\s+run\s+watch\b").unwrap();
+    let opens = Regex::new(r"(^|[|;&]\s*|\bdo\s+|\bthen\s+)(while|until|for)\s").unwrap();
+    let closes = Regex::new(r"(^|[;&]\s*)done\b").unwrap();
+    let sleep = Regex::new(r"(^|[;&]\s*|\bdo\s+|\bthen\s+)sleep\s").unwrap();
+    let sleeps = code_lines(body).any(|l| sleep.is_match(l.trim()));
+    let mut depth = 0usize;
+    for line in code_lines(body) {
+        let l = line.trim();
+        if watch.is_match(l) {
+            return Some(format!("watches a run: {l}"));
+        }
+        let open = opens.find_iter(l).count();
+        if read.is_match(l) {
+            if depth + open > 0 {
+                return Some(format!("reads a run in a loop: {l}"));
+            }
+            if sleeps {
+                return Some(format!("reads a run and sleeps: {l}"));
+            }
+        }
+        depth = (depth + open).saturating_sub(closes.find_iter(l).count());
+    }
+    None
+}
+
+#[test]
+fn the_poll_detector_sees_the_shapes_of_a_wait() {
+    let waits = [
+        "while :; do\n  gh run list --workflow x --limit 1 > row\n  sleep 15\ndone",
+        "until gh run view 7 --json status > s; do sleep 5; done",
+        "for i in 1 2 3; do gh api \"repos/$R/actions/runs/$ID\" > r; done",
+        "gh run watch 7",
+        "gh run list --limit 1 > row\nsleep 30\ngh run list --limit 1 > row",
+    ];
+    for w in waits {
+        assert!(polls(w).is_some(), "{w}");
+    }
+    let reads = [
+        "if ! gh run list --workflow x --commit \"$head\" --limit 1 > row; then exit 1; fi",
+        "while read -r t; do echo \"$t\"; done < tags\ngh run list --limit 1",
+        "# while :; do gh run list; sleep 1; done",
+    ];
+    for r in reads {
+        assert_eq!(polls(r), None, "{r}");
+    }
+}
+
+#[test]
+fn no_step_polls_another_workflows_run() {
+    let mut all = files();
+    let examples = crate::harness::root().join("docs/setup/examples");
+    all.extend(
+        std::fs::read_dir(examples)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path()),
+    );
+    for f in all {
+        for (step, body) in runs(&load(&f)) {
+            if let Some(why) = polls(&body) {
+                panic!("{} ({step}) {why}", relative(&f));
+            }
+        }
+    }
+}
