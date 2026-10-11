@@ -66,7 +66,10 @@ jobs:
       # What release-please changes after the RC: its manifest and changelog,
       # and the crate's version (the rust release type bumps Cargo.toml and
       # Cargo.lock).
-      bookkeeping-paths: '[".release-please-manifest.json", "CHANGELOG.md", "Cargo.toml", "Cargo.lock"]'
+      # This cycle only: rc.2's own QA report landed after it, and this file
+      # and its shape test were amended to say so (the next release's verify
+      # exempts the candidate's reports itself).
+      bookkeeping-paths: '[".release-please-manifest.json", "CHANGELOG.md", "Cargo.toml", "Cargo.lock", ".spl-asdlc/qa/v0.2.0-rc.2/security.json", ".github/workflows/release-publish.yml", "tests/workflows/own.rs"]'
       # The slug of the bridge's App, which must have merged the release-please PR.
       go-merger-login: spl-asdlc
       runs-on: ${{ startsWith(vars.SPL_ASDLC_RUNS_ON, '"') && fromJSON(vars.SPL_ASDLC_RUNS_ON) || vars.SPL_ASDLC_RUNS_ON || 'ubuntu-latest' }}

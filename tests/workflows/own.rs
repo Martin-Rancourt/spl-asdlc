@@ -563,6 +563,11 @@ fn the_publication_verifies_builds_the_binaries_and_always_closes() {
             changelog.to_string(),
             "Cargo.toml".to_string(),
             "Cargo.lock".to_string(),
+            // This cycle only: rc.2's own QA report, and the files amended
+            // after it to allow it.
+            ".spl-asdlc/qa/v0.2.0-rc.2/security.json".to_string(),
+            ".github/workflows/release-publish.yml".to_string(),
+            "tests/workflows/own.rs".to_string(),
         ])
     );
     // The bridge's App, by its slug.
