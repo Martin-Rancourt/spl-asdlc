@@ -28,20 +28,20 @@ release_please_manifest = ".release-please-manifest.json"
 # One shared nits ticket: the tracker's plan limits the number of tickets.
 nits = "shared"
 
-[[release.angles]]
-key = "security"
+# Light: no QA angle; the GO is the gate (docs/spec/05, "A release with no
+# QA angle"). Add a [[release.angles]] block to bring QA back.
+angles = []
 
 [review]
 merge_method = "squash"
-require_up_to_date = true
+require_up_to_date = false
 diff_size_extra_angle = 0
 human_approval = "never"
-sensitive_paths = ".github/review-paths.json"
-sensitive_angle = "security"
 ticketless_authors = ["dependabot"]
 
-[[review.angles]]
-key = "maintainability"
+# Light: no PR reviewer; the bridge merges a PR on its CI (docs/spec/04,
+# "No PR review"). Add [[review.angles]] blocks to bring review back.
+angles = []
 
 [bridge]
 poll_minutes = 5
