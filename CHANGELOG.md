@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.3.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v0.2.0...v0.3.0) (2026-10-11)
+
+
+### Features
+
+* **config:** this repository runs the light setup ([#54](https://github.com/Martin-Rancourt/spl-asdlc/issues/54)) ([9fb297b](https://github.com/Martin-Rancourt/spl-asdlc/commit/9fb297b4732e8d24b0bd0bc74d142eda88e94f42))
+
+
+### Bug Fixes
+
+* trial 2 fixes, in one PR (SID-1041) ([#50](https://github.com/Martin-Rancourt/spl-asdlc/issues/50)) ([088cf30](https://github.com/Martin-Rancourt/spl-asdlc/commit/088cf30f8aaa5f1961cd1c472fd30e68e642138f))
+
+
+### Documentation
+
+* **setup:** a light configuration template by default, with the steps to add each layer (SID-1017) ([#55](https://github.com/Martin-Rancourt/spl-asdlc/issues/55)) ([e9533f3](https://github.com/Martin-Rancourt/spl-asdlc/commit/e9533f3f54417907351d498773b502e838c6c9d2))
+
+
+### Chores
+
+* **release:** merge release/2026-10-10-16-54-utc back into main ([8c9b770](https://github.com/Martin-Rancourt/spl-asdlc/commit/8c9b770ad6640a4597fd23319bbd2c61247d92db))
+
 ## [0.2.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v0.1.0...v0.2.0) (2026-10-11)
 
 
