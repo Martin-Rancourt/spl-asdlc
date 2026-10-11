@@ -585,6 +585,41 @@ fn a_pr_merged_outside_the_bridge_is_swept_once() {
 }
 
 #[test]
+fn a_merge_is_swept_even_when_an_agent_mangled_the_consolidation_items_marker() {
+    let w = World::new();
+    let pr = in_review(&w, 9);
+    check_every_box(&w, "ABC-9");
+    let (consolidation, _) = round_keys(&w, "ABC-9", &pr);
+    // An agent ticking a box rewrote the marker the tracker shows as
+    // visible text: only its place under the ticket, linked to the same PR,
+    // says what the item is.
+    let mangled = w
+        .tracker
+        .item(&consolidation)
+        .description
+        .replace("spl-asdlc:", "spl-asdlc\\:");
+    crate::tracker::Tracker::update_description(&w.tracker, &consolidation, &mangled).unwrap();
+    let mut merged = pr.clone();
+    merged.state = PrState::Merged;
+    merged.merged_at = crate::github::Timestamp::parse("2026-10-05T10:00:00Z");
+    {
+        let mut s = w.github.state.borrow_mut();
+        if let Some(Ok(list)) = s.open_pulls.get_mut(&repo()) {
+            list.retain(|p| p.number != pr.number);
+        }
+        s.merged_pulls.insert(repo(), Ok(vec![merged]));
+    }
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(w.tracker.item("ABC-9").state.status, Some(Status::ToDeploy));
+    assert_eq!(
+        w.tracker.item(&consolidation).state.status,
+        Some(Status::Ready),
+        "never promoted as if it were the ticket"
+    );
+}
+
+#[test]
 fn a_ticket_the_closure_sent_back_is_not_swept_forward_again() {
     let w = World::new();
     let mut pr = pull_request(9);

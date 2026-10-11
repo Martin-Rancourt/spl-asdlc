@@ -41,22 +41,32 @@ pub fn ticket_item(
     })
 }
 
+/// The linked items that can be the PR's ticket. Two rules drop the
+/// bridge's own items: its marker (with a parent), and, since an agent
+/// editing an item may mangle a marker the tracker shows as visible text,
+/// its structure: an item whose parent is another of the linked items is a
+/// sub-item of that item (an angle or consolidation item of its round), not
+/// a second ticket.
 fn real_items(tracker: &dyn Tracker, mut keys: Vec<String>) -> TResult<Vec<Item>> {
     keys.sort();
     keys.dedup();
-    let mut out = Vec::new();
+    let mut items = Vec::new();
     for key in keys {
-        let item = match tracker.get(&key) {
-            Ok(i) => i,
+        match tracker.get(&key) {
+            Ok(i) => items.push(i),
             // A URL in a body that names no item is no link.
             Err(e) if e.is_not_found() => continue,
             Err(e) => return Err(e),
-        };
-        if texts::bridge_item(&item.description, item.parent.as_deref()).is_none() {
-            out.push(item);
         }
     }
-    Ok(out)
+    let linked: Vec<String> = items.iter().map(|i| i.key.clone()).collect();
+    Ok(items
+        .into_iter()
+        .filter(|item| {
+            texts::bridge_item(&item.description, item.parent.as_deref()).is_none()
+                && !item.parent.as_ref().is_some_and(|p| linked.contains(p))
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -102,20 +112,62 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_bridges_own_items_linked_to_the_pr_are_not_tickets() {
+    /// A ticket and one of its sub-items, both linked to the PR: the ticket
+    /// alone is found, whatever the sub-item's description says.
+    fn ticket_beside(title: &str, body: &str) {
         let t = FakeTracker::default();
         let pr = pull_request(7);
         t.seed("ABC-1", "a", "", Status::InReview, &[]);
-        let (_, body) =
-            texts::review_angle_item("ABC-1", &pr.url, &pr.head_sha, "security", None, &[]);
-        t.seed("ABC-2", "Security review", &body, Status::Ready, &[]);
+        t.seed("ABC-2", title, body, Status::Ready, &[]);
         t.state.borrow_mut().set_parent("ABC-2", "ABC-1");
         t.link("ABC-1", &pr.url);
         t.link("ABC-2", &pr.url);
         assert_eq!(
             key(ticket_item(&pr, &t, LinkFallback::None).unwrap()),
-            "ABC-1"
+            "ABC-1",
+            "{title}"
+        );
+    }
+
+    fn consolidation_body() -> String {
+        let pr = pull_request(7);
+        let scope = texts::round_scope(&pr.url, &pr.head_sha);
+        texts::consolidation_item(&scope, "ABC-1", texts::Consolidating::PullRequest).1
+    }
+
+    #[test]
+    fn the_bridges_own_items_linked_to_the_pr_are_not_tickets() {
+        let pr = pull_request(7);
+        let (_, angle) =
+            texts::review_angle_item("ABC-1", &pr.url, &pr.head_sha, "security", None, &[]);
+        ticket_beside("Security review", &angle);
+        ticket_beside("Consolidation", &consolidation_body());
+    }
+
+    #[test]
+    fn a_consolidation_item_whose_marker_an_agent_mangled_is_still_not_a_ticket() {
+        let body = consolidation_body();
+        // An agent ticking a box rewrote the marker the tracker shows as
+        // visible text, or dropped it.
+        let escaped = body.replace("spl-asdlc:", "spl-asdlc\\:");
+        let dropped = body.lines().skip(1).collect::<Vec<_>>().join("\n");
+        for mangled in [escaped, dropped] {
+            assert_eq!(texts::bridge_item(&mangled, Some("ABC-1")), None);
+            ticket_beside("Consolidation", &mangled);
+        }
+    }
+
+    #[test]
+    fn a_sub_item_of_a_ticket_not_linked_to_the_pr_is_the_ticket() {
+        let t = FakeTracker::default();
+        let pr = pull_request(7);
+        t.seed("ABC-1", "a", "", Status::InProgress, &[]);
+        t.seed("ABC-2", "b", "", Status::InProgress, &[]);
+        t.state.borrow_mut().set_parent("ABC-2", "ABC-1");
+        t.link("ABC-2", &pr.url);
+        assert_eq!(
+            key(ticket_item(&pr, &t, LinkFallback::None).unwrap()),
+            "ABC-2"
         );
     }
 }
