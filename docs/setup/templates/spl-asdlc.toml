@@ -11,6 +11,12 @@
 # unknown key, a wrong type or a repeated list entry makes the file invalid:
 # nothing falls back to a default shape. No secret ever goes here: a channel's
 # credentials are `env:<VARIABLE>` references resolved on the bridge's host.
+#
+# This is the light configuration: tickets, PRs, CI and the bridge, with no
+# PR review (a PR merges on its CI) and no release cycle (a merged ticket is
+# Done). "Layers", below the [review] section, shows the keys that add each
+# part of the method when the project needs it: adding one is an edit of this
+# file, with no migration (docs/setup/README.md, "Start light, add layers").
 
 schema = 1
 
@@ -31,51 +37,6 @@ team_keys = ["ABC"]                    # identifier prefixes of the team's items
 # No status mapping: the tracker names each canonical status exactly so
 # (docs/spec/03-vocabulary.md, docs/setup/tracker-linear.md).
 
-[release]
-# Tag patterns: {version} once; {rc} once in the candidate, never in the release.
-# The callers under .github/workflows/ pass the same patterns as inputs.
-candidate_tag = "acme-v{version}-rc.{rc}"
-release_tag = "acme-v{version}"
-# branch_prefix = "release/"
-# max_rc_passes = 2
-# later_passes = "full"                # "full" | "gate-and-coordinator"
-# go_policy = "computed"               # "computed" | "human" (adds the owner's /go, never replaces the computed GO)
-# nits = "shared"                      # "shared" | "per-nit"
-# record = ".spl-asdlc/qa/{candidate}/"
-# release_pr_label = "autorelease: pending"
-release_please_authors = ["app/example-app"]   # the App that runs release-please (`app/<slug>`)
-bookkeeping_paths = [".release-please-manifest.json", "CHANGELOG.md"]  # add the version files release-please writes; the latest candidate's own QA reports need no entry
-# registry_path = "docs/business-rules.md"
-# business_rule_paths = ["docs/business-rules.md", "**/business-rules.md"]
-# stagnation_hours = 2
-coordinators = ["coordinator-login"]   # GitHub logins whose approval at the head SHA merges an angle PR
-# coordinator_assignee = "coordinator-handle" # tracker participant who receives each candidate's consolidation item, and each angle item In Review
-# escalation_label = "blocked-by-human"
-# auto_candidate = false
-# cut_workflow = "release-cut.yml"
-# gate_workflow = "release-gate.yml"
-# gate_rerun_workflow = "release-gate-auto-rerun.yml"
-# gate_rerun_wait_minutes = 30
-# release_please_workflow = "release-please.yml"
-# release_please_config = "release-please-config.json"
-# release_please_manifest = ".release-please-manifest.json"
-#
-# Multi-component products only: all three together.
-# components = ["app", "website"]
-# version_component = "app"
-# gate_record = "docs/releases/v{version}.md"
-
-# The angles of a release QA: at least one. `assignee` (a participant hint)
-# and `notes` (the project's notes for the angle) are optional. A release
-# with no QA angle writes `angles = []` under [release] instead: its GO rests
-# on the gate, and `coordinators` becomes optional.
-[[release.angles]]
-key = "security"
-# notes = ".spl-asdlc/angles/security.md"
-
-[[release.angles]]
-key = "product"
-
 [review]
 # merge_method = "squash"              # "squash" | "merge"
 # require_up_to_date = true
@@ -83,30 +44,62 @@ key = "product"
 # diff_size_extra_angle = 0            # changed lines above which diff_size_angle is added; 0 adds none
 # diff_size_angle = "maintainability"  # required while diff_size_extra_angle is above 0
 # human_approval = "never"             # "never" | "sensitive-paths" | "always"
-# Declared: the file must exist and be valid at each PR's base, or every PR
-# waits (spec 08 rule 5). Remove the key only to have no sensitive path at all.
-sensitive_paths = ".github/review-paths.json"
 # sensitive_angle = "security"
-coordinators = ["coordinator-login"]   # GitHub logins whose approval at the head SHA merges a PR; optional with no PR review
 # coordinator_assignee = "coordinator-handle" # tracker participant who receives each PR round's consolidation item
 # human_reviewer = "owner-login"       # asked to look at a green PR stuck on a human
 # ticketless_authors = []              # Apps whose PRs need no ticket, e.g. ["dependabot"]
 
-# The base angles of every PR review: one table each.
-#
-# No PR review (docs/spec/04-pr-review.md §11) is an explicit choice: replace
-# these tables with `angles = []` under [review] and remove sensitive_paths
-# and every path angle (and any size threshold). No PR then gets an angle: it
-# merges on its CI (contract complete, checks green, branch up to date,
-# business-rule guard) with no round and no approval, and coordinators may be
-# left out. Leaving the angles out altogether makes the file invalid.
-[[review.angles]]
-key = "maintainability"
+# No PR review (docs/spec/04-pr-review.md §11), an explicit choice: no PR
+# gets an angle, and each merges on its CI (contract complete, checks green,
+# branch up to date, business-rule guard) with no round and no approval.
+# Leaving the angles out altogether makes the file invalid.
+angles = []                            # no base angle: layer 1 replaces it
+# coordinators = ["coordinator-login"] # layers 1 and 4: GitHub logins whose approval at the head SHA merges a reviewed PR
+# sensitive_paths = ".github/review-paths.json" # layer 4
 
-# Paths that add an angle (`*` crosses `/`).
-# [[review.path_angles]]
-# paths = ["**/auth/**", "**/migrations/**"]
-# angle = "security"
+# ---- Layers ----------------------------------------------------------------
+#
+# Each layer is added by keys alone, in this order or another, and applies
+# from the bridge's next tick; removing it is the reverse edit.
+#
+# 1. PR review (standard; docs/spec/04-pr-review.md). Remove `angles = []`
+#    under [review], uncomment `coordinators` there, and add one table per
+#    base angle. Paths may add an angle too (`[[review.path_angles]]`,
+#    docs/spec/08-configuration.md).
+#
+# [[review.angles]]
+# key = "maintainability"
+#
+# 2. The release cycle with its gate (standard; docs/spec/05-release-cycle.md).
+#    Uncomment the section, then add the release workflows, the release and
+#    tag rulesets and release-please's files (docs/setup/repository.md, "A
+#    light project"). Merged tickets now wait To Deploy for a release. With
+#    `angles = []` the release has no QA angle: its GO rests on the gate. The
+#    other release keys have defaults (docs/spec/08-configuration.md).
+#
+# [release]
+# candidate_tag = "acme-v{version}-rc.{rc}"    # {version} once, {rc} once (never in release_tag); the callers pass the same patterns
+# release_tag = "acme-v{version}"
+# release_please_authors = ["app/example-app"] # the App that runs release-please (`app/<slug>`)
+# bookkeeping_paths = [".release-please-manifest.json", "CHANGELOG.md"] # add the version files release-please writes
+# angles = []                                  # no QA angle: layer 3 replaces it
+#
+# 3. Release QA angles (full; docs/spec/05-release-cycle.md §3). Replace
+#    `angles = []` under [release] with the lines below, kept right after the
+#    section's keys, and list the same keys in the publication caller's
+#    `qa-angles`. Angles apply from the next candidate.
+#
+# coordinators = ["coordinator-login"]         # GitHub logins whose approval at the head SHA merges an angle PR
+# [[release.angles]]
+# key = "security"
+# [[release.angles]]
+# key = "product"
+#
+# 4. Sensitive paths (full; docs/spec/04-pr-review.md). Uncomment
+#    `sensitive_paths` under [review] (and `coordinators`, if layer 1 did not)
+#    and commit the list (templates/review-paths.json): a PR that touches one
+#    of its paths gets the `sensitive_angle`. Once declared, the file must
+#    exist and be valid at each PR's base, or every PR waits (spec 08 rule 5).
 
 # [bridge]
 # poll_minutes = 5
