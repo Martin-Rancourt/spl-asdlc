@@ -39,7 +39,9 @@ team_keys = ["ABC"]                    # identifier prefixes of the team's items
 
 [review]
 # merge_method = "squash"              # "squash" | "merge"
-# require_up_to_date = true
+# A light project merges a PR without first bringing it up to date with the
+# default branch; set true (and the ruleset's "up to date" option) to require it.
+require_up_to_date = false
 # An angle by size is off by default: set both keys to add one above a threshold.
 # diff_size_extra_angle = 0            # changed lines above which diff_size_angle is added; 0 adds none
 # diff_size_angle = "maintainability"  # required while diff_size_extra_angle is above 0
