@@ -616,6 +616,21 @@ fn tracker_checks(config: &Config, tracker: &dyn Tracker) -> Vec<Check> {
         ),
         Err(e) => check("owner", Verdict::Missing, e.to_string()),
     });
+    // The hold label of an escalation: absent is fine, the bridge creates it
+    // the first time it escalates.
+    if let Some(release) = &config.release {
+        let name = "release.escalation_label";
+        let label = &release.escalation_label;
+        out.push(match tracker.label_exists(label) {
+            Ok(true) => check(name, Verdict::Ok, format!("{label} exists in the tracker")),
+            Ok(false) => check(
+                name,
+                Verdict::Ok,
+                format!("{label} does not exist yet: it will be created at the first escalation"),
+            ),
+            Err(e) => check(name, Verdict::Missing, e.to_string()),
+        });
+    }
     // The participants the bridge assigns items to: an unknown one leaves
     // its items unassigned, so it is reported here rather than at a tick.
     for (key, name) in participants(config) {
@@ -737,6 +752,11 @@ mod tests {
         assert_eq!(by("tracker"), Verdict::Ok);
         assert_eq!(by("statuses"), Verdict::Ok);
         assert_eq!(by("owner"), Verdict::Ok);
+        assert!(
+            checks.iter().any(|c| c.to_string()
+                == "release.escalation_label: ok — blocked-by-human does not exist yet: it will be created at the first escalation"),
+            "{checks:#?}"
+        );
         assert_eq!(by("review.coordinator_assignee"), Verdict::Ok);
         let unknown = checks
             .iter()
@@ -796,6 +816,22 @@ mod tests {
         );
         // The PR pass's business-rule guard still reads the registry.
         assert!(checks.iter().any(|c| c.name == "business-rules"));
+    }
+
+    #[test]
+    fn the_escalation_label_is_said_to_exist_once_the_tracker_has_it() {
+        let c = config();
+        let t = FakeTracker::default();
+        t.ensure_label("blocked-by-human").unwrap();
+        let checks = tracker_checks(&c, &t);
+        let label = checks
+            .iter()
+            .find(|c| c.name == "release.escalation_label")
+            .unwrap_or_else(|| panic!("{checks:#?}"));
+        assert_eq!(
+            label.to_string(),
+            "release.escalation_label: ok — blocked-by-human exists in the tracker"
+        );
     }
 
     #[test]

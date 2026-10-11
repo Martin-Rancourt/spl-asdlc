@@ -286,6 +286,9 @@ impl Tracker for DryTracker<'_> {
     fn items_linked_to_pr(&self, pr_url: &str) -> TResult<Vec<String>> {
         self.inner.items_linked_to_pr(pr_url)
     }
+    fn label_exists(&self, name: &str) -> TResult<bool> {
+        self.inner.label_exists(name)
+    }
     fn ensure_label(&self, name: &str) -> TResult<()> {
         // A label some item carries exists: the real write would be a no-op.
         if !self.inner.list_by_label(name)?.is_empty() {

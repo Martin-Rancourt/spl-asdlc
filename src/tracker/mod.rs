@@ -206,6 +206,9 @@ pub trait Tracker {
     /// Items whose link (attachment, web link) is this PR URL.
     fn items_linked_to_pr(&self, pr_url: &str) -> TResult<Vec<String>>;
 
+    /// Whether the label exists, so that adding it to an item would be
+    /// accepted (a tracker whose labels exist by being used: always).
+    fn label_exists(&self, name: &str) -> TResult<bool>;
     fn ensure_label(&self, name: &str) -> TResult<()>;
     fn create_item(&self, item: &NewItem) -> TResult<Item>;
     fn update_description(&self, key: &str, description: &str) -> TResult<()>;

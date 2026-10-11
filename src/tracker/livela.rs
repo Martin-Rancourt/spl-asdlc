@@ -352,6 +352,11 @@ impl<S: LivelaStore> Tracker for Livela<S> {
         ids.iter().map(|id| self.short_of(id)).collect()
     }
 
+    fn label_exists(&self, _name: &str) -> TResult<bool> {
+        // Tags exist by being used: any can be added.
+        Ok(true)
+    }
+
     fn ensure_label(&self, _name: &str) -> TResult<()> {
         // Tags exist by being used.
         Ok(())
