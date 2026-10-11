@@ -243,7 +243,9 @@ fn tree(base: &Path, dir: &Path, out: &mut Vec<String>) {
             }
             tree(base, &p, out);
         } else {
-            out.push(p.strip_prefix(base).unwrap().display().to_string());
+            out.push(spl_asdlc::method::glob::repo_path(
+                p.strip_prefix(base).unwrap(),
+            ));
         }
     }
 }
