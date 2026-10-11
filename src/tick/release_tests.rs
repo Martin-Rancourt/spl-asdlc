@@ -940,6 +940,87 @@ fn a_release_pr_staging_another_version_is_no_go() {
     assert!(!w.github.writes().iter().any(|l| l.starts_with("merge")));
 }
 
+/// Spec 09 (BR-ASDLC-021): a human merges the release-please PR in GitHub
+/// instead of the bridge. The bridge picks up from that state: it merges
+/// nothing and says no GO of its own while the release is not yet out, then
+/// closes the cycle once it is published and merged back, recording who
+/// merged the release PR, and writes nothing more at the next tick.
+#[test]
+fn a_release_pr_merged_by_a_human_is_picked_up_without_a_rewrite_and_recorded_at_closure() {
+    let w = World::new();
+    w.tick();
+    let release = w.release_item();
+    all_angles_merged(&w);
+    let mut rp = release_pr(&w, "1.2.0");
+    rp.state = PrState::Merged;
+    rp.merged_at = Timestamp::parse("2026-10-05T11:50:00Z");
+    rp.merge_commit_sha = Some("rel1".into());
+    rp.merged_by = Some(Actor {
+        login: "owner-login".into(),
+        is_bot: false,
+    });
+    {
+        let mut s = w.github.state.borrow_mut();
+        if let Some(Ok(merged)) = s.merged_pulls.get_mut(&repo()) {
+            merged.push(rp.clone());
+        }
+    }
+    // Merged, not yet published: the bridge neither merges nor claims a GO.
+    let comments_before = w.tracker.comments(&release.key).unwrap().len();
+    w.tick();
+    assert!(
+        !w.github.writes().iter().any(|l| l.starts_with("merge")),
+        "{:?}",
+        w.github.writes()
+    );
+    let comments = w.tracker.comments(&release.key).unwrap();
+    assert!(
+        !comments.iter().any(|c| c.body.contains("GO computed")),
+        "{comments:?}"
+    );
+    assert!(comments.len() >= comments_before);
+
+    // Published and merged back: the closure runs and records the human.
+    publish(&w);
+    w.github.state.borrow_mut().commits.insert(
+        (repo(), "acme-v1.2.0".into()),
+        Ok(Commit {
+            sha: "rel1".into(),
+            message: "chore(release): release acme 1.2.0".into(),
+            committer_date: Timestamp::parse("2026-10-05T11:50:00Z"),
+            parents: vec![],
+        }),
+    );
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.tracker.item(&release.key).state.status,
+        Some(Status::Done)
+    );
+    let closure = w
+        .tracker
+        .comments(&release.key)
+        .unwrap()
+        .into_iter()
+        .find(|c| c.body.contains("spl-asdlc:closure"))
+        .expect("the closure comment");
+    assert!(
+        closure.body.contains(&format!(
+            "the release PR {} was merged by `owner-login`, a human, in GitHub",
+            rp.url
+        )),
+        "{}",
+        closure.body
+    );
+    let before = (w.tracker.writes().len(), w.github.writes().len());
+    w.tick();
+    assert_eq!(
+        (w.tracker.writes().len(), w.github.writes().len()),
+        before,
+        "nothing written twice"
+    );
+}
+
 #[test]
 fn the_closure_judges_the_shipped_tickets_sends_the_note_and_closes_the_item() {
     let w = World::new();

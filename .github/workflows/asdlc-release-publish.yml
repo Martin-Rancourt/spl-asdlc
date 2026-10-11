@@ -3,9 +3,13 @@ name: asdlc-release-publish
 # The publication of a release (docs/spec/05-release-cycle.md §9;
 # docs/requirements/ci.md, REQ-CI-076..097), as one reusable workflow in three
 # stages: `verify` (the RC's gate was green, only bookkeeping changed since the
-# RC, the release-please PR was merged by the bridge's App), `record-deployed`
-# (the `deployed: production` ledger of a multi-component product) and
-# `close` (the merge back into the default branch, then `closing-guard`).
+# RC, the release-please PR was merged by the bridge's App or by a human),
+# `record-deployed` (the `deployed: production` ledger of a multi-component
+# product) and `close` (the merge back into the default branch, then
+# `closing-guard`). Every stage reads the state GitHub is in, so a step a
+# human did by hand (the release-please PR merged, a label written, the
+# release branch merged back) is taken as done, never refused or redone
+# (docs/spec/09-requalification-and-human-gestures.md).
 #
 # The publication and deployment steps are the project's own jobs, and they
 # sit between the stages: a reusable workflow runs as one job of its caller
@@ -20,7 +24,7 @@ name: asdlc-release-publish
 # full: docs/setup/examples/release-publish.yml):
 #
 #   on:
-#     release: {types: [published]}          # created by the bridge's App
+#     release: {types: [published]}          # created by release-please, as the App
 #     workflow_dispatch:
 #       inputs:
 #         replay: {type: boolean, default: false}   # merge back only, on the branch
@@ -108,7 +112,9 @@ on:
         type: string
         default: release-gate.yml
       go-merger-login:
-        description: The slug of the bridge's App, which must have merged the release-please PR.
+        description: >-
+          The slug of the bridge's App. The release-please PR must have been merged by
+          this App or by a human account (a User); any other bot is no GO.
         type: string
         default: ''
       branch-prefix:
@@ -198,6 +204,9 @@ on:
       go-merged-by:
         description: Who merged it.
         value: ${{ jobs.verify.outputs.go-merged-by }}
+      go-merged-by-kind:
+        description: '`app` when the bridge''s App merged it, `human` when a person did.'
+        value: ${{ jobs.verify.outputs.go-merged-by-kind }}
       verified:
         description: '`true` once every check of verify passed.'
         value: ${{ jobs.verify.outputs.verified }}
@@ -248,6 +257,7 @@ jobs:
       release-branch: ${{ steps.go.outputs.release-branch }}
       release-pr-number: ${{ steps.go.outputs.release-pr-number }}
       go-merged-by: ${{ steps.go.outputs.go-merged-by }}
+      go-merged-by-kind: ${{ steps.go.outputs.go-merged-by-kind }}
       verified: ${{ steps.go.outputs.verified }}
     steps:
       # Before anything is checked out: what this run is asked to publish.
@@ -487,7 +497,7 @@ jobs:
           echo "$GATE_WORKFLOW on $RC_TAG: success."
           printf -- '- Gate `%s` on `%s`: success.\n' "$GATE_WORKFLOW" "$RC_TAG" >> "$summary"
 
-      - name: The release-please PR was merged by the bridge's App
+      - name: The release-please PR was merged by the bridge's App or by a human
         id: go
         env:
           GH_TOKEN: ${{ github.token }}
@@ -524,7 +534,9 @@ jobs:
 
           # REQ-CI-079: the PR whose merge made the release commit, merged into
           # a release branch from release-please's head. The bridge merges it
-          # only on its computed GO, so the merge is the GO.
+          # only on its computed GO; a human with write access may merge it
+          # instead (spec 09), the rulesets deciding who may. Either merge is
+          # the GO. Any other bot (another App, the Actions token) is not.
           if ! gh api "repos/$REPO/commits/$RELEASE_SHA/pulls" > "$work/pulls"; then
             refuse "the PRs of $RELEASE_TAG's commit could not be read."
           fi
@@ -545,22 +557,30 @@ jobs:
           fi
           merged="$(jq -r '.merged // false' "$work/pull")"
           merged_by="$(jq -r '.merged_by.login // ""' "$work/pull")"
+          merged_by_type="$(jq -r '.merged_by.type // ""' "$work/pull")"
           branch="$(jq -r '.base.ref // ""' "$work/pull")"
           if [ "$merged" != "true" ]; then
             refuse "PR #$number is not merged."
           fi
           merged_by_lower="$(tr '[:upper:]' '[:lower:]' <<< "$merged_by")"
-          if [ "$merged_by_lower" != "$bot_login" ] && [ "$merged_by_lower" != "$app_login" ]; then
-            refuse "PR #$number was merged by '${merged_by:-nobody readable}', not by the bridge's App ($slug): no GO."
+          if [ "$merged_by_lower" = "$bot_login" ] || [ "$merged_by_lower" = "$app_login" ]; then
+            kind=app
+            who="the bridge's App"
+          elif [ -n "$merged_by" ] && [ "$merged_by_type" = "User" ]; then
+            kind=human
+            who="a human"
+          else
+            refuse "PR #$number was merged by '${merged_by:-nobody readable}' (${merged_by_type:-no account type}), neither the bridge's App ($slug) nor a human account: no GO."
           fi
           {
             echo "release-branch=$branch"
             echo "release-pr-number=$number"
             echo "go-merged-by=$merged_by"
+            echo "go-merged-by-kind=$kind"
             echo "verified=true"
           } >> "$out"
-          echo "GO: #$number merged into $branch by $merged_by."
-          printf -- '- GO: #%s merged into `%s` by `%s`.\n' "$number" "$branch" "$merged_by" >> "$summary"
+          echo "GO: #$number merged into $branch by $merged_by ($who)."
+          printf -- '- GO: #%s merged into `%s` by `%s` (%s).\n' "$number" "$branch" "$merged_by" "$who" >> "$summary"
 
   record-deployed:
     name: record-deployed
@@ -573,8 +593,9 @@ jobs:
       recorded: ${{ steps.record.outputs.recorded }}
       skipped: ${{ steps.record.outputs.skipped }}
     steps:
-      # The App writes the label: it is the identity the ledger trusts, and
-      # the job's own token only reads.
+      # The App writes the label, and the job's own token only reads. The
+      # ledger reads the label, not who wrote it: a human who labels a
+      # component's release PR by hand records the same fact.
       - name: Mint the App token
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0

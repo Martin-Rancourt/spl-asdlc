@@ -513,10 +513,16 @@ fn associated(number: u64, base: &str, head: &str, merge_sha: &str) -> String {
     )
 }
 
-fn merged_by(login: &str) -> String {
+/// The PR as REST reads it, merged by `login`, an account of `kind`
+/// (`Bot`, `User`, `Organization`, or empty when GitHub gave none).
+fn merged_as(login: &str, kind: &str) -> String {
     format!(
-        r#"{{"number": 42, "merged": true, "merged_by": {{"login": "{login}"}}, "base": {{"ref": "release/2026-10-01-10-00-utc"}}}}"#
+        r#"{{"number": 42, "merged": true, "merged_by": {{"login": "{login}", "type": "{kind}"}}, "base": {{"ref": "release/2026-10-01-10-00-utc"}}}}"#
     )
+}
+
+fn merged_by(login: &str) -> String {
+    merged_as(login, "Bot")
 }
 
 const SLUG: &str = "the-bridge";
@@ -540,19 +546,66 @@ fn the_go_is_the_release_please_pr_merged_by_the_app_in_either_login_form() {
         assert_eq!(r.code, 0, "{input}: {}", r.log);
         assert_eq!(r.output("release-pr-number").as_deref(), Some("42"));
         assert_eq!(r.output("go-merged-by").as_deref(), Some(bot.as_str()));
+        assert_eq!(r.output("go-merged-by-kind").as_deref(), Some("app"));
         assert_eq!(
             r.output("release-branch").as_deref(),
             Some("release/2026-10-01-10-00-utc")
         );
         assert_eq!(r.output("verified").as_deref(), Some("true"));
-        assert!(read(&dir.0, "summary").contains("GO: #42"));
+        let summary = read(&dir.0, "summary");
+        assert!(summary.contains("GO: #42"), "{summary}");
+        assert!(summary.contains("(the bridge's App)"), "{summary}");
     }
     let (r, _d) = go(SLUG, Some(&pulls), Some(&merged_by(&format!("app/{SLUG}"))));
     assert_eq!(r.code, 0, "{}", r.log);
 }
 
+/// Spec 09 (BR-ASDLC-021): a human with write access may merge the
+/// release-please PR in GitHub instead of the bridge; the rulesets decide
+/// who may, the workflow does not. The merge is the GO either way, and the
+/// outputs and the summary say it was a human.
 #[test]
-fn a_release_pr_merged_by_anyone_else_is_no_go() {
+fn a_release_pr_merged_by_a_human_is_the_go_and_says_so() {
+    let pulls = format!(
+        "[{}]",
+        associated(
+            42,
+            "release/2026-10-01-10-00-utc",
+            "release-please--branches--release/2026-10-01-10-00-utc",
+            "abc"
+        )
+    );
+    let (r, dir) = go(SLUG, Some(&pulls), Some(&merged_as("owner-login", "User")));
+    assert_eq!(r.code, 0, "{}", r.log);
+    assert_eq!(r.output("release-pr-number").as_deref(), Some("42"));
+    assert_eq!(r.output("go-merged-by").as_deref(), Some("owner-login"));
+    assert_eq!(r.output("go-merged-by-kind").as_deref(), Some("human"));
+    assert_eq!(
+        r.output("release-branch").as_deref(),
+        Some("release/2026-10-01-10-00-utc")
+    );
+    assert_eq!(r.output("verified").as_deref(), Some("true"));
+    let summary = read(&dir.0, "summary");
+    assert!(
+        summary.contains(
+            "GO: #42 merged into `release/2026-10-01-10-00-utc` by `owner-login` (a human)."
+        ),
+        "{summary}"
+    );
+    // The job and the workflow both expose who and which kind.
+    let d = doc();
+    assert_eq!(
+        d["jobs"]["verify"]["outputs"]["go-merged-by-kind"].as_str(),
+        Some("${{ steps.go.outputs.go-merged-by-kind }}")
+    );
+    assert_eq!(
+        d["on"]["workflow_call"]["outputs"]["go-merged-by-kind"]["value"].as_str(),
+        Some("${{ jobs.verify.outputs.go-merged-by-kind }}")
+    );
+}
+
+#[test]
+fn a_release_pr_merged_by_another_bot_or_nobody_readable_is_no_go() {
     let pulls = format!(
         "[{}]",
         associated(
@@ -562,21 +615,28 @@ fn a_release_pr_merged_by_anyone_else_is_no_go() {
             "abc"
         )
     );
-    for login in [
-        "owner-login".to_string(),
-        format!("{SLUG}-{}[bot]", "impostor"),
-        format!("{}[bot]", "other-app"),
-        String::new(),
+    for (login, kind) in [
+        // Another App, one whose name merely starts like the bridge's, and
+        // the Actions token: a token a CI job holds is never the GO.
+        (format!("{SLUG}-{}[bot]", "impostor"), "Bot"),
+        (format!("{}[bot]", "other-app"), "Bot"),
+        (format!("{}[bot]", "github-actions"), "Bot"),
+        // A login with no account type, or one that is not a person.
+        ("owner-login".to_string(), ""),
+        ("example-org".to_string(), "Organization"),
+        (String::new(), "User"),
+        (String::new(), ""),
     ] {
-        let (r, _d) = go(SLUG, Some(&pulls), Some(&merged_by(&login)));
-        assert_eq!(r.code, 1, "{login}: {}", r.log);
+        let (r, _d) = go(SLUG, Some(&pulls), Some(&merged_as(&login, kind)));
+        assert_eq!(r.code, 1, "{login} {kind}: {}", r.log);
         assert!(
             r.log
-                .contains("not by the bridge's App (the-bridge): no GO"),
+                .contains("neither the bridge's App (the-bridge) nor a human account: no GO"),
             "{}",
             r.log
         );
         assert_eq!(r.output("verified"), None);
+        assert_eq!(r.output("go-merged-by-kind"), None);
     }
     let not_merged = r#"{"number": 42, "merged": false, "merged_by": null}"#;
     let (r, _d) = go(SLUG, Some(&pulls), Some(not_merged));
@@ -1397,6 +1457,54 @@ fn a_branch_main_already_holds_is_only_deleted_and_nothing_is_opened_or_merged()
     std::fs::remove_file(dir.0.join("ref")).unwrap();
     let r = mergeback(&dir.0);
     assert_eq!(r.code, 0, "{}", r.log);
+}
+
+/// Spec 09 (BR-ASDLC-021): the merge back is the close stage's automation,
+/// never the only way. A human who merges it in GitHub, while the poll
+/// waits or before the close runs at all, leaves a state the close takes as
+/// done: nothing is merged twice, no second PR is opened, and the closing
+/// guard reads the run green.
+#[test]
+fn a_merge_back_a_human_did_in_github_is_taken_as_done() {
+    // The merge-back PR merged by a human while the poll waited on its
+    // required check: the close merges nothing itself and deletes the branch.
+    let dir = fresh("OPEN|BLOCKED|h1\nMERGED|MERGED|h1\n", "pending\n");
+    let r = mergeback(&dir.0);
+    assert_eq!(r.code, 0, "{}", r.log);
+    assert_eq!(r.output("merged").as_deref(), Some("true"));
+    let c = gh_calls(&dir.0);
+    assert!(position(&c, PUT).is_none(), "{c:?}");
+    assert!(position(&c, DELETE).is_some(), "{c:?}");
+
+    // The release branch merged back by hand (a merge commit) and deleted
+    // before the close ran: nothing is left to merge back, and GitHub is not
+    // asked for a PR.
+    let rem = remote_cycle();
+    rem.repo.git(&["checkout", "-q", "main"]);
+    rem.repo.git(&[
+        "merge",
+        "-q",
+        "--no-ff",
+        "-m",
+        "Merge the release back",
+        BRANCH,
+    ]);
+    rem.repo.git(&["push", "-q", "origin", "main"]);
+    git_at(rem.origin.0.as_path(), &["branch", "-q", "-D", BRANCH]);
+    rem.repo.git(&["checkout", "-q", "--detach", "acme-v1.2.0"]);
+    let dir = Scratch::new("refs");
+    refs_gh(&dir.0, Some("[]"));
+    let r = refs(&dir.0, &rem.repo.dir.0, &[]);
+    assert_eq!(r.code, 0, "{}", r.log);
+    assert_eq!(r.output("branch").as_deref(), Some(""));
+    assert!(
+        r.log.contains("already on main: nothing to merge back"),
+        "{}",
+        r.log
+    );
+    assert!(calls(&dir.0, "gh").is_empty());
+    // The close succeeded with nothing to do: the guard is green.
+    assert_eq!(guard("close", "success", "false", "success").code, 0);
 }
 
 #[test]

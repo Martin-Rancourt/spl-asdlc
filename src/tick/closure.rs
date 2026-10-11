@@ -92,7 +92,11 @@ pub fn close(
     let marker = texts::marker("closure", &[("tag", &published.tag)]);
     match tracker_said(t, &item.key, &marker) {
         Ok(false) => {
-            let body = for_tracker(t, &format!("{}\n\n{marker}", closure::comment(&result)));
+            let go = go_merger(t, shape, c, published);
+            let body = for_tracker(
+                t,
+                &format!("{}\n\n{go}\n\n{marker}", closure::comment(&result)),
+            );
             t.act(log, report, &object, "comment closure", json!({}), || {
                 t.tracker
                     .comment(&item.key, &body)
@@ -266,6 +270,42 @@ fn archive_resolved(
             json!({"release": release.key}),
             || t.tracker.archive(&release.key).map_err(|e| e.to_string()),
         );
+    }
+}
+
+/// Who merged the release PR that made the published release's commit, for
+/// the closure's record (spec 09): the bridge, or a human in GitHub. Read
+/// from the merged PRs around the candidate (the release commit is on the
+/// default branch by now, where GitHub no longer associates it with its
+/// merged PR). A read that fails is said, never guessed, and holds nothing.
+fn go_merger(t: &Tick, shape: &Shape, c: &Candidate, published: &Release) -> String {
+    let label = super::release::section(t)
+        .map(|r| r.release_pr_label.as_str())
+        .unwrap_or_default();
+    let since = c
+        .tagged_at
+        .or(published.published_at)
+        .map(|at| crate::github::Timestamp(at.0 - time::Duration::days(1)));
+    let read = t
+        .github
+        .commit(&t.repo, &published.tag)
+        .map_err(|e| e.to_string())
+        .and_then(|commit| {
+            t.github
+                .merged_pulls(&t.repo, None, since, 500)
+                .map(|merged| (commit.sha, merged))
+                .map_err(|e| e.to_string())
+        });
+    match read {
+        Ok((sha, merged)) => prs::go_merger_line(
+            &published.tag,
+            prs::go_pull(&merged, &sha, &shape.branch_prefix, label),
+            &t.github_login,
+        ),
+        Err(e) => format!(
+            "Who merged the release PR of `{}` could not be read: {e}.",
+            published.tag
+        ),
     }
 }
 
