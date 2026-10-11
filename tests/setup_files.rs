@@ -12,6 +12,9 @@ use spl_asdlc::config::Config;
 use spl_asdlc::method::{business_rules, contract, glob, review};
 use yaml_rust2::YamlLoader;
 
+#[path = "support/template.rs"]
+mod template;
+
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -40,58 +43,73 @@ fn fenced(text: &str, lang: &str) -> String {
     text[start..end].to_string()
 }
 
-const TOML: &str = "docs/setup/templates/spl-asdlc.toml";
+const TOML: &str = template::PATH;
 const PATHS: &str = "docs/setup/templates/review-paths.json";
 const REGISTRY: &str = "docs/setup/templates/business-rules.md";
 const TICKET: &str = "docs/setup/templates/ticket.md";
 
 // ---- the templates ----
 
+/// The template as written is the light configuration: no PR review, no
+/// release cycle, no sensitive path, no channel.
 #[test]
-fn the_configuration_template_is_valid_as_written() {
+fn the_configuration_template_is_valid_as_written_and_light() {
     let c = Config::parse(&read(TOML)).unwrap_or_else(|e| panic!("{TOML}: {e}"));
     assert_eq!(c.product.name, "acme");
     assert_eq!(c.product.repository, "example-org/acme");
-    // Declared, so the review-paths template is part of the setup, and an
+    assert!(!c.review.angle_possible(), "no PR review (spec 04 §11)");
+    assert!(c.review.coordinators.is_empty());
+    assert!(c.review.sensitive_paths.is_none());
+    assert!(c.release.is_none(), "no release cycle (spec 05)");
+    assert!(c.notify.is_empty(), "no channel is configured by default");
+    // No PR review is said, never assumed: without `angles = []` the file is
+    // refused.
+    let absent = read(TOML).replacen("\nangles = []", "\n# angles = []", 1);
+    let errs = Config::parse(&absent).expect_err("absent angles are refused");
+    assert!(errs.to_string().contains("review.angles"), "{errs}");
+}
+
+fn parse(text: &str) -> Config {
+    Config::parse(text).unwrap_or_else(|e| panic!("{e}\n{text}"))
+}
+
+/// Each layer the template's comments describe, added as they say, gives a
+/// valid file with that layer on: alone, then on top of the others.
+#[test]
+fn each_layer_of_the_configuration_template_is_valid() {
+    let light = template::light();
+
+    let c = parse(&template::pr_review(&light));
+    assert!(c.review.angle_possible());
+    assert_eq!(c.review.coordinators, ["coordinator-login"]);
+    assert!(c.release.is_none());
+
+    let c = parse(&template::release_cycle(&light));
+    assert!(!c.review.angle_possible(), "the layers are independent");
+    let release = c.release.expect("a release cycle");
+    assert!(release.angles.is_empty(), "the GO rests on the gate");
+    assert!(release.coordinators.is_empty());
+
+    let c = parse(&template::release_angles(&template::release_cycle(&light)));
+    let release = c.release.unwrap();
+    let keys: Vec<&str> = release.angles.iter().map(|a| a.key.as_str()).collect();
+    assert_eq!(keys, ["security", "product"]);
+    assert_eq!(release.coordinators, ["coordinator-login"]);
+
+    // Declared, so the review-paths template is part of the layer, and an
     // absent file holds every PR (spec 08 rule 5).
+    let c = parse(&template::sensitive_paths(&light));
     assert_eq!(
         c.review.sensitive_paths.as_deref(),
         Some(".github/review-paths.json")
     );
-    assert!(c.notify.is_empty(), "no channel is configured by default");
-}
+    assert_eq!(c.review.coordinators, ["coordinator-login"]);
 
-/// The template's no-review variant, made as its comment says, is valid and
-/// has no PR review (spec 04 §11); without the angles at all it is refused.
-#[test]
-fn the_configuration_templates_no_review_variant_is_valid() {
-    let text = read(TOML);
-    let edits = [
-        (
-            "[[review.angles]]\nkey = \"maintainability\"\n",
-            String::new(),
-        ),
-        ("[review]\n", "[review]\nangles = []\n".to_string()),
-        (
-            "sensitive_paths = \".github/review-paths.json\"\n",
-            String::new(),
-        ),
-        (
-            "coordinators = [\"coordinator-login\"]   # GitHub logins whose approval at the head SHA merges a PR;",
-            "# coordinators;".to_string(),
-        ),
-    ];
-    let mut variant = text.clone();
-    for (from, to) in &edits {
-        assert_eq!(variant.matches(from).count(), 1, "{from:?} in {TOML}");
-        variant = variant.replacen(from, to, 1);
-    }
-    let c = Config::parse(&variant).unwrap_or_else(|e| panic!("{e}\n{variant}"));
-    assert!(!c.review.angle_possible(), "no PR review");
-    assert!(c.review.coordinators.is_empty());
-    let absent = variant.replace("angles = []\n", "");
-    let errs = Config::parse(&absent).expect_err("absent angles are refused");
-    assert!(errs.to_string().contains("review.angles"), "{errs}");
+    let c = parse(&template::full());
+    assert!(c.review.angle_possible());
+    assert!(c.review.sensitive_paths.is_some());
+    assert_eq!(c.review.coordinators, ["coordinator-login"]);
+    assert_eq!(c.release.unwrap().angles.len(), 2);
 }
 
 #[test]
@@ -102,7 +120,7 @@ fn config_check_accepts_the_configuration_template() {
 
 #[test]
 fn the_configuration_template_names_the_example_callers() {
-    let c = Config::parse(&read(TOML)).unwrap();
+    let c = parse(&template::full());
     for wf in [
         &c.release.as_ref().unwrap().cut_workflow,
         &c.release.as_ref().unwrap().gate_workflow,

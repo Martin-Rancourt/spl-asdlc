@@ -454,9 +454,11 @@ fn the_gate_reruns_the_guards_the_pr_runs() {
     );
 }
 
+/// The configuration template with every layer added as its comments say
+/// (`tests/support/template.rs`): the template is light as written, and the
+/// release examples are the callers of the full configuration.
 fn template() -> spl_asdlc::config::Config {
-    let text = std::fs::read_to_string(root().join("docs/setup/templates/spl-asdlc.toml")).unwrap();
-    spl_asdlc::config::Config::parse(&text).unwrap()
+    spl_asdlc::config::Config::parse(&crate::template::full()).unwrap()
 }
 
 #[test]
