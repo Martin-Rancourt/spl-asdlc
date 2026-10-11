@@ -19,7 +19,7 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::github::{RepoSlug, Timestamp};
 
