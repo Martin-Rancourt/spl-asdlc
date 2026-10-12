@@ -1,0 +1,26 @@
+name: publish
+
+# The publication of a spl-asdlc release: once release-please (running as the
+# App, release-please.yml) has published the GitHub release of a tag
+# `v<X.Y.Z>`, binaries.yml builds and tests the binary on every target from
+# that tag and attaches the archives and their sums to the release. Nothing
+# else: this repository does not run the SPL-ASDLC release cycle on itself.
+#
+# The one write is binaries.yml's, which attaches the archives to the
+# release: this caller grants `contents: write`, and binaries.yml keeps it to
+# that one job.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  binaries:
+    permissions:
+      contents: write
+    uses: ./.github/workflows/binaries.yml
+    with:
+      tag: ${{ github.event.release.tag_name }}

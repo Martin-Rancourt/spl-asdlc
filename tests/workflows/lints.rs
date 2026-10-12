@@ -46,7 +46,7 @@ fn a_reusable_workflow_has_no_trigger_of_its_own() {
             continue;
         }
         if !is_product_workflow(&f) {
-            // This repository's binaries.yml: called by its release-publish.yml,
+            // This repository's binaries.yml: called by its publish.yml,
             // and dispatched by hand to rebuild a tag. Never a push trigger.
             assert_eq!(relative(&f), ".github/workflows/binaries.yml");
             assert!(doc["on"]["push"].is_badvalue(), "{}", relative(&f));

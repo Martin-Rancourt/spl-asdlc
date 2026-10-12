@@ -4,11 +4,11 @@ name: Binaries
 # `v<X.Y.Z>`, run the tests on each, and attach the archives and their SHA-256
 # sums to the GitHub release of the tag. It writes to GitHub only; it never
 # touches a tracker. The only place macOS and Windows are built and tested
-# (pr.yml and the gate are Linux only): a macOS minute counts ten.
+# (pr.yml is Linux only): a macOS minute counts ten.
 #
-# Called by release-publish.yml as its publication, once the release is
-# verified; a dispatch rebuilds an existing tag. No tag push trigger: the
-# release-please tag would start a second, duplicate build. The one write,
+# Called by publish.yml once release-please has published the release; a
+# dispatch rebuilds an existing tag. No tag push trigger: the release-please
+# tag would start a second, duplicate build. The one write,
 # `contents: write` to attach to the release, is the `release` job's; the
 # caller's job grants it, as a called job holds at most its caller's
 # permissions.
