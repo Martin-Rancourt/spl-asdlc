@@ -38,6 +38,11 @@ pub trait GitHub {
     fn commit(&self, repo: &RepoSlug, rev: &str) -> Read<Commit>;
     /// `base...head`, refused when GitHub cannot return it whole.
     fn compare(&self, repo: &RepoSlug, base: &str, head: &str) -> Read<Comparison>;
+    /// `head`'s whole history, as a comparison from the repository's root:
+    /// every commit `head` reaches and every file at `head` (no base, so no
+    /// `base_committed_at`). The range of a first release, which no earlier
+    /// release bounds; refused when GitHub cannot return it whole.
+    fn since_root(&self, repo: &RepoSlug, head: &str) -> Read<Comparison>;
     /// The text of `path` at `rev`; `NotFound` when GitHub says 404 (the
     /// caller decides whether the revision itself exists).
     fn file(&self, repo: &RepoSlug, path: &str, rev: &str) -> Read<String>;

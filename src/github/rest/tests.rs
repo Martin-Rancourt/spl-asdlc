@@ -419,6 +419,62 @@ fn a_comparison_github_lists_partially_is_unreadable() {
     assert!(gh.compare(&repo(), "a", "b").is_err());
 }
 
+#[test]
+fn the_history_from_the_root_reads_every_commit_and_every_path_or_refuses() {
+    let commits = "/repos/example-org/acme/commits?sha=c2&per_page=100";
+    let tree = "/repos/example-org/acme/git/trees/c2?recursive=1";
+    let (gh, t) = client();
+    t.on(
+        "GET",
+        &url(commits),
+        200,
+        r#"[{"sha":"c2","commit":{"message":"feat: two\n\nbody","committer":{"date":"2026-10-12T10:00:00Z"}}},
+            {"sha":"c1","commit":{"message":"initial"}}]"#,
+    );
+    t.on(
+        "GET",
+        &url(tree),
+        200,
+        r#"{"truncated":false,"tree":[{"path":"src","type":"tree"},{"path":"src/x.rs","type":"blob"},
+            {"path":"README.md","type":"blob"},{"path":"vendor/lib","type":"commit"}]}"#,
+    );
+    let c = gh.since_root(&repo(), "c2").unwrap();
+    // Oldest first, as a comparison lists them, with no base to bound them.
+    assert_eq!(
+        c.commits.iter().map(|c| c.sha.as_str()).collect::<Vec<_>>(),
+        vec!["c1", "c2"]
+    );
+    assert_eq!(c.commits[1].subject, "feat: two");
+    assert_eq!(
+        c.commits[1].committed_at,
+        Timestamp::parse("2026-10-12T10:00:00Z")
+    );
+    assert_eq!(c.ahead_by, 2);
+    assert_eq!(c.base_committed_at, None);
+    assert_eq!(c.files, vec!["src/x.rs", "README.md", "vendor/lib"]);
+
+    // A tree GitHub cut, or one that does not say, is not the tree.
+    for answer in [
+        r#"{"truncated":true,"tree":[]}"#,
+        r#"{"tree":[{"path":"a","type":"blob"}]}"#,
+    ] {
+        let (gh, t) = client();
+        t.on(
+            "GET",
+            &url(commits),
+            200,
+            r#"[{"sha":"c2","commit":{"message":"x"}}]"#,
+        );
+        t.on("GET", &url(tree), 200, answer);
+        assert!(gh.since_root(&repo(), "c2").is_err(), "{answer}");
+    }
+    // A commit list that cannot be read is no history.
+    let (gh, t) = client();
+    t.on("GET", &url(commits), 500, "{}");
+    t.on("GET", &url(tree), 200, r#"{"truncated":false,"tree":[]}"#);
+    assert!(gh.since_root(&repo(), "c2").is_err());
+}
+
 // ---- pull requests over GraphQL ----
 
 fn pull_node(number: u64) -> String {

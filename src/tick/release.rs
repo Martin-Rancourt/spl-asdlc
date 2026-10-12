@@ -28,7 +28,7 @@ use serde_json::json;
 
 use crate::action_log::ActionLog;
 use crate::config::{LaterPasses, NitsGrouping, Release};
-use crate::github::{CompareStatus, GitRef, ObjectType, PullRequest};
+use crate::github::{CompareStatus, Comparison, GitRef, ObjectType, PullRequest};
 use crate::method::checks::{self, CheckState};
 use crate::method::release::findings;
 use crate::method::release::gate;
@@ -706,21 +706,37 @@ pub struct Embarked {
     pub sub_items: Vec<String>,
 }
 
-pub fn embarked_items(t: &Tick, shape: &Shape, c: &Candidate) -> Result<Embarked, String> {
+/// The candidate's range (REQ-REL-018), with the release it starts from:
+/// the highest published release below the candidate's version, or, for the
+/// product's first release (`None`), the repository's root, so that the
+/// whole history is the range. One definition for the brief, the embarked
+/// tickets, the note coverage and the closure; unreadable is an error, never
+/// an empty range.
+pub fn release_range(
+    t: &Tick,
+    shape: &Shape,
+    c: &Candidate,
+) -> Result<(Option<String>, Comparison), String> {
     let tags = t
         .github
         .tags(&t.repo, shape.release_tag_prefix())
         .map_err(|e| e.to_string())?;
-    let base = shape.previous_release(tags.iter().map(|r| r.name.as_str()), Some(c.version));
-    let commits = match &base {
-        Some((tag, _)) => {
-            t.github
-                .compare(&t.repo, tag, &c.sha)
-                .map_err(|e| e.to_string())?
-                .commits
-        }
-        None => return Ok(Embarked::default()),
-    };
+    match shape.previous_release(tags.iter().map(|r| r.name.as_str()), Some(c.version)) {
+        Some((tag, _)) => t
+            .github
+            .compare(&t.repo, &tag, &c.sha)
+            .map(|cmp| (Some(tag), cmp))
+            .map_err(|e| e.to_string()),
+        None => t
+            .github
+            .since_root(&t.repo, &c.sha)
+            .map(|cmp| (None, cmp))
+            .map_err(|e| e.to_string()),
+    }
+}
+
+pub fn embarked_items(t: &Tick, shape: &Shape, c: &Candidate) -> Result<Embarked, String> {
+    let commits = release_range(t, shape, c)?.1.commits;
     let team = t.tracker.team_key().map_err(|e| e.to_string())?;
     let mut keys = t.config.tracker.team_keys.clone();
     if keys.is_empty() {
@@ -1080,31 +1096,16 @@ fn brief_facts(
     previous: Option<&str>,
     run: &crate::github::WorkflowRun,
 ) -> Result<texts::Brief, String> {
-    let release_tags = t
-        .github
-        .tags(&t.repo, shape.release_tag_prefix())
-        .map_err(|e| e.to_string())?;
-    let last = shape
-        .previous_release(
-            release_tags.iter().map(|r| r.name.as_str()),
-            Some(c.version),
-        )
-        .map(|(tag, _)| tag);
-    let (paths_since_release, not_in_note) = match &last {
-        Some(tag) => {
-            let cmp = t
-                .github
-                .compare(&t.repo, tag, &c.sha)
-                .map_err(|e| e.to_string())?;
-            let unseen = notes::walk(&cmp.commits, cmp.base_committed_at)
-                .unseen
-                .iter()
-                .map(|u| format!("`{}` {}", notes::short(&u.sha), u.subject))
-                .collect();
-            (cmp.files, unseen)
-        }
-        None => (Vec::new(), Vec::new()),
-    };
+    // A first release (no earlier one) is measured from the repository's
+    // root: every path at the candidate, and every commit is read by
+    // release-please (no release commit stops it).
+    let (last, cmp) = release_range(t, shape, c)?;
+    let not_in_note = notes::walk(&cmp.commits, cmp.base_committed_at)
+        .unseen
+        .iter()
+        .map(|u| format!("`{}` {}", notes::short(&u.sha), u.subject))
+        .collect();
+    let paths_since_release = cmp.files;
     let paths_since_candidate = match previous {
         Some(p) => Some(
             t.github
@@ -2038,21 +2039,10 @@ fn release_prs(
     // The range, read once: unreadable is a gap, never an empty range. The
     // note owes a line only to the commits release-please reads of it; the
     // others are not in the note by construction (the brief lists them).
-    let range: Result<Vec<crate::github::CommitSummary>, String> = t
-        .github
-        .tags(&t.repo, shape.release_tag_prefix())
-        .map_err(|e| e.to_string())
-        .and_then(|tags| {
-            match shape.previous_release(tags.iter().map(|r| r.name.as_str()), Some(c.version)) {
-                Some((tag, _)) => t
-                    .github
-                    .compare(&t.repo, &tag, &c.sha)
-                    .map(|cmp| notes::walk(&cmp.commits, cmp.base_committed_at).seen)
-                    .map_err(|e| e.to_string()),
-                // The first release: no previous tag bounds it.
-                None => Ok(Vec::new()),
-            }
-        });
+    // The first release: no previous release commit stops release-please,
+    // so every commit of the whole history is seen.
+    let range: Result<Vec<crate::github::CommitSummary>, String> = release_range(t, shape, c)
+        .map(|(_, cmp)| notes::walk(&cmp.commits, cmp.base_committed_at).seen);
     let commits = match &range {
         Ok(list) => Ok(list.as_slice()),
         Err(_) => Err("the range could not be read"),

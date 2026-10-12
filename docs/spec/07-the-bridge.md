@@ -74,4 +74,4 @@ The verbs below are a person's own gestures: the guard is the tick's.
 | `release requalify <ticket> --severity <s> --reason <r>` | Human requalification of a finding |
 | `ticket check <item>` | Contract judgement |
 | `config check` | Validate `spl-asdlc.toml`, merged with its instance overlay (spec 08) |
-| `doctor` | Verify the setup of a repository (App, secrets, rulesets, tracker identity, config and its instance overlay); `release cycle: none` without `[release]`, the release-only checks then skipped |
+| `doctor` | Verify the setup of a repository (App, secrets, rulesets, tracker identity, config and its instance overlay); `release cycle: none` without `[release]`, the release-only checks then skipped; with it, `release base`: the published release the next candidate is measured from, or none yet, the first release being measured from the repository's root |

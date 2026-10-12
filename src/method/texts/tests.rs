@@ -399,8 +399,14 @@ fn the_brief_names_tickets_criteria_rules_and_distinguishes_first_from_unresolva
     assert!(text.contains("They ship with this release and do not hold the GO.\n\n- `abcdef012345` fix: merged during the last cycle (#47)\n"));
     b.previous_candidate = None;
     assert!(brief(&b).contains("first candidate of this version"));
+    // A first release is measured from the repository's root, and says so.
     b.last_release = None;
-    assert!(brief(&b).contains("(first release)"));
+    let text = brief(&b);
+    assert!(text.contains(
+        "- Diff since the repository's root: first release, no earlier release to measure from — 1 file(s)\n"
+    ));
+    assert!(text.contains("<summary>Paths since the repository's root (1)</summary>"));
+    assert!(!text.contains("last published release"), "{text}");
 }
 
 #[test]

@@ -52,7 +52,7 @@ In Review, To Deploy and Post Deploy are **validation** states: the item is stil
 
 - **Candidate**: a commit on the release branch, identified by its RC tag.
 - **Embarked ticket**: a ticket linked to a PR that merged a commit of the candidate's range.
-- **Range**: `<last published release>..<candidate>`.
+- **Range**: `<last published release>..<candidate>`; for a product's first release, with no published release below the candidate, the candidate's whole history, from the repository's root (`05-release-cycle.md`, "The range and the first release").
 - **Gate**: the deterministic CI of a candidate (suites, audits, evidence pack).
 - **Evidence pack**: the artifact the gate publishes for the reviewers.
 - **Brief**: what the bridge posts on the release issue: embarked tickets with their acceptance criteria, business rules touched, link to the evidence pack.

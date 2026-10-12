@@ -23,6 +23,8 @@ pub struct FakeState {
     pub tag_objects: HashMap<(RepoSlug, String), AnnotatedTag>,
     pub commits: HashMap<(RepoSlug, String), Read<Commit>>,
     pub compares: HashMap<(RepoSlug, String, String), Read<Comparison>>,
+    /// `(repo, head)`: `head`'s whole history (`since_root`).
+    pub histories: HashMap<(RepoSlug, String), Read<Comparison>>,
     /// `(repo, rev, path)`; a missing entry is `NotFound`.
     pub files: HashMap<(RepoSlug, String, String), Read<String>>,
     pub open_pulls: BTreeMap<RepoSlug, Read<Vec<PullRequest>>>,
@@ -175,6 +177,18 @@ impl GitHub for FakeGitHub {
         {
             Some(c) => c.clone(),
             None => not_scripted(format!("{base}...{head}")),
+        }
+    }
+
+    fn since_root(&self, repo: &RepoSlug, head: &str) -> Read<Comparison> {
+        match self
+            .state
+            .borrow()
+            .histories
+            .get(&(repo.clone(), head.to_string()))
+        {
+            Some(c) => c.clone(),
+            None => not_scripted(format!("the history of {head}")),
         }
     }
 
