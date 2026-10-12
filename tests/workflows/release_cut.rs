@@ -1241,11 +1241,18 @@ fn every_push_is_made_with_the_app_token_and_nothing_dispatches_a_workflow() {
         steps[1]["with"]["ref"].as_str(),
         Some("${{ inputs.default-branch }}")
     );
-    // The binary is downloaded with the App's token too.
+    // The binary is downloaded with the App's token too: one scoped to the
+    // method's repository, which may be private, else this repository's.
     assert_eq!(
         step(&doc, "cut", "binary")["env"]["GH_TOKEN"].as_str(),
-        Some("${{ steps.app-token.outputs.token }}")
+        Some("${{ steps.method-token.outputs.token || steps.app-token.outputs.token }}")
     );
+    let method = step(&doc, "cut", "method-token");
+    assert_eq!(
+        method["with"]["repositories"].as_str(),
+        Some("${{ steps.method-repo.outputs.name }}")
+    );
+    assert_eq!(method["continue-on-error"].as_bool(), Some(true));
     let text = std::fs::read_to_string(crate::harness::root().join(CUT)).unwrap();
     let code = || text.lines().filter(|l| !l.trim_start().starts_with('#'));
     for forbidden in ["dispatches", "GITHUB_TOKEN }}", "github.token"] {
@@ -1277,6 +1284,8 @@ fn the_cut_waits_for_no_other_workflow() {
         [
             "app-token",
             "cycle",
+            "method-repo",
+            "method-token",
             "binary",
             "open",
             "version",

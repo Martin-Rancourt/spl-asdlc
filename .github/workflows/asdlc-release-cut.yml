@@ -399,6 +399,35 @@ jobs:
             echo "proceed=true"
           } >> "$out"
 
+      # The App token above is scoped to this repository. The method's
+      # releases may live in a private repository the same App is installed
+      # on: a second token, scoped to it, reads them. When the App is not
+      # installed there (a public method repository), the read falls back to
+      # this repository's App token, which reads public releases.
+      - name: Name the method's repository
+        id: method-repo
+        if: inputs.action == 'open' && steps.cycle.outputs.proceed == 'true'
+        env:
+          SPL_REPOSITORY: ${{ inputs.spl-asdlc-repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${GITHUB_OUTPUT:-/dev/stdout}"
+          {
+            echo "owner=${SPL_REPOSITORY%%/*}"
+            echo "name=${SPL_REPOSITORY#*/}"
+          } >> "$out"
+      - name: Mint a token that reads the method's releases
+        id: method-token
+        if: inputs.action == 'open' && steps.cycle.outputs.proceed == 'true'
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.SPL_ASDLC_APP_ID }}
+          private-key: ${{ secrets.SPL_ASDLC_APP_PRIVATE_KEY }}
+          owner: ${{ steps.method-repo.outputs.owner }}
+          repositories: ${{ steps.method-repo.outputs.name }}
+
       # One read of a published binary, checked before it runs: the archive
       # of this runner's target from the channel's release, and its line of
       # the release's SHA256SUMS (docs/setup/bridge.md, "The binary").
@@ -408,7 +437,7 @@ jobs:
         env:
           SPL_REPOSITORY: ${{ inputs.spl-asdlc-repository }}
           SPL_VERSION: ${{ inputs.spl-asdlc-version }}
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.method-token.outputs.token || steps.app-token.outputs.token }}
         shell: bash
         run: |
           set -euo pipefail
