@@ -886,8 +886,8 @@ pub fn hold_comment(
     key: &str,
 ) -> String {
     format!(
-        "**HOLD computed on `{candidate}`** — the release PRs stay open.\n\n{}\n\nBlockers-Carried: {blockers_carried}\n\n\
-         The GO is recomputed at every tick and the PRs are merged by code as soon as it is true; nothing to tick by hand.\n\n{}",
+        "**HOLD computed on `{candidate}`** — the release is not tagged.\n\n{}\n\nBlockers-Carried: {blockers_carried}\n\n\
+         The GO is recomputed at every tick and the release is tagged and published by code as soon as it is true; nothing to tick by hand.\n\n{}",
         reasons
             .iter()
             .map(|r| format!("- {r}"))

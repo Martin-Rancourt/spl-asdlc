@@ -34,10 +34,10 @@ The method has its own rules, which hold for every project that uses it. They ar
 | SR-004 | No merge bypasses the required checks. |
 | SR-005 | A merged PR's branch is deleted; a release branch merged back into `main` is deleted after the merge. |
 | SR-006 | A release-candidate tag is immutable once pushed: the gate judges a frozen ref. |
-| SR-007 | The GO of a release is computed, never declared. |
+| SR-007 | The GO of a release is computed, never declared (or taken on themselves by a person who tags and publishes the release, spec 09). |
 | SR-008 | The angles of a release QA are configured per project, never a shared constant. |
 | SR-009 | A release QA has a configurable number of RC passes; when they are exhausted with blockers left, a human decides. |
-| SR-010 | Every `Enforced` rule names a test that runs in the gate. |
+| SR-010 | Every `Enforced` rule names a test that runs in CI. |
 | SR-011 | A skipped CI step is never read as a success. |
 | SR-012 | Every actor that writes to the Git host does so under its own traceable identity. |
 | SR-013 | The contract of a ticket is every checkbox of its description and of its duplicates. |

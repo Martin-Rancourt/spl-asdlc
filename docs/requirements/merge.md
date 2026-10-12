@@ -23,14 +23,14 @@ A PR is a release-please PR if its head branch starts with `release-please--` OR
 Source: `pr_merge.py:107-108`, `pr_merge.py:1479-1485`, `pr_merge.py:3893-3897`.
 Notes: merging it cuts a release, which is a deliberate human act. Making the branch prefix/title pattern configurable per repo is allowed; the defaults above are the contract. Test: `test_a_release_please_pr_citing_a_to_deploy_ticket_does_not_reopen_it` (no tracker write at all even when the body cites a ticket URL).
 
-Superseded 2026-10-12 (SID-1058): the release cycle opens no release PR: it prepares the version on the release branch and tags the release itself (`docs/spec/05-release-cycle.md` §1, §9). A PR shaped like release-please's is an ordinary PR to the merge pass, judged like any other; the label `release.release_pr_label` is gone.
+Superseded 2026-10-12: the release cycle opens no release PR: it prepares the version on the release branch and tags the release itself (`docs/spec/05-release-cycle.md` §1, §9). A PR shaped like release-please's is an ordinary PR to the merge pass, judged like any other; the label `release.release_pr_label` is gone.
 
 **REQ-MERGE-004 — A release-record (gate-record) PR is never merged by the pass.**
 A PR whose head branch starts with `release-record/` is skipped ("gate-record PR — the release pass merges it") and is never treated as the delivery of the ticket its title cites.
 Source: `pr_merge.py:1488-1498`, `pr_merge.py:3898-3902`.
 Notes: it is merged by the release machinery (another area). The prefix should be configurable; the default is the Python literal.
 
-Superseded 2026-10-12 (SID-1058): the gate record PR is gone with the multi-component shape; a `release-record/` head is an ordinary PR.
+Superseded 2026-10-12: the gate record PR is gone with the multi-component shape; a `release-record/` head is an ordinary PR.
 
 **REQ-MERGE-005 — A merge-back PR (release branch into main) and the PR that resolves a conflicted merge-back are never merged by the pass, and are excluded before anything else is read.**
 Detection is on the HEAD branch, never the base: head starts with `release/`, OR head starts with `chore/merge-back-`, OR the head is empty/unreadable (an unreadable head is treated as a merge back). A PR whose BASE is `release/...` is NOT a merge back. Exclusion happens without reading a diff, a ticket or checks. Reasons recorded: "the head branch could not be read — refusing to squash what may be a merge back"; "resolution of a merge-back conflict — merged by hand, as a merge commit, never squashed"; "merge back of a release branch — the release close merges it, as a merge commit".

@@ -104,6 +104,7 @@ fn preflight_accepts_both_gestures_and_an_empty_or_named_class() {
     for channel in ["latest", "staging", "v0.4.0", "v10.20.30"] {
         ok(&preflight(&[("SPL_VERSION", channel)]));
     }
+    ok(&preflight(&[("FORCE_VERSION", "2.0.0")]));
 }
 
 #[test]
@@ -161,6 +162,12 @@ fn preflight_refuses_what_it_cannot_cut_before_touching_anything() {
             "inside the repository",
         ),
         (&[("CONFIG_FILE", "/etc/x")], "inside the repository"),
+        (&[("FORCE_VERSION", "1.2")], "version '1.2' is not X.Y.Z"),
+        (&[("FORCE_VERSION", "v1.2.0")], "is not X.Y.Z"),
+        (
+            &[("ACTION", "candidate"), ("FORCE_VERSION", "1.2.0")],
+            "version only applies to 'open'",
+        ),
     ];
     for (extra, words) in cases {
         let r = preflight(extra);
@@ -586,6 +593,19 @@ fn open_prepares_the_release_and_pushes_the_branch_with_its_first_candidate() {
         r.log
             .contains(&format!("--ref {BRANCH} -f action=candidate"))
     );
+}
+
+#[test]
+fn open_forces_the_version_it_is_given() {
+    let (repo, _origin) = product();
+    let r = open_step(&repo, &[("FORCE_VERSION", "2.0.0")]);
+    ok(&r);
+    assert_eq!(r.output("version").as_deref(), Some("2.0.0"), "{}", r.log);
+    assert_eq!(
+        repo.git(&["log", "-1", "--format=%s"]),
+        "chore(release): v2.0.0"
+    );
+    assert_eq!(repo.git(&["show", "HEAD:VERSION"]), "acme 2.0.0");
 }
 
 #[test]

@@ -1,6 +1,6 @@
 # 2. The repository
 
-**A light project** (`README.md`, "Start light, add layers") has no `[release]` section, so it skips the release steps below: the `release/**` ruleset and the tag rulesets, the App's repository secrets, the release callers (`release-cut.yml`, `release-gate.yml`, `release-gate-auto-rerun.yml`, `release-publish.yml`). It also skips `.github/review-paths.json` until it declares `sensitive_paths`. It keeps the `main` ruleset, `pr.yml`, `pr-title.yml`, `spl-asdlc.toml`, the registry and the `.gitignore` entry. `doctor` reports `release cycle: none` and skips the release-only checks (`docs/spec/05-release-cycle.md`, "Without a release cycle"). To move up to the release cycle, do the skipped steps first, then add the `[release]` section: the bridge switches to the full cycle at its next tick, with no migration.
+**A light project** (`docs/setup/README.md`, "Start light, add layers") has no `[release]` section, so it skips the release steps below: the `release/**` ruleset and the tag rulesets, the App's repository secrets, the release callers (`release-cut.yml`, `release-gate.yml`, `release-gate-auto-rerun.yml`, `release-publish.yml`). It also skips `.github/review-paths.json` until it declares `sensitive_paths`. It keeps the `main` ruleset, `pr.yml`, `pr-title.yml`, `spl-asdlc.toml`, the registry and the `.gitignore` entry. `doctor` reports `release cycle: none` and skips the release-only checks (`docs/spec/05-release-cycle.md`, "Without a release cycle"). To move up to the release cycle, do the skipped steps first, then add the `[release]` section: the bridge switches to the full cycle at its next tick, with no migration.
 
 **Rulesets** (Settings → Rules → Rulesets):
 - `main`: require a pull request, require the status check `required-check`, require branches to be up to date, block force pushes; bypass list: the App only.
@@ -13,6 +13,8 @@ The App on the bypass lists automates the flow; it is never the only actor (`doc
 
 **Secrets**: `SPL_ASDLC_APP_ID`, `SPL_ASDLC_APP_PRIVATE_KEY` (the App), plus whatever the project's publication and deployment steps need. Never a tracker key: the CI does not write to the tracker.
 
+**Labels**: the hands-off label (`[bridge] hands_off_label`, default `spl-asdlc:hands-off`), by which a person takes a PR over (`docs/spec/07-the-bridge.md`, "Hands off"). The bridge never creates it: create it once, `gh label create spl-asdlc:hands-off --repo OWNER/REPO`.
+
 **Variables**: `SPL_ASDLC_RUNNER_READY` (`true` to run the gate on the project's self-hosted runner, otherwise the hosted runner is used for what fits there).
 
 **Workflow callers**: one short workflow per reusable workflow, under `.github/workflows/`, calling `<owner>/spl-asdlc/.github/workflows/asdlc-<unit>.yml@v1` with the project's inputs (test command, suites, runner labels, publication and deployment steps). The callers own the triggers, the concurrency groups and the GitHub environment; the reusable workflows own nothing else. Examples, to copy and edit (replace `<owner>`, the `acme` tag patterns, the App's slug and the `make` commands):
@@ -21,7 +23,7 @@ The App on the bypass lists automates the flow; it is never the only actor (`doc
 |---|---|---|
 | `docs/setup/examples/pr.yml` | `asdlc-pr-guards.yml`, the project's tests, the `required-check` action | `pull_request` on `main` and `release/**` |
 | `docs/setup/examples/pr-title.yml` | `asdlc-pr-title.yml` | `pull_request`, `edited` included; its own workflow so that a title edit never cancels the tests |
-| `docs/setup/examples/release-cut.yml` | `asdlc-release-cut.yml`, which runs the published `spl-asdlc` binary of its channel (`spl-asdlc-version`) | `workflow_dispatch` (`action`, `class`, the reasons, `dry_run`), dispatched by the bridge |
+| `docs/setup/examples/release-cut.yml` | `asdlc-release-cut.yml`, which runs the published `spl-asdlc` binary of its channel (`spl-asdlc-version`) | `workflow_dispatch` (`action`, `class`, the reasons, `version` to force one, `dry_run`), dispatched by the bridge |
 | `docs/setup/examples/release-gate.yml` | `asdlc-release-gate.yml`, after the project's build | `push` of an RC tag |
 | `docs/setup/examples/release-gate-auto-rerun.yml` | `asdlc-release-gate-auto-rerun.yml` | `workflow_run` of `release-gate` |
 | `docs/setup/examples/release-publish.yml` | `asdlc-release-publish.yml` twice (`verify`, `close`), the project's publication between | `release: published`; `workflow_dispatch` to resume or replay |

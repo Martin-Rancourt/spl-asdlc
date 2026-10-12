@@ -177,7 +177,8 @@ pub fn evaluate(facts: &GoFacts) -> GoDecision {
 }
 
 impl GoDecision {
-    /// The only value a gate record's `Blockers-Carried:` line may hold.
+    /// The value of the `Blockers-Carried:` line of the HOLD comment and of
+    /// `release status`.
     pub fn blockers_carried(&self) -> String {
         if self.blockers.is_empty() {
             "none".to_string()

@@ -1,13 +1,13 @@
 # 07 — The bridge
 
-One deterministic process, `spl-asdlc tick`, that turns GitHub facts into tracker state and tracker state into GitHub actions. It is the only writer of statuses, but on an item a person took over by hand ("Hands off" below). It contains no model call.
+One deterministic process, `spl-asdlc tick`, that turns GitHub facts into tracker state and tracker state into GitHub actions. It is the only writer of the statuses the flow derives from GitHub (`03-vocabulary.md` says who writes each), but on an item a person took over by hand ("Hands off" below). It contains no model call.
 
 ## Invariants
 
 1. **It runs in the user's environment**, never in CI: a daemon or scheduled job (a tracker's own runner, a cron, a system timer), or by hand (`spl-asdlc tick` from a shell or a skill). The same binary and the same configuration serve every host.
 2. **It polls GitHub.** Default every five minutes, configurable. Nothing needs to be exposed on the network; an optional relay can push webhook events into a queue the bridge pulls, which only shortens the latency.
 3. **It writes under one identity**: a GitHub App installed on the repositories (the same App the CI workflows use), with a fallback to a personal token where an App is not allowed; the tracker identity is a service account of the tracker. The binary prints under which names it writes.
-4. **Every write is idempotent.** The bridge keeps an action log (append-only, one line per decision: when, repository, object, action, inputs, outcome). A fact already acted upon is skipped; a fact whose action failed is retried at the next tick; a tracker read that fails writes nothing and retries.
+4. **Every write is idempotent.** The bridge keeps an action log (append-only, one line per decision: when, repository, object, action, inputs, outcome). A fact already acted upon is skipped; a fact whose action failed is retried at the next tick; a tracker read that fails writes nothing and retries. On unix the log is private to the bridge's account: the file is created `0600`, a directory the bridge creates for it `0700` (`docs/setup/bridge.md`, "Action log").
 5. **It fails closed.** An unreadable configuration, registry, ticket or PR link stops the decision that depends on it and says so in the log; it never guesses and never degrades to "no constraint".
 6. **One merge per repository per tick**, so that the next tick re-reads a base that moved.
 7. **It leaves no heartbeat in the data.** A tick that finds nothing to do writes nothing, anywhere, but the action log's note of why a PR waits, when that reason is new (step 3), and of an object a person took over, when the tick first leaves it alone ("Hands off"). A tick that works leaves only its effects (transitions, comments, links, merges), signed by its identity: that is its report. It never rewrites an unchanged value. A failed tick (error, time budget exceeded) is reported once to its host (the host's job log, the action log), never as a fact on an item. The lock file of invariant 8 is no exception: it is empty and carries nothing.
@@ -44,7 +44,7 @@ An item it serves to an agent is a complete contract that carries its protocol (
 
 ## What it writes to GitHub
 
-Merges (REST, pinned to a head SHA), branch deletions, labels, comments on PRs (one per cause, never repeated), the dispatch of the cut workflow when the policy tags the next RC automatically, and on a computed GO the annotated release tag and its GitHub release.
+Merges (REST, pinned to a head SHA), branch deletions, labels, comments on PRs (one per cause, never repeated), the dismissal of an App's standing request for changes that a coordinator's approval at the head supersedes, right before the merge (`04-pr-review.md` §6), the update of a PR branch behind a base it must be up to date with (`review.require_up_to_date`), a review request to `review.human_reviewer` for a green PR held by something only a human can lift, the dispatch of the cut workflow when the policy tags the next RC automatically, and on a computed GO the annotated release tag and its GitHub release. The ticket it opens for an App's PR that has none (`review.ticketless_authors`, `04-pr-review.md` §9) is a tracker write: created labelled `ticketless-pr` and linked to the PR there.
 
 ## What it sends (the `Notifier` trait)
 
@@ -68,10 +68,11 @@ The verbs below are a person's own gestures: the guard is the tick's.
 | Verb | Purpose |
 |---|---|
 | `tick` | One pass; `--dry-run` writes only the log of what it would do |
-| `release cut --product <p> [--open]` | Dispatch the cut workflow (new cycle or next RC). Every `release` verb refuses, writing nothing, when the configuration has no `[release]` section |
+| `release cut --product <p> [--open]` | Dispatch the cut workflow (new cycle or next RC). Every `release` verb, `release prepare` included, refuses, writing nothing, when the configuration has no `[release]` section |
 | `release status --product <p>` | The GO decision and its inputs, as text and JSON |
-| `release prepare [--version <X.Y.Z>] [--notes <file>] [--dry-run]` | Run by the cut's `open` in a checkout of the new release branch: the next version from the commits since the last release, along the git graph, written into the version files and the CHANGELOG, and the release notes; prints `version=`, `tag=`, `previous-tag=`. Reads the repository's file only, never an instance overlay, and talks to no service (`05-release-cycle.md` §1) |
+| `release prepare [--version <X.Y.Z>] [--notes <file>] [--dir <path>] [--repository <owner>/<repo>] [--date <YYYY-MM-DD>] [--dry-run]` | Run by the cut's `open` in a checkout of the new release branch: the next version from the commits since the last release, along the git graph, written into the version files and the CHANGELOG, and the release notes; prints `version=`, `tag=`, `previous-tag=`. Reads the repository's file only, never an instance overlay, and talks to no service (`05-release-cycle.md` §1) |
 | `release requalify <ticket> --severity <s> --reason <r>` | Human requalification of a finding |
+| `release abandon --product <p>` | Abandon the cycle in flight (`05-release-cycle.md` §13) |
 | `ticket check <item>` | Contract judgement |
 | `config check` | Validate `spl-asdlc.toml`, merged with its instance overlay (spec 08) |
 | `doctor` | Verify the setup of a repository (App, secrets, rulesets, tracker identity, config and its instance overlay); `release cycle: none` without `[release]`, the release-only checks then skipped; with it, `release base`: the published release the next candidate is measured from, or none yet, the first release being measured from the repository's root |

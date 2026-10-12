@@ -1,6 +1,6 @@
 # 06 — The angle report
 
-Every angle of a release QA commits one report in its branch, in `.spl-asdlc/qa/<candidate>/<angle>.json`. The report is mandatory: an angle that found nothing still commits it with an empty findings list and a `go` verdict. The bridge reads the merged reports to create tickets and to compute the GO; the concatenation of the reports is the record of the cycle.
+Every angle of a release QA commits one report in its branch, in `.spl-asdlc/qa/<candidate>/<angle>.json` by default (the directory is `release.record`, `08-configuration.md`). The report is mandatory: an angle that found nothing still commits it with an empty findings list and a `go` verdict. The bridge reads the merged reports to create tickets and to compute the GO; the concatenation of the reports is the record of the cycle.
 
 ## Schema
 
@@ -35,7 +35,7 @@ Every angle of a release QA commits one report in its branch, in `.spl-asdlc/qa/
 1. `checked` is never empty: "found nothing" is not "did nothing". A report with an empty `checked` is invalid and the bridge refuses the angle PR.
 2. A `hold` verdict requires at least one `blocker` that is not `fixed_in_branch`; a `go` verdict requires no `blocker` at all; otherwise `go-with-note`.
 3. A `blocker` fixed in the branch is listed with `fixed_in_branch: true` and its test named in `proposed_test`; the fix and the test are commits of the same branch.
-4. A `blocker` not fixed in the branch becomes, when the report is merged, a blocker ticket that `blocks` the release issue; the bridge writes its id back into `ticket` in a follow-up commit on the release branch, or records the mapping in the release issue.
+4. A `blocker` not fixed in the branch becomes, when the report is merged, a blocker ticket that `blocks` the release issue; the bridge writes nothing back into the report: the finding marker on the ticket (candidate, angle, finding id) carries the mapping, and `ticket` stays as the angle wrote it.
 5. A `should-fix` becomes a `qa-finding` ticket; a `nit` becomes a box of the cycle's nits ticket, or a ticket of its own, as `release.nits` says (`05-release-cycle.md` §6). All are created by the bridge, once, idempotently (keyed by candidate, angle, finding id), each with a full contract. A `nit` is documented, not solved: `summary` says what was observed, `anchor` where, `evidence` in what context (how it was met, what it looks like). `evidence` may end with a fix that is already obvious; nobody hunts for one. The bridge copies the three into the nit's box, each collapsed to one line.
 6. Every `testable: true` finding names a `proposed_test`; the ticket that fixes it carries that test as an acceptance criterion.
 7. A red CI suite is not a finding: it is the gate's job.

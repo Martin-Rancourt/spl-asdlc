@@ -4,7 +4,7 @@ One file per repository, `spl-asdlc.toml` at the root, read by the bridge and va
 
 ## Example
 
-The repository's file, then its instance overlay. Both are valid as written: the crate's test suite parses them and merges them. A project that keeps everything in one file writes the overlay's keys in its `spl-asdlc.toml`, each in its table, and an angle's `assignee` in that angle's entry.
+The repository's file, then its instance overlay. Both are valid as written: the crate's test suite parses them and merges them. The example leaves out some optional keys; the tables under "Keys" list every key with its default. A project that keeps everything in one file writes the overlay's keys in its `spl-asdlc.toml`, each in its table, and an angle's `assignee` in that angle's entry.
 
 ```toml
 schema = 1
@@ -66,6 +66,7 @@ ticketless_authors = ["dependabot"]    # Apps whose PRs need no ticket: the brid
 
 [[review.angles]]                      # base angles of every PR review
 key = "maintainability"
+notes = ".spl-asdlc/angles/maintainability.md" # optional project notes, linked from the angle's sub-items
 
 [[review.path_angles]]
 paths = ["**/auth/**", "**/migrations/**"]
@@ -75,6 +76,7 @@ angle = "security"
 poll_minutes = 5
 github_identity = "app"                # "app" | "token"
 sweep_hours = 24
+# hands_off_label = "spl-asdlc:hands-off"  # the default; the label by which a person takes an object over
 ```
 
 The instance overlay, `spl-asdlc.instance.toml` on the host:
@@ -119,7 +121,7 @@ events = ["release-note", "escalation", "stagnation", "stuck-pr", "blind-pass"]
 1. Secrets are never in the file. A channel's `target` and `token` are references `env:<VARIABLE>` (`VARIABLE`: capital letters, digits and `_`, not starting with a digit) resolved from the environment of the host that runs the bridge; a literal value there is an error. Identities (`service_identity`, logins, `github_identity`) are names, never credentials: the credentials themselves come from the host (`docs/setup/bridge.md`).
 2. Tag patterns must contain `{version}` exactly once and `{rc}` exactly once for the candidate; the release tag contains `{version}` exactly once and no `{rc}`; `record` contains `{candidate}` exactly once and a version file's `pattern` `{version}` exactly once; no other placeholder is accepted. A multi-component product (a non-empty `release.components`, a `release.version_component` or a `release.gate_record`) is refused: the release cycle prepares one version per product (`05-release-cycle.md` §1, §9), and a product whose components ship their own versions is not supported yet.
 3. Angle keys name branches (`qa/<candidate>/<angle>`) and files (`<angle>.json`): lower-case letters, digits and hyphens, not starting with a hyphen, unique per list. Product names follow the same shape (they appear in tags and labels). The bridge embeds in each angle sub-item the method's file of that key under `docs/agents/angles/` of this product, compiled into its binary, or a line saying the method has no notes for an angle of the project's own; the project's notes (`notes`) are linked from the item, never embedded (BR-ASDLC-015).
-4. `go_policy = "human"` adds the owner's approval on the release issue to the computed conditions; it never replaces them.
+4. `go_policy = "human"` adds the owner's approval on the release issue to the computed conditions; it never replaces them. That approval is **not implemented**: the bridge does not read it (`docs/open-points.md` #3), so under `human` it never reaches a GO, and a person tags and publishes the release instead (`09-requalification-and-human-gestures.md`).
 5. The sensitive-path file follows the format of `.github/review-paths.json`: a list of globs and a list of documented exceptions; it is read at the PR's base ref, so a PR cannot weaken the list that judges it. When `sensitive_paths` is declared, the file must exist and be valid at the base: absent or unreadable, the PR waits, one human notice says "configuration invalid for this repository", and `doctor` reports it — never "no sensitive path". Only when the key is not declared at all are there no sensitive paths.
 6. Unknown keys are errors (a misspelt key is never a silently ignored setting). `config check` lists every problem of a well-formed file; a file that is not valid TOML, carries an unknown key or a value of the wrong type (a string where a number is expected) is reported by its first such error, with its line.
 7. Every default below is what the bridge uses when the key is absent; a present key with an invalid value is an error, never replaced by its default.
@@ -172,7 +174,7 @@ Every other key is the method's shape and stays in the repository's file, where 
 | Key | Default | Meaning | Fail-closed |
 |---|---|---|---|
 | `owner.tracker_user` | required | The owner as the tracker knows them; escalations are assigned to them (`05-release-cycle.md` §10), and a validation sub-task names them as whom to reassign a check an agent cannot verify (§11). | Unknown to the tracker: the escalation is reported as failed and retried; `doctor` reports it. |
-| `owner.github_login` | none; required when `go_policy = "human"` | The login whose `/go` on the release issue counts as the human GO. | Absent under a human policy: file invalid. |
+| `owner.github_login` | none; required when `go_policy = "human"` | The login whose `/go` on the release issue is meant to count as the human GO; not read yet (rule 4): a person tags and publishes the release instead (spec 09). | Absent under a human policy: file invalid. |
 
 ### `[tracker]`
 
@@ -197,7 +199,7 @@ The section is optional, and so is the release cycle it configures (`05-release-
 | `release.branch_prefix` | `release/` | Prefix of release branches; the rest is `<YYYY-MM-DD-HH-MM>-utc`. | Not a path ending in `/`: file invalid. |
 | `release.max_rc_passes` | `2` | RC passes with QA before escalation to the owner. | Not a positive integer: file invalid. |
 | `release.later_passes` | `"full"` | Whether passes after the first run every angle (`full`) or only the gate and the coordinator. | Other value: file invalid. |
-| `release.go_policy` | `"computed"` | `human` adds the owner's approval to the computed GO. | Other value: file invalid. |
+| `release.go_policy` | `"computed"` | `human` adds the owner's approval to the computed GO; that approval is not read yet, so under `human` the bridge never reaches a GO (rule 4). | Other value: file invalid. |
 | `release.nits` | `"shared"` | How the nits of a release become tickets (`05-release-cycle.md` §6), chosen for the tracker: `shared`, one nits ticket per release whose boxes are the nits, for a tracker that limits its ticket count (Linear's free plan); `per-nit`, one ticket per nit in `Triage`, keyed by candidate, angle and finding id, for a tracker that does not (Livela). Either way each ticket carries a full contract whose goal is to triage. | Other value: file invalid. A shared nits ticket that carries no contract: left alone, said at each tick. |
 | `release.record` | `.spl-asdlc/qa/{candidate}/` | Directory of the angle reports (`06-qa-report.md`). | Without `{candidate}`: file invalid. |
 | `release.bookkeeping_paths` | `[]` | Files allowed to differ between the latest RC and the release branch tip (a file the project's own tooling writes on the branch after the candidate), as exact paths. The reports of the latest RC's own angles (`record` rendered for that RC) are always allowed and need no entry (`05-release-cycle.md` §8). The release itself is tagged on the RC's commit, so none of these files reaches it. | Empty: the RC must equal the tip, but for those; anything else is a tip gap and the GO is false. |
@@ -216,7 +218,7 @@ The section is optional, and so is the release cycle it configures (`05-release-
 | `[[release.changelog_sections]]` | one section per type `asdlc-pr-title.yml` allows by default: `feat` Features, `fix` Bug Fixes, `perf` Performance, `revert` Reverts, `docs` Documentation, `style` Style, `chore` Chores, `refactor` Refactoring, `test` Tests, `build` Build, `ci` Continuous Integration | The CHANGELOG sections of the release notes, in order: a Conventional Commit `type` (lower-case letters) and its `section` title. A type no section lists is left out of the notes and bumps nothing; a breaking change is always listed, first, under `⚠ BREAKING CHANGES`. Keep it equal to the types the PR title check allows (REQ-CI-016). | A type twice, not lower-case, or `[]`: file invalid. |
 | `[[release.angles]]` | required with `[release]`: at least one entry, or `angles = []` written under `[release]` | `key` (required), `title` (default `<Key> review`), `assignee` (participant hint: the angle item is created assigned to it, and is assigned to it again when a coordinator sends its angle PR back, `05-release-cycle.md` §4), `notes` (path). `angles = []` is a release with no QA angle: the bridge opens no angle sub-item and no consolidation item, the brief says no QA angle is configured, and the GO rests on the gate and the conditions that involve no angle (`05-release-cycle.md` §3, §8). Angles configured later apply from the next candidate: a candidate recorded with none keeps none. | No angle written at all: file invalid — the file forgot them, it never means none. An `assignee` unknown to the tracker: the angle item is created unassigned, and unassigned when sent back; `doctor` reports it. |
 
-*Superseded 2026-10-12 (SID-1058)*: `release.release_pr_label`, `release.release_please_authors`, `release.release_please_workflow`, `release.release_please_config` and `release.release_please_manifest` are gone with release-please, and are unknown keys (rule 6); `release.components`, `release.version_component` and `release.gate_record` are refused (rule 2).
+`release.release_pr_label` and the `release.release_please_*` keys are unknown keys, refused (rule 6).
 
 ### `[review]`
 
