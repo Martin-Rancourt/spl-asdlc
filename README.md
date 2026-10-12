@@ -26,7 +26,11 @@ First draft. The specification and the requirements are written (`docs/requireme
 | `docs/livela-contract.md` | What the Livela tracker must offer for its adapter |
 | `scripts/` | Checks that run in CI (no instance names, …) |
 | `.github/workflows/asdlc-*.yml`, `actions/` | The reusable workflows and the composite action a project calls |
-| `.github/workflows/` (the others) | This repository's own CI: `pr.yml`, `pr-title.yml` and the release chain call this commit's `asdlc-*` workflows; `binaries.yml` builds and attaches the binaries of a release |
+| `.github/workflows/` (the others) | This repository's own CI: `pr.yml` and `pr-title.yml` call this commit's PR-side `asdlc-*` workflows; `release-please.yml` keeps the release PR on `main`; `publish.yml` calls `binaries.yml`, which builds and attaches the binaries of a release |
+
+## How spl-asdlc itself is developed
+
+This repository does not run the SPL-ASDLC flow on itself. It follows GitHub Flow: every change is a pull request to `main`, checked by `pr.yml` and `pr-title.yml`. Releases are release-please's normal mode on `main`: it keeps a release PR open, and merging it tags `v<X.Y.Z>` and publishes the GitHub release, whose binaries `publish.yml` builds and attaches. The method (the bridge, the `asdlc-*` workflows, the release cycle) is exercised on a separate sandbox repository, so that a bug in the flow never blocks its own fix.
 
 ## Rule zero
 

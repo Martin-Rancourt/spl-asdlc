@@ -276,20 +276,19 @@ fn this_repositorys_release_please_files_make_the_existing_tags() {
     let package = &config["packages"]["."];
     assert_eq!(package["release-type"], "rust");
     assert_eq!(package["component"], "spl-asdlc");
-    // Tags are `v<X.Y.Z>` (the existing v0.1.0, the release tag of this
-    // repository's release callers), so the component stays out of the tag.
+    // Tags are `v<X.Y.Z>` (the existing ones, and the tag binaries.yml
+    // builds), so the component stays out of the tag.
     assert_eq!(package["include-component-in-tag"], false);
-    let publish = read(".github/workflows/release-publish.yml");
+    let binaries = read(".github/workflows/binaries.yml");
     assert!(
-        publish.contains("release-tag-pattern: v{version}\n"),
-        "release-publish.yml publishes v<X.Y.Z> tags"
+        binaries.contains(r#"test "v$version" = "$TAG""#),
+        "binaries.yml builds v<X.Y.Z> tags"
     );
     // Without the component in the tag release-please leaves it out of its
-    // PR title too, and release-cut finds the staged version after the
-    // component's name: the title pattern names it.
+    // PR title too: the title pattern names the product. release-please runs
+    // on main, where the scope is empty.
     let title = package["pull-request-title-pattern"].as_str().unwrap();
-    assert!(title.contains("${scope}"), "{title}");
-    assert!(title.ends_with("release spl-asdlc ${version}"), "{title}");
+    assert_eq!(title, "chore: release spl-asdlc ${version}");
 
     let manifest = json(".release-please-manifest.json");
     let cargo: toml::Value = toml::from_str(&read("Cargo.toml")).unwrap();

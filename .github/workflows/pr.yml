@@ -12,9 +12,11 @@ name: pr
 # file is a need of `required-check`, and only the jobs listed in `may-skip`
 # may be skipped (REQ-CI-024, REQ-CI-025).
 #
-# No run on a push to main: the PR already ran on its merge commit, and the
-# hosted minutes are a budget. Linux only: a macOS minute counts ten and a
-# Windows minute two; binaries.yml builds and tests those once per release.
+# GitHub Flow: every change reaches main through a PR to main, so the PR is
+# the only trigger. No run on a push to main: the PR already ran on its merge
+# commit, and the hosted minutes are a budget. Linux only: a macOS minute
+# counts ten and a Windows minute two; binaries.yml builds and tests those
+# once per release.
 #
 # The repository variable SPL_ASDLC_RUNS_ON (a JSON string such as
 # "ubuntu-latest", or a JSON array of labels such as
@@ -25,7 +27,7 @@ name: pr
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    branches: [main, 'release/**']
+    branches: [main]
 
 concurrency:
   group: pr-${{ github.ref }}-${{ github.event.pull_request.draft }}
@@ -49,9 +51,7 @@ jobs:
       # docs/setup/templates/ and docs/setup/examples/, and rule zero reads
       # every file. Only the licence text, which no test reads, skips the suite.
       prose-regex: '^LICENSE$'
-      # The same list as the gate's (release-gate.yml): a guard that runs on
-      # PRs also runs on the candidate, or carries a written exception
-      # (REQ-CI-033). This repository's checks are jobs of their own.
+      # This repository's checks are jobs of their own.
       guard-commands: '[]'
       runs-on: ${{ startsWith(vars.SPL_ASDLC_RUNS_ON, '"') && fromJSON(vars.SPL_ASDLC_RUNS_ON) || vars.SPL_ASDLC_RUNS_ON || 'ubuntu-latest' }}
 
@@ -73,66 +73,9 @@ jobs:
           SPL_ASDLC_FORBIDDEN_WORDS: ${{ secrets.SPL_ASDLC_FORBIDDEN_WORDS || vars.SPL_ASDLC_FORBIDDEN_WORDS }}
         run: bash scripts/check-no-instance-names.sh
 
-  # The host runs the latest published release, never this commit
-  # (docs/setup/bridge.md), and refuses a file with a key it does not know: a
-  # merged change that release cannot read stops the bridge on this
-  # repository. So this repository's spl-asdlc.toml, completed by the neutral
-  # overlay tests/own_config.rs uses, is checked by that release's binary,
-  # checksum verified. A new key enters the file only once a release that
-  # knows it is installed (docs/agents/implement.md). On every PR, drafts and
-  # release-please's included: it costs a download. Not a gate guard: the
-  # host reads the default branch's file, and a PR to a release branch runs
-  # it here. The archive is the x86_64 Linux one: the runners are x64.
-  config-latest-release:
-    name: spl-asdlc.toml — readable by the latest release
-    runs-on: ${{ fromJSON(vars.SPL_ASDLC_RUNS_ON || '"ubuntu-latest"') }}
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Check the file with the latest published release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          TARGET: x86_64-unknown-linux-gnu
-          OVERLAY: tests/fixtures/own-config.instance.toml
-        run: |
-          work=$(mktemp -d)
-          # The latest published release: neither a draft nor a prerelease.
-          if ! tag=$(gh api "repos/$REPO/releases/latest" --jq .tag_name 2> "$work/err"); then
-            if grep -q 'HTTP 404' "$work/err"; then
-              echo "::notice::No published release of $REPO: no installed bridge to stay readable by, nothing to check."
-              exit 0
-            fi
-            cat "$work/err" >&2
-            exit 1
-          fi
-          asset="spl-asdlc-$tag-$TARGET.tar.gz"
-          gh release download "$tag" --repo "$REPO" --dir "$work" --pattern "$asset" --pattern SHA256SUMS
-          want=$(awk -v a="$asset" '$2 == a { print $1 }' "$work/SHA256SUMS")
-          got=$(sha256sum "$work/$asset" | awk '{ print $1 }')
-          if [ -z "$want" ] || [ "$want" != "$got" ]; then
-            echo "::error::$asset: its SHA-256 is not the one the SHA256SUMS of $tag lists"
-            exit 1
-          fi
-          tar xzf "$work/$asset" -C "$work"
-          bin="$work/spl-asdlc-$tag-$TARGET/spl-asdlc"
-          version=$("$bin" --version)
-          if [ "$version" != "spl-asdlc ${tag#v}" ]; then
-            echo "::error::$asset prints \"$version\", not the version of $tag"
-            exit 1
-          fi
-          echo "spl-asdlc.toml with $OVERLAY, checked by $version, the latest published release:"
-          if ! "$bin" config check --file spl-asdlc.toml --instance "$OVERLAY"; then
-            echo "::error file=spl-asdlc.toml::spl-asdlc $tag, the release the host runs, refuses this file (the key is named above). A new key enters it only once a release that knows it is installed."
-            exit 1
-          fi
-
   # The cheap tier: also on drafts. Skipped on release-please's PRs (guards
-  # reports no code); the gate validates the release.
+  # reports no code): they change only the version and the changelog, and
+  # binaries.yml tests the release on every target before attaching it.
   fmt:
     name: rustfmt
     needs: guards
@@ -203,7 +146,7 @@ jobs:
   required-check:
     name: required-check
     if: always()
-    needs: [guards, rule-zero, config-latest-release, fmt, clippy, test]
+    needs: [guards, rule-zero, fmt, clippy, test]
     runs-on: ${{ fromJSON(vars.SPL_ASDLC_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 5
     permissions:
