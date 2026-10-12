@@ -247,6 +247,7 @@ The section is optional, and so is the release cycle it configures (`05-release-
 | `bridge.poll_minutes` | `5` | Cadence of the tick when run as a daemon. | Not a positive integer: file invalid. |
 | `bridge.github_identity` | `"app"` | Write as the GitHub App, or as a personal token where an App is not allowed. | Credentials missing on the host: the bridge refuses to start and names them. |
 | `bridge.sweep_hours` | `24` | Window of the sweep of PRs merged outside the bridge. | Not a positive integer: file invalid. |
+| `bridge.hands_off_label` | `spl-asdlc:hands-off` | The label by which a person takes a tracker item, or a GitHub PR (the GitHub label of the same name), over by hand: the tick writes nothing to an object that carries it (`07-the-bridge.md`, "Hands off"; `09-requalification-and-human-gestures.md`). It sits under `[bridge]` because it bounds what the bridge itself writes, on the tracker and on GitHub alike, with or without a review or a release cycle. The bridge never creates it: a person adds it where they need it. | Empty: file invalid. Absent from the tracker or from GitHub: nothing is under it; `doctor` says whether the tracker has it, never as a missing piece. |
 
 ### `[[notify]]`
 

@@ -274,6 +274,10 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> Pass {
             report.out_of_time = true;
             break;
         }
+        // Taken over by hand: still live work on its ticket, never judged.
+        if t.by_hand(report, &pr) {
+            continue;
+        }
         let base = bases
             .entry(pr.base_ref.clone())
             .or_insert_with(|| read_base(t, &pr.base_ref));

@@ -218,6 +218,7 @@ impl World {
             now: Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
             deadline: None,
             dry_run: false,
+            hands_off: None,
         };
         let mut log = ActionLog::in_memory();
         run(&t, &mut log)
@@ -933,6 +934,47 @@ fn the_go_computed_merges_the_release_pr_and_nothing_else() {
 }
 
 #[test]
+fn a_release_pr_under_the_hands_off_label_is_left_to_the_person_who_takes_the_go() {
+    let w = World::new();
+    w.tick();
+    all_angles_merged(&w);
+    let mut rp = release_pr(&w, "1.2.0");
+    rp.labels.push("spl-asdlc:hands-off".into());
+    w.open_on_branch(vec![rp.clone()]);
+    let comments = |w: &World| {
+        w.tracker
+            .writes()
+            .iter()
+            .filter(|l| l.contains("GO computed"))
+            .count()
+    };
+    for _ in 0..2 {
+        let r = w.tick();
+        assert!(r.ok(), "{r:?}");
+        assert_eq!(r.hands_off_lines(), vec!["hands-off: pr#40"], "{r:?}");
+        assert!(
+            !w.github.writes().iter().any(|l| l.starts_with("merge")),
+            "{:?}",
+            w.github.writes()
+        );
+        assert_eq!(comments(&w), 0, "no GO comment for a merge not made");
+    }
+    // The label removed: the next tick takes the GO as usual.
+    rp.labels.retain(|l| l != "spl-asdlc:hands-off");
+    w.open_on_branch(vec![rp.clone()]);
+    let r = w.tick();
+    assert!(r.hands_off.is_empty(), "{r:?}");
+    assert!(
+        w.github.writes().contains(&format!(
+            "merge example-org/acme#40 at {} squash",
+            rp.head_sha
+        )),
+        "{r:?}"
+    );
+    assert_eq!(comments(&w), 1, "the GO comment, once merged");
+}
+
+#[test]
 fn a_single_component_release_pr_stages_its_version_in_its_title_and_its_heading() {
     let body = ":robot: I have created a release *beep* *boop*\n---\n\n\n## [1.2.0](https://github.com/OWNER/REPO/compare/acme-v1.1.0...acme-v1.2.0) (2026-10-11)\n\n\n### Features\n\n* m1\n";
     for title in [
@@ -1259,6 +1301,7 @@ impl World {
             now: Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
             deadline: None,
             dry_run: false,
+            hands_off: None,
         }
     }
 }
@@ -1895,6 +1938,7 @@ fn a_dry_run_writes_no_nit_in_either_grouping() {
             now: Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
             deadline: None,
             dry_run: true,
+            hands_off: None,
         };
         let mut log = ActionLog::in_memory();
         let r = run(&t, &mut log);
@@ -1934,6 +1978,7 @@ fn a_dry_run_of_the_release_pass_writes_nothing() {
         now: Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
         deadline: None,
         dry_run: true,
+        hands_off: None,
     };
     let mut log = ActionLog::in_memory();
     let r = run(&t, &mut log);
@@ -2418,6 +2463,7 @@ fn a_dry_run_of_the_post_deploy_pass_writes_nothing() {
     let t = Tick {
         tracker: &tr,
         dry_run: true,
+        hands_off: None,
         ..w.tick_ctx()
     };
     let mut log = ActionLog::in_memory();
@@ -2656,6 +2702,7 @@ fn a_dry_run_of_the_closure_prints_the_unassign() {
         tracker: &tr,
         signal: &sig,
         dry_run: true,
+        hands_off: None,
         ..w.tick_ctx()
     };
     let mut log = ActionLog::in_memory();
@@ -3122,6 +3169,7 @@ fn a_dry_run_prints_the_urgent_gate_fix_ticket_it_would_open() {
         tracker: &tr,
         signal: &sig,
         dry_run: true,
+        hands_off: None,
         ..w.tick_ctx()
     };
     let mut log = ActionLog::in_memory();
@@ -3171,6 +3219,7 @@ fn the_validation_sub_task_is_created_urgent_and_a_dry_run_says_so() {
     let t = Tick {
         tracker: &tr,
         dry_run: true,
+        hands_off: None,
         ..w.tick_ctx()
     };
     let mut log = ActionLog::in_memory();
@@ -3444,6 +3493,7 @@ fn a_dry_run_of_the_closure_prints_the_archives() {
         tracker: &tr,
         signal: &sig,
         dry_run: true,
+        hands_off: None,
         ..w.tick_ctx()
     };
     let mut log = ActionLog::in_memory();
@@ -3920,6 +3970,7 @@ fn a_dry_run_prints_the_angle_items_flow_and_the_relations() {
         tracker: &tr,
         signal: &sig,
         dry_run: true,
+        hands_off: None,
         ..w.tick_ctx()
     };
     let mut log = ActionLog::in_memory();
@@ -4163,6 +4214,7 @@ fn a_dry_run_prints_the_coordinator_served_in_review() {
         tracker: &tr,
         signal: &sig,
         dry_run: true,
+        hands_off: None,
         ..w.tick_ctx()
     };
     let mut log = ActionLog::in_memory();

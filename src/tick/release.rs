@@ -265,7 +265,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
         let Some((cand, angle)) = prs::parse_angle_branch(&pr.head_ref) else {
             continue;
         };
-        if cand != candidate.tag {
+        if cand != candidate.tag || t.by_hand(report, pr) {
             continue;
         }
         let state = angle_pr(

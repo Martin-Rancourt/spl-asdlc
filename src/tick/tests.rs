@@ -89,6 +89,7 @@ impl World {
             now: crate::github::Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
             deadline: None,
             dry_run,
+            hands_off: None,
         };
         // A dry run keeps its log in memory, as the command line does.
         let mut log = if dry_run {
@@ -548,6 +549,7 @@ fn a_dry_run_reads_everything_and_writes_nothing() {
         now: crate::github::Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
         deadline: None,
         dry_run: true,
+        hands_off: None,
     };
     let mut log = ActionLog::in_memory();
     run(&t, &mut log);
@@ -1644,6 +1646,7 @@ fn a_dry_run_says_the_relations_it_would_write() {
         now: crate::github::Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
         deadline: None,
         dry_run: true,
+        hands_off: None,
     };
     let mut log = ActionLog::in_memory();
     run(&t, &mut log);
@@ -1884,6 +1887,7 @@ fn a_dry_run_shows_a_merge_with_no_pr_review() {
         now: crate::github::Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
         deadline: None,
         dry_run: true,
+        hands_off: None,
     };
     let mut log = ActionLog::in_memory();
     run(&t, &mut log);
@@ -2434,6 +2438,7 @@ fn a_dry_run_prints_the_dismissals_before_the_merge() {
         now: crate::github::Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
         deadline: None,
         dry_run: true,
+        hands_off: None,
     };
     let mut log = ActionLog::in_memory();
     run(&t, &mut log);
@@ -2462,4 +2467,117 @@ fn a_dry_run_prints_the_dismissals_before_the_merge() {
         .position(|l| l == "github example-org/acme: merge #7 at head-7 (squash)")
         .expect("then the merge");
     assert!(dismissal < merge, "{intents:?}");
+}
+
+// ---- the hands-off label (spec 07, spec 09) ----
+
+const HANDS_OFF: &str = "spl-asdlc:hands-off";
+
+#[test]
+fn a_pr_under_the_hands_off_label_is_never_merged_until_the_label_is_removed() {
+    let mut w = World::new();
+    no_review(&mut w);
+    let mut pr = green(pull_request(7));
+    pr.labels = vec![HANDS_OFF.into()];
+    w.ticket("ABC-7", Status::InProgress, &pr);
+    check_every_box(&w, "ABC-7");
+    w.open(pr.clone());
+    let tracker_before = w.tracker.writes().len();
+    let (report, log) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(report.hands_off_lines(), vec!["hands-off: pr#7"]);
+    assert!(
+        report.waiting.is_empty(),
+        "hands-off is not waiting: {report:?}"
+    );
+    assert!(w.github_writes().is_empty(), "{:?}", w.github_writes());
+    assert_eq!(
+        w.tracker.writes().len(),
+        tracker_before,
+        "nothing moved because of it"
+    );
+    let notes: Vec<(&str, &str)> = log
+        .entries()
+        .iter()
+        .map(|e| (e.object.as_str(), e.action.as_str()))
+        .collect();
+    assert_eq!(notes, vec![("pr#7", crate::action_log::HANDS_OFF)]);
+    // The next tick says it again, and the log does not.
+    let (report, log) = w.tick(false);
+    assert_eq!(report.hands_off_lines(), vec!["hands-off: pr#7"]);
+    assert!(log.entries().is_empty(), "{:?}", log.entries());
+    assert!(!merged(&w));
+
+    // The label removed: handed back, the next tick merges it.
+    pr.labels.clear();
+    w.open(pr);
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert!(report.hands_off.is_empty(), "{report:?}");
+    assert!(merged(&w), "{:?}", w.github_writes());
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::ToDeploy));
+}
+
+#[test]
+fn a_pr_under_the_hands_off_label_gets_no_review_round_and_no_comment() {
+    let w = World::new();
+    let mut pr = green(pull_request(7));
+    pr.labels = vec![HANDS_OFF.into()];
+    w.ticket("ABC-7", Status::InProgress, &pr);
+    w.open(pr);
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(report.hands_off_lines(), vec!["hands-off: pr#7"]);
+    assert!(children_of(&w, "ABC-7").is_empty(), "no round opened");
+    assert_eq!(
+        w.tracker.item("ABC-7").state.status,
+        Some(Status::InProgress)
+    );
+    assert!(w.github_writes().is_empty(), "{:?}", w.github_writes());
+}
+
+#[test]
+fn a_ticket_under_the_hands_off_label_is_never_written_and_is_handed_back_when_it_goes() {
+    let mut w = World::new();
+    no_review(&mut w);
+    let pr = green(pull_request(7));
+    w.tracker.seed(
+        "ABC-7",
+        "A ticket",
+        COMPLETE,
+        Status::InProgress,
+        &[HANDS_OFF],
+    );
+    w.tracker.link("ABC-7", &pr.url);
+    check_every_box(&w, "ABC-7");
+    w.open(pr.clone());
+    let tracker_before = w.tracker.writes().len();
+    // Its PR merges; the ticket stays as the person put it, tick after tick.
+    for _ in 0..2 {
+        let (report, _) = w.tick(false);
+        assert!(report.ok(), "{report:?}");
+        assert_eq!(report.hands_off_lines(), vec!["hands-off: ABC-7"]);
+        assert_eq!(
+            w.tracker.item("ABC-7").state.status,
+            Some(Status::InProgress)
+        );
+        assert_eq!(
+            w.tracker.writes().len(),
+            tracker_before,
+            "{:?}",
+            &w.tracker.writes()[tracker_before..]
+        );
+    }
+    assert!(
+        merged(&w),
+        "the PR is not under the label: {:?}",
+        w.github_writes()
+    );
+
+    // The label removed: the next tick gives the ticket the merge's transition.
+    crate::tracker::Tracker::remove_label(&w.tracker, "ABC-7", HANDS_OFF).unwrap();
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert!(report.hands_off.is_empty(), "{report:?}");
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::ToDeploy));
 }

@@ -272,7 +272,13 @@ pub struct Bridge {
     pub poll_minutes: u32,
     pub github_identity: GithubIdentity,
     pub sweep_hours: u32,
+    /// The label, on a tracker item or a GitHub PR, under which the tick
+    /// writes nothing to it: a person took it over by hand (spec 09).
+    pub hands_off_label: String,
 }
+
+/// The default of `bridge.hands_off_label`.
+pub const DEFAULT_HANDS_OFF_LABEL: &str = "spl-asdlc:hands-off";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotifyKind {
@@ -1180,6 +1186,7 @@ impl Validator {
             poll_minutes: None,
             github_identity: None,
             sweep_hours: None,
+            hands_off_label: None,
         });
         let poll_minutes = self.positive("bridge.poll_minutes", raw.poll_minutes, 5);
         let github_identity = self
@@ -1194,10 +1201,14 @@ impl Validator {
             )
             .unwrap_or(GithubIdentity::App);
         let sweep_hours = self.positive("bridge.sweep_hours", raw.sweep_hours, 24);
+        let hands_off_label = self
+            .optional("bridge.hands_off_label", raw.hands_off_label)
+            .unwrap_or_else(|| DEFAULT_HANDS_OFF_LABEL.to_string());
         Bridge {
             poll_minutes,
             github_identity,
             sweep_hours,
+            hands_off_label,
         }
     }
 

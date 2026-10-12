@@ -107,6 +107,7 @@ angles = []                            # no base angle: layer 1 replaces it
 # poll_minutes = 5
 # github_identity = "app"              # "app" | "token"
 # sweep_hours = 24
+# hands_off_label = "spl-asdlc:hands-off" # an item or PR carrying it is left to people (spec 07, "Hands off")
 
 # Notification channels (optional). References only, never values.
 # [[notify]]
