@@ -1912,6 +1912,141 @@ fn a_dry_run_shows_a_merge_with_no_pr_review() {
     );
 }
 
+/// The bridge's comments on an item saying the configuration no longer asks
+/// for it.
+fn not_asked(w: &World, key: &str) -> usize {
+    crate::tracker::Tracker::comments(&w.tracker, key)
+        .unwrap()
+        .iter()
+        .filter(|c| c.by_bridge && c.body.contains("The configuration no longer asks for"))
+        .count()
+}
+
+#[test]
+fn a_round_opened_before_the_angles_were_removed_is_canceled_and_the_pr_merges_on_its_ci() {
+    let mut w = World::new();
+    let pr = in_review(&w, 7);
+    check_every_box(&w, "ABC-7");
+    let items = round(&w, "ABC-7", &pr);
+    assert!(all_in(&items, Status::Ready), "{items:?}");
+    // The project drops its PR review; the PR has no approval at all.
+    no_review(&mut w);
+    let (report, log) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert!(merged(&w), "{:?}", w.github_writes());
+    let after = round(&w, "ABC-7", &pr);
+    assert!(all_in(&after, Status::Canceled), "{after:?}");
+    for item in &items {
+        assert_eq!(not_asked(&w, &item.key), 1, "{}", item.key);
+    }
+    let merge = log
+        .entries()
+        .iter()
+        .find(|e| e.action.starts_with("merge"))
+        .expect("the merge is logged");
+    assert_eq!(merge.action, "merge (squash, no PR review)");
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::ToDeploy));
+    quiet(&w);
+}
+
+#[test]
+fn a_round_item_that_cannot_be_canceled_holds_the_merge_and_is_told_once() {
+    let mut w = World::new();
+    let pr = in_review(&w, 7);
+    check_every_box(&w, "ABC-7");
+    let (consolidation, angles) = round_keys(&w, "ABC-7", &pr);
+    no_review(&mut w);
+    w.tracker
+        .fail_writes_starting_with(&format!("status {consolidation} Canceled"));
+    let (report, _) = w.tick(false);
+    assert!(!report.ok(), "the refused write is a failure");
+    assert!(
+        !merged(&w),
+        "an item left open would be closed Done by the merge"
+    );
+    for a in &angles {
+        assert_eq!(w.tracker.item(a).state.status, Some(Status::Canceled));
+    }
+    assert_eq!(not_asked(&w, &consolidation), 1);
+    // The next tick cancels it, without saying it again, and merges.
+    w.tracker.state.borrow_mut().failing_writes.clear();
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert!(merged(&w));
+    assert_eq!(
+        w.tracker.item(&consolidation).state.status,
+        Some(Status::Canceled)
+    );
+    assert_eq!(not_asked(&w, &consolidation), 1);
+    for a in &angles {
+        assert_eq!(not_asked(&w, a), 1);
+    }
+    quiet(&w);
+}
+
+#[test]
+fn a_round_keeps_the_angles_still_asked_for_and_cancels_the_others() {
+    let mut w = World::new();
+    let mut product = w.config.review.angles[0].clone();
+    product.key = "product".into();
+    product.title = "Product review".into();
+    w.config.review.angles.push(product);
+    let pr = in_review(&w, 7);
+    check_every_box(&w, "ABC-7");
+    let (consolidation, angles) = round_keys(&w, "ABC-7", &pr);
+    let angle_of = |key: &str| {
+        let item = w.tracker.item(key);
+        match texts::bridge_item(&item.description, item.parent.as_deref()) {
+            Some(BridgeItem::Angle { angle, .. }) => angle,
+            other => panic!("{key} is not an angle sub-item: {other:?}"),
+        }
+    };
+    let (dropped, kept): (Vec<String>, Vec<String>) =
+        angles.into_iter().partition(|k| angle_of(k) == "product");
+    assert_eq!((dropped.len(), kept.len()), (1, 1));
+    // The project no longer asks for the product angle; the coordinator
+    // approved before the remaining angle reviewed.
+    w.config.review.angles.retain(|a| a.key != "product");
+    let mut early = pr.clone();
+    early.reviews = vec![review("coordinator-login", "APPROVED", &pr.head_sha, "ok")];
+    w.open(early);
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert!(!merged(&w));
+    assert_eq!(
+        w.tracker.item(&dropped[0]).state.status,
+        Some(Status::Canceled)
+    );
+    assert_eq!(not_asked(&w, &dropped[0]), 1);
+    assert_eq!(w.tracker.item(&kept[0]).state.status, Some(Status::Ready));
+    assert_eq!(
+        w.tracker.item(&consolidation).state.status,
+        Some(Status::Ready)
+    );
+    assert_eq!(
+        report.waiting_lines(),
+        vec![format!(
+            "waiting: pr#7 its angle reviews are still open ({}): the approval at head-7 does not count yet",
+            kept[0]
+        )]
+    );
+    quiet(&w);
+
+    // The remaining angle reviews: the approval counts and the PR merges.
+    w.open(approved(&w, pr));
+    w.tick(false);
+    assert!(merged(&w));
+    assert_eq!(w.tracker.item(&kept[0]).state.status, Some(Status::Done));
+    assert_eq!(
+        w.tracker.item(&consolidation).state.status,
+        Some(Status::Done)
+    );
+    assert_eq!(
+        w.tracker.item(&dropped[0]).state.status,
+        Some(Status::Canceled)
+    );
+}
+
 /// No base angle, but sensitive paths can add one: a coordinator approves.
 fn sensitive_only(w: &mut World) {
     no_review(w);
@@ -1945,8 +2080,14 @@ fn a_sensitive_path_still_opens_a_round_that_needs_the_coordinator() {
     // Without the coordinator's approval, no merge.
     w.tick(false);
     assert!(!merged(&w));
-    // Approved after its angle: merged as a reviewed PR.
+    // Approved after its angle: merged as a reviewed PR. It still touches
+    // the sensitive path (opening it again reset its files).
     w.open(approved(&w, pr));
+    w.github
+        .state
+        .borrow_mut()
+        .pull_files
+        .insert((repo(), 7), Ok(vec!["src/auth/login.rs".into()]));
     let (report, log) = w.tick(false);
     assert!(report.ok(), "{report:?}");
     assert!(merged(&w));

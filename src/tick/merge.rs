@@ -396,6 +396,7 @@ fn one(
     // ---- reviews submitted close their angle sub-items ----
     let mut has_round = true;
     let mut open_angles = Vec::new();
+    let mut read_children = None;
     if ticket.state.status == Some(Status::InReview) {
         match t.tracker.children(&ticket.key) {
             Ok(children) => {
@@ -403,6 +404,7 @@ fn one(
                 let closed = close_reviewed_sub_items(t, log, report, &pr, &children);
                 open_angles = angles_open(&children, &pr, &closed);
                 repair_rounds(t, log, report, &pr, &children);
+                read_children = Some(children);
             }
             Err(e) => {
                 t.unreadable(report, &ticket.key, format!("the ticket's children: {e}"));
@@ -643,6 +645,31 @@ fn one(
     let changes_at_head = review::changes_requested_at_head(&pr, &t.config.review.coordinators);
     let changes_wait =
         |by: &str| format!("{by} requested changes at {head}: the implementer's turn");
+    // No angle under the current configuration (spec 04 §11): no round is
+    // opened, and a round opened under an older one no longer applies. Its
+    // open items are canceled first, and the PR merges on its CI.
+    if plan.unreviewed() {
+        if let Some(by) = &changes_at_head {
+            t.wait(report, &pr, changes_wait(by));
+            return None;
+        }
+        let children = match read_children {
+            Some(c) => c,
+            None => match t.tracker.children(&ticket.key) {
+                Ok(c) => c,
+                Err(e) => {
+                    t.unreadable(report, &object, format!("the ticket's children: {e}"));
+                    return None;
+                }
+            },
+        };
+        // An item not canceled would be closed Done by the merge: the merge
+        // waits for the next tick instead.
+        if !drop_unasked(t, log, report, &pr, &children, &plan).1 {
+            return None;
+        }
+        return unreviewed(t, log, report, pr, ticket, &plan, branch);
+    }
     // A ticket In Review for another of its PRs: this PR gets its own round
     // (a round is scoped to its PR, BR-ASDLC-007).
     if status == Some(Status::InProgress) || !has_round {
@@ -650,11 +677,18 @@ fn one(
             t.wait(report, &pr, changes_wait(by));
             return None;
         }
-        if plan.unreviewed() {
-            return unreviewed(t, log, report, pr, ticket, &plan, branch);
-        }
         enter_review(t, log, report, &pr, &ticket, &plan);
         return None;
+    }
+    // Fewer angles than the round has: the angle sub-items the current
+    // configuration no longer asks for are canceled, the rest of the round
+    // stands. Only on a diff read in full: an unread diff ran no path
+    // trigger, so a missing angle says nothing.
+    if plan.diff_read {
+        if let Some(children) = &read_children {
+            let (canceled, _) = drop_unasked(t, log, report, &pr, children, &plan);
+            open_angles.retain(|k| !canceled.contains(k));
+        }
     }
 
     // ---- In Review: changes requested, or the merge ----
@@ -784,7 +818,8 @@ fn one(
     })
 }
 
-/// A PR with no angle (spec 04 §11): no round, no sub-item, no approval. It
+/// A PR with no angle (spec 04 §11): no round, no sub-item, no approval (a
+/// round opened under an earlier configuration was canceled first). It
 /// merges on what the pass already checked (CI green, the contract complete
 /// with a box ticked, the business-rule guard), once nothing holds it, no
 /// thread is open and its branch is current; the ticket is never set In
@@ -842,6 +877,108 @@ fn unreviewed(
         approved_by: None,
         dismiss: Vec::new(),
     })
+}
+
+/// Cancel the open items of this PR's review rounds (any head) that the
+/// current configuration no longer asks for (spec 04 §11): an angle sub-item
+/// whose angle the plan does not give the PR, and, when the plan gives it no
+/// angle at all, the consolidation item too. Each gets a comment saying so,
+/// once (a marker the bridge reads in its own comments), then Canceled; a
+/// replay finds the item resolved and writes nothing. Returns the items
+/// canceled now and whether every one was.
+fn drop_unasked(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    pr: &PullRequest,
+    children: &[Item],
+    plan: &review::ReviewPlan,
+) -> (Vec<String>, bool) {
+    let prefix = format!("{}@", pr.url);
+    let asked = if plan.angles.is_empty() {
+        "no angle".to_string()
+    } else {
+        format!(
+            "the angles {}",
+            plan.angles
+                .iter()
+                .map(|a| format!("`{a}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    let mut canceled = Vec::new();
+    let mut all = true;
+    for child in children.iter().filter(|c| !c.state.is_resolved()) {
+        let what = match texts::bridge_item(&child.description, child.parent.as_deref()) {
+            Some(BridgeItem::Angle { scope, angle })
+                if scope.starts_with(&prefix) && !plan.angles.contains(&angle) =>
+            {
+                format!("the `{angle}` review")
+            }
+            Some(BridgeItem::Consolidation { scope })
+                if scope.starts_with(&prefix) && plan.angles.is_empty() =>
+            {
+                "the consolidation".to_string()
+            }
+            _ => continue,
+        };
+        let object = child.key.as_str();
+        let marker = texts::marker("not-asked", &[("pr", &pr.url)]);
+        match tracker_said(t, object, &marker) {
+            Ok(true) => {}
+            Ok(false) => {
+                let body = for_tracker(
+                    t,
+                    &format!(
+                        "The configuration no longer asks for {what} of {}: it now gives this PR {asked}. \
+                         The bridge cancels this item (`docs/spec/04-pr-review.md` §11).\n\n{marker}",
+                        pr.url
+                    ),
+                );
+                let said = t.act(
+                    log,
+                    report,
+                    object,
+                    "comment not asked",
+                    json!({"pr": pr.url, "angles": plan.angles}),
+                    || {
+                        t.tracker
+                            .comment(object, &body)
+                            .map(|_| ())
+                            .map_err(|e| e.to_string())
+                    },
+                );
+                if said.is_none() {
+                    all = false;
+                    continue;
+                }
+            }
+            Err(e) => {
+                t.unreadable(report, object, format!("its comments: {e}"));
+                all = false;
+                continue;
+            }
+        }
+        let done = t.act(
+            log,
+            report,
+            object,
+            "status Canceled (no longer asked)",
+            json!({"pr": pr.url, "angles": plan.angles}),
+            || {
+                t.tracker
+                    .set_status(object, Status::Canceled, None)
+                    .map_err(|e| e.to_string())
+            },
+        );
+        if done.is_some() {
+            canceled.push(child.key.clone());
+        } else {
+            all = false;
+        }
+    }
+    (canceled, all)
 }
 
 /// Merge the first candidate: the Apps' requests for changes its approval

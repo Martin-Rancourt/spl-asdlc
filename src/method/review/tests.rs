@@ -206,6 +206,8 @@ fn an_unreadable_diff_buys_a_reviewer_instead_of_a_merge() {
     let plan = plan(&facts(None, &SensitivePaths::NotDeclared, &[]), &config);
     assert!(plan.holds[0].contains("the diff could not be read"));
     assert!(plan.angles.contains(&"security".to_string()));
+    // No path trigger ran: an angle missing from the plan says nothing.
+    assert!(!plan.diff_read);
 }
 
 /// A project with no PR review (spec 04 §11): a PR gets no angle, and an
@@ -223,6 +225,7 @@ fn with_no_possible_angle_a_pr_is_unreviewed_and_an_unread_diff_only_holds_it() 
         &config,
     );
     assert!(read.unreviewed() && read.holds.is_empty(), "{read:?}");
+    assert!(read.diff_read);
     let unread = plan(&facts(None, &SensitivePaths::NotDeclared, &[]), &config);
     assert!(unread.unreviewed(), "{unread:?}");
     assert!(unread.holds[0].contains("the diff could not be read"));
@@ -237,6 +240,7 @@ fn an_empty_file_list_that_contradicts_the_pr_is_not_an_answer() {
         &config,
     );
     assert!(!plan.holds.is_empty());
+    assert!(!plan.diff_read);
 }
 
 #[test]
