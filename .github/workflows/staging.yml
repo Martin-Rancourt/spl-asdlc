@@ -1,0 +1,63 @@
+name: staging
+
+# The staging channel of the bridge (docs/setup/bridge.md, "Channels"): on
+# every push to main, build the Linux binary and replace the assets of the
+# rolling `staging` prerelease, which a host on the staging channel installs
+# (the sandbox's bridge, never a real project's). The prerelease is never the
+# latest release, and its `staging` tag is moved to the commit built; the
+# release tags (`v*`) are never touched. The archive carries the commit it was
+# built from in a COMMIT file, and SHA256SUMS covers it, as for a release.
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: staging
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  staging:
+    runs-on: ${{ fromJSON(vars.SPL_ASDLC_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      TARGET: x86_64-unknown-linux-gnu
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-gnu
+      - run: cargo build --locked --release --target "$TARGET"
+      - name: Package
+        run: |
+          name="spl-asdlc-staging-$TARGET"
+          rm -rf dist "$name" && mkdir dist "$name"
+          cp README.md LICENSE "$name/"
+          cp "target/$TARGET/release/spl-asdlc" "$name/"
+          echo "$GITHUB_SHA" > "$name/COMMIT"
+          tar czf "dist/$name.tar.gz" "$name"
+          (cd dist && sha256sum * > SHA256SUMS)
+      - name: Replace the staging prerelease
+        run: |
+          # Move the lightweight `staging` tag to this commit through the API
+          # (a release tag is never moved; this one exists to be moved).
+          if ! gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/staging" \
+              -f sha="$GITHUB_SHA" -F force=true > /dev/null 2>&1; then
+            gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref=refs/tags/staging -f sha="$GITHUB_SHA" > /dev/null
+          fi
+          notes="The latest main, built from $GITHUB_SHA. For the staging channel only: never install it on a real project's host."
+          if gh release view staging --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release edit staging --repo "$GITHUB_REPOSITORY" --prerelease --latest=false --notes "$notes"
+            gh release upload staging dist/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create staging dist/* --repo "$GITHUB_REPOSITORY" --prerelease --latest=false \
+              --title "spl-asdlc staging" --notes "$notes"
+          fi
