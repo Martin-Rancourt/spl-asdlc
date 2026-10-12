@@ -88,6 +88,7 @@ fn this_repositorys_workflows_are_its_callers_and_binaries() {
         "pr.yml",
         "publish.yml",
         "release-please.yml",
+        "staging.yml",
     ]
     .into_iter()
     .map(str::to_string)
@@ -412,4 +413,30 @@ fn the_binaries_are_built_once_per_release_by_the_publication() {
             "{id}"
         );
     }
+}
+
+#[test]
+fn staging_rebuilds_the_rolling_prerelease_on_every_push_to_main() {
+    let staging = own("staging.yml");
+    assert_eq!(keys(&staging["on"]), BTreeSet::from(["push".to_string()]));
+    assert_eq!(
+        staging["on"]["push"]["branches"][0].as_str(),
+        Some("main"),
+        "staging follows main only"
+    );
+    let job = &staging["jobs"]["staging"];
+    assert_eq!(
+        keys(&job["permissions"]),
+        BTreeSet::from(["contents".to_string()])
+    );
+    let text = std::fs::read_to_string(root().join(".github/workflows/staging.yml")).unwrap();
+    // A prerelease, never the latest, on its own tag: the release tags stay
+    // the published releases'.
+    assert!(text.contains("--prerelease"));
+    assert!(text.contains("--latest=false"));
+    assert!(text.contains("refs/tags/staging"));
+    assert!(!text.contains("refs/tags/v"));
+    // The archive says which commit it was built from, and the sums cover it.
+    assert!(text.contains("COMMIT"));
+    assert!(text.contains("sha256sum"));
 }
