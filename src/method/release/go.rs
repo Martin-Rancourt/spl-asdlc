@@ -48,12 +48,8 @@ pub struct GoFacts {
     pub no_qa_angle: bool,
     pub blockers: Vec<String>,
     pub unlinked_blockers: Vec<String>,
-    pub note_gaps: Vec<String>,
     pub fix_gaps: Vec<String>,
     pub tip_gaps: Vec<String>,
-    /// The staged version is not the version the QA judged (spec 05 §8); an
-    /// unreadable staged version is a gap.
-    pub version_gaps: Vec<String>,
     pub policy: Policy,
 }
 
@@ -77,16 +73,12 @@ pub struct GoDecision {
     pub missing_angles: Vec<String>,
     pub blockers: Vec<String>,
     pub unlinked_blockers: Vec<String>,
-    pub note_gaps: Vec<String>,
     pub fix_gaps: Vec<String>,
     pub tip_gaps: Vec<String>,
-    pub version_gaps: Vec<String>,
     pub policy: Policy,
     /// One English sentence per failing condition; never empty when `go` is false.
     pub reasons: Vec<String>,
 }
-
-const NOTE_GAPS_SHOWN: usize = 10;
 
 fn dedup(list: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -120,7 +112,6 @@ pub fn evaluate(facts: &GoFacts) -> GoDecision {
             blockers.push(u.clone());
         }
     }
-    let note_gaps = dedup(&facts.note_gaps);
     let fix_gaps = dedup(&facts.fix_gaps);
     let tip_gaps = dedup(&facts.tip_gaps);
 
@@ -146,23 +137,6 @@ pub fn evaluate(facts: &GoFacts) -> GoDecision {
             unlinked.join(", ")
         ));
     }
-    if !note_gaps.is_empty() {
-        let mut shown = note_gaps
-            .iter()
-            .take(NOTE_GAPS_SHOWN)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("; ");
-        if note_gaps.len() > NOTE_GAPS_SHOWN {
-            shown.push_str(&format!(
-                " ; … and {} more",
-                note_gaps.len() - NOTE_GAPS_SHOWN
-            ));
-        }
-        reasons.push(format!(
-            "the release-please note does not cover the candidate's range (merging its PR would make it final): {shown}"
-        ));
-    }
     if !fix_gaps.is_empty() {
         reasons.push(format!(
             "resolved blockers whose fix is not in the candidate (a new candidate that contains it frees them): {}",
@@ -173,13 +147,6 @@ pub fn evaluate(facts: &GoFacts) -> GoDecision {
         reasons.push(format!(
             "the candidate is not the release branch tip: {}",
             tip_gaps.join("; ")
-        ));
-    }
-    let version_gaps = dedup(&facts.version_gaps);
-    if !version_gaps.is_empty() {
-        reasons.push(format!(
-            "the release PR does not stage the QA'd version: {}",
-            version_gaps.join("; ")
         ));
     }
     match facts.policy {
@@ -202,10 +169,8 @@ pub fn evaluate(facts: &GoFacts) -> GoDecision {
         missing_angles,
         blockers,
         unlinked_blockers: unlinked,
-        note_gaps,
         fix_gaps,
         tip_gaps,
-        version_gaps,
         policy: facts.policy,
         reasons,
     }
@@ -235,10 +200,8 @@ impl GoDecision {
             "missing_angles": self.missing_angles,
             "blockers": self.blockers,
             "unlinked_blockers": self.unlinked_blockers,
-            "note_gaps": self.note_gaps,
             "fix_gaps": self.fix_gaps,
             "tip_gaps": self.tip_gaps,
-            "version_gaps": self.version_gaps,
             "owner_approved": match self.policy {
                 Policy::Computed => Value::Null,
                 Policy::Human { approved } => json!(approved),
@@ -349,14 +312,6 @@ mod tests {
                 ..no_qa_angle()
             },
             GoFacts {
-                note_gaps: vec!["a1 feat: x".into()],
-                ..no_qa_angle()
-            },
-            GoFacts {
-                version_gaps: vec!["stages `v0.4.92`".into()],
-                ..no_qa_angle()
-            },
-            GoFacts {
                 tip_gaps: vec!["src/a.rs".into()],
                 ..no_qa_angle()
             },
@@ -399,49 +354,6 @@ mod tests {
         assert!(!d.go);
         assert_eq!(d.blockers, vec!["ABC-8"]);
         assert_eq!(d.blockers_carried(), "ABC-8");
-    }
-
-    #[test]
-    fn a_note_omitting_commits_is_not_a_go_and_names_them() {
-        let d = evaluate(&GoFacts {
-            note_gaps: vec!["a1 feat: x".into()],
-            ..all_good()
-        });
-        assert!(d.reasons[0].ends_with(": a1 feat: x"));
-    }
-
-    #[test]
-    fn a_very_incomplete_note_does_not_flood_the_reason() {
-        let gaps: Vec<String> = (0..25).map(|i| format!("sha{i} fix: {i}")).collect();
-        let d = evaluate(&GoFacts {
-            note_gaps: gaps,
-            ..all_good()
-        });
-        assert!(
-            d.reasons[0].ends_with(" ; … and 15 more"),
-            "{}",
-            d.reasons[0]
-        );
-        assert_eq!(d.note_gaps.len(), 25, "the full list stays in the decision");
-    }
-
-    #[test]
-    fn an_unreadable_note_is_a_gap() {
-        let d = evaluate(&GoFacts {
-            note_gaps: vec!["note unreadable: no section".into()],
-            ..all_good()
-        });
-        assert!(!d.go);
-    }
-
-    #[test]
-    fn a_note_gap_adds_to_the_other_reasons() {
-        let d = evaluate(&GoFacts {
-            gate_green: Some(false),
-            note_gaps: vec!["x".into()],
-            ..all_good()
-        });
-        assert_eq!(d.reasons.len(), 2);
     }
 
     #[test]
@@ -500,18 +412,6 @@ mod tests {
             unread.reasons,
             vec!["the owner's approval could not be read (GO policy `human`)"]
         );
-    }
-
-    #[test]
-    fn a_release_pr_staging_another_version_is_not_a_go() {
-        let d = evaluate(&GoFacts {
-            version_gaps: vec![
-                "release-please stages `v0.4.92` while the QA'd candidate is `v0.4.91`".into(),
-            ],
-            ..all_good()
-        });
-        assert!(!d.go);
-        assert!(d.reasons[0].starts_with("the release PR does not stage the QA'd version"));
     }
 
     #[test]

@@ -27,14 +27,7 @@ pub const INSTANCE_KEYS: [(&str, &[&str]); 5] = [
     ("product", &["repository"]),
     ("owner", &["tracker_user", "github_login"]),
     ("tracker", &["team", "service_identity", "team_keys"]),
-    (
-        "release",
-        &[
-            "coordinators",
-            "coordinator_assignee",
-            "release_please_authors",
-        ],
-    ),
+    ("release", &["coordinators", "coordinator_assignee"]),
     (
         "review",
         &["coordinators", "coordinator_assignee", "human_reviewer"],
@@ -181,11 +174,6 @@ pub(super) fn merge(
             "release",
             "coordinator_assignee",
             r.coordinator_assignee.map(Value::from),
-        );
-        m.put(
-            "release",
-            "release_please_authors",
-            r.release_please_authors.map(Value::from),
         );
         m.angles("release", r.angles);
     }

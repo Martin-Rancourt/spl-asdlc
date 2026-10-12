@@ -238,7 +238,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> Pass {
         }
     };
     prs.sort_by_key(|p| p.number);
-    let (branch_prefix, release_pr_label) = t.config.release_machinery();
+    let branch_prefix = t.config.release_machinery();
     let coordinators = &t.config.review.coordinators;
     let mut open = OpenPrs {
         known: true,
@@ -250,7 +250,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> Pass {
             report.out_of_time = true;
             return Pass::default();
         }
-        if review::excluded_from_merge_pass(&pr, branch_prefix, release_pr_label).is_some() {
+        if review::excluded_from_merge_pass(&pr, branch_prefix).is_some() {
             continue;
         }
         let link = link::ticket_item(&pr, t.tracker, t.config.tracker.link_fallback);

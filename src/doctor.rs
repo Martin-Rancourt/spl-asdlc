@@ -520,7 +520,7 @@ fn files(
         out.push(check(
             "release cycle",
             Verdict::Ok,
-            "none (no [release] section: a merged ticket is Done; the release-please files and the release workflows are not checked)",
+            "none (no [release] section: a merged ticket is Done; the version files and the release workflows are not checked)",
         ));
         return out;
     };
@@ -547,24 +547,19 @@ fn files(
         },
         Err(e) => check("release base", Verdict::Missing, e.to_string()),
     });
-    for path in [
-        &release.release_please_config,
-        &release.release_please_manifest,
-    ] {
-        let path = path.as_str();
-        out.push(match read(path) {
-            Ok(text) if serde_json::from_str::<serde_json::Value>(&text).is_ok() => {
-                check(path, Verdict::Ok, "valid JSON")
-            }
-            Ok(_) => check(path, Verdict::Invalid, "not JSON"),
-            Err(e) => check(path, Verdict::Missing, e.to_string()),
+    // The files `release prepare` writes the version into, besides Rust's
+    // own: one it cannot find refuses the cut's `open`.
+    for f in &release.version_files {
+        let name = format!("version file {}", f.path);
+        out.push(match read(&f.path) {
+            Ok(_) => check(&name, Verdict::Ok, format!("pattern `{}`", f.pattern)),
+            Err(e) => check(&name, Verdict::Missing, e.to_string()),
         });
     }
     for wf in [
         &release.cut_workflow,
         &release.gate_workflow,
         &release.gate_rerun_workflow,
-        &release.release_please_workflow,
     ] {
         let path = format!(".github/workflows/{wf}");
         out.push(match read(&path) {
@@ -749,7 +744,7 @@ mod tests {
                 "| BR-ACME-001 | a | b | c | Enforced |\n",
             );
             file(".github/review-paths.json", "{\"paths\": []}");
-            file("release-please-config.json", "{}");
+            file("web/package.json", "{\"version\": \"0.1.0\"}");
             s.rulesets.insert(repo.clone(), Ok(procedure_rulesets()));
             // A candidate, never a published release: the first release.
             s.tags.insert(
@@ -793,8 +788,8 @@ mod tests {
             Verdict::Invalid,
             "an empty list makes nothing sensitive"
         );
-        assert_eq!(by("release-please-config.json"), Verdict::Ok);
-        assert_eq!(by(".release-please-manifest.json"), Verdict::Missing);
+        assert_eq!(by("version file web/package.json"), Verdict::Ok);
+        assert_eq!(by("version file docs/version.txt"), Verdict::Missing);
         assert_eq!(by("ruleset main"), Verdict::Ok);
         assert_eq!(by("ruleset release/**"), Verdict::Ok);
         assert_eq!(by("ruleset tags"), Verdict::Ok);
@@ -878,15 +873,10 @@ mod tests {
             cycle.to_string().starts_with("release cycle: ok — none"),
             "{cycle}"
         );
-        for skipped in [
-            "release-please-config.json",
-            ".release-please-manifest.json",
-        ] {
-            assert!(
-                checks.iter().all(|c| c.name != skipped),
-                "{skipped}: {checks:#?}"
-            );
-        }
+        assert!(
+            checks.iter().all(|c| !c.name.starts_with("version file ")),
+            "{checks:#?}"
+        );
         assert!(
             checks.iter().all(|c| !c.name.starts_with("workflow ")),
             "{checks:#?}"

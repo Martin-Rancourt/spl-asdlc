@@ -83,12 +83,31 @@ enum ReleaseCommand {
         #[arg(long)]
         open: bool,
     },
-    /// Close a cycle by waiver: a component deliberately not deployed.
-    Close {
+    /// Prepare the next release in a checkout of the release branch: compute
+    /// its version from the commits since the last release, write it into the
+    /// version files and the CHANGELOG, and write its notes. Prints
+    /// `version=`, `tag=` and `previous-tag=` lines; exit 1 when there is
+    /// nothing to release. Reads the repository's file only, never an
+    /// instance overlay, and talks to no service.
+    Prepare {
+        /// Force this version (`X.Y.Z`) instead of the computed one.
+        #[arg(long = "version")]
+        forced: Option<String>,
+        /// Write the release notes (the CHANGELOG section) to this file.
         #[arg(long)]
-        version: String,
+        notes: Option<PathBuf>,
+        /// The repository's working tree.
+        #[arg(long, default_value = ".")]
+        dir: PathBuf,
+        /// `<owner>/<repo>` for the links of the notes (default: `product.repository`).
         #[arg(long)]
-        reason: String,
+        repository: Option<String>,
+        /// The date of the CHANGELOG heading, `YYYY-MM-DD` (default: today, UTC).
+        #[arg(long)]
+        date: Option<String>,
+        /// Compute and print; write no file of the working tree.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Change a finding's severity.
     Requalify {
@@ -428,6 +447,25 @@ fn release(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> ExitCode {
+    if let ReleaseCommand::Prepare {
+        forced,
+        notes,
+        dir,
+        repository,
+        date,
+        dry_run,
+    } = command
+    {
+        let options = crate::prepare::Options {
+            dir,
+            version: forced,
+            notes,
+            date,
+            repository,
+            dry_run,
+        };
+        return prepare(file, instance, product, &options, out, err);
+    }
     let c = match connect(file, instance) {
         Ok(c) => c,
         Err(e) => {
@@ -489,9 +527,7 @@ fn release(
             Err(e) => Err(e),
         },
         ReleaseCommand::Cut { open } => crate::verbs::cut(&t, &mut log, open),
-        ReleaseCommand::Close { version, reason } => {
-            crate::verbs::close(&t, &mut log, &version, &reason, &who())
-        }
+        ReleaseCommand::Prepare { .. } => unreachable!("prepared above, with no connection"),
         ReleaseCommand::Requalify {
             ticket,
             severity,
@@ -512,6 +548,87 @@ fn release(
         }
         Err(e) => {
             let _ = writeln!(err, "{e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// `release prepare`: the repository's file alone, read in a checkout; no
+/// overlay, no client.
+fn prepare(
+    file: &std::path::Path,
+    instance: Option<&std::path::Path>,
+    product: Option<&str>,
+    options: &crate::prepare::Options,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> ExitCode {
+    if instance.is_some() {
+        let _ = writeln!(
+            err,
+            "release prepare reads the repository's file only: --instance is not taken"
+        );
+        return ExitCode::from(2);
+    }
+    let text = match std::fs::read_to_string(file) {
+        Ok(t) => t,
+        Err(e) => {
+            let _ = writeln!(err, "{} could not be read: {e}", file.display());
+            return ExitCode::from(2);
+        }
+    };
+    let prep = match Config::preparation(&text) {
+        Ok(p) => p,
+        Err(errors) => {
+            let _ = writeln!(err, "{}: invalid configuration", file.display());
+            for e in &errors.0 {
+                let _ = writeln!(err, "  {e}");
+            }
+            return ExitCode::from(2);
+        }
+    };
+    if let Some(p) = product.filter(|p| *p != prep.product) {
+        let _ = writeln!(
+            err,
+            "{} configures {}, not {p}",
+            file.display(),
+            prep.product
+        );
+        return ExitCode::from(2);
+    }
+    match crate::prepare::run(&prep, options) {
+        Ok(p) => {
+            let _ = writeln!(out, "version={}", p.version);
+            let _ = writeln!(out, "tag={}", p.tag);
+            let _ = writeln!(
+                out,
+                "previous-tag={}",
+                p.previous_tag.as_deref().unwrap_or("")
+            );
+            let _ = writeln!(
+                err,
+                "{} {} from {} ({} commit(s)); {} {}",
+                if options.dry_run {
+                    "Would prepare"
+                } else {
+                    "Prepared"
+                },
+                p.tag,
+                p.previous_tag
+                    .as_deref()
+                    .unwrap_or("the repository's root (first release)"),
+                p.commits,
+                if options.dry_run {
+                    "would write"
+                } else {
+                    "wrote"
+                },
+                p.files.join(", ")
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            let _ = writeln!(err, "release prepare refused: {e}");
             ExitCode::from(1)
         }
     }

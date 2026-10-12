@@ -430,6 +430,18 @@ impl GitHub for HandsOff<'_> {
     fn create_branch(&self, repo: &RepoSlug, branch: &str, sha: &str) -> Write<()> {
         self.github.create_branch(repo, branch, sha)
     }
+    fn create_tag(&self, repo: &RepoSlug, tag: &str, sha: &str, message: &str) -> Write<()> {
+        self.github.create_tag(repo, tag, sha, message)
+    }
+    fn create_release(
+        &self,
+        repo: &RepoSlug,
+        tag: &str,
+        name: &str,
+        body: &str,
+    ) -> Write<github::Release> {
+        self.github.create_release(repo, tag, name, body)
+    }
     fn add_labels(&self, repo: &RepoSlug, number: u64, labels: &[String]) -> Write<()> {
         self.pr(number)?;
         self.github.add_labels(repo, number, labels)

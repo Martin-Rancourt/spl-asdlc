@@ -99,7 +99,7 @@ fn check_with(given: &BTreeSet<String>, declared: &BTreeMap<String, bool>, what:
 #[test]
 fn every_example_parses_and_is_a_caller() {
     let all = examples();
-    assert!(all.len() >= 7, "{all:?}");
+    assert!(all.len() >= 6, "{all:?}");
     for f in &all {
         let doc = load(f);
         assert!(
@@ -533,71 +533,34 @@ fn the_cut_is_dispatched_with_one_input() {
             assert_ne!(v["required"].as_bool(), Some(true), "input {k} is required");
         }
     }
-    let prefix = template().release.unwrap().branch_prefix;
-    check_cut_follows_release_please(&cut, &example("release-please.yml"), &prefix);
+    check_cut_waits_for_no_workflow(&cut);
 }
 
-/// The cut caller's two triggers: the dispatch, and `workflow_run` of
-/// release-please (completed, on the release branches) that cuts the first
-/// candidate, so that nothing waits for release-please (REQ-CI-042).
-pub(crate) fn check_cut_follows_release_please(cut: &Yaml, release_please: &Yaml, prefix: &str) {
+/// The cut caller's one trigger, the dispatch: `open` prepares the release
+/// and tags its first candidate in the same run, so nothing follows another
+/// workflow's run (REQ-CI-042), and the binary it runs is a published one.
+pub(crate) fn check_cut_waits_for_no_workflow(cut: &Yaml) {
     assert_eq!(
         keys(&cut["on"]),
-        BTreeSet::from(["workflow_dispatch".to_string(), "workflow_run".to_string()])
+        BTreeSet::from(["workflow_dispatch".to_string()])
     );
-    let run = &cut["on"]["workflow_run"];
-    assert_eq!(
-        run["workflows"].as_vec().map(Vec::len),
-        Some(1),
-        "one workflow"
-    );
-    assert_eq!(
-        run["workflows"][0].as_str(),
-        release_please["name"].as_str(),
-        "workflow_run names release-please by its name:"
-    );
-    let strings = |y: &Yaml| -> Vec<String> {
-        y.as_vec()
-            .unwrap()
-            .iter()
-            .filter_map(Yaml::as_str)
-            .map(str::to_string)
-            .collect()
-    };
-    assert_eq!(strings(&run["types"]), ["completed"]);
-    assert_eq!(strings(&run["branches"]), [format!("{prefix}**")]);
-    // The same release branches release-please runs on.
-    assert_eq!(
-        strings(&release_please["on"]["push"]["branches"]),
-        strings(&run["branches"])
-    );
-    // A dispatch is never replaced by a queued automatic run.
-    assert_eq!(
-        cut["concurrency"]["group"].as_str(),
-        Some(
-            "${{ github.event_name == 'workflow_run' && 'release-cut-after-release-please' || 'release-cut' }}"
-        )
-    );
+    assert_eq!(cut["concurrency"]["group"].as_str(), Some("release-cut"));
     assert_eq!(
         cut["concurrency"]["cancel-in-progress"].as_bool(),
         Some(false)
     );
     let job = &cut["jobs"]["release"];
-    assert_eq!(
-        job["if"].as_str(),
-        Some(
-            "github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'"
-        )
-    );
-    assert_eq!(
-        job["with"]["action"].as_str(),
-        Some("${{ github.event_name == 'workflow_run' && 'candidate' || inputs.action }}")
-    );
-    // A boolean whatever the event: `inputs` is empty on `workflow_run`.
+    assert!(job["if"].is_badvalue(), "the dispatch alone runs it");
+    assert_eq!(job["with"]["action"].as_str(), Some("${{ inputs.action }}"));
     assert_eq!(
         job["with"]["dry-run"].as_str(),
         Some("${{ inputs.dry_run == true }}")
     );
+    assert_eq!(
+        job["with"]["spl-asdlc-repository"].as_str(),
+        Some("<owner>/spl-asdlc")
+    );
+    assert_eq!(job["with"]["spl-asdlc-version"].as_str(), Some("latest"));
 }
 
 #[test]
@@ -618,7 +581,7 @@ fn the_auto_rerun_follows_the_gate_by_name() {
 }
 
 #[test]
-fn the_publication_calls_the_three_stages_and_always_closes() {
+fn the_publication_calls_the_two_stages_and_always_closes() {
     let publish = example("release-publish.yml");
     let mut stages = Vec::new();
     for (id, job) in jobs(&publish) {
@@ -630,31 +593,25 @@ fn the_publication_calls_the_three_stages_and_always_closes() {
         .iter()
         .map(|(a, b)| (a.as_str(), b.as_str()))
         .collect();
-    assert_eq!(
-        ids,
-        [
-            ("verify", "verify"),
-            ("record-deployed", "record-deployed"),
-            ("close", "close")
-        ]
-    );
+    assert_eq!(ids, [("verify", "verify"), ("close", "close")]);
     let close = &publish["jobs"]["close"];
     assert_eq!(close["if"].as_str(), Some("${{ always() }}"));
     assert_eq!(
         close["with"]["publish-result"].as_str(),
         Some("${{ needs.publish.result }}")
     );
-    // The App writes the ledger and the merge back.
-    for id in ["record-deployed", "close"] {
-        assert_eq!(
-            keys(&publish["jobs"][id]["secrets"]),
-            BTreeSet::from([
-                "SPL_ASDLC_APP_ID".to_string(),
-                "SPL_ASDLC_APP_PRIVATE_KEY".to_string()
-            ]),
-            "{id}"
-        );
-    }
+    // The App writes the merge back.
+    assert_eq!(
+        keys(&publish["jobs"]["close"]["secrets"]),
+        BTreeSet::from([
+            "SPL_ASDLC_APP_ID".to_string(),
+            "SPL_ASDLC_APP_PRIVATE_KEY".to_string()
+        ])
+    );
+    assert_eq!(
+        strings(&publish["jobs"]["close"]["needs"]),
+        ["verify", "publish"]
+    );
     // The latest candidate's own QA reports, as the configuration renders them.
     let release = template().release.unwrap();
     let verify = &publish["jobs"]["verify"]["with"];
@@ -663,7 +620,7 @@ fn the_publication_calls_the_three_stages_and_always_closes() {
         serde_json::from_str(verify["qa-angles"].as_str().expect("qa-angles")).unwrap();
     let keys_of: Vec<String> = release.angles.iter().map(|a| a.key.clone()).collect();
     assert_eq!(angles, keys_of);
-    // The project's job sits between verify and the ledger.
+    // The project's job sits between verify and the close.
     let own = &publish["jobs"]["publish"];
     assert_eq!(own["needs"].as_str(), Some("verify"));
     assert!(own["uses"].is_badvalue());
@@ -681,83 +638,28 @@ fn the_publication_calls_the_three_stages_and_always_closes() {
     );
 }
 
-#[test]
-fn release_please_runs_on_release_branches_only_as_the_app() {
-    let rp = example("release-please.yml");
-    assert_eq!(
-        keys(&rp["on"]),
-        BTreeSet::from(["push".to_string(), "workflow_dispatch".to_string()])
-    );
-    let branches: Vec<&str> = rp["on"]["push"]["branches"]
-        .as_vec()
+fn strings(y: &Yaml) -> Vec<String> {
+    y.as_vec()
         .unwrap()
         .iter()
         .filter_map(Yaml::as_str)
-        .collect();
-    assert_eq!(branches, ["release/**"], "REQ-CI-098");
-    assert!(rp["on"]["push"]["tags"].is_badvalue());
-
-    let job = &rp["jobs"]["release-please"];
-    let all = job["steps"].as_vec().unwrap();
-    assert_eq!(
-        all[0]["env"]["REF"].as_str(),
-        Some("${{ github.ref }}"),
-        "the refusal reads the full ref, not the ref name"
-    );
-    let action = all
-        .iter()
-        .find(|s| {
-            s["uses"]
-                .as_str()
-                .is_some_and(|u| u.starts_with("googleapis/release-please-action@"))
-        })
-        .expect("the release-please step");
-    assert_eq!(
-        action["with"]["token"].as_str(),
-        Some("${{ steps.app-token.outputs.token }}"),
-        "REQ-CI-099: the App token, never GITHUB_TOKEN"
-    );
-    assert_eq!(
-        action["with"]["target-branch"].as_str(),
-        Some("${{ github.ref_name }}"),
-        "REQ-CI-099"
-    );
-    let c = template();
-    assert_eq!(
-        action["with"]["config-file"].as_str(),
-        Some(c.release.as_ref().unwrap().release_please_config.as_str())
-    );
-    assert_eq!(
-        action["with"]["manifest-file"].as_str(),
-        Some(c.release.as_ref().unwrap().release_please_manifest.as_str())
-    );
-    let mint = all
-        .iter()
-        .find(|s| {
-            s["uses"]
-                .as_str()
-                .is_some_and(|u| u.starts_with("actions/create-github-app-token@"))
-        })
-        .expect("the App token step");
-    assert_eq!(mint["id"].as_str(), Some("app-token"));
+        .map(str::to_string)
+        .collect()
 }
 
-#[cfg(unix)]
 #[test]
-fn release_please_refuses_any_ref_but_a_release_branch() {
-    let rp = example("release-please.yml");
-    let body = run_body(&rp["jobs"]["release-please"]["steps"][0]);
-    let dir = crate::harness::Scratch::new("rp-ref");
-    for (reference, ok) in [
-        ("refs/heads/release/2026-10-08-12-00-utc", true),
-        ("refs/heads/main", false),
-        ("refs/heads/feat/release/thing", false),
-        ("refs/tags/release/thing", false),
-        ("refs/tags/acme-v1.2.3-rc.1", false),
-        ("refs/heads/release/", false),
-        ("", false),
-    ] {
-        let ran = crate::harness::run(&body, &[("REF", reference)], &dir.0);
-        assert_eq!(ran.code == 0, ok, "{reference}: {}", ran.log);
+fn the_method_has_no_release_please_example() {
+    // The cycle prepares its version and notes itself (spec 05 §1): no
+    // example caller runs release-please, and none follows its runs.
+    for f in examples() {
+        let text = std::fs::read_to_string(&f).unwrap();
+        assert!(!text.contains("release-please"), "{}", relative(&f));
+        assert!(
+            load(&f)["on"]["workflow_run"]["workflows"]
+                .as_vec()
+                .is_none_or(|w| w.iter().all(|x| x.as_str() != Some("release-please"))),
+            "{}",
+            relative(&f)
+        );
     }
 }

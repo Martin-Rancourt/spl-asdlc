@@ -25,8 +25,7 @@ later_passes = "full"                  # "full" | "gate-and-coordinator"
 go_policy = "computed"                 # "computed" | "human"
 nits = "shared"                        # "shared" | "per-nit": one nits ticket per release, or one per nit
 record = ".spl-asdlc/qa/{candidate}/"  # where angle reports live
-release_pr_label = "autorelease: pending"
-bookkeeping_paths = [".release-please-manifest.json", "CHANGELOG.md"]
+bookkeeping_paths = []                  # files allowed to change after the candidate
 registry_path = "docs/business-rules.md"
 business_rule_paths = ["docs/business-rules.md", "**/business-rules.md"]
 stagnation_hours = 2
@@ -36,13 +35,15 @@ cut_workflow = "release-cut.yml"
 gate_workflow = "release-gate.yml"
 gate_rerun_workflow = "release-gate-auto-rerun.yml"
 gate_rerun_wait_minutes = 30
-release_please_workflow = "release-please.yml"
-release_please_config = "release-please-config.json"
-release_please_manifest = ".release-please-manifest.json"
-# Multi-component products
-# components = ["app", "website", "admin"]
-# version_component = "app"
-# gate_record = "docs/releases/v{version}.md"
+# changelog_sections: the defaults, one section per Conventional Commit type
+
+[[release.version_files]]               # Cargo.toml and Cargo.lock need no entry
+path = "web/package.json"
+pattern = '"version": "{version}"'
+
+[[release.version_files]]
+path = "docs/version.txt"
+pattern = "acme {version}"
 
 [[release.angles]]
 key = "security"
@@ -94,7 +95,6 @@ service_identity = "spl-asdlc"         # the service account that writes
 team_keys = ["ABC"]                    # identifier prefixes of the team's items
 
 [release]
-release_please_authors = ["app/release-app"]
 coordinators = ["coordinator-login"]
 coordinator_assignee = "coordinator-handle" # optional: receives each candidate's consolidation item, and each angle item In Review
 

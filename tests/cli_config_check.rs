@@ -52,7 +52,7 @@ fn spec_example() -> String {
         )
         .replacen(
             "[release]\n",
-            "[release]\nrelease_please_authors = [\"app/release-app\"]\ncoordinators = [\"coordinator-login\"]\n",
+            "[release]\ncoordinators = [\"coordinator-login\"]\n",
             1,
         )
         .replacen(

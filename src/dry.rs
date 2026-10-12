@@ -5,7 +5,7 @@
 
 use std::cell::RefCell;
 
-use crate::github::{self, GitHub, Read, RepoSlug, Timestamp, Write};
+use crate::github::{self, GitHub, Read, Release, RepoSlug, Timestamp, Write};
 use crate::method::vocabulary::{ItemState, Status};
 use crate::notify::Signal;
 use crate::tracker::{Comment, Item, NewItem, RelationKind, Relations, TResult, Tracker, User};
@@ -142,6 +142,24 @@ impl GitHub for DryGitHub<'_> {
         self.intents
             .push(format!("github {repo}: delete branch {branch}"));
         Ok(())
+    }
+    fn create_tag(&self, repo: &RepoSlug, tag: &str, sha: &str, _message: &str) -> Write<()> {
+        self.intents
+            .push(format!("github {repo}: create tag {tag} at {sha}"));
+        Ok(())
+    }
+    fn create_release(&self, repo: &RepoSlug, tag: &str, name: &str, body: &str) -> Write<Release> {
+        self.intents
+            .push(format!("github {repo}: publish release {tag} ({name})"));
+        Ok(Release {
+            tag: tag.to_string(),
+            url: format!("(dry run) release {tag}"),
+            body: body.to_string(),
+            draft: false,
+            prerelease: false,
+            published_at: None,
+            author: None,
+        })
     }
     fn create_branch(&self, repo: &RepoSlug, branch: &str, sha: &str) -> Write<()> {
         self.intents

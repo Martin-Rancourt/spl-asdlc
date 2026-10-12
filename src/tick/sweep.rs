@@ -47,13 +47,13 @@ fn closed(t: &Tick, log: &mut ActionLog, report: &mut Report, open: &OpenPrs) {
             return;
         }
     };
-    let (branch_prefix, release_pr_label) = t.config.release_machinery();
+    let branch_prefix = t.config.release_machinery();
     for pr in &prs {
         if !t.in_time() {
             report.out_of_time = true;
             return;
         }
-        if review::excluded_from_merge_pass(pr, branch_prefix, release_pr_label).is_some() {
+        if review::excluded_from_merge_pass(pr, branch_prefix).is_some() {
             continue;
         }
         let object = format!("pr#{}", pr.number);
@@ -256,13 +256,13 @@ fn merged(t: &Tick, log: &mut ActionLog, report: &mut Report, open: &OpenPrs) {
             return;
         }
     };
-    let (branch_prefix, release_pr_label) = t.config.release_machinery();
+    let branch_prefix = t.config.release_machinery();
     for pr in prs {
         if !t.in_time() {
             report.out_of_time = true;
             return;
         }
-        if review::excluded_from_merge_pass(&pr, branch_prefix, release_pr_label).is_some() {
+        if review::excluded_from_merge_pass(&pr, branch_prefix).is_some() {
             continue;
         }
         let object = format!("pr#{}", pr.number);

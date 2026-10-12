@@ -1,30 +1,30 @@
 name: asdlc-release-publish
 
 # The publication of a release (docs/spec/05-release-cycle.md §9;
-# docs/requirements/ci.md, REQ-CI-076..097), as one reusable workflow in three
-# stages: `verify` (the RC's gate was green, only bookkeeping changed since the
-# RC, the release-please PR was merged by the bridge's App or by a human),
-# `record-deployed` (the `deployed: production` ledger of a multi-component
-# product) and `close` (the merge back into the default branch, then
+# docs/requirements/ci.md, REQ-CI-076..097), as one reusable workflow in two
+# stages: `verify` (the release tag names the commit of its latest
+# candidate, or differs from it only by that candidate's own QA reports; the
+# candidate's gate was green; the release was published by the bridge's App
+# or by a human) and `close` (the merge back into the default branch, then
 # `closing-guard`). Every stage reads the state GitHub is in, so a step a
-# human did by hand (the release-please PR merged, a label written, the
-# release branch merged back) is taken as done, never refused or redone
+# human did by hand (the release tag and the release published, the release
+# branch merged back) is taken as done, never refused or redone
 # (docs/spec/09-requalification-and-human-gestures.md).
 #
 # The publication and deployment steps are the project's own jobs, and they
 # sit between the stages: a reusable workflow runs as one job of its caller
 # and cannot host a caller's job in its middle, and trusted publishing
 # rejects a publication nested under workflow_call. So the caller calls this
-# workflow three times, choosing the stage with `stage`; every job here runs
-# for one stage only, and `closing-guard` runs on every call. The caller owns
-# the trigger, the concurrency group, the GitHub environment of its deploy and
-# the replay dispatch. A called job holds at most the caller job's permissions:
-# the `verify` call needs `contents: read`, `actions: read` and
-# `pull-requests: read`, or it fails at startup. Intended caller (in
-# full: docs/setup/examples/release-publish.yml):
+# workflow twice, choosing the stage with `stage`; every job here runs for
+# one stage only, and `closing-guard` runs on every call. The caller owns the
+# trigger, the concurrency group, the GitHub environment of its deploy and
+# the replay dispatch. A called job holds at most the caller job's
+# permissions: the `verify` call needs `contents: read` and `actions: read`,
+# or it fails at startup. Intended caller (in full:
+# docs/setup/examples/release-publish.yml):
 #
 #   on:
-#     release: {types: [published]}          # created by release-please, as the App
+#     release: {types: [published]}          # by the bridge's GO, or a person
 #     workflow_dispatch:
 #       inputs:
 #         replay: {type: boolean, default: false}   # merge back only, on the branch
@@ -39,27 +39,15 @@ name: asdlc-release-publish
 #         resume-from: ${{ inputs.resume-from }}
 #         candidate-tag: acme-v{version}-rc.{rc}
 #         release-tag-pattern: acme-v{version}
-#         bookkeeping-paths: '[".release-please-manifest.json", "CHANGELOG.md"]'
 #         qa-record: .spl-asdlc/qa/{candidate}/
 #         qa-angles: '["security", "product"]'
-#         go-merger-login: <the App's slug>
+#         go-publisher-login: <the App's slug>
 #     publish:                                # the project's own job(s)
 #       needs: verify
 #       environment: production
-#       outputs: {in-production: <decided from its own step outcomes>}
 #       steps: [checkout needs.verify.outputs.deploy-sha, publish, deploy]
-#     record-deployed:                        # multi-component products only
-#       needs: [verify, publish]
-#       if: ${{ always() && needs.verify.result == 'success' && needs.publish.result != 'cancelled' }}
-#       uses: <owner>/spl-asdlc/.github/workflows/asdlc-release-publish.yml@<sha>
-#       with:
-#         stage: record-deployed
-#         release-branch: ${{ needs.verify.outputs.release-branch }}
-#         resume-from: ${{ inputs.resume-from }}
-#         components-in-production: ${{ needs.publish.outputs.in-production }}
-#       secrets: {SPL_ASDLC_APP_ID: ..., SPL_ASDLC_APP_PRIVATE_KEY: ...}
 #     close:
-#       needs: [verify, publish, record-deployed]
+#       needs: [verify, publish]
 #       if: ${{ always() }}
 #       uses: <owner>/spl-asdlc/.github/workflows/asdlc-release-publish.yml@<sha>
 #       with:
@@ -68,10 +56,9 @@ name: asdlc-release-publish
 #         resume-from: ${{ inputs.resume-from }}
 #         replay: ${{ inputs.replay || false }}
 #         publish-result: ${{ needs.publish.result }}
-#         components: '["app", "website"]'    # empty for a single component
 #       secrets: {SPL_ASDLC_APP_ID: ..., SPL_ASDLC_APP_PRIVATE_KEY: ...}
 #
-# Called job names: `verify`, `record-deployed`, `close`, `closing-guard`.
+# Called job names: `verify`, `close`, `closing-guard`.
 # CI writes no tracker, chat or task: a failure is a red run, the outputs and
 # the step summary, which carries the recovery recipe.
 
@@ -79,7 +66,7 @@ on:
   workflow_call:
     inputs:
       stage:
-        description: '`verify`, `record-deployed` or `close`.'
+        description: '`verify` or `close`.'
         type: string
         required: true
       release-tag:
@@ -97,16 +84,7 @@ on:
       release-tag-pattern:
         description: >-
           The release tag pattern, `{version}` once (spec 08 `release.release_tag`). A
-          release tag it does not match is refused, unless `components` is set (another
-          component's tag, certified by the newest candidate in its history).
-        type: string
-        default: ''
-      bookkeeping-paths:
-        description: JSON array of the paths allowed to differ between the RC and the release (spec 08 `release.bookkeeping_paths`).
-        type: string
-        default: '[]'
-      gate-record:
-        description: The gate record path, `{version}` once (spec 08 `release.gate_record`); an allowed delta too.
+          release tag it does not match is refused: the version it releases cannot be read.
         type: string
         default: ''
       qa-record:
@@ -124,30 +102,16 @@ on:
         description: The file name of the gate workflow (spec 08 `release.gate_workflow`).
         type: string
         default: release-gate.yml
-      go-merger-login:
+      go-publisher-login:
         description: >-
-          The slug of the bridge's App. The release-please PR must have been merged by
-          this App or by a human account (a User); any other bot is no GO.
+          The slug of the bridge's App. The release must have been published by this App
+          (its computed GO) or by a human account (a User); any other bot is no GO.
         type: string
         default: ''
       branch-prefix:
         description: The prefix of release branches.
         type: string
         default: release/
-      components:
-        description: JSON array of the components of a multi-component product; `[]` for a single component.
-        type: string
-        default: '[]'
-      components-in-production:
-        description: >-
-          JSON array of the components this run put in production, decided by the
-          caller from its own deploy step outcomes; empty means unknown and records nothing.
-        type: string
-        default: ''
-      release-branch:
-        description: The cycle's release branch (record-deployed; verify's `release-branch` output).
-        type: string
-        default: ''
       publish-result:
         description: The result of the caller's publication and deployment job (close).
         type: string
@@ -160,18 +124,6 @@ on:
         description: The branch the release branch merges back into.
         type: string
         default: main
-      pending-label:
-        description: The label release-please puts on its open PRs.
-        type: string
-        default: 'autorelease: pending'
-      tagged-label:
-        description: The label release-please puts on a PR it released.
-        type: string
-        default: 'autorelease: tagged'
-      deployed-label:
-        description: The ledger label the bridge reads.
-        type: string
-        default: 'deployed: production'
       required-context:
         description: The check run that must be green on the merge-back PR's head before a REST merge.
         type: string
@@ -185,15 +137,15 @@ on:
         type: number
         default: 30
       runs-on:
-        description: A runner label, or a JSON array of labels (verify, record-deployed).
+        description: A runner label, or a JSON array of labels (verify).
         type: string
         default: ubuntu-latest
     secrets:
       SPL_ASDLC_APP_ID:
-        description: The App's id; needed by record-deployed and close.
+        description: The App's id; needed by close.
         required: false
       SPL_ASDLC_APP_PRIVATE_KEY:
-        description: The App's private key; needed by record-deployed and close.
+        description: The App's private key; needed by close.
         required: false
     outputs:
       rc-tag:
@@ -208,27 +160,15 @@ on:
       deploy-sha:
         description: The commit to publish and deploy (the RC's on a resume).
         value: ${{ jobs.verify.outputs.deploy-sha }}
-      release-branch:
-        description: The base of the release-please PR.
-        value: ${{ jobs.verify.outputs.release-branch }}
-      release-pr-number:
-        description: The release-please PR that is the GO.
-        value: ${{ jobs.verify.outputs.release-pr-number }}
-      go-merged-by:
-        description: Who merged it.
-        value: ${{ jobs.verify.outputs.go-merged-by }}
-      go-merged-by-kind:
-        description: '`app` when the bridge''s App merged it, `human` when a person did.'
-        value: ${{ jobs.verify.outputs.go-merged-by-kind }}
+      go-published-by:
+        description: Who published the release.
+        value: ${{ jobs.verify.outputs.go-published-by }}
+      go-published-by-kind:
+        description: '`app` when the bridge''s App published it, `human` when a person did.'
+        value: ${{ jobs.verify.outputs.go-published-by-kind }}
       verified:
         description: '`true` once every check of verify passed.'
         value: ${{ jobs.verify.outputs.verified }}
-      recorded:
-        description: 'JSON [{component, branch, pr}] labelled and read back.'
-        value: ${{ jobs.record-deployed.outputs.recorded }}
-      skipped:
-        description: 'JSON [{component, reason}] not recorded.'
-        value: ${{ jobs.record-deployed.outputs.skipped }}
       branch:
         description: The release branch the close merged back, or none.
         value: ${{ jobs.close.outputs.branch }}
@@ -241,9 +181,6 @@ on:
       last-state:
         description: The last mergeStateStatus seen, set on a poll timeout.
         value: ${{ jobs.close.outputs.last-state }}
-      held:
-        description: '`open-release-pr`, `undeployed` or `unknown` when the cycle is not over yet.'
-        value: ${{ jobs.close.outputs.held }}
 
 # gh finds the caller's repository without a checkout.
 env:
@@ -261,16 +198,13 @@ jobs:
     permissions:
       contents: read
       actions: read
-      pull-requests: read
     outputs:
       rc-tag: ${{ steps.candidate.outputs.rc-tag }}
       rc-sha: ${{ steps.candidate.outputs.rc-sha }}
       version: ${{ steps.candidate.outputs.version }}
       deploy-sha: ${{ steps.candidate.outputs.deploy-sha }}
-      release-branch: ${{ steps.go.outputs.release-branch }}
-      release-pr-number: ${{ steps.go.outputs.release-pr-number }}
-      go-merged-by: ${{ steps.go.outputs.go-merged-by }}
-      go-merged-by-kind: ${{ steps.go.outputs.go-merged-by-kind }}
+      go-published-by: ${{ steps.go.outputs.go-published-by }}
+      go-published-by-kind: ${{ steps.go.outputs.go-published-by-kind }}
       verified: ${{ steps.go.outputs.verified }}
     steps:
       # Before anything is checked out: what this run is asked to publish.
@@ -307,8 +241,8 @@ jobs:
             echo "::error title=Not a release::$RELEASE_TAG is a candidate tag, not a published release."
             exit 1
           fi
-          # A resume redeploys a global RC tag and nothing else: a branch or a
-          # component tag proves nothing about QA.
+          # A resume redeploys an RC tag and nothing else: a branch or another
+          # tag proves nothing about QA.
           if [ -n "$RESUME_FROM" ] && ! [[ "$RESUME_FROM" =~ $full ]]; then
             echo "::error title=Not a candidate::'$RESUME_FROM' is not a candidate tag ($CANDIDATE_PATTERN); only an RC tag is resumed."
             exit 1
@@ -323,16 +257,13 @@ jobs:
           fetch-tags: true
           persist-credentials: false
 
-      - name: Name the candidate and check that only bookkeeping changed
+      - name: Name the candidate and check that the release is that candidate
         id: candidate
         env:
           RELEASE_TAG: ${{ inputs.release-tag }}
           RESUME_FROM: ${{ inputs.resume-from }}
           CANDIDATE_PATTERN: ${{ inputs.candidate-tag }}
           RELEASE_PATTERN: ${{ inputs.release-tag-pattern }}
-          COMPONENTS: ${{ inputs.components }}
-          BOOKKEEPING: ${{ inputs.bookkeeping-paths }}
-          GATE_RECORD: ${{ inputs.gate-record }}
           QA_RECORD: ${{ inputs.qa-record }}
           QA_ANGLES: ${{ inputs.qa-angles }}
           DEFAULT_BRANCH: ${{ inputs.default-branch }}
@@ -354,12 +285,6 @@ jobs:
             printf '%s\n' "$1" | sed -e 's/[][\.*^$+?(){}|]/\\&/g' \
               -e 's/\\{version\\}/([0-9]+\\.[0-9]+\\.[0-9]+)/' -e 's/\\{rc\\}/([0-9]+)/'
           }
-          if ! jq -e 'type == "array" and all(.[]; type == "string")' > /dev/null 2>&1 <<< "$BOOKKEEPING"; then
-            refuse "bookkeeping-paths is not a JSON array of paths."
-          fi
-          if ! jq -e 'type == "array"' > /dev/null 2>&1 <<< "$COMPONENTS"; then
-            refuse "components is not a JSON array."
-          fi
           if ! jq -e 'type == "array" and all(.[]; type == "string" and test("^[a-z0-9][a-z0-9-]*$"))' \
                 > /dev/null 2>&1 <<< "$QA_ANGLES"; then
             refuse "qa-angles is not a JSON array of angle keys (lower-case letters, digits and hyphens)."
@@ -370,7 +295,6 @@ jobs:
             *'{candidate}'*) ;;
             *) refuse "qa-record '$QA_RECORD' must hold {candidate} once." ;;
           esac
-          multi="$(jq 'length > 0' <<< "$COMPONENTS")"
 
           candidate_re="^$(to_regex "$CANDIDATE_PATTERN")\$"
           # Which group is the version: the placeholder that comes first.
@@ -382,7 +306,7 @@ jobs:
             refuse "the tag $RELEASE_TAG is not in the checkout."
           fi
 
-          # The version the release tag names, when it is this product's tag.
+          # The version the release tag names.
           version=""
           if [ -n "$RELEASE_PATTERN" ]; then
             release_re="^$(to_regex "$RELEASE_PATTERN")\$"
@@ -390,14 +314,12 @@ jobs:
               version="${BASH_REMATCH[1]}"
             fi
           fi
-          if [ -z "$version" ] && [ "$multi" != "true" ]; then
+          if [ -z "$version" ]; then
             refuse "$RELEASE_TAG does not match release-tag-pattern '$RELEASE_PATTERN': the version it releases cannot be read."
           fi
 
           # REQ-CI-076: the newest candidate of exactly this version in the
-          # release's history (rc.10 after rc.9). Another component's tag names
-          # no version of the product: its certificate is the newest candidate
-          # in its history, and the delta check below refuses an older one.
+          # release's history (rc.10 after rc.9).
           if ! git tag --list --merged "$RELEASE_SHA" > "$work/tags"; then
             refuse "the tags merged into $RELEASE_TAG could not be listed."
           fi
@@ -406,7 +328,7 @@ jobs:
             if [[ "$tag" =~ $candidate_re ]]; then
               v="${BASH_REMATCH[$vi]}"
               rc="${BASH_REMATCH[$ri]}"
-              if [ -n "$version" ] && [ "$v" != "$version" ]; then
+              if [ "$v" != "$version" ]; then
                 continue
               fi
               IFS=. read -r major minor patch <<< "$v"
@@ -435,22 +357,14 @@ jobs:
             refuse "the commit under deploy ($HEAD_SHA) is not the commit behind $RELEASE_TAG ($RELEASE_SHA)."
           fi
 
-          # REQ-CI-078: only release-please bookkeeping, the gate record the
-          # bridge lands before the release PRs and the candidate's own QA
-          # reports may differ from the RC.
-          jq -r '.[]' <<< "$BOOKKEEPING" > "$work/allowed"
-          if [ -n "$GATE_RECORD" ]; then
-            case "$GATE_RECORD" in
-              *'{version}'*'{version}'* | '') refuse "gate-record '$GATE_RECORD' must hold {version} once." ;;
-              *'{version}'*) ;;
-              *) refuse "gate-record '$GATE_RECORD' must hold {version} once." ;;
-            esac
-            printf '%s\n' "$GATE_RECORD" | sed "s/{version}/$RC_VERSION/" >> "$work/allowed"
-          fi
-          # The latest candidate's report of each angle, `<record>/<angle>.json`,
-          # which the GO allows too: the last pass's reports land after its
-          # candidate by construction. They are rendered for RC_TAG only, so an
-          # earlier candidate's report is a delta like any other.
+          # REQ-CI-078: the release is its candidate. The bridge tags the
+          # candidate's own commit on its GO; a person may tag the release
+          # branch's tip instead, which differs from the candidate only by
+          # the latest candidate's report of each angle,
+          # `<record>/<angle>.json`: the last pass's reports land after its
+          # candidate by construction. They are rendered for RC_TAG only, so
+          # an earlier candidate's report is a delta like any other.
+          : > "$work/allowed"
           qa_dir="${QA_RECORD%%"{candidate}"*}${RC_TAG}${QA_RECORD#*"{candidate}"}"
           while [[ "$qa_dir" == */ ]]; do qa_dir="${qa_dir%/}"; done
           jq -r '.[]' <<< "$QA_ANGLES" > "$work/angles"
@@ -466,7 +380,7 @@ jobs:
           fi
           if [ -s "$work/unexpected" ]; then
             # Name the cause when it is the default branch merged into the
-            # release branch: release-please never reads a merge commit.
+            # release branch: a change no candidate covered.
             if git rev-parse --verify --quiet "refs/remotes/origin/$DEFAULT_BRANCH" > /dev/null; then
               git rev-list --merges "$RC_SHA..$RELEASE_SHA" > "$work/merges"
               while IFS= read -r merge; do
@@ -474,11 +388,11 @@ jobs:
                 if [ -n "$second" ] && git merge-base --is-ancestor "$second" "refs/remotes/origin/$DEFAULT_BRANCH"; then
                   echo "::error title=$DEFAULT_BRANCH merged into the release branch::merge $(git rev-parse --short "$merge") brought from $DEFAULT_BRANCH, after $RC_TAG:"
                   git log --format='  %h %s' "$merge^1..$merge^2"
-                  echo "release-please does not read a merge commit, so these changes are not in the changelog either."
+                  echo "No candidate covered these changes, and the notes the cycle prepared do not name them."
                 fi
               done < "$work/merges"
             fi
-            echo "Changed since $RC_TAG, beyond bookkeeping:"
+            echo "Changed since $RC_TAG, beyond its own QA reports:"
             sed 's/^/  /' "$work/unexpected"
             refuse "commits landed after $RC_TAG that the gate never saw. Cut a new RC and let the gate pass; a fix during a cycle is a PR on the release branch, never $DEFAULT_BRANCH merged into it."
           fi
@@ -490,8 +404,12 @@ jobs:
             echo "release-sha=$RELEASE_SHA"
             echo "deploy-sha=$HEAD_SHA"
           } >> "$out"
-          echo "Only bookkeeping changed between $RC_TAG and $RELEASE_TAG."
-          printf -- '- Candidate `%s` (`%s`); only bookkeeping since.\n' "$RC_TAG" "$RC_SHA" >> "$summary"
+          if [ -s "$work/changed" ]; then
+            echo "$RELEASE_TAG is $RC_TAG with its own QA reports."
+          else
+            echo "$RELEASE_TAG is $RC_TAG."
+          fi
+          printf -- '- Candidate `%s` (`%s`); nothing but its own QA reports since.\n' "$RC_TAG" "$RC_SHA" >> "$summary"
 
       - name: The candidate's own gate run is green
         id: gate
@@ -533,15 +451,13 @@ jobs:
           echo "$GATE_WORKFLOW on $RC_TAG: success."
           printf -- '- Gate `%s` on `%s`: success.\n' "$GATE_WORKFLOW" "$RC_TAG" >> "$summary"
 
-      - name: The release-please PR was merged by the bridge's App or by a human
+      - name: The release was published by the bridge's App or by a human
         id: go
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ inputs.release-tag }}
-          RELEASE_SHA: ${{ steps.candidate.outputs.release-sha }}
-          GO_MERGER: ${{ inputs.go-merger-login }}
-          BRANCH_PREFIX: ${{ inputs.branch-prefix }}
+          GO_PUBLISHER: ${{ inputs.go-publisher-login }}
         shell: bash
         run: |
           set -euo pipefail
@@ -555,199 +471,47 @@ jobs:
             exit 1
           }
           # The App's two logins, built from its slug: `<slug>[bot]` as the
-          # REST API spells the merger, `app/<slug>` as gh spells an author.
-          slug="$(tr '[:upper:]' '[:lower:]' <<< "$GO_MERGER")"
+          # REST API spells the author, `app/<slug>` as gh spells it.
+          slug="$(tr '[:upper:]' '[:lower:]' <<< "$GO_PUBLISHER")"
           slug="${slug#app/}"
           slug="${slug%\[bot\]}"
           if ! [[ "$slug" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
-            refuse "go-merger-login '$GO_MERGER' is not an App slug."
+            refuse "go-publisher-login '$GO_PUBLISHER' is not an App slug."
           fi
           bot_login="${slug}[bot]"
           app_login="app/${slug}"
-          if [ -z "$BRANCH_PREFIX" ]; then
-            refuse "branch-prefix is empty."
-          fi
 
-          # REQ-CI-079: the PR whose merge made the release commit, merged into
-          # a release branch from release-please's head. The bridge merges it
-          # only on its computed GO; a human with write access may merge it
-          # instead (spec 09), the rulesets deciding who may. Either merge is
-          # the GO. Any other bot (another App, the Actions token) is not.
-          if ! gh api "repos/$REPO/commits/$RELEASE_SHA/pulls" > "$work/pulls"; then
-            refuse "the PRs of $RELEASE_TAG's commit could not be read."
+          # REQ-CI-079: the release is the GO. The bridge publishes it only on
+          # its computed GO; a human with write access may tag the candidate
+          # and publish it instead (spec 09), the rulesets deciding who may.
+          # Either is the GO. Any other bot (another App, the Actions token)
+          # is not.
+          if ! gh api "repos/$REPO/releases/tags/$RELEASE_TAG" > "$work/release"; then
+            refuse "the release of $RELEASE_TAG could not be read."
           fi
-          if ! jq -r --arg sha "$RELEASE_SHA" --arg prefix "$BRANCH_PREFIX" \
-                '.[] | select(.merged_at != null and .merge_commit_sha == $sha
-                  and (.base.ref | startswith($prefix))
-                  and (.head.ref | startswith("release-please--"))) | .number' \
-                "$work/pulls" > "$work/numbers"; then
-            refuse "the PRs of $RELEASE_TAG's commit are not the expected JSON."
+          draft="$(jq -r '.draft // false' "$work/release")"
+          author="$(jq -r '.author.login // ""' "$work/release")"
+          author_type="$(jq -r '.author.type // ""' "$work/release")"
+          if [ "$draft" = "true" ]; then
+            refuse "the release of $RELEASE_TAG is a draft: it is not published."
           fi
-          count="$(grep -c . "$work/numbers" || true)"
-          if [ "$count" != 1 ]; then
-            refuse "$count release-please PR(s) merged into a $BRANCH_PREFIX* branch made $RELEASE_TAG's commit $RELEASE_SHA; exactly one is the GO."
-          fi
-          number="$(head -n 1 "$work/numbers")"
-          if ! gh api "repos/$REPO/pulls/$number" > "$work/pull"; then
-            refuse "PR #$number could not be read."
-          fi
-          merged="$(jq -r '.merged // false' "$work/pull")"
-          merged_by="$(jq -r '.merged_by.login // ""' "$work/pull")"
-          merged_by_type="$(jq -r '.merged_by.type // ""' "$work/pull")"
-          branch="$(jq -r '.base.ref // ""' "$work/pull")"
-          if [ "$merged" != "true" ]; then
-            refuse "PR #$number is not merged."
-          fi
-          merged_by_lower="$(tr '[:upper:]' '[:lower:]' <<< "$merged_by")"
-          if [ "$merged_by_lower" = "$bot_login" ] || [ "$merged_by_lower" = "$app_login" ]; then
+          author_lower="$(tr '[:upper:]' '[:lower:]' <<< "$author")"
+          if [ "$author_lower" = "$bot_login" ] || [ "$author_lower" = "$app_login" ]; then
             kind=app
             who="the bridge's App"
-          elif [ -n "$merged_by" ] && [ "$merged_by_type" = "User" ]; then
+          elif [ -n "$author" ] && [ "$author_type" = "User" ]; then
             kind=human
             who="a human"
           else
-            refuse "PR #$number was merged by '${merged_by:-nobody readable}' (${merged_by_type:-no account type}), neither the bridge's App ($slug) nor a human account: no GO."
+            refuse "the release of $RELEASE_TAG was published by '${author:-nobody readable}' (${author_type:-no account type}), neither the bridge's App ($slug) nor a human account: no GO."
           fi
           {
-            echo "release-branch=$branch"
-            echo "release-pr-number=$number"
-            echo "go-merged-by=$merged_by"
-            echo "go-merged-by-kind=$kind"
+            echo "go-published-by=$author"
+            echo "go-published-by-kind=$kind"
             echo "verified=true"
           } >> "$out"
-          echo "GO: #$number merged into $branch by $merged_by ($who)."
-          printf -- '- GO: #%s merged into `%s` by `%s` (%s).\n' "$number" "$branch" "$merged_by" "$who" >> "$summary"
-
-  record-deployed:
-    name: record-deployed
-    if: inputs.stage == 'record-deployed'
-    runs-on: ${{ startsWith(inputs.runs-on, '[') && fromJSON(inputs.runs-on) || inputs.runs-on }}
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    outputs:
-      recorded: ${{ steps.record.outputs.recorded }}
-      skipped: ${{ steps.record.outputs.skipped }}
-    steps:
-      # The App writes the label, and the job's own token only reads. The
-      # ledger reads the label, not who wrote it: a human who labels a
-      # component's release PR by hand records the same fact.
-      - name: Mint the App token
-        id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          app-id: ${{ secrets.SPL_ASDLC_APP_ID }}
-          private-key: ${{ secrets.SPL_ASDLC_APP_PRIVATE_KEY }}
-
-      - name: Label the release PR of each component in production
-        id: record
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          REPO: ${{ github.repository }}
-          IN_PRODUCTION: ${{ inputs.components-in-production }}
-          BRANCH: ${{ inputs.release-branch }}
-          RESUME_FROM: ${{ inputs.resume-from }}
-          LABEL: ${{ inputs.deployed-label }}
-          TAGGED_LABEL: ${{ inputs.tagged-label }}
-          PENDING_LABEL: ${{ inputs.pending-label }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          out="${GITHUB_OUTPUT:-/dev/stdout}"
-          summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
-          delay="${READBACK_SECONDS:-5}"
-          work="$(mktemp -d)"
-          trap 'rm -rf "$work"' EXIT
-          # REQ-CI-085: no answer from the deploy (a job that failed early or
-          # was cancelled) is "unknown", never "nothing was released".
-          if [ -z "$IN_PRODUCTION" ]; then
-            echo "::error title=Unknown deploy::components-in-production is empty: what this run put in production is unknown. Nothing is recorded; the cycle stays open."
-            exit 1
-          fi
-          if ! jq -e 'type == "array" and all(.[]; type == "string")' > /dev/null 2>&1 <<< "$IN_PRODUCTION"; then
-            echo "::error title=Invalid components-in-production::not a JSON array of component names."
-            exit 1
-          fi
-          recorded='[]'
-          skipped='[]'
-          if [ "$(jq 'length' <<< "$IN_PRODUCTION")" = 0 ]; then
-            echo "This run put no component in production: nothing to record."
-            { echo "recorded=$recorded"; echo "skipped=$skipped"; } >> "$out"
-            exit 0
-          fi
-          if [ -z "$BRANCH" ]; then
-            echo "::error title=No release branch::release-branch is empty: the release PRs cannot be found."
-            exit 1
-          fi
-          # Never repository-wide: by base, merged, under release-please's
-          # labels. A full page may hide a release PR, so it is unreadable.
-          : > "$work/merged"
-          for label in "$TAGGED_LABEL" "$PENDING_LABEL"; do
-            if ! gh pr list --state merged --base "$BRANCH" --label "$label" --limit 100 \
-                  --json number,title,labels > "$work/page"; then
-              echo "::error title=Ledger unreadable::the merged release PRs on $BRANCH could not be listed; nothing is recorded."
-              exit 1
-            fi
-            if [ "$(jq 'length' "$work/page")" -ge 100 ]; then
-              echo "::error title=Ledger unreadable::100 or more merged PRs labelled '$label' on $BRANCH; refusing to guess which are this cycle's."
-              exit 1
-            fi
-            jq -c '.[]' "$work/page" >> "$work/merged"
-          done
-
-          failed=0
-          while IFS= read -r component; do
-            if ! [[ "$component" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
-              echo "::error title=Invalid component::'$component' is not a component name."
-              failed=1
-              continue
-            fi
-            # The title the bridge's ledger reads: `release <component> <version>`.
-            jq -r --arg c "$component" \
-              'select(any(.labels[]; .name | startswith("autorelease:")))
-               | select(.title | test("\\brelease " + $c + " v?[0-9]")) | .number' \
-              "$work/merged" | sort -u > "$work/numbers"
-            if [ ! -s "$work/numbers" ]; then
-              if [ -n "$RESUME_FROM" ]; then
-                echo "::notice::$component has no merged release PR on $BRANCH: the cycle did not embark it, nothing to record."
-                skipped="$(jq -c --arg c "$component" '. + [{component: $c, reason: "not embarked"}]' <<< "$skipped")"
-              else
-                echo "::error title=Nothing to record::$component was put in production but has no merged release PR on $BRANCH."
-                skipped="$(jq -c --arg c "$component" '. + [{component: $c, reason: "no merged release PR"}]' <<< "$skipped")"
-                failed=1
-              fi
-              continue
-            fi
-            while IFS= read -r number; do
-              if ! gh api -X POST "repos/$REPO/issues/$number/labels" -f "labels[]=$LABEL" > /dev/null; then
-                echo "::error title=Label refused::#$number ($component): the label '$LABEL' was not written. First suspect: the App's Pull requests permission."
-                skipped="$(jq -c --arg c "$component" --arg n "$number" '. + [{component: $c, pr: ($n | tonumber), reason: "label refused"}]' <<< "$skipped")"
-                failed=1
-                continue
-              fi
-              # REQ-CI-011: written is what reads back.
-              seen=false
-              for attempt in 1 2 3; do
-                if gh api "repos/$REPO/issues/$number/labels" --jq '.[].name' > "$work/labels" \
-                    && grep -qxF -- "$LABEL" "$work/labels"; then
-                  seen=true
-                  break
-                fi
-                if [ "$attempt" -lt 3 ]; then sleep "$delay"; fi
-              done
-              if [ "$seen" != true ]; then
-                echo "::error title=Label not read back::#$number ($component) does not carry '$LABEL' after the write."
-                skipped="$(jq -c --arg c "$component" --arg n "$number" '. + [{component: $c, pr: ($n | tonumber), reason: "not read back"}]' <<< "$skipped")"
-                failed=1
-                continue
-              fi
-              echo "Recorded: $component is in production (#$number on $BRANCH, '$LABEL')."
-              printf -- '- `%s` in production: #%s labelled `%s`.\n' "$component" "$number" "$LABEL" >> "$summary"
-              recorded="$(jq -c --arg c "$component" --arg b "$BRANCH" --arg n "$number" '. + [{component: $c, branch: $b, pr: ($n | tonumber)}]' <<< "$recorded")"
-            done < "$work/numbers"
-          done < <(jq -r '.[]' <<< "$IN_PRODUCTION")
-          { echo "recorded=$recorded"; echo "skipped=$skipped"; } >> "$out"
-          exit "$failed"
+          echo "GO: $RELEASE_TAG published by $author ($who)."
+          printf -- '- GO: `%s` published by `%s` (%s).\n' "$RELEASE_TAG" "$author" "$who" >> "$summary"
 
   close:
     name: close
@@ -761,7 +525,6 @@ jobs:
       contents: read
     outputs:
       branch: ${{ steps.refs.outputs.branch }}
-      held: ${{ steps.ledger.outputs.held || steps.refs.outputs.held }}
       number: ${{ steps.mergeback.outputs.number }}
       merged: ${{ steps.mergeback.outputs.merged }}
       last-state: ${{ steps.mergeback.outputs.last-state }}
@@ -779,7 +542,7 @@ jobs:
           app-id: ${{ secrets.SPL_ASDLC_APP_ID }}
           private-key: ${{ secrets.SPL_ASDLC_APP_PRIVATE_KEY }}
 
-      - name: Name the release branch, and see whether the cycle is over
+      - name: Name the release branch
         id: refs
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -790,7 +553,6 @@ jobs:
           REF_TYPE: ${{ github.ref_type }}
           BRANCH_PREFIX: ${{ inputs.branch-prefix }}
           DEFAULT_BRANCH: ${{ inputs.default-branch }}
-          PENDING_LABEL: ${{ inputs.pending-label }}
         shell: bash
         run: |
           set -euo pipefail
@@ -801,7 +563,7 @@ jobs:
           none() {
             echo "$1"
             printf -- '- %s\n' "$1" >> "$summary"
-            { echo "branch="; echo "held="; } >> "$out"
+            echo "branch=" >> "$out"
             exit 0
           }
           if [ -z "$BRANCH_PREFIX" ]; then
@@ -867,110 +629,9 @@ jobs:
           echo "Release branch: $BRANCH"
           echo "branch=$BRANCH" >> "$out"
 
-          # REQ-CI-088 (1): another component still going out holds the cycle.
-          if ! gh pr list --state open --base "$BRANCH" --label "$PENDING_LABEL" \
-                --json number,title > "$work/open"; then
-            echo "::error title=Release PRs unreadable::the open release PRs against $BRANCH could not be listed; 'none left' and 'could not read' are not the same answer."
-            exit 1
-          fi
-          if [ "$(jq 'length' "$work/open")" -gt 0 ]; then
-            echo "The cycle is NOT over: release PRs still target $BRANCH:"
-            jq -r '.[] | "  #\(.number) \(.title)"' "$work/open"
-            echo "Nothing is merged back; the last component's run does it."
-            printf -- '- Held: release PRs still open against `%s`.\n' "$BRANCH" >> "$summary"
-            echo "held=open-release-pr" >> "$out"
-            exit 0
-          fi
-          echo "held=" >> "$out"
-          echo "No release PR is left open against $BRANCH."
-
-      - name: Check that every embarked component is in production
-        id: ledger
-        if: steps.refs.outputs.branch != '' && steps.refs.outputs.held == '' && inputs.components != '[]' && inputs.components != ''
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          BRANCH: ${{ steps.refs.outputs.branch }}
-          COMPONENTS: ${{ inputs.components }}
-          LABEL: ${{ inputs.deployed-label }}
-          TAGGED_LABEL: ${{ inputs.tagged-label }}
-          PENDING_LABEL: ${{ inputs.pending-label }}
-          # From the event, never from a value a caller could hand in.
-          REPLAY: ${{ github.event_name == 'workflow_dispatch' && inputs.replay }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          out="${GITHUB_OUTPUT:-/dev/stdout}"
-          summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
-          work="$(mktemp -d)"
-          trap 'rm -rf "$work"' EXIT
-          if ! jq -e 'type == "array" and length > 0 and all(.[]; type == "string" and test("^[a-z0-9][a-z0-9-]*$"))' \
-                > /dev/null 2>&1 <<< "$COMPONENTS"; then
-            echo "::error title=Invalid components::not a JSON array of component names."
-            echo "held=unknown" >> "$out"
-            exit 1
-          fi
-          # Embarked: a release PR merged on the branch, tagged or not (a PR
-          # merged and never tagged is embarked, and never deployed).
-          : > "$work/merged"
-          for label in "$TAGGED_LABEL" "$PENDING_LABEL"; do
-            if ! gh pr list --state merged --base "$BRANCH" --label "$label" --limit 100 \
-                  --json number,title,labels > "$work/page" \
-                || [ "$(jq 'length' "$work/page")" -ge 100 ]; then
-              echo "::error title=Ledger unreadable::the release PRs merged on $BRANCH could not be listed in full; 'everything is deployed' and 'could not read' are not the same answer."
-              echo "held=unknown" >> "$out"
-              exit 1
-            fi
-            jq -c '.[]' "$work/page" >> "$work/merged"
-          done
-          jq -s -c 'unique_by(.number) | .[]' "$work/merged" > "$work/embarked"
-
-          : > "$work/held"
-          deployed=""
-          while IFS= read -r pr; do
-            number="$(jq -r '.number' <<< "$pr")"
-            title="$(jq -r '.title' <<< "$pr")"
-            component="$(jq -r --argjson cs "$COMPONENTS" \
-              '.title as $t | [$cs[] | select(. as $c | $t | test("\\brelease " + $c + " v?[0-9]"))] | first // ""' <<< "$pr")"
-            if [ -z "$component" ]; then
-              # Fail closed: a release PR that names no declared component.
-              echo "#$number ('$title') names no declared component" >> "$work/held"
-            elif jq -e --arg l "$LABEL" 'any(.labels[]; .name == $l)' > /dev/null <<< "$pr"; then
-              deployed="$deployed $component (#$number)"
-            else
-              echo "$component (#$number) is merged but not in production" >> "$work/held"
-            fi
-          done < "$work/embarked"
-          if [ ! -s "$work/embarked" ]; then
-            echo "no merged release PR on $BRANCH: what the cycle embarked is not established" >> "$work/held"
-          fi
-
-          if [ ! -s "$work/held" ]; then
-            echo "Every embarked component is in production:$deployed."
-            printf -- '- Every embarked component is in production:%s.\n' "$deployed" >> "$summary"
-            echo "held=" >> "$out"
-            exit 0
-          fi
-          while IFS= read -r what; do
-            if [ "$REPLAY" = "true" ]; then
-              echo "::warning::Closing over an explicit replay: $what."
-            else
-              echo "::warning::The cycle on $BRANCH stays OPEN: $what."
-            fi
-            printf -- '- %s\n' "$what" >> "$summary"
-          done < "$work/held"
-          if [ "$REPLAY" = "true" ]; then
-            # The dispatch is the human decision; it never closes in silence.
-            echo "This replay closes $BRANCH over the above."
-            echo "held=" >> "$out"
-            exit 0
-          fi
-          echo "Nothing is merged back and $BRANCH is kept. To finish the cycle: resume the missing component from the RC tag, then dispatch a replay on $BRANCH (replay: true; it publishes nothing). A component left undeployed on purpose is closed over by the same replay; there is no automatic waiver."
-          printf -- '- Held: nothing merged back. Resume the missing component from the RC tag, then replay on `%s`.\n' "$BRANCH" >> "$summary"
-          echo "held=undeployed" >> "$out"
-
       - name: Merge the release branch back
         id: mergeback
-        if: steps.refs.outputs.branch != '' && steps.refs.outputs.held == '' && steps.ledger.outputs.held == ''
+        if: steps.refs.outputs.branch != ''
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
@@ -1145,7 +806,7 @@ jobs:
           echo "merged=false" >> "$out"
           {
             echo "::error title=Merge back not done::#$NUMBER did not merge within $POLL_TIMEOUT minutes (last state: $LAST_STATE). $DEFAULT_BRANCH has NOT received $BRANCH; the release stays published, it is $DEFAULT_BRANCH that is behind."
-            echo "FORBIDDEN, whatever the state: bringing $DEFAULT_BRANCH into $BRANCH (no PR from $DEFAULT_BRANCH to $BRANCH, no branch update from the base, no local merge pushed). It adds code no candidate covered and release-please never reads it."
+            echo "FORBIDDEN, whatever the state: bringing $DEFAULT_BRANCH into $BRANCH (no PR from $DEFAULT_BRANCH to $BRANCH, no branch update from the base, no local merge pushed). It adds code no candidate covered."
             if [ "$LAST_STATE" = "DIRTY" ]; then
               echo "A real conflict. Resolve it OFF the release branch: cut chore/merge-back-<stamp> from $BRANCH, merge $DEFAULT_BRANCH into that branch and resolve there, open its PR into $DEFAULT_BRANCH and merge it as a merge commit; then dispatch a replay on $BRANCH (replay: true), which deletes the branch and publishes nothing."
             elif [ "$LAST_STATE" = "BLOCKED" ] || [ "$LAST_STATE" = "BEHIND" ]; then
@@ -1160,7 +821,6 @@ jobs:
         if: always()
         env:
           BRANCH: ${{ steps.refs.outputs.branch }}
-          HELD: ${{ steps.ledger.outputs.held || steps.refs.outputs.held }}
           NUMBER: ${{ steps.mergeback.outputs.number }}
           MERGED: ${{ steps.mergeback.outputs.merged }}
           LAST_STATE: ${{ steps.mergeback.outputs.last-state }}
@@ -1170,9 +830,9 @@ jobs:
           summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
           {
             echo "### Release close"
-            echo "| branch | held | merge-back PR | merged | last state |"
-            echo "|---|---|---|---|---|"
-            echo "| ${BRANCH:-none} | ${HELD:-no} | ${NUMBER:-none} | ${MERGED:-no} | ${LAST_STATE:-} |"
+            echo "| branch | merge-back PR | merged | last state |"
+            echo "|---|---|---|---|"
+            echo "| ${BRANCH:-none} | ${NUMBER:-none} | ${MERGED:-no} | ${LAST_STATE:-} |"
           } >> "$summary"
 
   closing-guard:
@@ -1189,21 +849,20 @@ jobs:
           PUBLISH_RESULT: ${{ inputs.publish-result }}
           REPLAY: ${{ github.event_name == 'workflow_dispatch' && inputs.replay }}
           CLOSE_RESULT: ${{ needs.close.result }}
-          HELD: ${{ needs.close.outputs.held }}
           RELEASE_TAG: ${{ inputs.release-tag }}
         shell: bash
         run: |
           set -euo pipefail
           summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
           case "$STAGE" in
-            verify | record-deployed)
+            verify)
               echo "Stage $STAGE: nothing to guard."
               exit 0
               ;;
             close) ;;
             *)
               # A stage nobody runs would skip every job and read green.
-              echo "::error title=Unknown stage::'$STAGE' is not verify, record-deployed or close."
+              echo "::error title=Unknown stage::'$STAGE' is not verify or close."
               exit 1
               ;;
           esac
@@ -1217,7 +876,7 @@ jobs:
           fi
           case "$CLOSE_RESULT" in
             success)
-              echo "close=success${HELD:+, held: $HELD}."
+              echo "close=success."
               ;;
             skipped)
               fail "${RELEASE_TAG:-the release} was published but the merge back was SKIPPED: nothing carried the cycle back. The publication is not undone; replay on the release branch (replay: true)."

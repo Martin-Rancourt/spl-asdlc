@@ -3,9 +3,6 @@
 //! review round gets, what holds a PR whatever its approval, whether the
 //! coordinator's approval qualifies, and whether the branch is up to date.
 
-use std::sync::LazyLock;
-
-use regex::Regex;
 use serde_json::Value;
 
 use super::glob;
@@ -13,34 +10,15 @@ use super::vocabulary::NEEDS_REVIEW_LABEL;
 use crate::config;
 use crate::github::{Mergeable, PullRequest, Review, login_key, same_login};
 
-static RELEASE_PLEASE_TITLE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)^chore(\(.*\))?:\s*release\b").unwrap());
-
 /// Head prefixes of the release machinery.
-pub const RELEASE_PLEASE_PREFIX: &str = "release-please--";
-pub const RELEASE_RECORD_PREFIX: &str = "release-record/";
 pub const MERGE_BACK_RESOLUTION_PREFIX: &str = "chore/merge-back-";
 pub const ANGLE_BRANCH_PREFIX: &str = "qa/";
-
-/// A PR shaped like release-please's (label, head prefix or title).
-pub fn is_release_please_shaped(pr: &PullRequest, release_pr_label: &str) -> bool {
-    pr.head_ref.starts_with(RELEASE_PLEASE_PREFIX)
-        || RELEASE_PLEASE_TITLE.is_match(pr.title.trim())
-        || pr
-            .labels
-            .iter()
-            .any(|l| l.trim().eq_ignore_ascii_case(release_pr_label))
-}
 
 /// Why the merge pass never touches this PR, if it does not (spec 04 §8):
 /// the release machinery is governed by the release cycle. Decided on the
 /// head branch, never the base: a PR based on a release branch is an
 /// ordinary PR (a hotfix). An unreadable head is treated as a merge-back.
-pub fn excluded_from_merge_pass(
-    pr: &PullRequest,
-    branch_prefix: &str,
-    release_pr_label: &str,
-) -> Option<&'static str> {
+pub fn excluded_from_merge_pass(pr: &PullRequest, branch_prefix: &str) -> Option<&'static str> {
     let head = pr.head_ref.trim();
     if head.is_empty() {
         return Some(
@@ -56,12 +34,6 @@ pub fn excluded_from_merge_pass(
         return Some(
             "merge back of a release branch — the release close merges it, as a merge commit",
         );
-    }
-    if is_release_please_shaped(pr, release_pr_label) {
-        return Some("release-please PR — the release cycle merges it on a computed GO");
-    }
-    if head.starts_with(RELEASE_RECORD_PREFIX) {
-        return Some("gate-record PR — the release cycle merges it");
     }
     if head.starts_with(ANGLE_BRANCH_PREFIX) && pr.base_ref.starts_with(branch_prefix) {
         return Some("angle PR of a release QA — the release cycle merges it");

@@ -15,7 +15,8 @@
 //!    back In Progress on changes requested); merged into the release
 //!    branch when approved, green and carrying a valid report, the sub-item
 //!    Done; the findings of a merged report filed;
-//! 4. the GO, and on GO the release-please PR merged;
+//! 4. the GO, and on GO the release tag on the candidate and its GitHub
+//!    release published, with the notes the cut prepared;
 //! 5. otherwise the HOLD said once, the escalation when the passes are
 //!    spent, the stagnation notice;
 //! 6. once the release is published: the consolidation items Done, then the
@@ -33,7 +34,7 @@ use crate::method::checks::{self, CheckState};
 use crate::method::release::findings;
 use crate::method::release::gate;
 use crate::method::release::go::{self, AngleState, GoFacts, Policy};
-use crate::method::release::notes;
+use crate::method::release::prepare;
 use crate::method::release::prs;
 use crate::method::release::report::{self, Report as AngleReport};
 use crate::method::release::shape::{Shape, Version};
@@ -42,6 +43,7 @@ use crate::method::texts::{self, AngleLine, AngleScope, BridgeItem};
 use crate::method::vocabulary::{self, Severity, Status};
 use crate::tracker::{Item, NewItem, Priority, RelationKind};
 
+use super::hands_off;
 use super::merge::{for_tracker, tracker_said};
 use super::{Report, Tick, closure};
 
@@ -311,24 +313,20 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
     } else {
         (states, without_angles)
     };
-    let decision = decide(
+    let Some(decision) = decide(
         t,
         report,
-        &shape,
         &item,
         &candidate,
         &branch,
         &states,
-        &angle_prs,
         without_angles,
-    );
-    let Some((decision, rp)) = decision else {
-        return merged;
+    ) else {
+        return false;
     };
     if decision.go {
-        return on_go(
-            t, log, report, &shape, &item, &candidate, &branch, &decision, &rp, &states,
-        );
+        on_go(t, log, report, &shape, &item, &candidate);
+        return false;
     }
     hold(t, log, report, &item, &candidate, &decision);
     escalate(t, log, report, &item, &candidate, &decision, &branch);
@@ -710,7 +708,7 @@ pub struct Embarked {
 /// the highest published release below the candidate's version, or, for the
 /// product's first release (`None`), the repository's root, so that the
 /// whole history is the range. One definition for the brief, the embarked
-/// tickets, the note coverage and the closure; unreadable is an error, never
+/// tickets and the closure; unreadable is an error, never
 /// an empty range.
 pub fn release_range(
     t: &Tick,
@@ -754,9 +752,7 @@ pub fn embarked_items(t: &Tick, shape: &Shape, c: &Candidate) -> Result<Embarked
         else {
             continue;
         };
-        if pr.head_ref.starts_with(review::RELEASE_PLEASE_PREFIX)
-            || pr.head_ref.starts_with(&shape.branch_prefix)
-        {
+        if pr.head_ref.starts_with(&shape.branch_prefix) {
             continue;
         }
         let linked: Vec<String> = t
@@ -1097,14 +1093,8 @@ fn brief_facts(
     run: &crate::github::WorkflowRun,
 ) -> Result<texts::Brief, String> {
     // A first release (no earlier one) is measured from the repository's
-    // root: every path at the candidate, and every commit is read by
-    // release-please (no release commit stops it).
+    // root: every path at the candidate.
     let (last, cmp) = release_range(t, shape, c)?;
-    let not_in_note = notes::walk(&cmp.commits, cmp.base_committed_at)
-        .unseen
-        .iter()
-        .map(|u| format!("`{}` {}", notes::short(&u.sha), u.subject))
-        .collect();
     let paths_since_release = cmp.files;
     let paths_since_candidate = match previous {
         Some(p) => Some(
@@ -1141,7 +1131,6 @@ fn brief_facts(
         evidence_url: Some(evidence_url),
         tickets,
         untracked: Vec::new(),
-        not_in_note,
         rule_files_touched,
         no_qa_angle: false,
     })
@@ -2011,199 +2000,17 @@ fn relate(
     );
 }
 
-/// A release PR of the cycle, in merge order.
-#[derive(Debug, Clone)]
-pub struct ReleasePr {
-    /// The component, for a multi-component product.
-    pub component: Option<String>,
-    pub version: Version,
-    pub pr: PullRequest,
-}
-
-/// The release PRs open against the release branch, in merge order (spec 05
-/// §9: the version component last), with the gaps of their notes and of
-/// their staged version.
-fn release_prs(
-    t: &Tick,
-    shape: &Shape,
-    c: &Candidate,
-    branch: &str,
-    open: &[PullRequest],
-) -> (Vec<String>, Vec<String>, Vec<ReleasePr>) {
-    let cfg = t.config;
-    let Ok(release) = section(t) else {
-        return (vec![NO_RELEASE_CYCLE.to_string()], Vec::new(), Vec::new());
-    };
-    let rp_path = release.release_please_config.as_str();
-    let rp_config = |pr: &PullRequest| t.github.file(&t.repo, rp_path, &pr.head_sha);
-    // The range, read once: unreadable is a gap, never an empty range. The
-    // note owes a line only to the commits release-please reads of it; the
-    // others are not in the note by construction (the brief lists them).
-    // The first release: no previous release commit stops release-please,
-    // so every commit of the whole history is seen.
-    let range: Result<Vec<crate::github::CommitSummary>, String> = release_range(t, shape, c)
-        .map(|(_, cmp)| notes::walk(&cmp.commits, cmp.base_committed_at).seen);
-    let commits = match &range {
-        Ok(list) => Ok(list.as_slice()),
-        Err(_) => Err("the range could not be read"),
-    };
-    let coverage = |pr: &PullRequest, version: Version, changelog_path: &str| {
-        let changelog = t.github.file(&t.repo, changelog_path, &pr.head_sha).ok();
-        notes::coverage(
-            version,
-            changelog.as_deref(),
-            rp_config(pr).ok().as_deref(),
-            commits,
-        )
-    };
-    if !shape.multi_component() {
-        return match prs::release_please_pr(
-            open,
-            branch,
-            &release.release_please_authors,
-            &release.release_pr_label,
-        ) {
-            Err(e) => (vec![e.to_string()], Vec::new(), Vec::new()),
-            Ok(lookup) => match lookup.pr {
-                None => (
-                    vec!["no release-please PR is open".into()],
-                    Vec::new(),
-                    Vec::new(),
-                ),
-                Some(pr) => {
-                    let note = coverage(pr, c.version, "CHANGELOG.md");
-                    let staged =
-                        notes::staged_version(&pr.title, &pr.body, &pr.head_ref, &cfg.product.name);
-                    let version_gaps = match staged {
-                        Some(v) if v == c.version => Vec::new(),
-                        Some(v) => vec![format!(
-                            "the release PR stages {v}, the QA judged {}",
-                            c.version
-                        )],
-                        None => {
-                            vec!["the staged version could not be read from the release PR".into()]
-                        }
-                    };
-                    let rp = staged
-                        .map(|v| ReleasePr {
-                            component: None,
-                            version: v,
-                            pr: pr.clone(),
-                        })
-                        .into_iter()
-                        .collect();
-                    (note.gaps(), version_gaps, rp)
-                }
-            },
-        };
-    }
-    let found = match prs::component_prs(
-        open,
-        shape,
-        branch,
-        &release.release_please_authors,
-        &release.release_pr_label,
-    ) {
-        Ok(f) => f,
-        Err(e) => return (vec![e], Vec::new(), Vec::new()),
-    };
-    if found.is_empty() {
-        return (
-            vec!["no release-please PR is open".into()],
-            Vec::new(),
-            Vec::new(),
-        );
-    }
-    let version_component = shape.version_component.clone().unwrap_or_default();
-    let version_gaps = match found.iter().find(|f| f.component == version_component) {
-        Some(f) if f.version == c.version => Vec::new(),
-        Some(f) => vec![format!(
-            "the release PR of {version_component} stages {}, the QA judged {}",
-            f.version, c.version
-        )],
-        None => vec![format!(
-            "no release PR of the version component {version_component} is open"
-        )],
-    };
-    // A commit of the range is covered when one component's note names it.
-    let mut missing: Option<Vec<crate::github::CommitSummary>> = None;
-    let mut unreadable = None;
-    for f in &found {
-        // Where each component's note lives is read from release-please's
-        // configuration: unreadable is a gap, never the root changelog.
-        let config = match rp_config(f.pr) {
-            Ok(c) => c,
-            Err(e) => {
-                unreadable.get_or_insert(format!("{}: {rp_path}: {e}", f.component));
-                continue;
-            }
-        };
-        let path = changelog_path(Some(config.as_str()), &f.component);
-        let cov = coverage(f.pr, f.version, &path);
-        if let Some(why) = cov.unreadable {
-            unreadable.get_or_insert(format!("{}: {why}", f.component));
-            continue;
-        }
-        missing = Some(match missing {
-            None => cov.missing,
-            Some(prev) => prev
-                .into_iter()
-                .filter(|m| cov.missing.iter().any(|x| x.sha == m.sha))
-                .collect(),
-        });
-    }
-    let note = notes::NoteCoverage {
-        missing: missing.unwrap_or_default(),
-        unreadable,
-    };
-    let rp = found
-        .iter()
-        .map(|f| ReleasePr {
-            component: Some(f.component.clone()),
-            version: f.version,
-            pr: f.pr.clone(),
-        })
-        .collect();
-    (note.gaps(), version_gaps, rp)
-}
-
-/// Where release-please writes a component's changelog: its package's path
-/// in `release-please-config.json`, else the root.
-fn changelog_path(config: Option<&str>, component: &str) -> String {
-    let packages = config
-        .and_then(|c| serde_json::from_str::<serde_json::Value>(c).ok())
-        .and_then(|v| v.get("packages").cloned())
-        .and_then(|p| p.as_object().cloned())
-        .unwrap_or_default();
-    for (path, pkg) in &packages {
-        let named = pkg.get("component").and_then(|v| v.as_str()) == Some(component)
-            || path.rsplit('/').next() == Some(component);
-        if named {
-            return if path == "." {
-                "CHANGELOG.md".into()
-            } else {
-                format!("{}/CHANGELOG.md", path.trim_end_matches('/'))
-            };
-        }
-    }
-    "CHANGELOG.md".into()
-}
-
-/// The GO and its facts, with the release-please PR when one was found.
-/// `open` is the list of PRs open against the release branch, where
-/// release-please proposes the release.
+/// The GO and its facts.
 #[allow(clippy::too_many_arguments)]
 pub fn decide(
     t: &Tick,
     report: &mut Report,
-    shape: &Shape,
     item: &Item,
     c: &Candidate,
     branch: &str,
     states: &[(String, AngleState)],
-    open: &[PullRequest],
     no_qa_angle: bool,
-) -> Option<(go::GoDecision, Vec<ReleasePr>)> {
+) -> Option<go::GoDecision> {
     let cfg = t.config;
     let release = match section(t) {
         Ok(r) => r,
@@ -2254,19 +2061,16 @@ pub fn decide(
         }
     };
     // The branch moved past the candidate with more than bookkeeping: fixes
-    // no gate and no QA has seen (REQ-REL-070).
-    // The gate record is the bridge's own write on the branch, after the
-    // candidate: it is never a gap. Nor is a report of the candidate's own
-    // angles: its angle PR is merged after the candidate by construction,
-    // and the last allowed pass cuts no candidate after it. An earlier
-    // candidate's report is a gap.
-    let record = shape.gate_record_path(c.version);
+    // no gate and no QA has seen (REQ-REL-070). A report of the candidate's
+    // own angles is never a gap: its angle PR is merged after the candidate
+    // by construction, and the last allowed pass cuts no candidate after
+    // it. An earlier candidate's report is a gap.
     let tip_gaps = match t.github.compare(&t.repo, &c.sha, branch) {
         Ok(cmp) => {
             let moved: Vec<String> = cmp
                 .files
                 .into_iter()
-                .filter(|f| !bookkeeping(release, record.as_deref(), &c.tag, f))
+                .filter(|f| !bookkeeping(release, &c.tag, f))
                 .collect();
             if moved.is_empty() {
                 Vec::new()
@@ -2283,7 +2087,6 @@ pub fn decide(
             c.tag
         )],
     };
-    let (note_gaps, version_gaps, rp) = release_prs(t, shape, c, branch, open);
     let policy = match release.go_policy {
         crate::config::GoPolicy::Computed => Policy::Computed,
         // Whose approval counts is the owner's to settle (`docs/open-points.md` #3): never given.
@@ -2296,32 +2099,33 @@ pub fn decide(
         no_qa_angle,
         blockers,
         unlinked_blockers,
-        note_gaps,
         fix_gaps: Vec::new(),
         tip_gaps,
-        version_gaps,
         policy,
     };
-    Some((go::evaluate(&facts), rp))
+    Some(go::evaluate(&facts))
 }
 
 /// Whether `path` may differ between the candidate and the release branch
-/// tip (REQ-REL-070): a configured bookkeeping path (exact), the gate
-/// record, or the report of one of the candidate's own angles
-/// (`release.record` rendered for `candidate`).
-fn bookkeeping(release: &Release, gate_record: Option<&str>, candidate: &str, path: &str) -> bool {
+/// tip (REQ-REL-070): a configured bookkeeping path (exact), or the report
+/// of one of the candidate's own angles (`release.record` rendered for
+/// `candidate`).
+fn bookkeeping(release: &Release, candidate: &str, path: &str) -> bool {
     release.bookkeeping_paths.iter().any(|b| b == path)
-        || gate_record == Some(path)
         || release
             .angles
             .iter()
             .any(|a| report::report_path(&release.record, candidate, &a.key) == path)
 }
 
-/// On GO (spec 05 §9): a single-component product's release PR is merged;
-/// a multi-component product's gate record lands first, through the
-/// bridge's own PR, then the component release PRs in order, one per tick.
-#[allow(clippy::too_many_arguments)]
+/// On GO (spec 05 §9): the release tag on the candidate's commit, then the
+/// GitHub release of that tag, its notes the CHANGELOG section the cut
+/// prepared on the release branch. Publishing the release starts the
+/// publication workflow. Each step is read before it is written, so a tag
+/// or a release a person made by hand (spec 09) is taken as done, never
+/// made again; a tag on another commit stops the GO, fail-closed. The
+/// release item under the hands-off label means a person takes the GO: the
+/// bridge tags nothing.
 fn on_go(
     t: &Tick,
     log: &mut ActionLog,
@@ -2329,257 +2133,116 @@ fn on_go(
     shape: &Shape,
     item: &Item,
     c: &Candidate,
-    branch: &str,
-    decision: &go::GoDecision,
-    rp: &[ReleasePr],
-    states: &[(String, AngleState)],
-) -> bool {
-    let Some(first) = rp.first() else {
-        return false;
-    };
-    if let Some(path) = shape.gate_record_path(c.version) {
-        match record_on_branch(t, &path, branch, c) {
-            Ok(true) => {}
-            Ok(false) => {
-                land_record(t, log, report, item, c, branch, &path, decision, rp, states);
-                return false;
-            }
-            Err(e) => {
-                t.unreadable(report, &item.key, format!("the gate record {path}: {e}"));
-                return false;
-            }
-        }
-    }
-    merge_release_pr(t, log, report, item, c, &first.pr)
-}
-
-/// Whether the release branch carries the record of this candidate.
-fn record_on_branch(t: &Tick, path: &str, branch: &str, c: &Candidate) -> Result<bool, String> {
-    match t.github.file(&t.repo, path, branch) {
-        Ok(text) => Ok(texts::record_names(&text, &c.tag)),
-        Err(e) if e.is_not_found() => Ok(false),
-        Err(e) => Err(e.to_string()),
-    }
-}
-
-/// Land the gate record (REQ-REL-078): merge the bridge's record PR when it
-/// is green, current and exactly the record; open it otherwise.
-#[allow(clippy::too_many_arguments)]
-fn land_record(
-    t: &Tick,
-    log: &mut ActionLog,
-    report: &mut Report,
-    item: &Item,
-    c: &Candidate,
-    branch: &str,
-    path: &str,
-    decision: &go::GoDecision,
-    rp: &[ReleasePr],
-    states: &[(String, AngleState)],
 ) {
-    let head = format!("{}{}", review::RELEASE_RECORD_PREFIX, c.tag);
-    let open = match t.github.open_pulls(&t.repo, Some(branch)) {
-        Ok(o) => o,
+    if hands_off::carries(&item.labels, &t.config.bridge.hands_off_label) {
+        t.hold_by_hand(report, &item.key);
+        return;
+    }
+    let tag = shape.release_tag(c.version);
+    let notes = match t.github.file(&t.repo, crate::prepare::CHANGELOG, &c.sha) {
+        Ok(text) => match prepare::section_of(&text, c.version) {
+            Some(n) => n,
+            None => {
+                t.unreadable(
+                    report,
+                    &item.key,
+                    format!(
+                        "{} at {} has no section for {}: the cut did not prepare it, so the release has no notes",
+                        crate::prepare::CHANGELOG,
+                        c.tag,
+                        c.version
+                    ),
+                );
+                return;
+            }
+        },
         Err(e) => {
-            t.unreadable(report, &item.key, e);
-            return;
-        }
-    };
-    if let Some(pr) = open.iter().find(|p| p.head_ref == head) {
-        let ours = pr
-            .author
-            .as_ref()
-            .is_some_and(|a| a.login.eq_ignore_ascii_case(&t.github_login));
-        if !ours {
             t.unreadable(
                 report,
                 &item.key,
-                format!("{} is not the bridge's own record PR", pr.url),
+                format!("{} at {}: {e}", crate::prepare::CHANGELOG, c.tag),
             );
             return;
         }
-        let required = match t.github.required_checks(&t.repo, branch) {
-            Ok(r) => r,
-            Err(e) => {
-                t.unreadable(report, &item.key, e);
-                return;
-            }
-        };
-        if checks::pr_state(pr, &required.contexts) != CheckState::Green {
+    };
+    let existing = match release_tag_commit(t, &tag) {
+        Ok(e) => e,
+        Err(e) => {
+            t.unreadable(report, &item.key, format!("the tag {tag}: {e}"));
             return;
         }
-        if review::branch_state(pr) == BranchState::Behind {
-            t.act(
+    };
+    match existing {
+        Some(sha) if sha == c.sha => {}
+        Some(sha) => {
+            t.unreadable(
+                report,
+                &item.key,
+                format!(
+                    "{tag} exists on {}, not on the candidate {} ({}): the bridge publishes no release of it",
+                    texts::short(&sha),
+                    c.tag,
+                    texts::short(&c.sha)
+                ),
+            );
+            return;
+        }
+        None => {
+            let message = format!("Release {tag}\n\nCandidate: {}", c.tag);
+            let made = t.act(
                 log,
                 report,
                 &item.key,
-                &format!("update record PR #{}", pr.number),
-                json!({}),
+                &format!("tag {tag} (GO)"),
+                json!({"candidate": c.tag, "sha": c.sha}),
                 || {
                     t.github
-                        .update_branch(&t.repo, pr.number, &pr.head_sha)
+                        .create_tag(&t.repo, &tag, &c.sha, &message)
                         .map_err(|e| e.to_string())
                 },
             );
-            return;
+            if made.is_none() {
+                return;
+            }
         }
-        if review::branch_state(pr) != BranchState::Current {
-            return;
-        }
-        // Exactly the record, as it stands at the pinned head.
-        let files = t.github.pull_files(&t.repo, pr.number);
-        let text = t.github.file(&t.repo, path, &pr.head_sha);
-        let exact = matches!(&files, Ok(f) if f.len() == 1 && f[0] == path)
-            && matches!(&text, Ok(x) if texts::record_names(x, &c.tag));
-        if !exact {
+    }
+    match t.github.release(&t.repo, &tag) {
+        Ok(r) if r.draft => {
             t.unreadable(
                 report,
                 &item.key,
-                format!("{} is not exactly the gate record", pr.url),
+                format!(
+                    "a draft release of {tag} exists: publish it or delete it; the bridge publishes no second one"
+                ),
             );
             return;
         }
-        t.act(
-            log,
-            report,
-            &item.key,
-            &format!("merge record PR #{}", pr.number),
-            json!({"head": pr.head_sha}),
-            || {
-                t.github
-                    .merge_pull(
-                        &t.repo,
-                        pr.number,
-                        &pr.head_sha,
-                        crate::github::MergeMethod::Squash,
-                    )
-                    .map_err(|e| e.to_string())
-            },
-        );
-        return;
-    }
-    let angles: Vec<(String, String)> = states
-        .iter()
-        .map(|(a, s)| (a.clone(), s.name().to_string()))
-        .collect();
-    let prs: Vec<(String, String, u64)> = rp
-        .iter()
-        .map(|r| {
-            (
-                r.component.clone().unwrap_or_default(),
-                r.version.to_string(),
-                r.pr.number,
-            )
-        })
-        .collect();
-    let computed_at = format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}",
-        t.now.0.year(),
-        u8::from(t.now.0.month()),
-        t.now.0.day(),
-        t.now.0.hour(),
-        t.now.0.minute()
-    );
-    let Some(content) = texts::gate_record(
-        &c.version.to_string(),
-        &c.tag,
-        &c.sha,
-        branch,
-        &item.key,
-        &item.url,
-        &computed_at,
-        decision,
-        &angles,
-        &prs,
-    ) else {
-        return;
-    };
-    let tip = match t.github.commit(&t.repo, branch) {
-        Ok(cm) => cm.sha,
+        Ok(_) => return,
+        Err(e) if e.is_not_found() => {}
         Err(e) => {
-            t.unreadable(report, &item.key, e);
+            t.unreadable(report, &item.key, format!("the release {tag}: {e}"));
             return;
         }
-    };
-    // A head left by a closed PR or a tick that died is nobody's to vouch
-    // for: recreated from the release branch.
-    let _ = t.github.delete_branch(&t.repo, &head);
-    let made = t.act(
-        log,
-        report,
-        &item.key,
-        &format!("create branch {head}"),
-        json!({"from": tip}),
-        || {
-            t.github
-                .create_branch(&t.repo, &head, &tip)
-                .map_err(|e| e.to_string())
-        },
-    );
-    if made.is_none() {
-        return;
     }
-    let message = format!("docs(release): gate record {} ({})", c.version, item.key);
-    let put = t.act(
+    let name = format!("{} {}", t.config.product.name, c.version);
+    let published = t.act(
         log,
         report,
         &item.key,
-        &format!("write {path}"),
-        json!({}),
+        &format!("publish release {tag} (GO)"),
+        json!({"candidate": c.tag}),
         || {
             t.github
-                .put_file(&t.repo, &head, path, &content, &message)
+                .create_release(&t.repo, &tag, &name, &notes)
                 .map_err(|e| e.to_string())
         },
     );
-    if put.is_none() {
-        return;
-    }
-    let body = format!(
-        "The gate record of `{}` (`{}`): {}. Merged by the release pass once green; the release PRs of the cycle follow.",
-        c.tag,
-        decision.blockers_carried(),
-        item.url
-    );
-    t.act(log, report, &item.key, "open record PR", json!({}), || {
-        t.github
-            .create_pull(&t.repo, &head, branch, &message, &body)
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-    });
-}
-
-fn merge_release_pr(
-    t: &Tick,
-    log: &mut ActionLog,
-    report: &mut Report,
-    item: &Item,
-    c: &Candidate,
-    pr: &PullRequest,
-) -> bool {
-    let done = t.act(
-        log,
-        report,
-        &item.key,
-        &format!("merge release PR #{} (GO)", pr.number),
-        json!({"candidate": c.tag, "head": pr.head_sha}),
-        || {
-            t.github
-                .merge_pull(
-                    &t.repo,
-                    pr.number,
-                    &pr.head_sha,
-                    crate::github::MergeMethod::Squash,
-                )
-                .map_err(|e| e.to_string())
-        },
-    );
-    if done.is_some() {
+    if let Some(r) = published {
         let body = format!(
-            "GO computed on `{}`: the bridge merged the release PR {} (squash, at `{}`). The publication workflow takes over.",
+            "GO computed on `{}`: the bridge tagged `{tag}` on its commit `{}` and published the release {}, with the notes the cut prepared. The publication workflow takes over.",
             c.tag,
-            pr.url,
-            texts::short(&pr.head_sha)
+            texts::short(&c.sha),
+            r.url
         );
         t.act(log, report, &item.key, "comment GO", json!({}), || {
             t.tracker
@@ -2588,7 +2251,22 @@ fn merge_release_pr(
                 .map_err(|e| e.to_string())
         });
     }
-    done.is_some()
+}
+
+/// The commit the release tag names, or `None` when it does not exist.
+fn release_tag_commit(t: &Tick, tag: &str) -> Result<Option<String>, String> {
+    let refs = t.github.tags(&t.repo, tag).map_err(|e| e.to_string())?;
+    let Some(r) = refs.iter().find(|r| r.name == tag) else {
+        return Ok(None);
+    };
+    match r.object_type {
+        ObjectType::Tag => t
+            .github
+            .tag_object(&t.repo, &r.sha)
+            .map(|o| Some(o.target_sha))
+            .map_err(|e| e.to_string()),
+        _ => Ok(Some(r.sha.clone())),
+    }
 }
 
 /// The HOLD, once per candidate and set of reasons, only when every angle
@@ -2769,7 +2447,6 @@ fn stagnation(
         ("Open angles", d.open_angles.clone()),
         ("Angles not offered", d.missing_angles.clone()),
         ("Blockers", d.blockers.clone()),
-        ("Release note gaps", d.note_gaps.clone()),
     ];
     let text = texts::stagnation_message(
         &c.tag,

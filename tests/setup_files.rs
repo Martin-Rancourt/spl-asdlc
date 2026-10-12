@@ -125,7 +125,6 @@ fn the_configuration_template_names_the_example_callers() {
         &c.release.as_ref().unwrap().cut_workflow,
         &c.release.as_ref().unwrap().gate_workflow,
         &c.release.as_ref().unwrap().gate_rerun_workflow,
-        &c.release.as_ref().unwrap().release_please_workflow,
     ] {
         assert!(
             root().join("docs/setup/examples").join(wf).is_file(),
@@ -137,12 +136,7 @@ fn the_configuration_template_names_the_example_callers() {
 #[test]
 fn the_configuration_template_names_its_identities_by_placeholder() {
     let text = read(TOML);
-    for placeholder in [
-        "owner-handle",
-        "coordinator-login",
-        "app/example-app",
-        "example-org/acme",
-    ] {
+    for placeholder in ["owner-handle", "coordinator-login", "example-org/acme"] {
         assert!(text.contains(placeholder), "{placeholder}");
     }
 }
@@ -320,9 +314,26 @@ fn this_repositorys_changelog_sections_are_the_allowed_title_types() {
         .collect();
     assert_eq!(written, allowed);
     assert_eq!(sections.len(), allowed.len(), "no type twice, none hidden");
-    // The bridge reads the same set from the same file.
-    assert_eq!(
-        spl_asdlc::method::release::notes::written_types(Some(&read("release-please-config.json"))),
-        Some(allowed)
-    );
+}
+
+#[test]
+fn the_default_changelog_sections_are_the_allowed_title_types() {
+    // REQ-CI-016, for a project of the method: `release prepare` lists
+    // every type a PR title may carry, so none ships in silence.
+    let text = read(".github/workflows/asdlc-pr-title.yml");
+    let doc = YamlLoader::load_from_str(&text).unwrap().remove(0);
+    let allowed: Vec<String> = doc["on"]["workflow_call"]["inputs"]["allowed-types"]["default"]
+        .as_str()
+        .unwrap()
+        .split(',')
+        .map(|t| t.trim().to_string())
+        .collect();
+    let mut sections: Vec<String> = spl_asdlc::config::default_changelog_sections()
+        .into_iter()
+        .map(|s| s.kind)
+        .collect();
+    sections.sort();
+    let mut allowed_sorted = allowed.clone();
+    allowed_sorted.sort();
+    assert_eq!(sections, allowed_sorted);
 }

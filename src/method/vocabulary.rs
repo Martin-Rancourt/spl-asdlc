@@ -195,8 +195,6 @@ pub const TICKETLESS_LABEL: &str = "ticketless-pr";
 pub fn post_deploy_label(product: &str) -> String {
     format!("post-deploy-validation/{product}")
 }
-/// Label a component's deployment job sets on its merged release PR.
-pub const DEPLOYED_LABEL: &str = "deployed: production";
 
 /// `release/<product>-v<version>`, the version normalised to `vX.Y.Z`.
 pub fn release_label(product: &str, version: &str) -> String {

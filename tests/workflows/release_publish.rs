@@ -1,4 +1,4 @@
-//! `asdlc-release-publish` (REQ-CI-076..097): the three stages run as
+//! `asdlc-release-publish` (REQ-CI-076..097): the two stages run as
 //! shipped, with a stateful `gh` stub and real git repositories where the
 //! decision is a git one.
 
@@ -71,7 +71,6 @@ fn each_job_runs_for_its_own_stage_and_the_guard_on_every_call() {
     let jobs = &d["jobs"];
     let if_of = |j: &str| jobs[j]["if"].as_str().unwrap_or("").to_string();
     assert!(if_of("verify").contains("inputs.stage == 'verify'"));
-    assert!(if_of("record-deployed").contains("inputs.stage == 'record-deployed'"));
     let close = if_of("close");
     assert!(close.contains("inputs.stage == 'close'"), "{close}");
     // Closing proceeds after a successful publication, or on a replay read
@@ -89,15 +88,12 @@ fn each_job_runs_for_its_own_stage_and_the_guard_on_every_call() {
     for j in ["close", "closing-guard"] {
         assert_eq!(jobs[j]["runs-on"].as_str(), Some("ubuntu-latest"), "{j}");
     }
-    for j in ["verify", "record-deployed"] {
-        assert!(
-            jobs[j]["runs-on"]
-                .as_str()
-                .unwrap()
-                .contains("fromJSON(inputs.runs-on)"),
-            "{j}"
-        );
-    }
+    assert!(
+        jobs["verify"]["runs-on"]
+            .as_str()
+            .unwrap()
+            .contains("fromJSON(inputs.runs-on)")
+    );
     // The close job outlasts its poll.
     assert!(jobs["close"]["timeout-minutes"].as_i64().unwrap() >= 40);
     let names: Vec<&str> = jobs
@@ -106,10 +102,7 @@ fn each_job_runs_for_its_own_stage_and_the_guard_on_every_call() {
         .values()
         .map(|j| j["name"].as_str().unwrap())
         .collect();
-    assert_eq!(
-        names,
-        vec!["verify", "record-deployed", "close", "closing-guard"]
-    );
+    assert_eq!(names, vec!["verify", "close", "closing-guard"]);
 }
 
 #[test]
@@ -118,7 +111,7 @@ fn the_app_token_is_minted_right_before_the_writes_and_only_there() {
     let secrets = &d["on"]["workflow_call"]["secrets"];
     assert!(!secrets["SPL_ASDLC_APP_ID"].is_badvalue());
     assert!(!secrets["SPL_ASDLC_APP_PRIVATE_KEY"].is_badvalue());
-    for (job, consumer) in [("record-deployed", "record"), ("close", "refs")] {
+    for (job, consumer) in [("close", "refs")] {
         let steps = d["jobs"][job]["steps"].as_vec().unwrap();
         let token = steps
             .iter()
@@ -147,6 +140,10 @@ fn the_app_token_is_minted_right_before_the_writes_and_only_there() {
     let perms = &d["jobs"]["verify"]["permissions"];
     assert_eq!(perms["actions"].as_str(), Some("read"));
     assert_eq!(perms["contents"].as_str(), Some("read"));
+    assert!(
+        perms["pull-requests"].is_badvalue(),
+        "verify reads the release, never a PR"
+    );
 }
 
 #[test]
@@ -201,8 +198,8 @@ fn verify_refuses_a_replay_a_candidate_as_release_and_a_resume_from_anything_but
     }
 }
 
-/// main, an old cycle's candidate, then a release branch with rc.9, a fix,
-/// rc.10 and release-please's bookkeeping under the release tag.
+/// main, an old cycle's candidate, then a release branch with rc.9, a fix
+/// and rc.10.
 fn cycle() -> Repo {
     let repo = Repo::new();
     repo.git(&["tag", "acme-v1.1.0-rc.3"]);
@@ -216,16 +213,19 @@ fn cycle() -> Repo {
     repo
 }
 
+/// The release tag: on the candidate itself (the bridge's GO), or, with
+/// `files`, on a commit of the release branch after it (a person who tagged
+/// the branch's tip).
 fn release(repo: &Repo, tag: &str, files: &[(&str, &str)]) -> String {
-    for (p, t) in files {
-        repo.write(p, t);
+    if !files.is_empty() {
+        for (p, t) in files {
+            repo.write(p, t);
+        }
+        repo.commit("docs(qa): after the candidate");
     }
-    let sha = repo.commit("chore(release): release acme 1.2.0");
     repo.git(&["tag", tag]);
-    sha
+    repo.git(&["rev-parse", "HEAD"])
 }
-
-const BOOKKEEPING: &str = r#"[".release-please-manifest.json", "CHANGELOG.md"]"#;
 
 fn candidate(repo: &Repo, env: &[(&str, &str)]) -> Ran {
     let mut all: Vec<(&str, &str)> = vec![
@@ -233,9 +233,6 @@ fn candidate(repo: &Repo, env: &[(&str, &str)]) -> Ran {
         ("RESUME_FROM", ""),
         ("CANDIDATE_PATTERN", "acme-v{version}-rc.{rc}"),
         ("RELEASE_PATTERN", "acme-v{version}"),
-        ("COMPONENTS", "[]"),
-        ("BOOKKEEPING", BOOKKEEPING),
-        ("GATE_RECORD", ""),
         ("QA_RECORD", ".spl-asdlc/qa/{candidate}/"),
         ("QA_ANGLES", "[]"),
         ("DEFAULT_BRANCH", "main"),
@@ -251,14 +248,8 @@ fn candidate(repo: &Repo, env: &[(&str, &str)]) -> Ran {
 fn the_candidate_is_the_newest_rc_of_exactly_this_release() {
     let repo = cycle();
     let rc10 = repo.git(&["rev-parse", "acme-v1.2.0-rc.10"]);
-    let sha = release(
-        &repo,
-        "acme-v1.2.0",
-        &[
-            ("CHANGELOG.md", "## 1.2.0\n"),
-            (".release-please-manifest.json", "{\".\": \"1.2.0\"}\n"),
-        ],
-    );
+    let sha = release(&repo, "acme-v1.2.0", &[]);
+    assert_eq!(sha, rc10, "the bridge tags the candidate's own commit");
     let r = candidate(&repo, &[]);
     assert_eq!(r.code, 0, "{}", r.log);
     assert_eq!(r.output("rc-tag").as_deref(), Some("acme-v1.2.0-rc.10"));
@@ -266,13 +257,18 @@ fn the_candidate_is_the_newest_rc_of_exactly_this_release() {
     assert_eq!(r.output("version").as_deref(), Some("1.2.0"));
     assert_eq!(r.output("release-sha").as_deref(), Some(sha.as_str()));
     assert_eq!(r.output("deploy-sha").as_deref(), Some(sha.as_str()));
+    assert!(
+        r.log.contains("acme-v1.2.0 is acme-v1.2.0-rc.10."),
+        "{}",
+        r.log
+    );
 }
 
 #[test]
 fn a_release_with_no_candidate_of_its_version_is_refused() {
     let repo = Repo::new();
     repo.git(&["tag", "acme-v1.1.0-rc.3"]);
-    release(&repo, "acme-v1.2.0", &[("CHANGELOG.md", "x\n")]);
+    release(&repo, "acme-v1.2.0", &[("src/x.rs", "x\n")]);
     let r = candidate(&repo, &[]);
     assert_eq!(r.code, 1, "{}", r.log);
     assert!(
@@ -286,29 +282,22 @@ fn a_release_with_no_candidate_of_its_version_is_refused() {
 }
 
 #[test]
-fn only_bookkeeping_may_differ_from_the_candidate() {
-    let repo = cycle();
-    release(
-        &repo,
-        "acme-v1.2.0",
-        &[("CHANGELOG.md", "## 1.2.0\n"), ("src/extra.rs", "x\n")],
-    );
-    let r = candidate(&repo, &[]);
-    assert_eq!(r.code, 1, "{}", r.log);
-    assert!(r.log.contains("src/extra.rs"), "{}", r.log);
-    assert!(!r.log.contains("  CHANGELOG.md"), "{}", r.log);
-    assert!(r.log.contains("Cut a new RC"), "{}", r.log);
-    assert_eq!(r.output("rc-tag"), None);
-}
-
-#[test]
-fn an_empty_bookkeeping_list_demands_the_candidate_exactly() {
-    let repo = cycle();
-    release(&repo, "acme-v1.2.0", &[("CHANGELOG.md", "## 1.2.0\n")]);
-    let r = candidate(&repo, &[("BOOKKEEPING", "[]")]);
-    assert_eq!(r.code, 1, "{}", r.log);
-    let r = candidate(&repo, &[("BOOKKEEPING", "not json")]);
-    assert_eq!(r.code, 1, "{}", r.log);
+fn nothing_but_the_candidates_own_reports_may_follow_it() {
+    // The version and the notes are the candidate's: a CHANGELOG or a
+    // version file changed after it is a change no gate saw.
+    for files in [
+        vec![("CHANGELOG.md", "## 1.2.0\n")],
+        vec![("Cargo.toml", "[package]\n")],
+        vec![("src/extra.rs", "x\n")],
+    ] {
+        let repo = cycle();
+        release(&repo, "acme-v1.2.0", &files);
+        let r = candidate(&repo, &[]);
+        assert_eq!(r.code, 1, "{files:?}: {}", r.log);
+        assert!(r.log.contains(&format!("  {}", files[0].0)), "{}", r.log);
+        assert!(r.log.contains("Cut a new RC"), "{}", r.log);
+        assert_eq!(r.output("rc-tag"), None);
+    }
 }
 
 const ANGLES: &str = r#"["security", "product"]"#;
@@ -341,7 +330,6 @@ fn the_latest_candidates_own_qa_reports_may_follow_it() {
         &repo,
         "acme-v1.2.0",
         &[
-            ("CHANGELOG.md", "## 1.2.0\n"),
             (".spl-asdlc/qa/acme-v1.2.0-rc.10/security.json", "{}\n"),
             (".spl-asdlc/qa/acme-v1.2.0-rc.10/product.json", "{}\n"),
         ],
@@ -349,6 +337,12 @@ fn the_latest_candidates_own_qa_reports_may_follow_it() {
     let r = candidate(&repo, &[("QA_ANGLES", ANGLES)]);
     assert_eq!(r.code, 0, "{}", r.log);
     assert_eq!(r.output("rc-tag").as_deref(), Some("acme-v1.2.0-rc.10"));
+    assert!(
+        r.log
+            .contains("acme-v1.2.0 is acme-v1.2.0-rc.10 with its own QA reports."),
+        "{}",
+        r.log
+    );
     // The record directory as spec 08 renders it, with or without its slash.
     let r = candidate(
         &repo,
@@ -385,15 +379,12 @@ fn the_latest_candidates_own_qa_reports_may_follow_it() {
 }
 
 #[test]
-fn an_earlier_candidates_qa_report_is_not_bookkeeping() {
+fn an_earlier_candidates_qa_report_may_not_follow_the_latest() {
     let repo = cycle();
     release(
         &repo,
         "acme-v1.2.0",
-        &[
-            ("CHANGELOG.md", "## 1.2.0\n"),
-            (".spl-asdlc/qa/acme-v1.2.0-rc.9/security.json", "{}\n"),
-        ],
+        &[(".spl-asdlc/qa/acme-v1.2.0-rc.9/security.json", "{}\n")],
     );
     let r = candidate(&repo, &[("QA_ANGLES", ANGLES)]);
     assert_eq!(r.code, 1, "{}", r.log);
@@ -414,7 +405,6 @@ fn a_code_change_beside_the_qa_reports_is_refused() {
         &repo,
         "acme-v1.2.0",
         &[
-            ("CHANGELOG.md", "## 1.2.0\n"),
             (".spl-asdlc/qa/acme-v1.2.0-rc.10/security.json", "{}\n"),
             ("src/lib.rs", "pub fn f() -> u8 { 3 }\n"),
         ],
@@ -434,7 +424,7 @@ fn a_code_change_beside_the_qa_reports_is_refused() {
 #[test]
 fn malformed_qa_inputs_are_refused() {
     let repo = cycle();
-    release(&repo, "acme-v1.2.0", &[("CHANGELOG.md", "## 1.2.0\n")]);
+    release(&repo, "acme-v1.2.0", &[]);
     for angles in [
         "not json",
         r#""security""#,
@@ -468,7 +458,7 @@ fn main_merged_into_the_release_branch_after_the_rc_is_refused_by_name() {
     repo.git(&["update-ref", "refs/remotes/origin/main", "main"]);
     repo.git(&["checkout", "-q", "release/2026-10-01-10-00-utc"]);
     repo.git(&["merge", "-q", "--no-ff", "main", "-m", "Merge main"]);
-    release(&repo, "acme-v1.2.0", &[("CHANGELOG.md", "## 1.2.0\n")]);
+    release(&repo, "acme-v1.2.0", &[]);
     let r = candidate(&repo, &[]);
     assert_eq!(r.code, 1, "{}", r.log);
     assert!(
@@ -477,74 +467,31 @@ fn main_merged_into_the_release_branch_after_the_rc_is_refused_by_name() {
         r.log
     );
     assert!(r.log.contains("feat: main moved on"), "{}", r.log);
-    assert!(r.log.contains("does not read a merge commit"), "{}", r.log);
-}
-
-/// A multi-component cycle: global candidates `v{version}-rc.{rc}`, the gate
-/// record the bridge lands, then a component's release.
-fn components_cycle(record: &str) -> Repo {
-    let repo = Repo::new();
-    repo.git(&["tag", "v1.1.0-rc.1"]);
-    repo.git(&["checkout", "-q", "-b", "release/2026-10-01-10-00-utc"]);
-    repo.write("apps/app/src/a.ts", "a\n");
-    repo.commit("fix: app");
-    repo.git(&["tag", "v1.2.0-rc.2"]);
-    repo.write(record, "gate record\n");
-    repo.commit("docs(release): gate record 1.2.0");
-    repo.write("apps/website/CHANGELOG.md", "## 0.3.1\n");
-    repo.write(".release-please-manifest.json", "{}\n");
-    repo.commit("chore(release): release website 0.3.1");
-    repo.git(&["tag", "website-v0.3.1"]);
-    repo
-}
-
-fn component_candidate(repo: &Repo, release: &str, components: &str) -> Ran {
-    candidate(
-        repo,
-        &[
-            ("RELEASE_TAG", release),
-            ("CANDIDATE_PATTERN", "v{version}-rc.{rc}"),
-            ("RELEASE_PATTERN", "app-v{version}"),
-            ("COMPONENTS", components),
-            (
-                "BOOKKEEPING",
-                r#"[".release-please-manifest.json", "apps/website/CHANGELOG.md", "apps/app/CHANGELOG.md"]"#,
-            ),
-            ("GATE_RECORD", "docs/releases/v{version}.md"),
-        ],
-    )
-}
-
-#[test]
-fn the_gate_record_is_an_allowed_delta_and_another_components_tag_is_certified() {
-    let repo = components_cycle("docs/releases/v1.2.0.md");
-    let r = component_candidate(&repo, "website-v0.3.1", r#"["app", "website"]"#);
-    assert_eq!(r.code, 0, "{}", r.log);
-    assert_eq!(r.output("rc-tag").as_deref(), Some("v1.2.0-rc.2"));
-    // A single-component product never accepts a tag it cannot read.
-    let r = component_candidate(&repo, "website-v0.3.1", "[]");
-    assert_eq!(r.code, 1, "{}", r.log);
-}
-
-#[test]
-fn a_gate_record_of_another_version_is_not_bookkeeping() {
-    let repo = components_cycle("docs/releases/v1.1.0.md");
-    let r = component_candidate(&repo, "website-v0.3.1", r#"["app", "website"]"#);
-    assert_eq!(r.code, 1, "{}", r.log);
-    assert!(r.log.contains("docs/releases/v1.1.0.md"), "{}", r.log);
+    assert!(
+        r.log.contains("No candidate covered these changes"),
+        "{}",
+        r.log
+    );
 }
 
 #[test]
 fn a_resume_deploys_the_newest_candidate_on_its_exact_commit() {
     let repo = cycle();
     let rc10 = repo.git(&["rev-parse", "acme-v1.2.0-rc.10"]);
-    release(&repo, "acme-v1.2.0", &[("CHANGELOG.md", "## 1.2.0\n")]);
+    release(
+        &repo,
+        "acme-v1.2.0",
+        &[(".spl-asdlc/qa/acme-v1.2.0-rc.10/security.json", "{}\n")],
+    );
     // HEAD is the release: not the commit behind the RC.
     let r = candidate(&repo, &[("RESUME_FROM", "acme-v1.2.0-rc.10")]);
     assert_eq!(r.code, 1, "{}", r.log);
     assert!(r.log.contains("is not the commit behind"), "{}", r.log);
     repo.git(&["checkout", "-q", "--detach", "acme-v1.2.0-rc.10"]);
-    let r = candidate(&repo, &[("RESUME_FROM", "acme-v1.2.0-rc.10")]);
+    let r = candidate(
+        &repo,
+        &[("RESUME_FROM", "acme-v1.2.0-rc.10"), ("QA_ANGLES", ANGLES)],
+    );
     assert_eq!(r.code, 0, "{}", r.log);
     assert_eq!(r.output("deploy-sha").as_deref(), Some(rc10.as_str()));
     // A candidate a newer one superseded is refused.
@@ -629,18 +576,14 @@ fn an_unreadable_gate_refuses() {
     assert_eq!(r.code, 1, "{}", r.log);
 }
 
-fn go(merger_input: &str, pulls: Option<&str>, pull: Option<&str>) -> (Ran, Scratch) {
+fn go(publisher_input: &str, release: Option<&str>) -> (Ran, Scratch) {
     let dir = Scratch::new("go");
-    if let Some(p) = pulls {
-        put(&dir.0, "pulls", p);
-    }
-    if let Some(p) = pull {
-        put(&dir.0, "pull", p);
+    if let Some(r) = release {
+        put(&dir.0, "release", r);
     }
     gh(
         &dir.0,
-        r#"'api repos/o/r/commits/abc/pulls') [ -f "$S/pulls" ] || exit 1; cat "$S/pulls" ;;
-'api repos/o/r/pulls/42') [ -f "$S/pull" ] || exit 1; cat "$S/pull" ;;"#,
+        r#"'api repos/o/r/releases/tags/acme-v1.2.0') [ -f "$S/release" ] || exit 1; cat "$S/release" ;;"#,
     );
     let r = run_with(
         &body("verify", "go"),
@@ -649,395 +592,79 @@ fn go(merger_input: &str, pulls: Option<&str>, pull: Option<&str>) -> (Ran, Scra
         &[
             ("REPO", "o/r"),
             ("RELEASE_TAG", "acme-v1.2.0"),
-            ("RELEASE_SHA", "abc"),
-            ("GO_MERGER", merger_input),
-            ("BRANCH_PREFIX", "release/"),
+            ("GO_PUBLISHER", publisher_input),
         ],
     );
     (r, dir)
 }
 
-fn associated(number: u64, base: &str, head: &str, merge_sha: &str) -> String {
+/// The release as REST reads it, published by `login`, an account of
+/// `kind` (`Bot`, `User`, `Organization`, or empty when GitHub gave none).
+fn published_as(login: &str, kind: &str) -> String {
     format!(
-        r#"{{"number": {number}, "merged_at": "2026-10-07T10:00:00Z", "merge_commit_sha": "{merge_sha}", "base": {{"ref": "{base}"}}, "head": {{"ref": "{head}"}}}}"#
+        r#"{{"tag_name": "acme-v1.2.0", "draft": false, "author": {{"login": "{login}", "type": "{kind}"}}}}"#
     )
-}
-
-/// The PR as REST reads it, merged by `login`, an account of `kind`
-/// (`Bot`, `User`, `Organization`, or empty when GitHub gave none).
-fn merged_as(login: &str, kind: &str) -> String {
-    format!(
-        r#"{{"number": 42, "merged": true, "merged_by": {{"login": "{login}", "type": "{kind}"}}, "base": {{"ref": "release/2026-10-01-10-00-utc"}}}}"#
-    )
-}
-
-fn merged_by(login: &str) -> String {
-    merged_as(login, "Bot")
 }
 
 const SLUG: &str = "the-bridge";
 
 #[test]
-fn the_go_is_the_release_please_pr_merged_by_the_app_in_either_login_form() {
-    let pulls = format!(
-        "[{}, {}]",
-        associated(
-            42,
-            "release/2026-10-01-10-00-utc",
-            "release-please--branches--release/2026-10-01-10-00-utc",
-            "abc"
-        ),
-        // A PR that merely contains the commit is not the one that made it.
-        associated(7, "main", "feat/x", "other")
-    );
+fn the_go_is_the_release_published_by_the_app_in_either_login_form() {
     let bot = format!("{SLUG}[bot]");
     for input in [SLUG.to_string(), format!("app/{SLUG}"), bot.clone()] {
-        let (r, dir) = go(&input, Some(&pulls), Some(&merged_by(&bot)));
+        let (r, dir) = go(&input, Some(&published_as(&bot, "Bot")));
         assert_eq!(r.code, 0, "{input}: {}", r.log);
-        assert_eq!(r.output("release-pr-number").as_deref(), Some("42"));
-        assert_eq!(r.output("go-merged-by").as_deref(), Some(bot.as_str()));
-        assert_eq!(r.output("go-merged-by-kind").as_deref(), Some("app"));
-        assert_eq!(
-            r.output("release-branch").as_deref(),
-            Some("release/2026-10-01-10-00-utc")
-        );
+        assert_eq!(r.output("go-published-by").as_deref(), Some(bot.as_str()));
+        assert_eq!(r.output("go-published-by-kind").as_deref(), Some("app"));
         assert_eq!(r.output("verified").as_deref(), Some("true"));
-        let summary = read(&dir.0, "summary");
-        assert!(summary.contains("GO: #42"), "{summary}");
-        assert!(summary.contains("(the bridge's App)"), "{summary}");
+        assert!(read(&dir.0, "summary").contains("the bridge's App"));
     }
-    let (r, _d) = go(SLUG, Some(&pulls), Some(&merged_by(&format!("app/{SLUG}"))));
-    assert_eq!(r.code, 0, "{}", r.log);
 }
 
-/// Spec 09 (BR-ASDLC-021): a human with write access may merge the
-/// release-please PR in GitHub instead of the bridge; the rulesets decide
-/// who may, the workflow does not. The merge is the GO either way, and the
-/// outputs and the summary say it was a human.
+/// Spec 09 (BR-ASDLC-021): a person tags the candidate and publishes the
+/// release in GitHub instead of the bridge; the rulesets decide who may.
 #[test]
-fn a_release_pr_merged_by_a_human_is_the_go_and_says_so() {
-    let pulls = format!(
-        "[{}]",
-        associated(
-            42,
-            "release/2026-10-01-10-00-utc",
-            "release-please--branches--release/2026-10-01-10-00-utc",
-            "abc"
-        )
-    );
-    let (r, dir) = go(SLUG, Some(&pulls), Some(&merged_as("owner-login", "User")));
+fn a_release_published_by_a_human_is_the_go_and_says_so() {
+    let (r, dir) = go(SLUG, Some(&published_as("owner-login", "User")));
     assert_eq!(r.code, 0, "{}", r.log);
-    assert_eq!(r.output("release-pr-number").as_deref(), Some("42"));
-    assert_eq!(r.output("go-merged-by").as_deref(), Some("owner-login"));
-    assert_eq!(r.output("go-merged-by-kind").as_deref(), Some("human"));
-    assert_eq!(
-        r.output("release-branch").as_deref(),
-        Some("release/2026-10-01-10-00-utc")
-    );
-    assert_eq!(r.output("verified").as_deref(), Some("true"));
-    let summary = read(&dir.0, "summary");
-    assert!(
-        summary.contains(
-            "GO: #42 merged into `release/2026-10-01-10-00-utc` by `owner-login` (a human)."
-        ),
-        "{summary}"
-    );
-    // The job and the workflow both expose who and which kind.
-    let d = doc();
-    assert_eq!(
-        d["jobs"]["verify"]["outputs"]["go-merged-by-kind"].as_str(),
-        Some("${{ steps.go.outputs.go-merged-by-kind }}")
-    );
-    assert_eq!(
-        d["on"]["workflow_call"]["outputs"]["go-merged-by-kind"]["value"].as_str(),
-        Some("${{ jobs.verify.outputs.go-merged-by-kind }}")
-    );
+    assert_eq!(r.output("go-published-by").as_deref(), Some("owner-login"));
+    assert_eq!(r.output("go-published-by-kind").as_deref(), Some("human"));
+    assert!(r.log.contains("(a human)"), "{}", r.log);
+    assert!(read(&dir.0, "summary").contains("`owner-login` (a human)"));
 }
 
 #[test]
-fn a_release_pr_merged_by_another_bot_or_nobody_readable_is_no_go() {
-    let pulls = format!(
-        "[{}]",
-        associated(
-            42,
-            "release/r",
-            "release-please--branches--release/r",
-            "abc"
-        )
-    );
+fn a_release_published_by_another_bot_or_nobody_readable_is_no_go() {
+    let bot = |slug: &str| format!("{slug}[bot]");
     for (login, kind) in [
-        // Another App, one whose name merely starts like the bridge's, and
-        // the Actions token: a token a CI job holds is never the GO.
-        (format!("{SLUG}-{}[bot]", "impostor"), "Bot"),
-        (format!("{}[bot]", "other-app"), "Bot"),
-        (format!("{}[bot]", "github-actions"), "Bot"),
-        // A login with no account type, or one that is not a person.
+        (bot("other-app"), "Bot"),
+        (bot("github-actions"), "Bot"),
+        ("some-org".to_string(), "Organization"),
         ("owner-login".to_string(), ""),
-        ("example-org".to_string(), "Organization"),
-        (String::new(), "User"),
         (String::new(), ""),
     ] {
-        let (r, _d) = go(SLUG, Some(&pulls), Some(&merged_as(&login, kind)));
+        let (r, _d) = go(SLUG, Some(&published_as(&login, kind)));
         assert_eq!(r.code, 1, "{login} {kind}: {}", r.log);
-        assert!(
-            r.log
-                .contains("neither the bridge's App (the-bridge) nor a human account: no GO"),
-            "{}",
-            r.log
-        );
+        assert!(r.log.contains("no GO"), "{}", r.log);
         assert_eq!(r.output("verified"), None);
-        assert_eq!(r.output("go-merged-by-kind"), None);
     }
-    let not_merged = r#"{"number": 42, "merged": false, "merged_by": null}"#;
-    let (r, _d) = go(SLUG, Some(&pulls), Some(not_merged));
+    // A draft is no publication, an unreadable release no GO, and a slug
+    // that is not one refuses before anything is read.
+    let draft = published_as(&bot(SLUG), "Bot").replace(r#""draft": false"#, r#""draft": true"#);
+    let (r, _d) = go(SLUG, Some(&draft));
     assert_eq!(r.code, 1, "{}", r.log);
-}
-
-#[test]
-fn no_release_please_pr_two_of_them_or_an_unreadable_one_is_no_go() {
-    let bot = merged_by(&format!("{SLUG}[bot]"));
-    let on_main = format!(
-        "[{}]",
-        associated(42, "main", "release-please--branches--main", "abc")
-    );
-    let not_release_please = format!("[{}]", associated(42, "release/r", "fix/x", "abc"));
-    let two = format!(
-        "[{}, {}]",
-        associated(42, "release/r", "release-please--a", "abc"),
-        associated(43, "release/r", "release-please--b", "abc")
-    );
-    for (pulls, count) in [
-        (on_main.as_str(), 0),
-        (&not_release_please, 0),
-        (&two, 2),
-        ("[]", 0),
-    ] {
-        let (r, _d) = go(SLUG, Some(pulls), Some(&bot));
-        assert_eq!(r.code, 1, "{pulls}: {}", r.log);
-        assert!(
-            r.log.contains(&format!("{count} release-please PR(s)")),
-            "{}",
-            r.log
-        );
-    }
-    let good = format!(
-        "[{}]",
-        associated(42, "release/r", "release-please--a", "abc")
-    );
-    let (r, _d) = go(SLUG, None, Some(&bot));
+    assert!(r.log.contains("is a draft"), "{}", r.log);
+    let (r, _d) = go(SLUG, None);
     assert_eq!(r.code, 1, "{}", r.log);
     assert!(r.log.contains("could not be read"), "{}", r.log);
-    let (r, _d) = go(SLUG, Some(&good), None);
+    let (r, d) = go("Not A Slug", Some(&published_as("x", "User")));
     assert_eq!(r.code, 1, "{}", r.log);
-    let (r, _d) = go("", Some(&good), Some(&bot));
-    assert_eq!(r.code, 1, "{}", r.log);
-}
-
-// ---------------------------------------------------------------- record-deployed
-
-const BRANCH: &str = "release/2026-10-01-10-00-utc";
-
-fn pr_json(number: u64, title: &str, labels: &[&str]) -> String {
-    let labels: Vec<String> = labels
-        .iter()
-        .map(|l| format!(r#"{{"name": "{l}"}}"#))
-        .collect();
-    format!(
-        r#"{{"number": {number}, "title": "{title}", "labels": [{}]}}"#,
-        labels.join(", ")
-    )
-}
-
-/// `gh` for the ledger: merged PR pages per label, label writes appended to
-/// `labels-<n>` (unless `drop` exists), refused when `refuse` exists.
-fn ledger_gh(dir: &Path, tagged: Option<&str>, pending: &str) {
-    if let Some(t) = tagged {
-        put(dir, "tagged", t);
-    }
-    put(dir, "pending", pending);
-    gh(
-        dir,
-        r#"'pr list --state merged --base release/2026-10-01-10-00-utc --label autorelease: tagged --limit 100 --json number,title,labels') [ -f "$S/tagged" ] || exit 1; cat "$S/tagged" ;;
-'pr list --state merged --base release/2026-10-01-10-00-utc --label autorelease: pending --limit 100 --json number,title,labels') cat "$S/pending" ;;
-'api -X POST repos/o/r/issues/'*'/labels -f labels[]=deployed: production')
-  [ -f "$S/refuse" ] && exit 1
-  n="${4#repos/o/r/issues/}"; n="${n%/labels}"
-  [ -f "$S/drop" ] || echo 'deployed: production' >> "$S/labels-$n" ;;
-'api repos/o/r/issues/'*'/labels --jq .[].name')
-  n="${2#repos/o/r/issues/}"; n="${n%/labels}"
-  echo 'autorelease: tagged'; cat "$S/labels-$n" 2>/dev/null || true ;;"#,
-    );
-}
-
-fn record(dir: &Path, in_production: &str, resume: &str) -> Ran {
-    run_with(
-        &body("record-deployed", "record"),
-        dir,
-        dir,
-        &[
-            ("REPO", "o/r"),
-            ("IN_PRODUCTION", in_production),
-            ("BRANCH", BRANCH),
-            ("RESUME_FROM", resume),
-            ("LABEL", "deployed: production"),
-            ("TAGGED_LABEL", "autorelease: tagged"),
-            ("PENDING_LABEL", "autorelease: pending"),
-            ("READBACK_SECONDS", "0"),
-        ],
-    )
-}
-
-fn three_components() -> String {
-    format!(
-        "[{}, {}, {}]",
-        pr_json(
-            11,
-            "chore(release/2026-10-01-10-00-utc): release app 1.2.0",
-            &["autorelease: tagged"]
-        ),
-        pr_json(
-            12,
-            "chore(release/2026-10-01-10-00-utc): release website 0.3.1",
-            &["autorelease: tagged"]
-        ),
-        pr_json(
-            13,
-            "chore(release/2026-10-01-10-00-utc): release app-admin 0.2.0",
-            &["autorelease: tagged"]
-        )
-    )
-}
-
-#[test]
-fn the_ledger_labels_the_release_pr_of_each_component_in_production_and_only_those() {
-    let dir = Scratch::new("record");
-    ledger_gh(&dir.0, Some(&three_components()), "[]");
-    let r = record(&dir.0, r#"["app", "website"]"#, "");
-    assert_eq!(r.code, 0, "{}", r.log);
-    let writes: Vec<String> = calls(&dir.0, "gh")
-        .into_iter()
-        .filter(|c| c.contains("-X POST"))
-        .collect();
-    assert_eq!(
-        writes,
-        vec![
-            "api -X POST repos/o/r/issues/11/labels -f labels[]=deployed: production",
-            "api -X POST repos/o/r/issues/12/labels -f labels[]=deployed: production",
-        ]
-    );
-    // Each write is read back.
-    let reads = calls(&dir.0, "gh")
-        .into_iter()
-        .filter(|c| c.starts_with("api repos/o/r/issues/"))
-        .count();
-    assert_eq!(reads, 2);
-    let recorded = r.output("recorded").unwrap();
-    assert!(
-        recorded.contains(r#"{"component":"app","branch":"release/2026-10-01-10-00-utc","pr":11}"#),
-        "{recorded}"
-    );
-    assert_eq!(r.output("skipped").as_deref(), Some("[]"));
-    // Never repository-wide.
-    for c in calls(&dir.0, "gh") {
-        if c.starts_with("pr list") {
-            assert!(
-                c.contains("--base release/") && c.contains("--state merged"),
-                "{c}"
-            );
-        }
-    }
-}
-
-#[test]
-fn nothing_in_production_writes_nothing_and_asks_nothing_and_unknown_is_red() {
-    let dir = Scratch::new("record");
-    ledger_gh(&dir.0, Some(&three_components()), "[]");
-    let r = record(&dir.0, "[]", "");
-    assert_eq!(r.code, 0, "{}", r.log);
-    assert!(calls(&dir.0, "gh").is_empty());
-    let r = record(&dir.0, "", "");
-    assert_eq!(r.code, 1, "{}", r.log);
-    assert!(r.log.contains("unknown"), "{}", r.log);
-    assert!(calls(&dir.0, "gh").is_empty());
-    let r = record(&dir.0, "app", "");
-    assert_eq!(r.code, 1, "{}", r.log);
-}
-
-#[test]
-fn a_component_without_a_merged_release_pr_is_red_automatically_and_a_notice_on_a_resume() {
-    let dir = Scratch::new("record");
-    ledger_gh(&dir.0, Some(&three_components()), "[]");
-    let r = record(&dir.0, r#"["docs"]"#, "");
-    assert_eq!(r.code, 1, "{}", r.log);
-    assert!(r.log.contains("no merged release PR"), "{}", r.log);
-    let r = record(&dir.0, r#"["docs", "website"]"#, "v1.2.0-rc.2");
-    assert_eq!(r.code, 0, "{}", r.log);
-    assert!(r.log.contains("::notice::docs"), "{}", r.log);
-    assert!(r.output("recorded").unwrap().contains(r#""pr":12"#));
-}
-
-#[test]
-fn a_release_pr_merged_but_never_tagged_is_found_under_its_pending_label() {
-    let dir = Scratch::new("record");
-    let pending = format!(
-        "[{}]",
-        pr_json(
-            14,
-            "chore(release/2026-10-01-10-00-utc): release website 0.3.1",
-            &["autorelease: pending"]
-        )
-    );
-    ledger_gh(&dir.0, Some("[]"), &pending);
-    let r = record(&dir.0, r#"["website"]"#, "");
-    assert_eq!(r.code, 0, "{}", r.log);
-    assert!(r.output("recorded").unwrap().contains(r#""pr":14"#));
-}
-
-#[test]
-fn a_refused_write_an_unread_label_or_an_unreadable_list_is_red() {
-    let dir = Scratch::new("record");
-    ledger_gh(&dir.0, Some(&three_components()), "[]");
-    put(&dir.0, "refuse", "");
-    let r = record(&dir.0, r#"["app", "website"]"#, "");
-    assert_eq!(r.code, 1, "{}", r.log);
-    assert!(r.log.contains("Pull requests permission"), "{}", r.log);
-    // The loop goes on: both components were tried.
-    assert_eq!(
-        calls(&dir.0, "gh")
-            .iter()
-            .filter(|c| c.contains("-X POST"))
-            .count(),
-        2
-    );
-    assert!(r.output("skipped").unwrap().contains("label refused"));
-
-    let dir = Scratch::new("record");
-    ledger_gh(&dir.0, Some(&three_components()), "[]");
-    put(&dir.0, "drop", "");
-    let r = record(&dir.0, r#"["app"]"#, "");
-    assert_eq!(r.code, 1, "{}", r.log);
-    assert!(r.log.contains("does not carry"), "{}", r.log);
-    // Three reads, then the verdict.
-    assert_eq!(
-        calls(&dir.0, "gh")
-            .iter()
-            .filter(|c| c.starts_with("api repos/o/r/issues/11/labels"))
-            .count(),
-        3
-    );
-    assert_eq!(r.output("recorded").as_deref(), Some("[]"));
-
-    let dir = Scratch::new("record");
-    ledger_gh(&dir.0, None, "[]");
-    let r = record(&dir.0, r#"["app"]"#, "");
-    assert_eq!(r.code, 1, "{}", r.log);
-    assert!(
-        !calls(&dir.0, "gh").iter().any(|c| c.contains("-X POST")),
-        "a write after an unreadable list"
-    );
+    assert!(calls(&d.0, "gh").is_empty());
 }
 
 // ---------------------------------------------------------------- close: refs
+
+const BRANCH: &str = "release/2026-10-01-10-00-utc";
 
 /// A repository with an `origin` holding main, the release branch and tags.
 struct Remote {
@@ -1047,7 +674,7 @@ struct Remote {
 
 fn remote_cycle() -> Remote {
     let repo = cycle();
-    release(&repo, "acme-v1.2.0", &[("CHANGELOG.md", "## 1.2.0\n")]);
+    release(&repo, "acme-v1.2.0", &[]);
     let origin = Scratch::new("origin");
     git_at(&origin.0, &["init", "-q", "--bare"]);
     repo.git(&["remote", "add", "origin", origin.0.to_str().unwrap()]);
@@ -1056,14 +683,9 @@ fn remote_cycle() -> Remote {
     Remote { repo, origin }
 }
 
-fn refs_gh(dir: &Path, open: Option<&str>) {
-    if let Some(o) = open {
-        put(dir, "open", o);
-    }
-    gh(
-        dir,
-        r#"'pr list --state open --base release/2026-10-01-10-00-utc --label autorelease: pending --json number,title') [ -f "$S/open" ] || exit 1; cat "$S/open" ;;"#,
-    );
+/// A `gh` the refs step never calls: it reads the refs alone.
+fn refs_gh(dir: &Path) {
+    gh(dir, "");
 }
 
 fn refs(dir: &Path, cwd: &Path, env: &[(&str, &str)]) -> Ran {
@@ -1075,7 +697,6 @@ fn refs(dir: &Path, cwd: &Path, env: &[(&str, &str)]) -> Ran {
         ("REF_TYPE", "tag"),
         ("BRANCH_PREFIX", "release/"),
         ("DEFAULT_BRANCH", "main"),
-        ("PENDING_LABEL", "autorelease: pending"),
     ];
     for (k, v) in env {
         all.retain(|(x, _)| x != k);
@@ -1085,37 +706,22 @@ fn refs(dir: &Path, cwd: &Path, env: &[(&str, &str)]) -> Ran {
 }
 
 #[test]
-fn the_release_branch_is_read_off_the_refs_and_an_open_release_pr_holds_it_green() {
+fn the_release_branch_is_read_off_the_refs() {
     let rem = remote_cycle();
     let dir = Scratch::new("refs");
-    refs_gh(&dir.0, Some("[]"));
+    refs_gh(&dir.0);
     let r = refs(&dir.0, &rem.repo.dir.0, &[]);
     assert_eq!(r.code, 0, "{}", r.log);
     assert_eq!(r.output("branch").as_deref(), Some(BRANCH));
-    assert_eq!(r.output("held").as_deref(), Some(""));
-
-    let dir = Scratch::new("refs");
-    refs_gh(
-        &dir.0,
-        Some(r#"[{"number": 15, "title": "chore: release app 1.2.0"}]"#),
-    );
-    let r = refs(&dir.0, &rem.repo.dir.0, &[]);
-    assert_eq!(r.code, 0, "{}", r.log);
-    assert_eq!(r.output("held").as_deref(), Some("open-release-pr"));
-    assert!(r.log.contains("#15"), "{}", r.log);
-
-    let dir = Scratch::new("refs");
-    refs_gh(&dir.0, None);
-    let r = refs(&dir.0, &rem.repo.dir.0, &[]);
-    assert_eq!(r.code, 1, "{}", r.log);
-    assert!(r.log.contains("could not be listed"), "{}", r.log);
+    assert!(r.output("held").is_none(), "nothing holds a single release");
+    assert!(calls(&dir.0, "gh").is_empty());
 }
 
 #[test]
 fn no_release_branch_is_fine_only_when_the_tag_is_already_on_main() {
     let rem = remote_cycle();
     let dir = Scratch::new("refs");
-    refs_gh(&dir.0, Some("[]"));
+    refs_gh(&dir.0);
     // Gone on the remote; the stale tracking ref is pruned by the fetch.
     git_at(rem.origin.0.as_path(), &["branch", "-q", "-D", BRANCH]);
     let r = refs(&dir.0, &rem.repo.dir.0, &[]);
@@ -1134,7 +740,7 @@ fn no_release_branch_is_fine_only_when_the_tag_is_already_on_main() {
 fn a_replay_names_its_branch_and_off_any_release_branch_asks_nothing() {
     let rem = remote_cycle();
     let dir = Scratch::new("refs");
-    refs_gh(&dir.0, Some("[]"));
+    refs_gh(&dir.0);
     let r = refs(
         &dir.0,
         &rem.repo.dir.0,
@@ -1149,7 +755,7 @@ fn a_replay_names_its_branch_and_off_any_release_branch_asks_nothing() {
     assert_eq!(r.output("branch").as_deref(), Some(BRANCH));
 
     let dir = Scratch::new("refs");
-    refs_gh(&dir.0, Some("[]"));
+    refs_gh(&dir.0);
     let r = refs(
         &dir.0,
         &rem.repo.dir.0,
@@ -1180,7 +786,7 @@ fn a_replay_names_its_branch_and_off_any_release_branch_asks_nothing() {
 fn a_resume_merges_nothing_back_but_says_which_branch_still_holds_its_rc() {
     let rem = remote_cycle();
     let dir = Scratch::new("refs");
-    refs_gh(&dir.0, Some("[]"));
+    refs_gh(&dir.0);
     let r = refs(
         &dir.0,
         &rem.repo.dir.0,
@@ -1196,120 +802,6 @@ fn a_resume_merges_nothing_back_but_says_which_branch_still_holds_its_rc() {
         r.log
     );
     assert!(calls(&dir.0, "gh").is_empty());
-}
-
-// ---------------------------------------------------------------- close: ledger
-
-fn close_ledger(dir: &Path, replay: &str) -> Ran {
-    run_with(
-        &body("close", "ledger"),
-        dir,
-        dir,
-        &[
-            ("BRANCH", BRANCH),
-            ("COMPONENTS", r#"["app", "website", "app-admin"]"#),
-            ("LABEL", "deployed: production"),
-            ("TAGGED_LABEL", "autorelease: tagged"),
-            ("PENDING_LABEL", "autorelease: pending"),
-            ("REPLAY", replay),
-        ],
-    )
-}
-
-fn deployed_title(n: u64, component: &str, deployed: bool) -> String {
-    let mut labels = vec!["autorelease: tagged"];
-    if deployed {
-        labels.push("deployed: production");
-    }
-    pr_json(
-        n,
-        &format!("chore(release/2026-10-01-10-00-utc): release {component} 1.0.0"),
-        &labels,
-    )
-}
-
-#[test]
-fn every_embarked_component_in_production_lets_the_merge_back_run() {
-    let dir = Scratch::new("ledger");
-    let tagged = format!(
-        "[{}, {}]",
-        deployed_title(11, "app", true),
-        deployed_title(12, "website", true)
-    );
-    ledger_gh(&dir.0, Some(&tagged), "[]");
-    let r = close_ledger(&dir.0, "false");
-    assert_eq!(r.code, 0, "{}", r.log);
-    assert_eq!(r.output("held").as_deref(), Some(""));
-    assert!(
-        r.log.contains("app (#11)") && r.log.contains("website (#12)"),
-        "{}",
-        r.log
-    );
-}
-
-#[test]
-fn an_embarked_component_not_in_production_holds_the_cycle_open_green_and_loud() {
-    let dir = Scratch::new("ledger");
-    let tagged = format!(
-        "[{}, {}]",
-        deployed_title(11, "app", false),
-        deployed_title(12, "website", true)
-    );
-    // Merged and never tagged: embarked all the same.
-    let pending = format!(
-        "[{}]",
-        pr_json(
-            13,
-            "chore(release/2026-10-01-10-00-utc): release app-admin 0.2.0",
-            &["autorelease: pending"]
-        )
-    );
-    ledger_gh(&dir.0, Some(&tagged), &pending);
-    let r = close_ledger(&dir.0, "false");
-    assert_eq!(r.code, 0, "{}", r.log);
-    assert_eq!(r.output("held").as_deref(), Some("undeployed"));
-    assert!(r.log.contains("::warning::The cycle on"), "{}", r.log);
-    assert!(
-        r.log.contains("app (#11) is merged but not in production"),
-        "{}",
-        r.log
-    );
-    assert!(r.log.contains("app-admin (#13)"), "{}", r.log);
-    assert!(read(&dir.0, "summary").contains("replay"), "the recipe");
-    // The replay is the human decision, and it says what it closes over.
-    let r = close_ledger(&dir.0, "true");
-    assert_eq!(r.code, 0, "{}", r.log);
-    assert_eq!(r.output("held").as_deref(), Some(""));
-    assert!(
-        r.log.contains("Closing over an explicit replay: app (#11)"),
-        "{}",
-        r.log
-    );
-}
-
-#[test]
-fn the_ledger_fails_closed_on_nothing_embarked_an_unknown_component_or_an_unreadable_list() {
-    let dir = Scratch::new("ledger");
-    ledger_gh(&dir.0, Some("[]"), "[]");
-    let r = close_ledger(&dir.0, "false");
-    assert_eq!(r.code, 0, "{}", r.log);
-    assert_eq!(r.output("held").as_deref(), Some("undeployed"));
-    assert!(r.log.contains("not established"), "{}", r.log);
-
-    let dir = Scratch::new("ledger");
-    let tagged = format!(
-        "[{}]",
-        pr_json(11, "chore: release docs 1.0.0", &["autorelease: tagged"])
-    );
-    ledger_gh(&dir.0, Some(&tagged), "[]");
-    let r = close_ledger(&dir.0, "false");
-    assert_eq!(r.output("held").as_deref(), Some("undeployed"), "{}", r.log);
-
-    let dir = Scratch::new("ledger");
-    ledger_gh(&dir.0, None, "[]");
-    let r = close_ledger(&dir.0, "false");
-    assert_eq!(r.code, 1, "{}", r.log);
-    assert_eq!(r.output("held").as_deref(), Some("unknown"));
 }
 
 // ---------------------------------------------------------------- close: merge back
@@ -1643,7 +1135,7 @@ fn a_merge_back_a_human_did_in_github_is_taken_as_done() {
     git_at(rem.origin.0.as_path(), &["branch", "-q", "-D", BRANCH]);
     rem.repo.git(&["checkout", "-q", "--detach", "acme-v1.2.0"]);
     let dir = Scratch::new("refs");
-    refs_gh(&dir.0, Some("[]"));
+    refs_gh(&dir.0);
     let r = refs(&dir.0, &rem.repo.dir.0, &[]);
     assert_eq!(r.code, 0, "{}", r.log);
     assert_eq!(r.output("branch").as_deref(), Some(""));
@@ -1789,7 +1281,6 @@ fn guard(stage: &str, publish: &str, replay: &str, close: &str) -> Ran {
             ("PUBLISH_RESULT", publish),
             ("REPLAY", replay),
             ("CLOSE_RESULT", close),
-            ("HELD", ""),
             ("RELEASE_TAG", "acme-v1.2.0"),
         ],
         &dir.0,
@@ -1818,7 +1309,7 @@ fn the_closing_guard_is_red_when_the_close_was_skipped_or_failed() {
     assert_eq!(guard("close", "skipped", "true", "failure").code, 1);
     // The other stages have nothing to guard; an unknown stage is red.
     assert_eq!(guard("verify", "", "false", "skipped").code, 0);
-    assert_eq!(guard("record-deployed", "", "false", "skipped").code, 0);
+    assert_eq!(guard("record-deployed", "", "false", "skipped").code, 1);
     assert_eq!(guard("Close", "success", "false", "skipped").code, 1);
 }
 

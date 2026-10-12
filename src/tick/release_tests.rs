@@ -1,8 +1,8 @@
 //! The release pass and the closure against the in-memory GitHub and
 //! tracker (spec 05): the cycle opened at the first tick after the cut, its
 //! QA round and brief only once the candidate's gate is green, the
-//! angle PRs merged with their findings filed once, the GO and the merge of
-//! the release PR, the closure and the release note.
+//! angle PRs merged with their findings filed once, the GO and the release
+//! tagged and published, the closure and the release note.
 
 use super::*;
 use crate::config::Config;
@@ -189,6 +189,10 @@ impl World {
                 (repo(), "main".into(), ".github/review-paths.json".into()),
                 Ok(r#"{"paths": ["**/auth/**"]}"#.into()),
             );
+            for sha in ["c1", "c2"] {
+                s.files
+                    .insert((repo(), sha.into(), "CHANGELOG.md".into()), Ok(changelog()));
+            }
         }
         let tracker = FakeTracker::new("ABC");
         tracker.seed(
@@ -875,23 +879,14 @@ fn a_report_that_does_not_validate_holds_the_angle_and_is_said_once() {
     assert_eq!(said.len(), 1);
 }
 
-fn release_pr(w: &World, staged: &str) -> PullRequest {
-    let mut pr = pull_request(40);
-    pr.base_ref = BRANCH.into();
-    pr.head_ref = "release-please--branches--release".into();
-    pr.title = format!("chore(release): release acme {staged}");
-    pr.body = format!("<summary>acme: {staged}</summary>");
-    pr.labels = vec!["autorelease: pending".into()];
-    pr.author = Some(Actor {
-        login: bot("release-app"),
-        is_bot: true,
-    });
-    let changelog = format!("## [{staged}](x) (2026-10-05)\n\n### Features\n\n* m1 ([m1](x))\n");
-    w.github.state.borrow_mut().files.insert(
-        (repo(), pr.head_sha.clone(), "CHANGELOG.md".into()),
-        Ok(changelog),
-    );
-    pr
+/// The section `release prepare` wrote for 1.2.0 when the cut opened the
+/// cycle: the notes of the release.
+const NOTES: &str = "## [1.2.0](https://github.com/example-org/acme/compare/acme-v1.1.0...acme-v1.2.0) (2026-10-05)\n\n\n### Features\n\n* m1 ([#5](https://github.com/example-org/acme/issues/5)) ([m1](https://github.com/example-org/acme/commit/m1))";
+
+/// The CHANGELOG the cut committed on the release branch before tagging
+/// its first candidate.
+fn changelog() -> String {
+    format!("# Changelog\n\n{NOTES}\n\n## [1.1.0](x) (2026-09-01)\n\n\n### Bug Fixes\n\n* older\n")
 }
 
 fn all_angles_merged(w: &World) {
@@ -909,214 +904,194 @@ fn all_angles_merged(w: &World) {
         .insert(repo(), Ok(merged));
 }
 
-#[test]
-fn the_go_computed_merges_the_release_pr_and_nothing_else() {
-    let w = World::new();
-    w.tick();
-    all_angles_merged(&w);
-    let rp = release_pr(&w, "1.2.0");
-    w.open_on_branch(vec![rp.clone()]);
-    let r = w.tick();
-    let merges: Vec<String> = w
-        .github
-        .writes()
-        .into_iter()
-        .filter(|l| l.starts_with("merge"))
-        .collect();
-    assert_eq!(
-        merges,
-        vec![format!(
-            "merge example-org/acme#40 at {} squash",
-            rp.head_sha
-        )],
-        "{r:?}"
-    );
+/// What the GO writes on GitHub for a candidate at `sha`: the release tag
+/// on its commit, then the release with the prepared notes.
+fn go_lines(sha: &str) -> Vec<String> {
+    vec![
+        format!("create-tag example-org/acme acme-v1.2.0 at {sha}"),
+        "create-release example-org/acme acme-v1.2.0 acme 1.2.0".to_string(),
+    ]
 }
 
-#[test]
-fn a_release_pr_under_the_hands_off_label_is_left_to_the_person_who_takes_the_go() {
-    let w = World::new();
-    w.tick();
-    all_angles_merged(&w);
-    let mut rp = release_pr(&w, "1.2.0");
-    rp.labels.push("spl-asdlc:hands-off".into());
-    w.open_on_branch(vec![rp.clone()]);
-    let comments = |w: &World| {
-        w.tracker
+impl World {
+    /// The release tag and release the bridge wrote on GitHub.
+    fn go_writes(&self) -> Vec<String> {
+        self.github
+            .writes()
+            .into_iter()
+            .filter(|l| l.starts_with("create-tag") || l.starts_with("create-release"))
+            .collect()
+    }
+
+    fn go_comments(&self) -> usize {
+        self.tracker
             .writes()
             .iter()
             .filter(|l| l.contains("GO computed"))
             .count()
-    };
+    }
+}
+
+#[test]
+fn the_go_tags_the_candidate_and_publishes_its_prepared_notes_and_nothing_else() {
+    let w = World::new();
+    w.tick();
+    all_angles_merged(&w);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(w.go_writes(), go_lines("c1"), "{r:?}");
+    assert!(
+        !w.github.writes().iter().any(|l| l.starts_with("merge")),
+        "no release PR: nothing merged on the GO"
+    );
+    let release = w
+        .github
+        .release(&repo(), "acme-v1.2.0")
+        .expect("the release is published");
+    assert_eq!(
+        release.body, NOTES,
+        "the notes the cut prepared, as they are"
+    );
+    assert_eq!(w.go_comments(), 1);
+    // The release published: the next tick is the closure's, and tags
+    // nothing again.
+    let before = w.go_writes();
+    w.tick();
+    assert_eq!(w.go_writes(), before);
+    assert_eq!(w.go_comments(), 1);
+}
+
+#[test]
+fn a_release_item_under_the_hands_off_label_is_left_to_the_person_who_takes_the_go() {
+    let w = World::new();
+    w.tick();
+    all_angles_merged(&w);
+    let release = w.release_item();
+    w.tracker
+        .add_label(&release.key, "spl-asdlc:hands-off")
+        .unwrap();
     for _ in 0..2 {
         let r = w.tick();
         assert!(r.ok(), "{r:?}");
-        assert_eq!(r.hands_off_lines(), vec!["hands-off: pr#40"], "{r:?}");
-        assert!(
-            !w.github.writes().iter().any(|l| l.starts_with("merge")),
-            "{:?}",
-            w.github.writes()
+        assert_eq!(
+            r.hands_off_lines(),
+            vec![format!("hands-off: {}", release.key)],
+            "{r:?}"
         );
-        assert_eq!(comments(&w), 0, "no GO comment for a merge not made");
+        assert!(w.go_writes().is_empty(), "{:?}", w.github.writes());
+        assert_eq!(w.go_comments(), 0, "no GO comment for a release not made");
     }
     // The label removed: the next tick takes the GO as usual.
-    rp.labels.retain(|l| l != "spl-asdlc:hands-off");
-    w.open_on_branch(vec![rp.clone()]);
+    w.tracker
+        .remove_label(&release.key, "spl-asdlc:hands-off")
+        .unwrap();
     let r = w.tick();
     assert!(r.hands_off.is_empty(), "{r:?}");
-    assert!(
-        w.github.writes().contains(&format!(
-            "merge example-org/acme#40 at {} squash",
-            rp.head_sha
-        )),
-        "{r:?}"
-    );
-    assert_eq!(comments(&w), 1, "the GO comment, once merged");
+    assert_eq!(w.go_writes(), go_lines("c1"), "{r:?}");
+    assert_eq!(w.go_comments(), 1, "the GO comment, once published");
 }
 
+/// Spec 09 (BR-ASDLC-021): the release tag a person pushed on the
+/// candidate is taken as done; the bridge publishes only the release.
 #[test]
-fn a_single_component_release_pr_stages_its_version_in_its_title_and_its_heading() {
-    let body = ":robot: I have created a release *beep* *boop*\n---\n\n\n## [1.2.0](https://github.com/OWNER/REPO/compare/acme-v1.1.0...acme-v1.2.0) (2026-10-11)\n\n\n### Features\n\n* m1\n";
-    for title in [
-        format!("chore({BRANCH}): release acme 1.2.0"),
-        format!("chore({BRANCH}): release 1.2.0"),
-    ] {
-        let w = World::new();
-        w.tick();
-        all_angles_merged(&w);
-        let mut rp = release_pr(&w, "1.2.0");
-        rp.title = title.clone();
-        rp.body = body.into();
-        w.open_on_branch(vec![rp.clone()]);
-        w.tick();
-        assert!(
-            w.github.writes().contains(&format!(
-                "merge example-org/acme#40 at {} squash",
-                rp.head_sha
-            )),
-            "{title}: {:?}",
-            w.github.writes()
-        );
-    }
-}
-
-#[test]
-fn a_release_pr_staging_another_version_is_no_go() {
+fn a_release_tag_made_by_hand_on_the_candidate_is_taken_as_done() {
     let w = World::new();
     w.tick();
     all_angles_merged(&w);
-    w.open_on_branch(vec![release_pr(&w, "1.3.0")]);
-    w.tick();
-    assert!(!w.github.writes().iter().any(|l| l.starts_with("merge")));
-}
-
-/// The v0.2.0 → v0.3.0 history shape (spec 05 §8): the previous release
-/// commit (`acme-v1.1.0`, 09:46) squash-merged on its release branch; two
-/// fixes merged into `main` at 09:19 and 09:28 while that cycle was open;
-/// the merge-back at 10:10, then the feature of PR #5 and `extra`. The Git
-/// range holds them all, but release-please lists the history newest first
-/// and stops at the release commit: it never reads the two fixes.
-fn merged_back_range(w: &World, extra: &[(&str, &str, &str)]) {
-    let commit = |sha: &str, subject: &str, at: &str| CommitSummary {
-        sha: sha.into(),
-        subject: subject.into(),
-        committed_at: Timestamp::parse(at),
-    };
-    let mut commits = vec![
-        commit(
-            "f47",
-            "fix(config): the QA report is release bookkeeping (#47)",
-            "2026-10-05T09:19:55Z",
-        ),
-        commit(
-            "f48",
-            "fix(config): the QA report is release bookkeeping (#48)",
-            "2026-10-05T09:28:52Z",
-        ),
-        commit(
-            "mb",
-            "Merge pull request #53 from example-org/release/2026-10-04-16-54-utc",
-            "2026-10-05T10:10:09Z",
-        ),
-        commit("m1", "feat: m1", "2026-10-05T10:30:00Z"),
-    ];
-    commits.extend(extra.iter().map(|(s, subject, at)| commit(s, subject, at)));
-    let mut s = w.github.state.borrow_mut();
-    for c in &commits {
-        if c.sha != "m1" {
-            s.commit_pulls
-                .insert((repo(), c.sha.clone()), Ok(Vec::new()));
-        }
-    }
-    s.compares.insert(
-        (repo(), "acme-v1.1.0".into(), "c1".into()),
-        Ok(Comparison {
-            status: CompareStatus::Diverged,
-            ahead_by: commits.len() as u64,
-            behind_by: 1,
-            commits,
-            files: vec!["src/a.rs".into()],
-            base_committed_at: Timestamp::parse("2026-10-05T09:46:10Z"),
-        }),
+    w.github
+        .state
+        .borrow_mut()
+        .tags
+        .get_mut(&repo())
+        .unwrap()
+        .push(tag("acme-v1.2.0", "c1"));
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.go_writes(),
+        vec!["create-release example-org/acme acme-v1.2.0 acme 1.2.0".to_string()],
+        "{r:?}"
     );
 }
 
 #[test]
-fn a_commit_release_please_cannot_read_never_holds_the_go_and_the_brief_lists_it() {
+fn a_release_tag_on_another_commit_stops_the_go_and_says_why() {
     let w = World::new();
-    merged_back_range(&w, &[]);
+    w.tick();
+    all_angles_merged(&w);
+    w.github
+        .state
+        .borrow_mut()
+        .tags
+        .get_mut(&repo())
+        .unwrap()
+        .push(tag("acme-v1.2.0", "elsewhere"));
+    let r = w.tick();
+    assert!(w.go_writes().is_empty(), "{:?}", w.github.writes());
+    assert!(
+        r.failures
+            .iter()
+            .any(|f| f.contains("acme-v1.2.0 exists on") && f.contains("not on the candidate")),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn a_candidate_without_its_prepared_notes_is_not_released() {
+    let w = World::new();
+    w.tick();
+    all_angles_merged(&w);
+    w.github.state.borrow_mut().files.insert(
+        (repo(), "c1".into(), "CHANGELOG.md".into()),
+        Ok("# Changelog\n\n## [1.1.0](x) (2026-09-01)\n".into()),
+    );
+    let r = w.tick();
+    assert!(w.go_writes().is_empty(), "{:?}", w.github.writes());
+    assert!(
+        r.failures
+            .iter()
+            .any(|f| f.contains("has no section for 1.2.0")),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn a_release_refused_after_its_tag_is_retried_without_a_second_tag() {
+    let w = World::new();
+    w.tick();
+    all_angles_merged(&w);
+    w.github
+        .fail_writes_starting_with("create-release", Some(500), "boom");
+    let r = w.tick();
+    assert!(!r.ok());
+    assert_eq!(w.go_comments(), 0);
+    w.github.state.borrow_mut().failing_writes.clear();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.go_writes(),
+        vec![
+            "create-tag example-org/acme acme-v1.2.0 at c1".to_string(),
+            "create-release example-org/acme acme-v1.2.0 acme 1.2.0".to_string(),
+        ],
+        "one tag, and the release once accepted"
+    );
+    assert_eq!(w.go_comments(), 1);
+}
+
+#[test]
+fn the_brief_lists_no_commit_as_outside_the_notes() {
+    // The notes follow the graph: a commit merged into the default branch
+    // while the previous cycle was open is in this range and in its notes.
+    let w = World::new();
     w.tick();
     let briefs = w.briefs(CAND);
     assert_eq!(briefs.len(), 1);
-    let brief = &briefs[0];
-    let (_, listed) = brief
-        .split_once("#### Not in the release note by construction")
-        .expect("the brief lists what release-please cannot read");
-    assert!(listed.contains("`acme-v1.1.0`"), "{brief}");
-    assert!(listed.contains("- `f47` fix(config)"), "{brief}");
-    assert!(listed.contains("- `f48` fix(config)"), "{brief}");
-    assert!(!listed.contains("`m1`"), "{brief}");
-    // release-please's note names PR #5's feature, never #47 nor #48: the GO
-    // holds and the release PR is merged.
-    all_angles_merged(&w);
-    let rp = release_pr(&w, "1.2.0");
-    w.open_on_branch(vec![rp.clone()]);
-    let r = w.tick();
     assert!(
-        w.github.writes().contains(&format!(
-            "merge example-org/acme#40 at {} squash",
-            rp.head_sha
-        )),
-        "{r:?} {:?}",
-        w.github.writes()
+        !briefs[0].contains("Not in the release note"),
+        "{}",
+        briefs[0]
     );
-}
-
-#[test]
-fn a_commit_release_please_reads_and_its_note_omits_still_holds_the_go() {
-    let w = World::new();
-    merged_back_range(
-        &w,
-        &[(
-            "f55",
-            "fix: committed after the release commit (#55)",
-            "2026-10-05T10:40:00Z",
-        )],
-    );
-    w.tick();
-    all_angles_merged(&w);
-    w.open_on_branch(vec![release_pr(&w, "1.2.0")]);
-    w.tick();
-    assert!(!w.github.writes().iter().any(|l| l.starts_with("merge")));
-    let (_, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
-    assert!(!d.go);
-    let said = d.reasons.join("\n");
-    assert!(
-        said.contains("f55 fix: committed after the release commit (#55)"),
-        "{said}"
-    );
-    assert!(!said.contains("f47"), "{said}");
-    assert!(!said.contains("f48"), "{said}");
 }
 
 /// The product's first release: no published release below the candidate,
@@ -1161,7 +1136,7 @@ fn first_release(extra: &[(&str, &str)]) -> World {
 
 #[test]
 fn a_first_release_is_measured_from_the_repository_root_with_no_tag_set_by_hand() {
-    let w = first_release(&[]);
+    let w = first_release(&[("f3", "fix: the very first fix (#3)")]);
     let r = w.tick();
     assert!(r.ok(), "{r:?}");
     // The whole history is the range: PR #5's ticket is embarked.
@@ -1177,94 +1152,40 @@ fn a_first_release_is_measured_from_the_repository_root_with_no_tag_set_by_hand(
         "{brief}"
     );
     assert!(brief.contains("**ABC-5**"), "{brief}");
-    // No release commit stops release-please: it reads every commit.
-    assert!(!brief.contains("Not in the release note"), "{brief}");
-    // The note names PR #5's feature: the GO holds and the release PR merges.
+    // The GO tags the candidate and publishes the notes the cut prepared.
     all_angles_merged(&w);
-    let rp = release_pr(&w, "1.2.0");
-    w.open_on_branch(vec![rp.clone()]);
     let r = w.tick();
-    assert!(
-        w.github.writes().contains(&format!(
-            "merge example-org/acme#40 at {} squash",
-            rp.head_sha
-        )),
-        "{r:?} {:?}",
-        w.github.writes()
-    );
-
-    // Every commit of a first release is owed its line: one the note omits
-    // holds the GO.
-    let w = first_release(&[("f3", "fix: the very first fix (#3)")]);
-    w.tick();
-    all_angles_merged(&w);
-    w.open_on_branch(vec![release_pr(&w, "1.2.0")]);
-    w.tick();
-    assert!(!w.github.writes().iter().any(|l| l.starts_with("merge")));
-    let (_, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
-    assert!(!d.go);
-    assert!(
-        d.reasons
-            .join("\n")
-            .contains("f3 fix: the very first fix (#3)"),
-        "{:?}",
-        d.reasons
-    );
+    assert_eq!(w.go_writes(), go_lines("c1"), "{r:?}");
 }
 
-/// Spec 09 (BR-ASDLC-021): a human merges the release-please PR in GitHub
-/// instead of the bridge. The bridge picks up from that state: it merges
-/// nothing and says no GO of its own while the release is not yet out, then
-/// closes the cycle once it is published and merged back, recording who
-/// merged the release PR, and writes nothing more at the next tick.
+/// Spec 09 (BR-ASDLC-021): a person tags the candidate and publishes the
+/// release in GitHub instead of the bridge. The bridge picks up from that
+/// state: it tags nothing and says no GO of its own, closes the cycle once
+/// the release is merged back, records who published it, and writes nothing
+/// more at the next tick.
 #[test]
-fn a_release_pr_merged_by_a_human_is_picked_up_without_a_rewrite_and_recorded_at_closure() {
+fn a_release_published_by_a_human_is_picked_up_without_a_rewrite_and_recorded_at_closure() {
     let w = World::new();
     w.tick();
     let release = w.release_item();
     all_angles_merged(&w);
-    let mut rp = release_pr(&w, "1.2.0");
-    rp.state = PrState::Merged;
-    rp.merged_at = Timestamp::parse("2026-10-05T11:50:00Z");
-    rp.merge_commit_sha = Some("rel1".into());
-    rp.merged_by = Some(Actor {
+    publish(&w);
+    w.github
+        .state
+        .borrow_mut()
+        .releases
+        .get_mut(&(repo(), "acme-v1.2.0".into()))
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .author = Some(Actor {
         login: "owner-login".into(),
         is_bot: false,
     });
-    {
-        let mut s = w.github.state.borrow_mut();
-        if let Some(Ok(merged)) = s.merged_pulls.get_mut(&repo()) {
-            merged.push(rp.clone());
-        }
-    }
-    // Merged, not yet published: the bridge neither merges nor claims a GO.
-    let comments_before = w.tracker.comments(&release.key).unwrap().len();
-    w.tick();
-    assert!(
-        !w.github.writes().iter().any(|l| l.starts_with("merge")),
-        "{:?}",
-        w.github.writes()
-    );
-    let comments = w.tracker.comments(&release.key).unwrap();
-    assert!(
-        !comments.iter().any(|c| c.body.contains("GO computed")),
-        "{comments:?}"
-    );
-    assert!(comments.len() >= comments_before);
-
-    // Published and merged back: the closure runs and records the human.
-    publish(&w);
-    w.github.state.borrow_mut().commits.insert(
-        (repo(), "acme-v1.2.0".into()),
-        Ok(Commit {
-            sha: "rel1".into(),
-            message: "chore(release): release acme 1.2.0".into(),
-            committer_date: Timestamp::parse("2026-10-05T11:50:00Z"),
-            parents: vec![],
-        }),
-    );
     let r = w.tick();
     assert!(r.ok(), "{r:?}");
+    assert!(w.go_writes().is_empty(), "{:?}", w.github.writes());
+    assert_eq!(w.go_comments(), 0);
     assert_eq!(
         w.tracker.item(&release.key).state.status,
         Some(Status::Done)
@@ -1277,10 +1198,9 @@ fn a_release_pr_merged_by_a_human_is_picked_up_without_a_rewrite_and_recorded_at
         .find(|c| c.body.contains("spl-asdlc:closure"))
         .expect("the closure comment");
     assert!(
-        closure.body.contains(&format!(
-            "the release PR {} was merged by `owner-login`, a human, in GitHub",
-            rp.url
-        )),
+        closure
+            .body
+            .contains("was published by `owner-login`, a human, in GitHub"),
         "{}",
         closure.body
     );
@@ -1309,6 +1229,7 @@ fn the_closure_judges_the_shipped_tickets_sends_the_note_and_closes_the_item() {
                 draft: false,
                 prerelease: false,
                 published_at: None,
+                author: None,
             }),
         );
         s.branches.insert(repo(), Vec::new());
@@ -1357,6 +1278,7 @@ fn a_failed_note_send_keeps_the_release_open_and_is_retried() {
                 draft: false,
                 prerelease: false,
                 published_at: None,
+                author: None,
             }),
         );
         s.branches.insert(repo(), Vec::new());
@@ -1658,6 +1580,7 @@ fn publish(w: &World) {
             draft: false,
             prerelease: false,
             published_at: None,
+            author: None,
         }),
     );
     s.branches.insert(repo(), Vec::new());
@@ -2088,189 +2011,6 @@ fn a_dry_run_of_the_release_pass_writes_nothing() {
     );
 }
 
-// ---- multi-component GO (spec 05 §9, REQ-REL-077/078) ----
-
-fn multi_config() -> Config {
-    let text = crate::config::spec_example::repository()
-        .replace(
-            "# components = [\"app\", \"website\", \"admin\"]",
-            "components = [\"app\", \"website\"]",
-        )
-        .replace(
-            "# version_component = \"app\"",
-            "version_component = \"app\"",
-        )
-        .replace("# gate_record = ", "gate_record = ");
-    crate::config::spec_example::parse(&text)
-}
-
-fn component_pr(w: &World, number: u64, component: &str) -> PullRequest {
-    let mut pr = green(pull_request(number));
-    pr.base_ref = BRANCH.into();
-    pr.head_ref = format!("release-please--branches--{BRANCH}--components--{component}");
-    pr.title = format!("chore(release): release {component} 1.2.0");
-    pr.labels = vec!["autorelease: pending".into()];
-    pr.author = Some(Actor {
-        login: bot("release-app"),
-        is_bot: true,
-    });
-    let changelog = "## [1.2.0](x) (2026-10-05)\n\n### Features\n\n* m1 ([m1](x))\n".to_string();
-    let mut s = w.github.state.borrow_mut();
-    s.files.insert(
-        (repo(), pr.head_sha.clone(), "release-please-config.json".into()),
-        Ok(r#"{"packages": {"apps/app": {"component": "app"}, "apps/website": {"component": "website"}}}"#.into()),
-    );
-    s.files.insert(
-        (
-            repo(),
-            pr.head_sha.clone(),
-            format!("apps/{component}/CHANGELOG.md"),
-        ),
-        Ok(changelog),
-    );
-    pr
-}
-
-#[test]
-fn a_multi_component_go_lands_the_record_then_merges_the_version_component_last() {
-    let mut w = World::new();
-    w.config = multi_config();
-    w.tick();
-    all_angles_merged(&w);
-    w.github.state.borrow_mut().commits.insert(
-        (repo(), BRANCH.into()),
-        Ok(Commit {
-            sha: "c1".into(),
-            message: String::new(),
-            committer_date: None,
-            parents: vec![],
-        }),
-    );
-    let app = component_pr(&w, 41, "app");
-    let site = component_pr(&w, 42, "website");
-    w.open_on_branch(vec![app.clone(), site.clone()]);
-    let r = w.tick();
-    let writes = w.github.writes();
-    assert!(
-        writes
-            .iter()
-            .any(|l| l.starts_with("put-file") && l.contains("docs/releases/v1.2.0.md")),
-        "{writes:?} {r:?}"
-    );
-    assert!(
-        writes.iter().any(|l| l.starts_with("create-pull")),
-        "{writes:?}"
-    );
-    assert!(
-        !writes.iter().any(|l| l.starts_with("merge")),
-        "no release PR before the record"
-    );
-
-    // The record lands on the release branch: the components follow, one per tick.
-    let record = w
-        .github
-        .state
-        .borrow()
-        .files
-        .get(&(
-            repo(),
-            format!("release-record/{CAND}"),
-            "docs/releases/v1.2.0.md".into(),
-        ))
-        .cloned()
-        .unwrap()
-        .unwrap();
-    w.github.state.borrow_mut().files.insert(
-        (repo(), BRANCH.into(), "docs/releases/v1.2.0.md".into()),
-        Ok(record),
-    );
-    w.tick();
-    let merges: Vec<String> = w
-        .github
-        .writes()
-        .into_iter()
-        .filter(|l| l.starts_with("merge"))
-        .collect();
-    assert_eq!(
-        merges,
-        vec![format!(
-            "merge example-org/acme#42 at {} squash",
-            site.head_sha
-        )],
-        "website first, app last"
-    );
-}
-
-#[test]
-fn the_release_please_config_is_read_where_the_product_says_and_never_guessed() {
-    let mut w = World::new();
-    let text = crate::config::spec_example::repository()
-        .replace(
-            "# components = [\"app\", \"website\", \"admin\"]",
-            "components = [\"app\", \"website\"]",
-        )
-        .replace(
-            "# version_component = \"app\"",
-            "version_component = \"app\"",
-        )
-        .replace("# gate_record = ", "gate_record = ")
-        .replace(
-            "release_please_config = \"release-please-config.json\"",
-            "release_please_config = \".release-please-config.json\"",
-        );
-    w.config = crate::config::spec_example::parse(&text);
-    w.tick();
-    all_angles_merged(&w);
-    w.github.state.borrow_mut().commits.insert(
-        (repo(), BRANCH.into()),
-        Ok(Commit {
-            sha: "c1".into(),
-            message: String::new(),
-            committer_date: None,
-            parents: vec![],
-        }),
-    );
-    // The configuration only at the default path: the product's own is
-    // missing, so each component's note cannot be placed and the GO is false.
-    let app = component_pr(&w, 41, "app");
-    let site = component_pr(&w, 42, "website");
-    w.open_on_branch(vec![app.clone(), site.clone()]);
-    w.tick();
-    let record = |w: &World| {
-        w.github
-            .writes()
-            .iter()
-            .any(|l| l.starts_with("put-file") && l.contains("docs/releases/v1.2.0.md"))
-    };
-    assert!(!record(&w), "{:?}", w.github.writes());
-
-    // At the path the product names: the GO holds and the record is written.
-    {
-        let mut s = w.github.state.borrow_mut();
-        for pr in [&app, &site] {
-            let c = s
-                .files
-                .get(&(
-                    repo(),
-                    pr.head_sha.clone(),
-                    "release-please-config.json".into(),
-                ))
-                .cloned()
-                .unwrap();
-            s.files.insert(
-                (
-                    repo(),
-                    pr.head_sha.clone(),
-                    ".release-please-config.json".into(),
-                ),
-                c,
-            );
-        }
-    }
-    w.tick();
-    assert!(record(&w), "{:?}", w.github.writes());
-}
-
 #[test]
 fn a_version_released_without_a_release_item_of_the_bridge_is_not_its_cycle() {
     // Released before the bridge took the product over: no item to open,
@@ -2593,115 +2333,6 @@ fn a_ticket_whose_latest_pr_shipped_later_is_left_to_that_release() {
     };
     assert_eq!(run("99"), Some(Status::ToDeploy));
     assert_eq!(run("5"), Some(Status::Done));
-}
-
-#[test]
-fn the_gate_record_the_bridge_lands_is_no_tip_gap() {
-    // Once the record is on the release branch, the branch is ahead of the
-    // candidate by that one file: the GO holds and the components merge.
-    let mut w = World::new();
-    w.config = multi_config();
-    w.tick();
-    all_angles_merged(&w);
-    w.github.state.borrow_mut().commits.insert(
-        (repo(), BRANCH.into()),
-        Ok(Commit {
-            sha: "c1".into(),
-            message: String::new(),
-            committer_date: None,
-            parents: vec![],
-        }),
-    );
-    let app = component_pr(&w, 41, "app");
-    let site = component_pr(&w, 42, "website");
-    w.open_on_branch(vec![app, site.clone()]);
-    w.tick();
-    let record = w
-        .github
-        .state
-        .borrow()
-        .files
-        .get(&(
-            repo(),
-            format!("release-record/{CAND}"),
-            "docs/releases/v1.2.0.md".into(),
-        ))
-        .cloned()
-        .unwrap()
-        .unwrap();
-    {
-        let mut s = w.github.state.borrow_mut();
-        s.files.insert(
-            (repo(), BRANCH.into(), "docs/releases/v1.2.0.md".into()),
-            Ok(record),
-        );
-        s.compares.insert(
-            (repo(), "c1".into(), BRANCH.into()),
-            cmp(CompareStatus::Ahead, &["r1"], &["docs/releases/v1.2.0.md"]),
-        );
-    }
-    let r = w.tick();
-    let merges: Vec<String> = w
-        .github
-        .writes()
-        .into_iter()
-        .filter(|l| l.starts_with("merge"))
-        .collect();
-    assert_eq!(
-        merges,
-        vec![format!(
-            "merge example-org/acme#42 at {} squash",
-            site.head_sha
-        )],
-        "{r:?}"
-    );
-}
-
-#[test]
-fn the_deployment_ledger_reads_the_component_prs_merged_into_the_release_branch() {
-    // Release-please's component PRs target the release branch: a ledger
-    // read off the default branch would find nothing and never close.
-    let mut w = World::new();
-    w.config = multi_config();
-    w.tick();
-    let item = w.release_item();
-    publish(&w);
-    let merged = |n: u64, component: &str, deployed: bool| {
-        let mut pr = component_pr(&w, n, component);
-        pr.base_ref = BRANCH.into();
-        pr.state = crate::github::PrState::Merged;
-        pr.merged_at = Timestamp::parse("2026-10-05T13:00:00Z");
-        if deployed {
-            pr.labels.push("deployed: production".into());
-        }
-        pr
-    };
-    let app = merged(41, "app", true);
-    let site = merged(42, "website", false);
-    w.github
-        .state
-        .borrow_mut()
-        .merged_pulls
-        .insert(repo(), Ok(vec![app.clone(), site]));
-    let r = w.tick();
-    assert!(
-        !r.failures.iter().any(|f| f.contains("ledger")),
-        "the ledger is read: {r:?}"
-    );
-    assert_ne!(
-        w.tracker.item(&item.key).state.status,
-        Some(Status::Done),
-        "a component not deployed holds the closure"
-    );
-    // Both deployed: the closure proceeds.
-    let site = merged(42, "website", true);
-    w.github
-        .state
-        .borrow_mut()
-        .merged_pulls
-        .insert(repo(), Ok(vec![app, site]));
-    let r = w.tick();
-    assert!(!r.failures.iter().any(|f| f.contains("ledger")), "{r:?}");
 }
 
 // ---- a ticket the closure reopens is unassigned (BR-ASDLC-009) ----
@@ -4399,7 +4030,6 @@ fn without_a_release_section_the_release_verbs_say_there_is_no_cycle() {
     for refused in [
         crate::verbs::cut(&t, &mut log, true).unwrap_err(),
         crate::verbs::status(&t).err().unwrap(),
-        crate::verbs::close(&t, &mut log, "1.2.0", "a reason", "someone").unwrap_err(),
         crate::verbs::abandon(&t, &mut log, "someone").unwrap_err(),
         crate::verbs::requalify(
             &t,
@@ -4430,15 +4060,6 @@ impl World {
         w.config.release.as_mut().unwrap().angles.clear();
         w.config.release.as_mut().unwrap().coordinators.clear();
         w
-    }
-
-    /// The merges the bridge made on GitHub.
-    fn merges(&self) -> Vec<String> {
-        self.github
-            .writes()
-            .into_iter()
-            .filter(|l| l.starts_with("merge"))
-            .collect()
     }
 }
 
@@ -4489,7 +4110,7 @@ fn a_release_with_no_qa_angle_opens_no_round_and_posts_the_brief_once() {
 }
 
 #[test]
-fn with_no_qa_angle_a_green_gate_is_a_go_and_the_release_pr_is_merged() {
+fn with_no_qa_angle_a_green_gate_is_a_go_and_the_release_is_published() {
     let w = World::without_angles();
     w.tick();
     let (_, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
@@ -4504,19 +4125,10 @@ fn with_no_qa_angle_a_green_gate_is_a_go_and_the_release_pr_is_merged() {
         "{:?}",
         d.reasons
     );
-    let rp = release_pr(&w, "1.2.0");
-    w.open_on_branch(vec![rp.clone()]);
     let (_, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
     assert!(d.go, "{:?}", d.reasons);
     let r = w.tick();
-    assert_eq!(
-        w.merges(),
-        vec![format!(
-            "merge example-org/acme#40 at {} squash",
-            rp.head_sha
-        )],
-        "{r:?}"
-    );
+    assert_eq!(w.go_writes(), go_lines("c1"), "{r:?}");
 }
 
 #[test]
@@ -4524,9 +4136,8 @@ fn with_no_qa_angle_a_red_gate_is_no_go() {
     let w = World::without_angles();
     w.red_settled(1, CAND, "c1", r#""tests""#);
     w.tick();
-    w.open_on_branch(vec![release_pr(&w, "1.2.0")]);
     let r = w.tick();
-    assert!(w.merges().is_empty(), "{r:?}");
+    assert!(w.go_writes().is_empty(), "{r:?}");
     let (_, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
     assert!(!d.go);
     assert_eq!(d.reasons, vec!["the CI gate is not green"]);
@@ -4537,6 +4148,8 @@ fn with_no_qa_angle_a_red_gate_is_no_go() {
 #[test]
 fn with_no_qa_angle_a_blocker_still_holds_the_release() {
     let w = World::without_angles();
+    // The gate still running: no GO at the tick that opens the cycle.
+    w.gate(vec![gate_run(1, CAND, "c1", None)]);
     w.tick();
     let release = w.release_item();
     w.tracker
@@ -4544,20 +4157,27 @@ fn with_no_qa_angle_a_blocker_still_holds_the_release() {
     w.tracker
         .relate("ABC-9", &release.key, crate::tracker::RelationKind::Blocks)
         .unwrap();
-    w.open_on_branch(vec![release_pr(&w, "1.2.0")]);
+    w.gate(vec![gate_run(1, CAND, "c1", Some("success"))]);
     w.tick();
-    assert!(w.merges().is_empty());
+    assert!(w.go_writes().is_empty());
     let (_, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
     assert_eq!(d.reasons, vec!["open blocking issues: ABC-9"]);
 }
 
 #[test]
 fn angles_configured_later_apply_from_the_next_candidate() {
+    // Under the human policy the GO waits for the owner: rc.1, whose gate
+    // is green and which owes no angle, stays in flight.
+    let human = |mut c: Config| {
+        c.release.as_mut().unwrap().go_policy = crate::config::GoPolicy::Human;
+        c
+    };
     let mut w = World::without_angles();
+    w.config = human(w.config.clone());
     w.tick();
     assert!(w.round(CAND).is_empty());
     // The project configures its angles while rc.1 is in flight.
-    w.config = config();
+    w.config = human(config());
     let (r, writes) = w.writes_of_a_tick();
     assert!(r.ok(), "{r:?}");
     assert!(writes.is_empty(), "rc.1 keeps no angle: {writes:?}");
@@ -4640,18 +4260,9 @@ fn the_last_passs_own_report_after_its_candidate_is_a_go() {
             &format!(".spl-asdlc/qa/{CAND}/product.json"),
         ],
     );
-    let rp = release_pr(&w, "1.2.0");
-    w.open_on_branch(vec![rp.clone()]);
     assert!(w.tip_gaps().is_empty());
     let r = w.tick();
-    assert_eq!(
-        w.merges(),
-        vec![format!(
-            "merge example-org/acme#40 at {} squash",
-            rp.head_sha
-        )],
-        "{r:?}"
-    );
+    assert_eq!(w.go_writes(), go_lines("c1"), "{r:?}");
 }
 
 #[test]
@@ -4664,7 +4275,6 @@ fn a_change_beside_the_candidates_report_is_still_a_tip_gap() {
         "c1",
         &[&format!(".spl-asdlc/qa/{CAND}/security.json"), "src/a.rs"],
     );
-    w.open_on_branch(vec![release_pr(&w, "1.2.0")]);
     assert_eq!(
         w.tip_gaps(),
         vec![format!(
@@ -4672,7 +4282,7 @@ fn a_change_beside_the_candidates_report_is_still_a_tip_gap() {
         )]
     );
     let r = w.tick();
-    assert!(w.merges().is_empty(), "{r:?}");
+    assert!(w.go_writes().is_empty(), "{r:?}");
 }
 
 #[test]
@@ -4710,8 +4320,6 @@ fn a_lighter_later_pass_counts_the_first_pass_and_is_a_go_on_a_green_gate() {
         gate_run(2, CAND2, "c2", Some("success")),
         gate_run(1, CAND, "c1", Some("success")),
     ]);
-    let rp = release_pr(&w, "1.2.0");
-    w.open_on_branch(vec![rp.clone()]);
     let (_, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
     assert!(d.go, "{:?}", d.reasons);
     let r = w.tick();
@@ -4719,14 +4327,7 @@ fn a_lighter_later_pass_counts_the_first_pass_and_is_a_go_on_a_green_gate() {
         w.round(CAND2).is_empty(),
         "the lighter pass offers no angle"
     );
-    assert_eq!(
-        w.merges(),
-        vec![format!(
-            "merge example-org/acme#40 at {} squash",
-            rp.head_sha
-        )],
-        "{r:?}"
-    );
+    assert_eq!(w.go_writes(), go_lines("c2"), "{r:?}");
 }
 
 #[test]
@@ -4750,9 +4351,8 @@ fn a_lighter_later_pass_waits_for_an_angle_the_first_pass_did_not_merge() {
         gate_run(2, CAND2, "c2", Some("success")),
         gate_run(1, CAND, "c1", Some("success")),
     ]);
-    w.open_on_branch(vec![release_pr(&w, "1.2.0")]);
     let (_, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
     assert_eq!(d.reasons, vec!["angles missing: product"]);
     let r = w.tick();
-    assert!(w.merges().is_empty(), "{r:?}");
+    assert!(w.go_writes().is_empty(), "{r:?}");
 }
