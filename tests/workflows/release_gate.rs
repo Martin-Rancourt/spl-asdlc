@@ -179,10 +179,77 @@ fn the_base_is_the_last_published_release_never_a_candidate() {
     let r = last(&repo, "branch", "main");
     assert_eq!(r.output("last-tag").as_deref(), Some("acme-v1.10.0"));
     assert_eq!(r.output("candidate").as_deref(), Some(""));
-    // Nothing published: red, never an empty base.
+    // Nothing published below it: the product's first release, measured from
+    // the repository's root, with no tag set by hand. Green, and said.
     let r = last(&repo, "tag", "acme-v1.0.0-rc.1");
-    assert_eq!(r.code, 1, "{}", r.log);
-    assert!(r.log.contains("No published release"), "{}", r.log);
+    assert_eq!(r.code, 0, "{}", r.log);
+    assert_eq!(r.output("last-tag").as_deref(), Some(""));
+    assert_eq!(r.output("candidate").as_deref(), Some("acme-v1.0.0-rc.1"));
+    assert!(
+        r.log.contains("::notice title=First release::No published release (acme-v*) below acme-v1.0.0-rc.1: this is the product's first release, measured from the repository's root"),
+        "{}",
+        r.log
+    );
+}
+
+#[test]
+fn a_first_candidate_with_no_earlier_release_is_measured_from_the_root() {
+    // A brand-new repository: candidates only, never a release.
+    let repo = Repo::new();
+    repo.git(&["tag", "acme-v0.2.0-rc.1"]);
+    let r = last(&repo, "tag", "acme-v0.2.0-rc.1");
+    assert_eq!(r.code, 0, "{}", r.log);
+    assert_eq!(r.output("last-tag").as_deref(), Some(""));
+    assert!(
+        r.log
+            .contains("last published release: none (first release"),
+        "{}",
+        r.log
+    );
+
+    // The suites then run on the whole history, and the pack says so.
+    let mut g = Gate::new(r#"[{"id": "unit", "run": "echo 1 passed"}]"#);
+    g.repo.git(&["tag", "-d", "acme-v1.0.0"]);
+    g.set("LAST_TAG", "");
+    g.set(
+        "GUARDS",
+        r#"[{"name": "range", "run": "test \"$BASE_SHA\" = \"$(git hash-object -t tree /dev/null)\" && test -z \"$BASE_REF\" && git diff --name-only \"$BASE_SHA\" \"$HEAD_SHA\" | grep -qx README.md"}]"#,
+    );
+    let d = g.job("");
+    assert_eq!(d.prepare.code, 0, "{}", d.prepare.log);
+    assert!(
+        d.prepare
+            .log
+            .contains("Evidence prepared since the repository's root (first release)."),
+        "{}",
+        d.prepare.log
+    );
+    assert_eq!(d.enforce.code, 0, "{}", d.enforce.log);
+    let s = d.suites();
+    assert_eq!(s["from_tag"], Value::Null);
+    assert_eq!(d.failed(), Vec::<String>::new(), "{s}");
+    assert_eq!(s["suites"][0]["name"], "pr_guards");
+    let run: Value =
+        serde_json::from_str(&std::fs::read_to_string(d.pack.join("run.json")).unwrap()).unwrap();
+    assert_eq!(run["lastReleaseTag"], Value::Null);
+    // Every commit, the first included, and every file of the first commit.
+    let commits = std::fs::read_to_string(d.pack.join("commits.tsv")).unwrap();
+    assert!(commits.contains("\tfeat: g"), "{commits}");
+    assert!(commits.contains("\tinitial"), "{commits}");
+    let diff = std::fs::read_to_string(d.pack.join("changes.diff")).unwrap();
+    assert!(diff.contains("+++ b/README.md"), "{diff}");
+    let report = std::fs::read_to_string(d.pack.join("qa-report.md")).unwrap();
+    assert!(
+        report.contains(
+            "Previous release: none (first release, measured from the repository's root)"
+        ),
+        "{report}"
+    );
+    assert!(
+        std::fs::read_to_string(g.state.0.join("summary.md"))
+            .unwrap()
+            .contains("Previous release: none (first release"),
+    );
 }
 
 // ---------------------------------------------------------------- the suites

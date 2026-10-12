@@ -529,6 +529,24 @@ fn files(
         Verdict::Ok,
         format!("[release], {} angle(s)", release.angles.len()),
     ));
+    // The base a candidate is measured from. None is no setup step: the
+    // first release is measured from the repository's root.
+    let shape = Shape::of(&config.product.name, release);
+    out.push(match github.tags(repo, shape.release_tag_prefix()) {
+        Ok(tags) => match shape.previous_release(tags.iter().map(|r| r.name.as_str()), None) {
+            Some((tag, _)) => check(
+                "release base",
+                Verdict::Ok,
+                format!("{tag}: the next candidate is measured from the highest release below its version"),
+            ),
+            None => check(
+                "release base",
+                Verdict::Ok,
+                "no published release yet: the first candidate is measured from the repository's root (its whole history), with no tag to set by hand",
+            ),
+        },
+        Err(e) => check("release base", Verdict::Missing, e.to_string()),
+    });
     for path in [
         &release.release_please_config,
         &release.release_please_manifest,
@@ -733,6 +751,15 @@ mod tests {
             file(".github/review-paths.json", "{\"paths\": []}");
             file("release-please-config.json", "{}");
             s.rulesets.insert(repo.clone(), Ok(procedure_rulesets()));
+            // A candidate, never a published release: the first release.
+            s.tags.insert(
+                repo.clone(),
+                vec![crate::github::GitRef {
+                    name: "acme-v0.1.0-rc.1".into(),
+                    sha: "c1".into(),
+                    object_type: crate::github::ObjectType::Tag,
+                }],
+            );
         }
         let t = FakeTracker::default();
         t.state.borrow_mut().users.push(User {
@@ -795,6 +822,38 @@ mod tests {
             checks
                 .iter()
                 .any(|c| c.to_string() == "release cycle: ok — [release], 2 angle(s)"),
+            "{checks:#?}"
+        );
+        // No published release is no setup step: the first candidate is
+        // measured from the repository's root.
+        assert!(
+            checks.iter().any(|c| c.to_string()
+                == "release base: ok — no published release yet: the first candidate is measured from the repository's root (its whole history), with no tag to set by hand"),
+            "{checks:#?}"
+        );
+        g.state
+            .borrow_mut()
+            .tags
+            .get_mut(&repo)
+            .unwrap()
+            .push(crate::github::GitRef {
+                name: "acme-v0.1.0".into(),
+                sha: "r1".into(),
+                object_type: crate::github::ObjectType::Tag,
+            });
+        let checks = run(&c, None, &g, &t, "workstation");
+        assert!(
+            checks.iter().any(|c| c.to_string()
+                == "release base: ok — acme-v0.1.0: the next candidate is measured from the highest release below its version"),
+            "{checks:#?}"
+        );
+        // A tag list that cannot be read is not "no release".
+        g.state.borrow_mut().tags.remove(&repo);
+        let checks = run(&c, None, &g, &t, "workstation");
+        assert!(
+            checks
+                .iter()
+                .any(|c| c.name == "release base" && c.verdict == Verdict::Missing),
             "{checks:#?}"
         );
     }

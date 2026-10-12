@@ -234,7 +234,7 @@ jobs:
           fi
           # An unknown class must never become "cut with no class".
           case "$CLASS" in
-            '') echo "No class forced: it is computed from the delta since the last published release." ;;
+            '') echo "No class forced: it is computed from the delta since the last published release (the repository's root for a first release)." ;;
             routine | sensible) echo "Class forced to '$CLASS'." ;;
             *) refuse "Unknown release class '$CLASS'. Expected 'routine', 'sensible', or empty." ;;
           esac
@@ -707,35 +707,59 @@ jobs:
 
           # The class describes what goes to production: the delta is
           # measured from the last published release, never from the
-          # previous candidate.
+          # previous candidate. A product's first release has none: its delta
+          # is its whole history, measured from the repository's root (the
+          # empty tree), and the tag records the base `root`.
           rel_glob="$(printf '%s' "$RELEASE_TAG" | sed -e 's/{version}/*/')"
           cand_glob="$(printf '%s' "$CANDIDATE_TAG" | sed -e 's/{version}/*/' -e 's/{rc}/*/')"
           rel_re="^$(printf '%s' "$RELEASE_TAG" | sed -e 's/\./\\./g' -e 's/{version}/[0-9]+\\.[0-9]+\\.[0-9]+/')\$"
           base=none
+          from=''
+          since=''
           surfaces=unknown
           why=''
           : > "$work/hits"
-          if ! found="$(git describe --tags --abbrev=0 --match "$rel_glob" --exclude "$cand_glob" HEAD 2> /dev/null)"; then
-            why="no published release ($rel_glob) is reachable from HEAD"
-          elif ! [[ "$found" =~ $rel_re ]]; then
-            why="the nearest tag '$found' is not a published release"
-          elif ! git -c core.quotePath=false diff --no-renames --name-only "$found" HEAD > "$work/changed"; then
-            base="$found"
-            why="git diff $found HEAD failed"
+          if found="$(git describe --tags --abbrev=0 --match "$rel_glob" --exclude "$cand_glob" HEAD 2> /dev/null)"; then
+            if [[ "$found" =~ $rel_re ]]; then
+              base="$found"
+              from="$found"
+              since="$found"
+            else
+              why="the nearest tag '$found' is not a published release"
+            fi
+          else
+            if ! git tag --list "$rel_glob" > "$work/released"; then
+              refuse "Could not list the tags: whether a release was ever published cannot be known."
+            fi
+            published=0
+            while IFS= read -r t; do
+              if [[ "$t" =~ $rel_re ]]; then
+                published=$((published + 1))
+              fi
+            done < "$work/released"
+            if [ "$published" -eq 0 ]; then
+              base=root
+              from="$(git hash-object -t tree /dev/null)"
+              since="the repository's root"
+              echo "No published release ($rel_glob) exists: this is the product's first release, measured from the repository's root (its whole history)."
+            else
+              why="no published release ($rel_glob) is reachable from HEAD"
+            fi
+          fi
+          if [ -z "$from" ]; then
+            :
+          elif ! git -c core.quotePath=false diff --no-renames --name-only "$from" HEAD > "$work/changed"; then
+            why="git diff $since HEAD failed"
           elif [ ! -s "$work/changed" ]; then
-            base="$found"
-            why="no path changed since $found"
+            why="no path changed since $since"
           elif ! git cat-file -e "HEAD:$CLASS_PATHS_FILE" 2> /dev/null; then
-            base="$found"
             why="the candidate carries no $CLASS_PATHS_FILE"
           elif ! git show "HEAD:$CLASS_PATHS_FILE" > "$work/table" ||
             ! jq -e 'type == "object" and (.paths | type == "array" and length > 0)
                      and all(.paths[]; type == "string" and (gsub("[[:space:]]"; "") | length > 0) and (test("\n") | not))' \
               "$work/table" > /dev/null 2>&1; then
-            base="$found"
             why="$CLASS_PATHS_FILE at the candidate is not a non-empty {\"paths\": [glob, ...]} list"
           else
-            base="$found"
             jq -r '.paths[]' "$work/table" > "$work/patterns"
             # Shell globs where `*` also crosses `/`, or a directory prefix:
             # the bridge's rule (src/method/glob.rs).
@@ -765,7 +789,7 @@ jobs:
               if [ "$surfaces" = unknown ]; then
                 echo "The delta's reviewed paths could not be computed: $why."
               else
-                echo "The delta since $base touches reviewed paths ($surfaces). First hits:"
+                echo "The delta since $since touches reviewed paths ($surfaces). First hits:"
                 awk -F'\t' 'NR <= 20 { print "  " $2 "  (" $1 ")" }' "$work/hits"
               fi
               echo "Either cut it as what it is (class 'sensible'), or keep 'routine' and record why, in the tag, with routine-because."
@@ -789,10 +813,15 @@ jobs:
             because=''
           fi
 
+          if [ "$base" = root ]; then
+            reason="$reason (first release: measured from the repository's root)"
+          fi
+
           previous=''
           if [ "$round" -gt 1 ]; then
             previous="$(tag_of "$VERSION" $((round - 1)))"
-          elif [ "$base" != none ]; then
+          elif [ "$base" != none ] && [ "$base" != root ]; then
+            # The first candidate of a first release has no previous tag.
             previous="$base"
           fi
           # The files changed since the previous candidate decide the reviews
@@ -857,7 +886,7 @@ jobs:
           echo "Branch:    $BRANCH"
           echo "Commit:    $(git log -1 --format='%h %s' HEAD)"
           echo "Class:     $class ($reason)"
-          echo "Surfaces:  $surfaces (since $base)"
+          echo "Surfaces:  $surfaces (since ${since:-$base})"
           if [ -n "$because" ]; then
             echo "Routine because: $because"
           fi
@@ -980,7 +1009,11 @@ jobs:
             echo "| Candidate | \`${TAG:-?}\` (round ${ROUND:-?}) |"
             echo "| Branch | \`${BRANCH:-?}\` |"
             echo "| Class | ${CLASS_OUT:-?}: ${CLASS_REASON:-?} |"
-            echo "| Reviewed paths touched | ${SURFACES:-?} (since ${BASE:-?}) |"
+            if [ "${BASE:-}" = root ]; then
+              echo "| Reviewed paths touched | ${SURFACES:-?} (since the repository's root: first release) |"
+            else
+              echo "| Reviewed paths touched | ${SURFACES:-?} (since ${BASE:-?}) |"
+            fi
             echo "| Previous tag | ${PREVIOUS:-none} |"
             echo
             if [ -n "$PUSHED" ]; then

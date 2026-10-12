@@ -901,6 +901,68 @@ impl GitHub for RestGitHub {
         })
     }
 
+    fn since_root(&self, repo: &RepoSlug, head: &str) -> Read<Comparison> {
+        let what = format!("the history of {head} in {repo}");
+        // Newest first, every page: a list cut is unreadable (get_pages).
+        let listed = self.get_pages(
+            repo,
+            &what,
+            &format!(
+                "/repos/{repo}/commits?sha={}&per_page=100",
+                encode(head, false)
+            ),
+            None,
+            100_000,
+        )?;
+        let mut commits = listed
+            .iter()
+            .map(|c| {
+                let sha = opt_str(c, "sha")
+                    .ok_or_else(|| ReadError::unreadable(&what, "a commit without its sha"))?;
+                Ok(CommitSummary {
+                    sha,
+                    subject: str_of(&c["commit"], "message")
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .to_string(),
+                    committed_at: time_of(&c["commit"]["committer"], "date"),
+                })
+            })
+            .collect::<Read<Vec<CommitSummary>>>()?;
+        commits.reverse();
+        // Every path at `head`: the tree, whole or refused.
+        let (tree, _) = self.get_json(
+            repo,
+            &what,
+            &format!(
+                "/repos/{repo}/git/trees/{}?recursive=1",
+                encode(head, false)
+            ),
+        )?;
+        if tree["truncated"].as_bool() != Some(false) {
+            return Err(ReadError::unreadable(
+                &what,
+                "GitHub cut the tree, or did not say whether it did",
+            ));
+        }
+        let files: Vec<String> = tree["tree"]
+            .as_array()
+            .ok_or_else(|| ReadError::unreadable(&what, "no tree in the answer"))?
+            .iter()
+            .filter(|e| e["type"].as_str() != Some("tree"))
+            .map(|e| str_of(e, "path"))
+            .collect();
+        Ok(Comparison {
+            status: CompareStatus::Ahead,
+            ahead_by: commits.len() as u64,
+            behind_by: 0,
+            commits,
+            files,
+            base_committed_at: None,
+        })
+    }
+
     fn file(&self, repo: &RepoSlug, path: &str, rev: &str) -> Read<String> {
         let what = format!("{path} at {rev} in {repo}");
         let response = self

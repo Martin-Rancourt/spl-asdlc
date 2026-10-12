@@ -325,6 +325,9 @@ impl GitHub for HandsOff<'_> {
     fn compare(&self, repo: &RepoSlug, base: &str, head: &str) -> Read<github::Comparison> {
         self.github.compare(repo, base, head)
     }
+    fn since_root(&self, repo: &RepoSlug, head: &str) -> Read<github::Comparison> {
+        self.github.since_root(repo, head)
+    }
     fn file(&self, repo: &RepoSlug, path: &str, rev: &str) -> Read<String> {
         self.github.file(repo, path, rev)
     }

@@ -1119,6 +1119,99 @@ fn a_commit_release_please_reads_and_its_note_omits_still_holds_the_go() {
     assert!(!said.contains("f48"), "{said}");
 }
 
+/// The product's first release: no published release below the candidate,
+/// so its range is the whole history, read from the repository's root, and
+/// no tag was set by hand. `extra` commits follow PR #5's feature.
+fn first_release(extra: &[(&str, &str)]) -> World {
+    let w = World::new();
+    {
+        let mut s = w.github.state.borrow_mut();
+        s.tags.insert(repo(), vec![tag(CAND, "c1")]);
+        s.compares
+            .remove(&(repo(), "acme-v1.1.0".into(), "c1".into()));
+        let mut commits = vec![("r0", "initial"), ("m1", "feat: m1")];
+        commits.extend_from_slice(extra);
+        for (sha, _) in &commits {
+            if *sha != "m1" {
+                s.commit_pulls
+                    .insert((repo(), sha.to_string()), Ok(Vec::new()));
+            }
+        }
+        s.histories.insert(
+            (repo(), "c1".into()),
+            Ok(Comparison {
+                status: CompareStatus::Ahead,
+                ahead_by: commits.len() as u64,
+                behind_by: 0,
+                commits: commits
+                    .iter()
+                    .map(|(sha, subject)| CommitSummary {
+                        sha: sha.to_string(),
+                        subject: subject.to_string(),
+                        committed_at: Timestamp::parse("2026-10-05T10:00:00Z"),
+                    })
+                    .collect(),
+                files: vec!["README.md".into(), "src/a.rs".into()],
+                base_committed_at: None,
+            }),
+        );
+    }
+    w
+}
+
+#[test]
+fn a_first_release_is_measured_from_the_repository_root_with_no_tag_set_by_hand() {
+    let w = first_release(&[]);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    // The whole history is the range: PR #5's ticket is embarked.
+    assert!(
+        w.tracker.item("ABC-5").labels.contains(&LABEL.to_string()),
+        "embarked"
+    );
+    let briefs = w.briefs(CAND);
+    assert_eq!(briefs.len(), 1);
+    let brief = &briefs[0];
+    assert!(
+        brief.contains("- Diff since the repository's root: first release, no earlier release to measure from — 2 file(s)\n"),
+        "{brief}"
+    );
+    assert!(brief.contains("**ABC-5**"), "{brief}");
+    // No release commit stops release-please: it reads every commit.
+    assert!(!brief.contains("Not in the release note"), "{brief}");
+    // The note names PR #5's feature: the GO holds and the release PR merges.
+    all_angles_merged(&w);
+    let rp = release_pr(&w, "1.2.0");
+    w.open_on_branch(vec![rp.clone()]);
+    let r = w.tick();
+    assert!(
+        w.github.writes().contains(&format!(
+            "merge example-org/acme#40 at {} squash",
+            rp.head_sha
+        )),
+        "{r:?} {:?}",
+        w.github.writes()
+    );
+
+    // Every commit of a first release is owed its line: one the note omits
+    // holds the GO.
+    let w = first_release(&[("f3", "fix: the very first fix (#3)")]);
+    w.tick();
+    all_angles_merged(&w);
+    w.open_on_branch(vec![release_pr(&w, "1.2.0")]);
+    w.tick();
+    assert!(!w.github.writes().iter().any(|l| l.starts_with("merge")));
+    let (_, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
+    assert!(!d.go);
+    assert!(
+        d.reasons
+            .join("\n")
+            .contains("f3 fix: the very first fix (#3)"),
+        "{:?}",
+        d.reasons
+    );
+}
+
 /// Spec 09 (BR-ASDLC-021): a human merges the release-please PR in GitHub
 /// instead of the bridge. The bridge picks up from that state: it merges
 /// nothing and says no GO of its own while the release is not yet out, then

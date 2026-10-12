@@ -49,6 +49,11 @@ name: asdlc-release-gate
 # run in order in one job, each under `bash -e -o pipefail`, with
 # EVIDENCE_DIR, LAST_TAG, CANDIDATE, RELEASE_CLASS and HEAD_SHA set. Files are
 # relative to EVIDENCE_DIR, the root of the evidence pack.
+#
+# The candidate is measured from the highest published release below its
+# version. A product's first release has none: it is measured from the
+# repository's root (its whole history is the delta), LAST_TAG is empty, and
+# the log, `run.json`, `results/suites.json` and the report say so.
 
 on:
   workflow_call:
@@ -94,7 +99,7 @@ on:
         type: boolean
         default: true
       guard-commands:
-        description: 'JSON array of {"name", "run"}, as given to pr-guards; each runs with BASE_SHA (the last release), HEAD_SHA, HEAD_REF and BASE_REF.'
+        description: 'JSON array of {"name", "run"}, as given to pr-guards; each runs with BASE_SHA (the last release; the empty tree for a first release), HEAD_SHA, HEAD_REF and BASE_REF (empty for a first release).'
         type: string
         default: '[]'
       pr-guard-exceptions-file:
@@ -131,7 +136,7 @@ on:
         description: Where the class came from.
         value: ${{ jobs.candidate.outputs.release-class-source }}
       last-tag:
-        description: The published release the candidate is measured from.
+        description: The published release the candidate is measured from; empty for a first release, measured from the repository's root.
         value: ${{ jobs.candidate.outputs.last-tag }}
       conclusion:
         description: '`success` or `failure`.'
@@ -290,10 +295,13 @@ jobs:
           sort "$work/ranked" > "$work/sorted"
           last="$(tail -n 1 "$work/sorted" | awk '{ print $2 }')"
           if [ -z "$last" ]; then
-            echo "::error title=Release gate::No published release ($rel_glob) below ${REF_NAME}: the candidate has nothing to be measured from. The first release of a product needs its base tagged by hand."
-            exit 1
+            # The product's first release: no gesture, the whole history is
+            # the delta.
+            echo "::notice title=First release::No published release ($rel_glob) below ${REF_NAME}: this is the product's first release, measured from the repository's root (its whole history)."
+            echo "Candidate: ${candidate:-none (not an RC tag)}; last published release: none (first release, measured from the repository's root)"
+          else
+            echo "Candidate: ${candidate:-none (not an RC tag)}; last published release: $last"
           fi
-          echo "Candidate: ${candidate:-none (not an RC tag)}; last published release: $last"
           {
             echo "last-tag=$last"
             echo "candidate=$candidate"
@@ -423,22 +431,33 @@ jobs:
             done < <(jq -r 'keys[]' <<< "$STATIC_ENV" 2> /dev/null)
           fi
 
-          # The scope of the candidate, for the reviewers.
-          if ! git rev-parse --quiet --verify "refs/tags/$LAST_TAG" > /dev/null; then
-            echo "::error title=Release gate::The last release $LAST_TAG is not in the checkout."
-            exit 1
+          # The scope of the candidate, for the reviewers: since the last
+          # release, or, for a first release, since the repository's root
+          # (the empty tree, so that the first commit's files are in the diff).
+          if [ -z "$LAST_TAG" ]; then
+            from="$(git hash-object -t tree /dev/null)"
+            since="the repository's root (first release)"
+            git log --date=iso-strict --pretty=format:'%H%x09%ad%x09%an%x09%s' HEAD > "$EVIDENCE_DIR/commits.tsv"
+          else
+            if ! git rev-parse --quiet --verify "refs/tags/$LAST_TAG" > /dev/null; then
+              echo "::error title=Release gate::The last release $LAST_TAG is not in the checkout."
+              exit 1
+            fi
+            from="$LAST_TAG"
+            since="$LAST_TAG"
+            git log --date=iso-strict --pretty=format:'%H%x09%ad%x09%an%x09%s' "$LAST_TAG..HEAD" > "$EVIDENCE_DIR/commits.tsv"
           fi
-          git log --date=iso-strict --pretty=format:'%H%x09%ad%x09%an%x09%s' "$LAST_TAG..HEAD" > "$EVIDENCE_DIR/commits.tsv"
-          git diff --stat "$LAST_TAG..HEAD" > "$EVIDENCE_DIR/changes-stat.txt"
-          git diff --binary "$LAST_TAG..HEAD" > "$EVIDENCE_DIR/changes.diff"
+          git diff --stat "$from" HEAD > "$EVIDENCE_DIR/changes-stat.txt"
+          git diff --binary "$from" HEAD > "$EVIDENCE_DIR/changes.diff"
           cap=5242880
           if [ "$(wc -c < "$EVIDENCE_DIR/changes.diff")" -gt "$cap" ]; then
             head -c "$cap" "$EVIDENCE_DIR/changes.diff" > "$state/diff"
             mv "$state/diff" "$EVIDENCE_DIR/changes.diff"
-            echo "changes.diff is cut at $cap bytes; the whole diff is: git diff --binary $LAST_TAG..$GITHUB_SHA" > "$EVIDENCE_DIR/changes.diff.truncated"
+            echo "changes.diff is cut at $cap bytes; the whole diff is: git diff --binary $from $GITHUB_SHA" > "$EVIDENCE_DIR/changes.diff.truncated"
           fi
+          # lastReleaseTag is null for a first release.
           jq -n --arg run "${GITHUB_RUN_ID:-}" --arg sha "$GITHUB_SHA" --arg last "$LAST_TAG" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            '{run: $run, sha: $sha, lastReleaseTag: $last, generatedAt: $at}' > "$EVIDENCE_DIR/run.json"
+            '{run: $run, sha: $sha, lastReleaseTag: (if $last == "" then null else $last end), generatedAt: $at}' > "$EVIDENCE_DIR/run.json"
           if [ -n "$CHANGELOG_PATH" ]; then
             if [ ! -f "$CHANGELOG_PATH" ]; then
               echo "::error title=Release gate::changelog-path $CHANGELOG_PATH is not in the candidate."
@@ -450,7 +469,7 @@ jobs:
           if [ "$bad" -ne 0 ]; then
             exit 1
           fi
-          echo "Evidence prepared since $LAST_TAG."
+          echo "Evidence prepared since $since."
 
       - name: Set up the suites
         id: setup
@@ -506,7 +525,13 @@ jobs:
           # The PR guards, against the whole release range (REQ-CI-067).
           if [ "$RERUN_GUARDS" = true ] && [ "$(jq 'length' <<< "$GUARDS")" -gt 0 ]; then
             record pr_guards started
-            base_sha="$(git rev-parse "$LAST_TAG^{commit}")"
+            # A first release has no base commit: the empty tree, which
+            # `git diff "$BASE_SHA" "$HEAD_SHA"` reads as the whole history.
+            if [ -z "$LAST_TAG" ]; then
+              base_sha="$(git hash-object -t tree /dev/null)"
+            else
+              base_sha="$(git rev-parse "$LAST_TAG^{commit}")"
+            fi
             failed=()
             count="$(jq 'length' <<< "$GUARDS")"
             : > "$pack/pr_guards.log"
@@ -708,7 +733,7 @@ jobs:
                  sha: $sha,
                  ref: $ref,
                  candidate: (if $candidate == "" then null else $candidate end),
-                 from_tag: $from_tag,
+                 from_tag: (if $from_tag == "" then null else $from_tag end),
                  release_class: $release_class,
                  run_url: $run_url,
                  suites: $suites,
@@ -719,7 +744,11 @@ jobs:
             echo '# Release gate report'
             echo
             echo "Candidate: \`${CANDIDATE:-${GITHUB_REF_NAME:-?}}\` at \`$GITHUB_SHA\`"
-            echo "Previous release: \`${LAST_TAG:-?}\`"
+            if [ -n "$LAST_TAG" ]; then
+              echo "Previous release: \`$LAST_TAG\`"
+            else
+              echo "Previous release: none (first release, measured from the repository's root)"
+            fi
             echo "Release class: \`${RELEASE_CLASS:-?}\`"
             echo
             echo '| Suite | Outcome | Blocking? |'

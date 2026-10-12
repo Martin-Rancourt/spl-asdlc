@@ -750,7 +750,10 @@ pub fn brief(b: &Brief) -> String {
             "- Diff since the last published release: `{t}` — {} file(s)\n",
             b.paths_since_release.len()
         ),
-        None => "- Diff since the last published release: (first release)\n".to_string(),
+        None => format!(
+            "- Diff since the repository's root: first release, no earlier release to measure from — {} file(s)\n",
+            b.paths_since_release.len()
+        ),
     });
     out.push_str(&match (&b.previous_candidate, &b.paths_since_candidate) {
         (None, _) => "- Diff since the previous candidate: first candidate of this version, identical to the diff above\n".to_string(),
@@ -853,7 +856,11 @@ pub fn brief(b: &Brief) -> String {
         s
     };
     out.push_str(&details(
-        "Paths since the last release",
+        if b.last_release.is_some() {
+            "Paths since the last release"
+        } else {
+            "Paths since the repository's root"
+        },
         &b.paths_since_release,
     ));
     if let Some(p) = &b.paths_since_candidate {

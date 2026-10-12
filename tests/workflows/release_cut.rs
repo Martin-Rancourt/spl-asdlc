@@ -1000,10 +1000,13 @@ fn the_automatic_cut_tags_only_the_first_candidate_of_a_staged_version() {
 
 #[test]
 fn every_way_of_not_knowing_the_class_is_sensible() {
-    // No published release to measure from.
+    // A published release exists, but none the candidate's history reaches.
     let (repo, _o) = delta("docs/a.md");
     repo.git(&["tag", "-d", "acme-v1.0.0"]);
     repo.git(&["push", "-q", "origin", ":refs/tags/acme-v1.0.0"]);
+    let elsewhere = repo.git(&["commit-tree", "HEAD^{tree}", "-m", "elsewhere"]);
+    repo.git(&["tag", "acme-v0.5.0", &elsewhere]);
+    repo.git(&["push", "-q", "origin", "acme-v0.5.0"]);
     let r = compute(&repo, &[]);
     ok(&r);
     assert_eq!(r.output("class").as_deref(), Some("sensible"));
@@ -1056,6 +1059,56 @@ fn every_way_of_not_knowing_the_class_is_sensible() {
             .unwrap()
             .contains("no path changed")
     );
+}
+
+#[test]
+fn a_first_release_is_classed_on_its_whole_history_with_no_tag_set_by_hand() {
+    // A brand-new product: no release was ever published, only candidates.
+    let (repo, _o) = delta("docs/a.md");
+    repo.git(&["tag", "-d", "acme-v1.0.0"]);
+    repo.git(&["push", "-q", "origin", ":refs/tags/acme-v1.0.0"]);
+    repo.git(&["tag", "acme-v0.9.0-rc.1", "HEAD~1"]);
+    repo.git(&["push", "-q", "origin", "acme-v0.9.0-rc.1"]);
+    let r = compute(&repo, &[]);
+    ok(&r);
+    assert!(
+        r.log.contains("No published release (acme-v*) exists: this is the product's first release, measured from the repository's root (its whole history)."),
+        "{}",
+        r.log
+    );
+    // No reviewed path anywhere in the history: routine, and said why.
+    assert_eq!(r.output("class").as_deref(), Some("routine"), "{}", r.log);
+    assert_eq!(
+        r.output("class-reason").as_deref(),
+        Some("no reviewed path touched (first release: measured from the repository's root)")
+    );
+    assert_eq!(r.output("base").as_deref(), Some("root"));
+    assert_eq!(r.output("previous-tag").as_deref(), Some(""));
+    let t = trailers(&r);
+    assert!(t.contains("Release-Class-Base: root\n"), "{t}");
+    assert!(t.contains("Release-Class-Surfaces: none"), "{t}");
+    assert!(r.log.contains("(since the repository's root)"), "{}", r.log);
+
+    // A reviewed path anywhere in the history, here on `main` before the
+    // cycle, makes the first release sensible.
+    let (repo, _o) = Repo::with_origin();
+    repo.write(".github/review-paths.json", TABLE);
+    repo.write("src/auth/token.rs", "first\n");
+    repo.commit("table and auth");
+    repo.git(&["checkout", "-q", "-b", BRANCH]);
+    repo.write("docs/a.md", "changed\n");
+    repo.commit("change");
+    repo.git(&["push", "-q", "origin", "main", BRANCH]);
+    let r = compute(&repo, &[]);
+    ok(&r);
+    assert_eq!(r.output("class").as_deref(), Some("sensible"), "{}", r.log);
+    assert_eq!(
+        r.output("class-reason").as_deref(),
+        Some(
+            "touches the reviewed path src/auth/token.rs (first release: measured from the repository's root)"
+        )
+    );
+    assert!(trailers(&r).contains("Release-Class-Surfaces: src/auth/**"));
 }
 
 #[test]

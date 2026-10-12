@@ -51,6 +51,9 @@ impl GitHub for DryGitHub<'_> {
     fn compare(&self, repo: &RepoSlug, base: &str, head: &str) -> Read<github::Comparison> {
         self.inner.compare(repo, base, head)
     }
+    fn since_root(&self, repo: &RepoSlug, head: &str) -> Read<github::Comparison> {
+        self.inner.since_root(repo, head)
+    }
     fn file(&self, repo: &RepoSlug, path: &str, rev: &str) -> Read<String> {
         self.inner.file(repo, path, rev)
     }

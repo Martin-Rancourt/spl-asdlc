@@ -31,6 +31,18 @@ The cycle is optional: a project without a `[release]` section in its configurat
 
 Posted by the bridge on the release issue once per RC, once that RC's gate is green (§3): the candidate (tag, commit, class), the range, the embarked tickets with their acceptance criteria (each ticket is found by commit → PR → linked ticket, never by text; the bridge's own review items linked to a PR are not tickets, §11), the business rules touched (registry rows whose paths or tests intersect the range), the commits of the range release-please never reads, listed as not in the release note by construction (§8), the link to the evidence pack, the angles and their sub-items. A range, PR, link or evidence pack that cannot be read makes the brief fail; it is never guessed or left empty, and the angle sub-items wait with it, so that no agent starts without its brief.
 
+## The range and the first release
+
+A candidate's range is Git's: the commits of the candidate that the highest published release below its version does not contain (for a multi-component product, the version component's release). The release class the cut computes, the gate's evidence pack, the embarked tickets, the brief, the note coverage (§8) and the closure (§11) all read this one range.
+
+**A product's first release needs no base tagged by hand.** With no published release below the candidate, the range is the candidate's whole history, measured from the repository's root, and each step says so:
+
+- the cut computes the class on every file of the history and records the base `root` in the tag (`Release-Class-Base: root`), so a first release whose history holds a reviewed path is `sensible`;
+- the gate does not fail: its `last-tag` output is empty, and its log, `run.json` and `results/suites.json` (`lastReleaseTag` and `from_tag` null) and its report say the candidate is measured from the repository's root; the PR guards it re-runs get the empty tree as `BASE_SHA`;
+- the brief reads "Diff since the repository's root: first release", and lists every path at the candidate;
+- release-please reads every commit of a first release (no release commit stops it), so every Conventional commit of the range is owed its line in the note, and none is listed as not in the note by construction;
+- `doctor` reports the release base it finds, or that the first candidate will be measured from the root.
+
 ## Configuration (per project)
 
 - Release shape: candidate tag pattern, final tag pattern, components and their release PRs, the record file, the version component.
