@@ -131,6 +131,7 @@ pub(super) struct RawReview {
 pub(super) struct RawReviewAngle {
     pub key: Option<String>,
     pub assignee: Option<String>,
+    pub notes: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

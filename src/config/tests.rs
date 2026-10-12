@@ -119,6 +119,10 @@ fn the_example_of_the_specification_is_valid_once_merged() {
         Some(".spl-asdlc/angles/security.md")
     );
     assert_eq!(c.release.as_ref().unwrap().angles[1].assignee, None);
+    assert_eq!(
+        c.review.angles[0].notes.as_deref(),
+        Some(".spl-asdlc/angles/maintainability.md")
+    );
 }
 
 #[test]

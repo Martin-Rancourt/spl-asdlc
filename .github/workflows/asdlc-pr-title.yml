@@ -52,9 +52,9 @@ on:
       release-branch-exempt-heads:
         description: >-
           Comma list of head prefixes exempt when the base is a release branch:
-          the angle PRs and the gate record, merged as merge commits.
+          the angle PRs, merged as merge commits.
         type: string
-        default: qa/,release-record/
+        default: qa/
       runs-on:
         description: A runner label, or a JSON array of labels.
         type: string

@@ -263,8 +263,13 @@ fn a_rounds_items_carry_their_protocol_and_one_found_by_its_marker_is_never_rewr
 
 #[test]
 fn a_new_angle_sub_item_embeds_the_pr_review_protocol_and_links_the_projects_notes() {
-    let mut w = World::new();
-    w.config.review.angles[0].notes = Some(".spl-asdlc/angles/maintainability.md".into());
+    // The notes come from the example of spec 08, parsed: a review angle's
+    // `notes` is read from the file and linked from its sub-item.
+    let w = World::new();
+    assert_eq!(
+        w.config.review.angles[0].notes.as_deref(),
+        Some(".spl-asdlc/angles/maintainability.md")
+    );
     let pr = green(pull_request(7));
     w.ticket("ABC-1", Status::InProgress, &pr);
     w.open(pr.clone());

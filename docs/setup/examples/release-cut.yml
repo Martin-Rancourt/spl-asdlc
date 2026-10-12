@@ -7,7 +7,7 @@ name: release-cut
 # branch in flight (by hand: `gh workflow run release-cut.yml --ref
 # release/<stamp>-utc -f action=candidate`, never `--ref main`). Every other
 # input has a default. Run by hand, `dry_run` prints the plan and pushes
-# nothing.
+# nothing, and `version` forces the version `open` prepares.
 #
 # `open` creates the release branch, prepares the release on it with the
 # published `spl-asdlc` binary of the channel `spl-asdlc-version` names
@@ -39,6 +39,10 @@ on:
         description: Why a candidate is cut over commits the default branch handed the cycle (recorded in the tag).
         type: string
         default: ''
+      version:
+        description: '`open` only: the version `X.Y.Z` to force; empty computes it from the commits since the last release.'
+        type: string
+        default: ''
       dry_run:
         description: Print the plan; create, commit, tag and push nothing.
         type: boolean
@@ -61,6 +65,7 @@ jobs:
       class: ${{ inputs.class }}
       routine-because: ${{ inputs.routine_because }}
       main-merge-because: ${{ inputs.main_merge_because }}
+      version: ${{ inputs.version }}
       dry-run: ${{ inputs.dry_run == true }}
       candidate-tag: acme-v{version}-rc.{rc}
       release-tag: acme-v{version}

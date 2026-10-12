@@ -90,7 +90,7 @@ How the daemon runs the job:
 - An MCP session is named after its client at connection, or with the `name_session` tool. A session releases its own locks; another client may release one with the token.
 - Locks are advisory: the core's writes do not check them.
 - **Decided by the owner (2026-10-07): the bridge writes its transitions whoever holds the lock** (BR-ASDLC-011).
-  - It is the only writer of state transitions.
+  - It is the only writer of state transitions, except on an item under the hands-off label (spec 07, "Hands off").
   - A lock protects an agent's work on the item's **content**, never its **status**.
   - The bridge neither waits for a lock to be released nor notifies its holder of a transition; the adapter does not read locks.
 

@@ -1186,7 +1186,7 @@ impl Validator {
             Some(list) => self.angles(
                 "review.angles",
                 list.into_iter()
-                    .map(|a| (a.key, None, a.assignee, None))
+                    .map(|a| (a.key, None, a.assignee, a.notes))
                     .collect(),
                 false,
             ),

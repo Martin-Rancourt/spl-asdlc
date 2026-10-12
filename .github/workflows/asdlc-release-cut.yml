@@ -35,6 +35,7 @@ name: asdlc-release-cut
 #         class: {type: string, default: '', description: 'routine, sensible, or empty to compute it'}
 #         routine_because: {type: string, default: ''}
 #         main_merge_because: {type: string, default: ''}
+#         version: {type: string, default: '', description: 'X.Y.Z to force on open, or empty to compute it'}
 #         dry_run: {type: boolean, default: false}
 #   concurrency: {group: release-cut, cancel-in-progress: false}
 #   permissions: {contents: read}
@@ -46,6 +47,7 @@ name: asdlc-release-cut
 #         class: ${{ inputs.class }}
 #         routine-because: ${{ inputs.routine_because }}
 #         main-merge-because: ${{ inputs.main_merge_because }}
+#         version: ${{ inputs.version }}
 #         dry-run: ${{ inputs.dry_run == true }}
 #         candidate-tag: acme-v{version}-rc.{rc}
 #         release-tag: acme-v{version}
@@ -94,6 +96,10 @@ on:
         default: ''
       main-merge-because:
         description: Required to cut a candidate over commits the default branch handed the cycle; recorded in the tag.
+        type: string
+        default: ''
+      version:
+        description: '`open` only: `X.Y.Z` to force instead of the computed version, passed to `release prepare --version`; empty computes it.'
         type: string
         default: ''
       dry-run:
@@ -178,6 +184,7 @@ jobs:
           ACTION: ${{ inputs.action }}
           CLASS: ${{ inputs.class }}
           ROUTINE_BECAUSE: ${{ inputs.routine-because }}
+          FORCE_VERSION: ${{ inputs.version }}
           CANDIDATE_TAG: ${{ inputs.candidate-tag }}
           RELEASE_TAG: ${{ inputs.release-tag }}
           SPL_REPOSITORY: ${{ inputs.spl-asdlc-repository }}
@@ -207,6 +214,14 @@ jobs:
           esac
           if [ -n "${ROUTINE_BECAUSE//[[:space:]]/}" ] && [ "$CLASS" != routine ]; then
             refuse "routine-because only applies to the class 'routine' (the class is '${CLASS:-computed}')."
+          fi
+          # A forced version opens a cycle; a candidate takes the one committed.
+          if [ -n "${FORCE_VERSION:-}" ]; then
+            if [ "$ACTION" != open ]; then
+              refuse "version only applies to 'open': a candidate takes the version committed on its release branch."
+            elif ! [[ "$FORCE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              refuse "version '$FORCE_VERSION' is not X.Y.Z."
+            fi
           fi
           template_ok() { # name, value, whether {rc} is required
             local name="$1" t="$2" with_rc="$3" chars='^[A-Za-z0-9._/{}-]+$' rest
@@ -504,6 +519,7 @@ jobs:
           BRANCH: ${{ steps.cycle.outputs.branch }}
           BIN: ${{ steps.binary.outputs.bin }}
           CONFIG_FILE: ${{ inputs.config-file }}
+          FORCE_VERSION: ${{ inputs.version }}
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
         shell: bash
         run: |
@@ -519,6 +535,9 @@ jobs:
             refuse "$DEFAULT_BRANCH carries no $CONFIG_FILE: release prepare reads the release's shape there."
           fi
           args=(release prepare --file "$CONFIG_FILE" --repository "$GH_REPO" --notes "$work/notes.md")
+          if [ -n "${FORCE_VERSION:-}" ]; then
+            args+=(--version "$FORCE_VERSION")
+          fi
           if [ "$DRY_RUN" = true ]; then
             args+=(--dry-run)
           else

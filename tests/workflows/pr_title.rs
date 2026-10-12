@@ -92,10 +92,6 @@ fn the_release_chains_own_prs_are_exempt_by_branch_and_base() {
             "qa/acme-v1.2.0-rc.1/security",
             "release/2026-10-05-14-03-utc",
         ),
-        (
-            "release-record/acme-v1.2.0-rc.1",
-            "release/2026-10-05-14-03-utc",
-        ),
     ] {
         let r = check("not conventional at all", head, base);
         assert_eq!(r.code, 0, "{head} → {base}: {}", r.log);
@@ -106,9 +102,14 @@ fn the_release_chains_own_prs_are_exempt_by_branch_and_base() {
         );
     }
     // Never exempt: a delivery PR into a release branch, a release branch or
-    // a merge-back resolution into anything but main, an angle branch into main.
+    // a merge-back resolution into anything but main, an angle branch into
+    // main, a head named like the former gate record (gone with it).
     for (head, base) in [
         ("fix/hotfix", "release/2026-10-05-14-03-utc"),
+        (
+            "release-record/acme-v1.2.0-rc.1",
+            "release/2026-10-05-14-03-utc",
+        ),
         ("release/2026-10-05-14-03-utc", "release/other"),
         (
             "chore/merge-back-2026-10-05",

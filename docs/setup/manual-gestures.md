@@ -1,6 +1,6 @@
 # Manual gestures
 
-The bridge automates every step of the flow, and is never the only actor able to perform one (BR-ASDLC-021). This page gives, for each step, the exact command or GitHub click to do it by hand, and what the bridge does at its next tick. The normative list of gestures, and what a step done by hand implies, is spec 09's audit (`docs/spec/09-requalification-and-human-gestures.md`, "Every step can be done by a human in GitHub"); this page is its runbook and adds nothing to it.
+The bridge automates every step of the flow, and is never the only actor able to perform one (BR-ASDLC-021). This page gives, for each step, the exact command or GitHub click to do it by hand, and what the bridge does at its next tick. The normative list of gestures, and what a step done by hand implies, is spec 09's audit (`docs/spec/09-requalification-and-human-gestures.md`, "Every step can be done by a human in GitHub"); this page is its runbook: it adds the commands and clicks, and the gestures a step done by hand needs on the way (rerun the gate, publish when the publication's build failed, dismiss a review, create the hands-off label).
 
 Conventions:
 
@@ -35,7 +35,7 @@ Or, on the bridge's host, `spl-asdlc release cut --open`, which dispatches the s
 
 **What follows**: the cut prepares the release on the new branch (`spl-asdlc release prepare`: the version from the commits since the last release, the version files, the CHANGELOG section that is the release notes, all in the run's log), commits `chore(release): v<X.Y.Z>` and pushes the branch with its first candidate; the tag push starts the gate. A range with nothing to release refuses the run and creates nothing. **The bridge, next tick**: it creates the release issue, the candidate record and the labels.
 
-To see the version and the notes before opening, in a checkout of `main`: `spl-asdlc release prepare --repository OWNER/REPO --dry-run --notes notes.md` (or the dispatch with `-f dry_run=true`). To force a version, prepare by hand on a release branch instead of the dispatch: `spl-asdlc release prepare --repository OWNER/REPO --version <X.Y.Z>`, commit `chore(release): v<X.Y.Z>`, then cut the candidate below on that branch.
+To see the version and the notes before opening, in a checkout of `main`: `spl-asdlc release prepare --repository OWNER/REPO --dry-run --notes notes.md` (or the dispatch with `-f dry_run=true`). To force a version, add `-f version=<X.Y.Z>` to the `open` dispatch: the cut passes it to `release prepare --version`, which refuses a version that is not above the last release (the example caller declares the input; a caller without it cannot force one).
 
 ## Cut a candidate
 
@@ -62,7 +62,7 @@ Or in GitHub: the run, **Re-run jobs**, **Re-run failed jobs**. Never dispatch t
 
 ## Tag and publish the release by hand
 
-A person the tag rulesets let tag may give the GO instead of the bridge, and takes it on themselves: the computed conditions (angles merged, no blocker, the candidate the branch's tip) are the bridge's, and only the publication's own checks still hold (the candidate's gate green, the release tag on the candidate's commit, or on a commit that adds nothing but its own QA reports). To keep the bridge from tagging first, add the hands-off label to the release issue.
+A person the tag rulesets let tag may give the GO instead of the bridge, and takes it on themselves: the computed conditions (angles merged, no blocker, no resolved blocker's fix missing from the candidate, the candidate the branch's tip) are the bridge's, and only the publication's own checks still hold (the candidate's gate green, the release tag on the candidate's commit, or on a commit that adds nothing but its own QA reports). To keep the bridge from tagging first, add the hands-off label to the release issue, and remove it once the release is published: the bridge writes nothing to an issue under the label, so it closes the cycle only once the label is gone.
 
 ```sh
 git fetch origin --tags
@@ -74,7 +74,7 @@ gh release create <release tag> --repo OWNER/REPO --title "<product> <X.Y.Z>" --
 
 The notes are the version's section of the CHANGELOG the cut committed: copy it whole, so that the release note of the closure finds each PR's line.
 
-**What follows**: the publication runs on the published release; it accepts a release published by the App or by a human account, refuses any other bot, and says which (`go-published-by-kind`, its summary). **The bridge, next tick**: a tag a person pushed on the candidate is taken as done, the bridge then only publishes the release; once the release is published it tags and publishes nothing more and posts no GO of its own; it closes the cycle from the published release, and its closure comment records who published it.
+**What follows**: the publication runs on the published release; it accepts a release published by the App or by a human account, refuses any other bot, and says which (`go-published-by-kind`, its summary). **The bridge, next tick**: a tag a person pushed on the candidate is taken as done, the bridge then only publishes the release; once the release is published it tags and publishes nothing more and posts no GO of its own; it closes the cycle from the published release, and its closure comment records who published it; with the hands-off label on the release issue, it does so at the tick after the label is removed.
 
 ## Publish by hand when the publication's build failed
 
@@ -125,13 +125,16 @@ Or in GitHub: the PR, **Create a merge commit**. Then let the close stage delete
 The closure is the bridge's, not a GitHub gesture: it writes the tracker. A person brings about the facts it waits for:
 
 - **the release published**;
-- **the merge back merged**: no release branch holds the candidate, and the default branch holds the release tag.
+- **the merge back merged**: no release branch holds the candidate, and the default branch holds the release tag;
+- **the hands-off label removed** from the release issue, when a person added it to tag and publish by hand.
 
 **The bridge, next tick** after both: the closure (the embarked tickets judged, the release note, the release issue closed), then the archiving of what the cycle resolved. A release issue closed by hand in the tracker skips the judging and the archiving.
 
 ## Move a ticket by hand, and hold it
 
 A status is the bridge's write (BR-ASDLC-011), derived from GitHub facts at each tick. The usual gesture is the fact in GitHub (open, ready or merge the PR, check a box), and the bridge moves the ticket at its next tick.
+
+The label exists once in each place before it is used: the bridge never creates it. On GitHub, `gh label create spl-asdlc:hands-off --repo OWNER/REPO`; on the tracker, create it as any label (`tracker-linear.md`).
 
 To move a ticket the bridge would move otherwise, hold it first: add the hands-off label (`spl-asdlc:hands-off` by default) to the tracker item, and to its PR when the PR must not be touched either (`gh pr edit <n> --repo OWNER/REPO --add-label spl-asdlc:hands-off`), then move the item in the tracker. **The bridge, next tick**: it leaves a labelled item or PR alone (no status, no assignment, no comment, no merge) and says so once in the tick's report. Removing the label hands it back: the next tick derives its status from the facts again.
 
