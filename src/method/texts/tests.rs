@@ -380,7 +380,6 @@ fn the_brief_names_tickets_criteria_rules_and_distinguishes_first_from_unresolva
             BriefTicket { id: "ABC-2".into(), title: "Two".into(), state: "?".into(), prs: vec![], description: None },
         ],
         untracked: vec!["PR #12".into(), "commit abcdef01abcd".into()],
-        not_in_note: vec![],
         rule_files_touched: vec!["docs/business-rules.md".into()],
         no_qa_angle: false,
     };
@@ -390,13 +389,10 @@ fn the_brief_names_tickets_criteria_rules_and_distinguishes_first_from_unresolva
     assert!(text.contains("Business rules cited: BR-ACME-001"));
     assert!(text.contains("(ticket unreadable: its criteria are not shown)"));
     assert!(text.contains("Each rule touched must have a named test that is green."));
-    assert!(!text.contains("Not in the release note"), "none to list");
-    b.not_in_note = vec!["`abcdef012345` fix: merged during the last cycle (#47)".into()];
-    let text = brief(&b);
-    assert!(text.contains(
-        "#### Not in the release note by construction\n\nrelease-please reads the history newest first and stops at the last release's commit (`acme-v1.2.2`)."
-    ));
-    assert!(text.contains("They ship with this release and do not hold the GO.\n\n- `abcdef012345` fix: merged during the last cycle (#47)\n"));
+    assert!(
+        !text.contains("Not in the release note"),
+        "the notes follow the graph: no commit of the range is left out of them"
+    );
     b.previous_candidate = None;
     assert!(brief(&b).contains("first candidate of this version"));
     // A first release is measured from the repository's root, and says so.
@@ -480,48 +476,6 @@ fn a_red_gate_is_named_before_the_qa_and_not_repeated() {
     );
     assert!(fallback.contains("- angles missing: a"));
     assert!(!fallback.contains("gate is not green"));
-}
-
-#[test]
-fn a_record_names_its_candidate_and_carries_one_blockers_line() {
-    let go = crate::method::release::go::evaluate(&crate::method::release::go::GoFacts {
-        release: "ABC-100".into(),
-        gate_green: Some(true),
-        angles: vec![(
-            "security".into(),
-            crate::method::release::go::AngleState::Merged,
-        )],
-        ..Default::default()
-    });
-    let text = gate_record(
-        "1.2.3",
-        "v1.2.3-rc.2",
-        "abcdef01abcdef01",
-        "release/x",
-        "ABC-100",
-        "u",
-        "2026-10-05 14:03",
-        &go,
-        &[("security".into(), "merged".into())],
-        &[("app".into(), "1.2.3".into(), 10)],
-    )
-    .unwrap();
-    let no_go = crate::method::release::go::evaluate(&Default::default());
-    assert!(
-        gate_record("1.2.3", "c", "s", "b", "r", "u", "t", &no_go, &[], &[]).is_none(),
-        "a record only attests a GO"
-    );
-    assert!(record_names(&text, "v1.2.3-rc.2"));
-    assert!(
-        !record_names(&text, "v1.2.3-rc.1"),
-        "a record of an earlier candidate does not count"
-    );
-    assert!(!record_names(
-        &text.replace("Blockers-Carried: none", "Blockers-Carried: ABC-7"),
-        "v1.2.3-rc.2"
-    ));
-    let twice = format!("{text}\nBlockers-Carried: none\n");
-    assert!(!record_names(&twice, "v1.2.3-rc.2"));
 }
 
 #[test]
@@ -903,7 +857,6 @@ fn a_release_with_no_qa_angle_says_so_in_its_texts() {
         evidence_url: None,
         tickets: vec![],
         untracked: vec![],
-        not_in_note: vec![],
         rule_files_touched: vec![],
         no_qa_angle: true,
     };
@@ -915,27 +868,4 @@ fn a_release_with_no_qa_angle_says_so_in_its_texts() {
         })
         .contains("No QA angle")
     );
-
-    let go = crate::method::release::go::evaluate(&crate::method::release::go::GoFacts {
-        release: "ABC-100".into(),
-        gate_green: Some(true),
-        no_qa_angle: true,
-        ..Default::default()
-    });
-    let record = gate_record(
-        "1.2.3",
-        "v1.2.3-rc.1",
-        "abcdef01",
-        "release/x",
-        "ABC-100",
-        "u",
-        "t",
-        &go,
-        &[],
-        &[],
-    )
-    .unwrap();
-    assert!(record.contains("no QA angle is configured"), "{record}");
-    assert!(!record.contains("| angle | state |"), "{record}");
-    assert!(record.contains("Blockers-Carried: none"));
 }

@@ -374,7 +374,7 @@ fn a_comparison_reads_every_commit_and_refuses_a_cut_file_list() {
         vec!["feat: one", "fix: two"]
     );
     assert_eq!(c.files, vec!["src/x.rs"]);
-    // The dates that order release-please's walk; one GitHub did not give
+    // The committer dates; one GitHub did not give
     // is unknown, never a guess.
     assert_eq!(
         c.base_committed_at,

@@ -13,9 +13,8 @@ use crate::method::release::go::{AngleState, GoDecision};
 use crate::method::release::prs;
 use crate::method::release::report;
 use crate::method::release::shape::Shape;
-use crate::method::texts;
 use crate::method::vocabulary::{self, Severity, Status};
-use crate::tick::merge::{for_tracker, tracker_said};
+use crate::tick::merge::for_tracker;
 use crate::tick::release::{self, Candidate};
 use crate::tick::{Report, Tick};
 use crate::tracker::{Item, RelationKind};
@@ -116,15 +115,13 @@ pub fn status(t: &Tick) -> Result<(Cycle, GoDecision), String> {
         (states, without_angles)
     };
     let mut report = Report::default();
-    let (decision, _) = release::decide(
+    let decision = release::decide(
         t,
         &mut report,
-        &cy.shape,
         &cy.item,
         c,
         &branch,
         &states,
-        &open,
         without_angles,
     )
     .ok_or_else(|| report.failures.join("; "))?;
@@ -185,56 +182,6 @@ pub fn cut(t: &Tick, log: &mut ActionLog, open: bool) -> Result<String, String> 
     .ok_or_else(|| report.failures.join("; "))?;
     Ok(format!(
         "{workflow} dispatched on {git_ref} (action {action}); the bridge takes it from the next tick"
-    ))
-}
-
-/// `release close --version <v> --reason <r>`: the waiver of a component
-/// deliberately not deployed, recorded on the release item; the next tick
-/// closes the cycle on the other facts.
-pub fn close(
-    t: &Tick,
-    log: &mut ActionLog,
-    version: &str,
-    reason: &str,
-    who: &str,
-) -> Result<String, String> {
-    if reason.trim().is_empty() {
-        return Err("a waiver needs a reason".into());
-    }
-    let shape = Shape::of(&t.config.product.name, release_cycle(t)?);
-    let v = crate::method::release::shape::Version::parse(version).ok_or("not a version")?;
-    let item =
-        release::find_release_item(t, &shape, v)?.ok_or("no release item for this version")?;
-    let tag = shape.release_tag(v);
-    let marker = texts::marker("waiver", &[("tag", &tag)]);
-    if tracker_said(t, &item.key, &marker)? {
-        return Ok(format!("{tag}: the waiver is already recorded"));
-    }
-    let body = for_tracker(
-        t,
-        &format!(
-            "Closed by waiver ({who}): the undeployed components of `{tag}` are deliberately not deployed.\n\nReason: {}\n\n{marker}",
-            texts::inert(reason)
-        ),
-    );
-    let mut report = Report::default();
-    t.act(
-        log,
-        &mut report,
-        &item.key,
-        "comment waiver",
-        json!({"reason": reason}),
-        || {
-            t.tracker
-                .comment(&item.key, &body)
-                .map(|_| ())
-                .map_err(|e| e.to_string())
-        },
-    )
-    .ok_or_else(|| report.failures.join("; "))?;
-    Ok(format!(
-        "{tag}: waiver recorded on {}; the next tick closes the cycle once the release is published and merged back",
-        item.key
     ))
 }
 

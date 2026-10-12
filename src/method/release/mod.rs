@@ -5,7 +5,7 @@ pub mod findings;
 pub mod gate;
 pub mod go;
 pub mod note;
-pub mod notes;
+pub mod prepare;
 pub mod prs;
 pub mod report;
 pub mod shape;

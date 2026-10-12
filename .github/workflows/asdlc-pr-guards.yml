@@ -36,7 +36,7 @@ on:
         type: string
         required: true
       skip-head-prefixes:
-        description: Comma list of head prefixes for which nothing runs (release-please's PRs).
+        description: Comma list of head prefixes for which nothing runs (the release PRs of a project that runs a release tool of its own, release-please's by default).
         type: string
         default: release-please--
       prose-regex:

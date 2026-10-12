@@ -459,6 +459,50 @@ impl GitHub for FakeGitHub {
         Ok(())
     }
 
+    fn create_tag(&self, repo: &RepoSlug, tag: &str, sha: &str, message: &str) -> Write<()> {
+        self.record(format!("create-tag {repo} {tag} at {sha}"))?;
+        let object = format!("tag-object-{tag}");
+        let mut s = self.state.borrow_mut();
+        s.tag_objects.insert(
+            (repo.clone(), object.clone()),
+            AnnotatedTag {
+                name: tag.to_string(),
+                message: message.to_string(),
+                tagger_date: None,
+                target_sha: sha.to_string(),
+                target_type: ObjectType::Commit,
+            },
+        );
+        s.tags.entry(repo.clone()).or_default().push(GitRef {
+            name: tag.to_string(),
+            sha: object,
+            object_type: ObjectType::Tag,
+        });
+        Ok(())
+    }
+
+    fn create_release(&self, repo: &RepoSlug, tag: &str, name: &str, body: &str) -> Write<Release> {
+        self.record(format!("create-release {repo} {tag} {name}"))?;
+        let identity = self.state.borrow().identity.clone();
+        let release = Release {
+            tag: tag.to_string(),
+            url: format!("https://github.com/{repo}/releases/tag/{tag}"),
+            body: body.to_string(),
+            draft: false,
+            prerelease: false,
+            published_at: None,
+            author: identity.map(|i| Actor {
+                login: i.login(),
+                is_bot: true,
+            }),
+        };
+        self.state
+            .borrow_mut()
+            .releases
+            .insert((repo.clone(), tag.to_string()), Ok(release.clone()));
+        Ok(release)
+    }
+
     fn create_branch(&self, repo: &RepoSlug, branch: &str, sha: &str) -> Write<()> {
         self.record(format!("create-branch {repo} {branch} at {sha}"))?;
         self.state

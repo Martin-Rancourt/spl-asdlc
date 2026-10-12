@@ -33,7 +33,9 @@ gh workflow run release-cut.yml --repo OWNER/REPO --ref main -f action=open
 
 Or, on the bridge's host, `spl-asdlc release cut --open`, which dispatches the same workflow. In GitHub: **Actions**, the cut workflow, **Run workflow** on `main`, action `open`. Add `-f dry_run=true` to print the plan and push nothing.
 
-**What follows**: the cut pushes the release branch; that push starts release-please on it, and the cut caller's `workflow_run` cuts the first candidate once release-please succeeded. **The bridge, next tick**: it creates the release issue, the candidate record and the labels.
+**What follows**: the cut prepares the release on the new branch (`spl-asdlc release prepare`: the version from the commits since the last release, the version files, the CHANGELOG section that is the release notes, all in the run's log), commits `chore(release): v<X.Y.Z>` and pushes the branch with its first candidate; the tag push starts the gate. A range with nothing to release refuses the run and creates nothing. **The bridge, next tick**: it creates the release issue, the candidate record and the labels.
+
+To see the version and the notes before opening, in a checkout of `main`: `spl-asdlc release prepare --repository OWNER/REPO --dry-run --notes notes.md` (or the dispatch with `-f dry_run=true`). To force a version, prepare by hand on a release branch instead of the dispatch: `spl-asdlc release prepare --repository OWNER/REPO --version <X.Y.Z>`, commit `chore(release): v<X.Y.Z>`, then cut the candidate below on that branch.
 
 ## Cut a candidate
 
@@ -41,7 +43,7 @@ Or, on the bridge's host, `spl-asdlc release cut --open`, which dispatches the s
 gh workflow run release-cut.yml --repo OWNER/REPO --ref <release branch> -f action=candidate
 ```
 
-Always on the release branch, never `--ref main`, and once release-please has run on the branch's tip. Or `spl-asdlc release cut` on the bridge's host. Never push an RC tag by hand: a hand-pushed tag skips the cut's checks (one cycle at a time, the release class in the annotation).
+Always on the release branch, never `--ref main`. Or `spl-asdlc release cut` on the bridge's host. Never push an RC tag by hand: a hand-pushed tag skips the cut's checks (one cycle at a time, the release class in the annotation).
 
 **What follows**: the tag push starts the gate. **The bridge, next tick**: the candidate record, its labels, the previous candidate's consolidation item Done; once the gate is green, the angle sub-items and the brief.
 
@@ -58,18 +60,21 @@ Or in GitHub: the run, **Re-run jobs**, **Re-run failed jobs**. Never dispatch t
 
 **The bridge, next tick**: it reads the run on the tag. Green: the angle sub-items, the brief, and the gate-fix tickets the green run made moot closed. Red once the rerun settled: one urgent gate-fix ticket under the release issue, if there is none yet.
 
-## Merge the release-please PR by hand
+## Tag and publish the release by hand
 
-A person the release branch's ruleset lets merge may merge it instead of the bridge, and takes the GO on themselves: the computed conditions (angles merged, no blocker, note coverage) are the bridge's, and only the publication's own checks still hold (the candidate's gate green, nothing but bookkeeping since the candidate).
+A person the tag rulesets let tag may give the GO instead of the bridge, and takes it on themselves: the computed conditions (angles merged, no blocker, the candidate the branch's tip) are the bridge's, and only the publication's own checks still hold (the candidate's gate green, the release tag on the candidate's commit, or on a commit that adds nothing but its own QA reports). To keep the bridge from tagging first, add the hands-off label to the release issue.
 
 ```sh
-gh pr list --repo OWNER/REPO --base <release branch> --label "autorelease: pending"
-gh pr merge <n> --repo OWNER/REPO --squash --match-head-commit <head sha>
+git fetch origin --tags
+git tag -a <release tag> <latest candidate tag>^{commit} -m "Release <release tag>"
+git push origin <release tag>
+git show <latest candidate tag>:CHANGELOG.md | awk '/^## \[?<X.Y.Z>[] ]/ {on=1; print; next} /^## / {on=0} on' > notes.md
+gh release create <release tag> --repo OWNER/REPO --title "<product> <X.Y.Z>" --notes-file notes.md
 ```
 
-For a multi-component product, merge the record PR first, then every component's release PR, the version component last.
+The notes are the version's section of the CHANGELOG the cut committed: copy it whole, so that the release note of the closure finds each PR's line.
 
-**What follows**: release-please creates the release as the bridge's App, and the publication runs on it; it accepts a merge by the App or by a human account, refuses any other bot, and says which (`go-merged-by-kind`, its summary). **The bridge, next tick**: it merges nothing more and posts no GO of its own; it closes the cycle from the published release, and its closure comment records who merged the release PR.
+**What follows**: the publication runs on the published release; it accepts a release published by the App or by a human account, refuses any other bot, and says which (`go-published-by-kind`, its summary). **The bridge, next tick**: a tag a person pushed on the candidate is taken as done, the bridge then only publishes the release; once the release is published it tags and publishes nothing more and posts no GO of its own; it closes the cycle from the published release, and its closure comment records who published it.
 
 ## Publish by hand when the publication's build failed
 
@@ -119,10 +124,10 @@ Or in GitHub: the PR, **Create a merge commit**. Then let the close stage delete
 
 The closure is the bridge's, not a GitHub gesture: it writes the tracker. A person brings about the facts it waits for:
 
-- **the release published** (single component), or every embarked component's merged release PR labelled `deployed: production` (multi-component; by hand: `gh pr edit <n> --repo OWNER/REPO --add-label "deployed: production"`);
+- **the release published**;
 - **the merge back merged**: no release branch holds the candidate, and the default branch holds the release tag.
 
-**The bridge, next tick** after both: the closure (the embarked tickets judged, the release note, the release issue closed), then the archiving of what the cycle resolved. A cycle whose component is deliberately not deployed is closed by waiver, on the bridge's host: `spl-asdlc release close --version <v> --reason "<text>"`. A release issue closed by hand in the tracker skips the judging and the archiving.
+**The bridge, next tick** after both: the closure (the embarked tickets judged, the release note, the release issue closed), then the archiving of what the cycle resolved. A release issue closed by hand in the tracker skips the judging and the archiving.
 
 ## Move a ticket by hand, and hold it
 
@@ -169,14 +174,15 @@ An AI session (Claude Code, for instance) can take these gestures on the owner's
 
 | Rule | Gesture |
 |---|---|
-| `Bash(gh pr merge *)` | Merge a PR, the release-please PR, the merge-back PR |
-| `Bash(gh pr edit *)` | Add or remove a label (`deployed: production`, the hands-off label) |
+| `Bash(gh pr merge *)` | Merge a PR, the merge-back PR |
+| `Bash(gh pr edit *)` | Add or remove a label (the hands-off label) |
+| `Bash(git push origin <release tag>)`, `Bash(gh release create *)` | Tag and publish the release by hand |
 | `Bash(gh workflow run *)` | Open a cycle, cut a candidate, replay the publication |
 | `Bash(gh run rerun *)` | Rerun the gate, rerun a failed publication job |
 | `Bash(gh run download *)` | Download a run's build artifacts |
 | `Bash(gh release upload *)` | Attach files to a release |
 | `Bash(gh api --method PUT repos/OWNER/REPO/pulls/*/reviews/*/dismissals *)` | Dismiss a review |
 | `Bash(ssh <bridge host> spl-asdlc release status*)`, `Bash(ssh <bridge host> spl-asdlc tick --dry-run*)` | Read the GO and what the next tick would do |
-| `Bash(ssh <bridge host> spl-asdlc release *)` | Cut, requalify, abandon, close by waiver |
+| `Bash(ssh <bridge host> spl-asdlc release *)` | Cut, requalify, abandon |
 
 The reads (`gh pr list`, `gh pr view`, `gh run list`, `gh run view`, `gh api` without `--method`) change nothing. Every rule of the table but the two dry reads is an **outward action**: it merges, labels, dispatches, publishes or writes the tracker, on the shared repository, and most cannot be undone (a merge, an uploaded asset that replaced another, an abandoned cycle). A rule only lets the session run the command; each gesture still waits for the owner's go.

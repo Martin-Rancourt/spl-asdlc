@@ -55,10 +55,10 @@ pub(super) struct RawRelease {
     pub go_policy: Option<String>,
     pub nits: Option<String>,
     pub record: Option<String>,
+    /// Read only to refuse them: a multi-component product is not
+    /// supported by the release cycle yet (spec 08).
     pub components: Option<Vec<String>>,
     pub version_component: Option<String>,
-    pub release_pr_label: Option<String>,
-    pub release_please_authors: Option<Vec<String>>,
     pub gate_record: Option<String>,
     pub bookkeeping_paths: Option<Vec<String>>,
     pub registry_path: Option<String>,
@@ -72,12 +72,28 @@ pub(super) struct RawRelease {
     pub gate_workflow: Option<String>,
     pub gate_rerun_workflow: Option<String>,
     pub gate_rerun_wait_minutes: Option<i64>,
-    pub release_please_workflow: Option<String>,
-    pub release_please_config: Option<String>,
-    pub release_please_manifest: Option<String>,
+    pub version_files: Option<Vec<RawVersionFile>>,
+    pub changelog_sections: Option<Vec<RawChangelogSection>>,
     /// `None` when the file writes no angle at all; `Some([])` when it
     /// writes `angles = []` under `[release]`: a release with no QA angle.
     pub angles: Option<Vec<RawReleaseAngle>>,
+}
+
+/// A file `release prepare` writes the version into, by pattern.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawVersionFile {
+    pub path: Option<String>,
+    pub pattern: Option<String>,
+}
+
+/// A Conventional Commit type and the CHANGELOG section it goes under.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawChangelogSection {
+    #[serde(rename = "type")]
+    pub kind: Option<String>,
+    pub section: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -178,7 +194,6 @@ pub(super) struct RawOverlayTracker {
 pub(super) struct RawOverlayRelease {
     pub coordinators: Option<Vec<String>>,
     pub coordinator_assignee: Option<String>,
-    pub release_please_authors: Option<Vec<String>>,
     #[serde(default)]
     pub angles: Vec<RawOverlayAngle>,
 }

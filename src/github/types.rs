@@ -176,7 +176,7 @@ pub fn same_login(configured: &str, author: &str) -> bool {
 }
 
 /// [`same_login`] for a list that can only name Apps
-/// (`release.release_please_authors`, `review.ticketless_authors`): there a
+/// (`review.ticketless_authors`): there a
 /// bare `<slug>` cannot mean a person, so it is the App `<slug>[bot]`. The
 /// caller still refuses an author who is not an App.
 pub fn same_app(configured: &str, author: &str) -> bool {
@@ -234,8 +234,7 @@ impl Commit {
 pub struct CommitSummary {
     pub sha: String,
     pub subject: String,
-    /// The committer date, which orders release-please's walk of the
-    /// history; `None` when GitHub did not give it.
+    /// The committer date; `None` when GitHub did not give it.
     pub committed_at: Option<Timestamp>,
 }
 
@@ -415,6 +414,9 @@ pub struct Release {
     pub draft: bool,
     pub prerelease: bool,
     pub published_at: Option<Timestamp>,
+    /// Who created the release: the bridge's App on its GO, or a person
+    /// (spec 09); `None` when GitHub did not say.
+    pub author: Option<Actor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

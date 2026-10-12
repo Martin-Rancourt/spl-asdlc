@@ -2,9 +2,9 @@ name: asdlc-pr-title
 
 # Refuse a pull request whose title is not a Conventional Commit
 # (docs/requirements/ci.md, REQ-CI-015..021). Every delivery PR is squash-merged
-# and the squash commit's subject is the PR title: release-please reads it to
-# pick the version bump and the release-note section, and drops a title it
-# cannot parse.
+# and the squash commit's subject is the PR title: the cut's `release
+# prepare` reads it to pick the version bump and the release-note section,
+# and lists no title it cannot parse.
 #
 # The caller owns the trigger (pull_request: opened, edited, synchronize,
 # reopened, ready_for_review; bases main and release/**), its own concurrency
@@ -28,7 +28,7 @@ on:
         type: string
         required: true
       allowed-types:
-        description: Comma list of types; equal to the release-please changelog sections.
+        description: Comma list of types; equal to the CHANGELOG sections `release prepare` writes (spec 08 `release.changelog_sections`).
         type: string
         default: build,chore,ci,docs,feat,fix,perf,refactor,revert,style,test
       default-branch:
@@ -40,7 +40,7 @@ on:
         type: string
         default: release/
       release-please-head-prefix:
-        description: Head prefix release-please owns.
+        description: Head prefix of the release PRs of a project that runs a release tool of its own (release-please's by default); empty for none.
         type: string
         default: release-please--
       default-branch-exempt-heads:
@@ -185,7 +185,7 @@ jobs:
           fi
           echo "::error title=PR title is not a Conventional Commit::${hint}"
           echo "Title:  $TITLE"
-          echo "Why:    the squash commit's message is this title; release-please reads it to pick the version bump and the release-note section, and drops a title it cannot parse."
+          echo "Why:    the squash commit's message is this title; the release cut reads it to pick the version bump and the release-note section, and lists no title it cannot parse."
           echo "Rule:   type(scope)?!?: subject, with the types ${shown}."
           echo "Fix:    edit the PR title; this check re-runs on the edit."
           exit 1

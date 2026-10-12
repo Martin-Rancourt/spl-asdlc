@@ -17,7 +17,6 @@ team = "ABC"
 service_identity = "spl-asdlc"
 
 [release]
-release_please_authors = ["app/release-app"]
 coordinators = ["coordinator-login"]
 
 [[release.angles]]
@@ -64,20 +63,13 @@ fn a_minimal_file_gets_every_documented_default() {
         ".spl-asdlc/qa/{candidate}/"
     );
     assert_eq!(
-        c.release.as_ref().unwrap().release_pr_label,
-        "autorelease: pending"
-    );
-    assert_eq!(
         c.release.as_ref().unwrap().registry_path,
         "docs/business-rules.md"
     );
+    assert!(c.release.as_ref().unwrap().version_files.is_empty());
     assert_eq!(
-        c.release.as_ref().unwrap().release_please_config,
-        "release-please-config.json"
-    );
-    assert_eq!(
-        c.release.as_ref().unwrap().release_please_manifest,
-        ".release-please-manifest.json"
+        c.release.as_ref().unwrap().changelog_sections,
+        default_changelog_sections()
     );
     assert_eq!(c.release.as_ref().unwrap().stagnation_hours, 2);
     assert_eq!(
@@ -226,30 +218,141 @@ fn the_release_tag_carries_no_rc() {
 }
 
 #[test]
-fn a_multi_component_product_names_its_version_component_and_gate_record() {
-    let text = MINIMAL.replace(
-        "[release]\n",
-        "[release]\ncomponents = [\"app\", \"website\"]\n",
-    );
-    assert_refused_with(&text, "release.version_component: is required");
-    assert_refused_with(&text, "release.gate_record: is required");
-    let ok = MINIMAL.replace(
-        "[release]\n",
-        "[release]\ncomponents = [\"app\", \"website\"]\nversion_component = \"app\"\ngate_record = \"docs/releases/v{version}.md\"\n",
-    );
-    let c = Config::parse(&ok).expect("complete multi-component shape");
-    assert!(c.release.as_ref().unwrap().multi_component());
+fn a_multi_component_product_is_refused_until_the_cycle_supports_it() {
+    for key in [
+        "components = [\"app\", \"website\"]",
+        "version_component = \"app\"",
+        "gate_record = \"docs/releases/v{version}.md\"",
+    ] {
+        let text = MINIMAL.replace("[release]\n", &format!("[release]\n{key}\n"));
+        assert_refused_with(&text, "a multi-component product is not supported");
+    }
+    // An empty list says nothing more than its absence.
+    let empty = MINIMAL.replace("[release]\n", "[release]\ncomponents = []\n");
+    Config::parse(&empty).expect("no component");
 }
 
 #[test]
-fn a_version_component_must_be_one_of_the_components() {
-    let text = MINIMAL.replace(
-        "[release]\n",
-        "[release]\ncomponents = [\"app\"]\nversion_component = \"admin\"\ngate_record = \"r/v{version}.md\"\n",
+fn the_release_please_keys_are_unknown_keys() {
+    for key in [
+        "release_pr_label = \"autorelease: pending\"",
+        "release_please_authors = [\"app/release-app\"]",
+        "release_please_workflow = \"release-please.yml\"",
+        "release_please_config = \"release-please-config.json\"",
+        "release_please_manifest = \".release-please-manifest.json\"",
+    ] {
+        let text = MINIMAL.replace("[release]\n", &format!("[release]\n{key}\n"));
+        assert_refused_with(&text, "unknown field");
+    }
+}
+
+/// MINIMAL with `entries` written under `[release]`, after its angles.
+fn with_release_tables(entries: &str) -> String {
+    MINIMAL.replace("\n[review]", &format!("\n{entries}\n[review]"))
+}
+
+#[test]
+fn version_files_name_a_path_and_a_pattern_with_one_version() {
+    let c = Config::parse(&with_release_tables(
+        "[[release.version_files]]\npath = \"web/package.json\"\npattern = '\"version\": \"{version}\"'\n",
+    ))
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        c.release.unwrap().version_files,
+        vec![VersionFile {
+            path: "web/package.json".into(),
+            pattern: "\"version\": \"{version}\"".into(),
+        }]
     );
-    assert_refused_with(&text, "is not one of release.components");
-    let alone = MINIMAL.replace("[release]\n", "[release]\nversion_component = \"app\"\n");
-    assert_refused_with(&alone, "release.components is empty");
+    assert_refused_with(
+        &with_release_tables(
+            "[[release.version_files]]\npath = \"web/package.json\"\npattern = \"no version\"\n",
+        ),
+        "must contain {version} exactly once",
+    );
+    assert_refused_with(
+        &with_release_tables(
+            "[[release.version_files]]\npath = \"../x\"\npattern = \"v{version}\"\n",
+        ),
+        "must be a path inside the repository",
+    );
+    assert_refused_with(
+        &with_release_tables("[[release.version_files]]\npattern = \"v{version}\"\n"),
+        "path: is required",
+    );
+}
+
+#[test]
+fn changelog_sections_name_each_type_once() {
+    let c = Config::parse(&with_release_tables(
+        "[[release.changelog_sections]]\ntype = \"feat\"\nsection = \"New\"\n",
+    ))
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        c.release.unwrap().changelog_sections,
+        vec![ChangelogSection {
+            kind: "feat".into(),
+            section: "New".into()
+        }]
+    );
+    assert_refused_with(
+        &with_release_tables(
+            "[[release.changelog_sections]]\ntype = \"Feat\"\nsection = \"New\"\n",
+        ),
+        "must be a Conventional Commit type",
+    );
+    assert_refused_with(
+        &with_release_tables(
+            "[[release.changelog_sections]]\ntype = \"fix\"\nsection = \"A\"\n[[release.changelog_sections]]\ntype = \"fix\"\nsection = \"B\"\n",
+        ),
+        "\"fix\" is listed twice",
+    );
+    assert_refused_with(
+        &MINIMAL.replace("[release]\n", "[release]\nchangelog_sections = []\n"),
+        "must name at least one type",
+    );
+}
+
+/// What `release prepare` reads in CI, where no overlay exists: the shape
+/// alone, with the same rules, and no instance key required.
+#[test]
+fn the_preparation_reads_the_shape_of_a_neutral_file() {
+    let p = Config::preparation(&with_release_tables(
+        "[[release.version_files]]\npath = \"VERSION\"\npattern = \"{version}\"\n",
+    ))
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(p.product, "acme");
+    assert_eq!(p.repository.as_deref(), Some("example-org/acme"));
+    assert_eq!(p.release_tag, "acme-v{version}");
+    assert_eq!(p.version_files.len(), 1);
+    assert_eq!(p.changelog_sections, default_changelog_sections());
+    let neutral = Config::preparation(
+        "schema = 1\n[product]\nname = \"acme\"\n[release]\nrelease_tag = \"v{version}\"\nangles = []\n",
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(neutral.repository, None);
+    assert_eq!(neutral.release_tag, "v{version}");
+    let errs = |text: &str| {
+        Config::preparation(text)
+            .unwrap_err()
+            .0
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert!(
+        errs("schema = 1\n[product]\nname = \"acme\"\n").contains("no [release] section"),
+        "nothing to prepare without a release cycle"
+    );
+    assert!(
+        errs("schema = 1\n[product]\nname = \"acme\"\n[release]\nrelease_please_authors = []\n")
+            .contains("unknown field")
+    );
+    assert!(
+        errs("schema = 1\n[product]\nname = \"acme\"\n[release]\nrelease_tag = \"v1\"\n")
+            .contains("must contain {version} exactly once")
+    );
 }
 
 // ---- spec 04 §11: a project may configure no PR review ----
@@ -421,10 +524,13 @@ fn an_angle_key_is_a_branch_segment_and_unique() {
 }
 
 #[test]
-fn coordinators_and_release_please_authors_are_required() {
+fn coordinators_are_required() {
     assert_refused_with(
-        &MINIMAL.replace("release_please_authors = [\"app/release-app\"]\n", ""),
-        "release.release_please_authors: is required",
+        &MINIMAL.replace(
+            "coordinators = [\"coordinator-login\"]\n\n[[release.angles]]",
+            "\n[[release.angles]]",
+        ),
+        "release.coordinators: is required",
     );
     let no_review_coordinator = MINIMAL.replace(
         "[review]\ncoordinators = [\"coordinator-login\"]\n",
@@ -578,9 +684,10 @@ fn the_owner_table_is_required() {
 
 #[test]
 fn a_duplicated_list_entry_is_refused() {
-    let text = MINIMAL.replace(
-        "release_please_authors = [\"app/release-app\"]",
-        "release_please_authors = [\"app/release-app\", \"app/release-app\"]",
+    let text = MINIMAL.replacen(
+        "coordinators = [\"coordinator-login\"]",
+        "coordinators = [\"coordinator-login\", \"coordinator-login\"]",
+        1,
     );
     assert_refused_with(&text, "is listed twice");
 }
@@ -644,7 +751,7 @@ fn the_nits_grouping_is_shared_or_per_nit_and_nothing_else() {
 
 /// MINIMAL without its `[release]` section.
 fn without_release(text: &str) -> String {
-    let release = "[release]\nrelease_please_authors = [\"app/release-app\"]\ncoordinators = [\"coordinator-login\"]\n\n[[release.angles]]\nkey = \"security\"\n";
+    let release = "[release]\ncoordinators = [\"coordinator-login\"]\n\n[[release.angles]]\nkey = \"security\"\n";
     assert!(
         text.contains(release),
         "MINIMAL carries its [release] section"
@@ -658,23 +765,20 @@ fn without_a_release_section_the_file_is_valid_and_no_release_key_is_required() 
     assert_eq!(c.release, None, "no section, no release cycle");
     // What the PR pass still reads gets the defaults of the release keys.
     assert_eq!(c.registry_path(), "docs/business-rules.md");
-    assert_eq!(c.release_machinery(), ("release/", "autorelease: pending"));
+    assert_eq!(c.release_machinery(), "release/");
     let with = Config::parse(MINIMAL).unwrap();
     assert!(with.release.is_some(), "the section is the release cycle");
     // A section present is judged in full, as before.
     assert_refused_with(
-        &MINIMAL.replace("release_please_authors = [\"app/release-app\"]\n", ""),
-        "release.release_please_authors: is required",
+        &MINIMAL.replace("[[release.angles]]\nkey = \"security\"\n", ""),
+        "release.angles",
     );
 }
 
 #[test]
 fn release_keys_of_an_overlay_without_a_release_section_are_refused() {
     let neutral = NEUTRAL.replace("[[release.angles]]\nkey = \"security\"\n", "");
-    let overlay = OVERLAY.replace(
-        "[release]\nrelease_please_authors = [\"app/release-app\"]\ncoordinators = [\"coordinator-login\"]\n",
-        "",
-    );
+    let overlay = OVERLAY.replace("[release]\ncoordinators = [\"coordinator-login\"]\n", "");
     let c = merged(&neutral, &overlay).unwrap();
     assert_eq!(c.release, None);
     assert_eq!(c, Config::parse(&without_release(MINIMAL)).unwrap());
@@ -732,7 +836,6 @@ team = "ABC"
 service_identity = "spl-asdlc"
 
 [release]
-release_please_authors = ["app/release-app"]
 coordinators = ["coordinator-login"]
 
 [review]
@@ -868,12 +971,12 @@ fn a_key_that_is_not_an_instance_key_is_refused_with_its_line() {
         "spl-asdlc.instance.toml: product.name: line 6: not an instance key",
     );
     let table = format!("{OVERLAY}\n[bridge]\npoll_minutes = 1\n");
-    assert_merge_refused_with(NEUTRAL, &table, "bridge: line 21: not an instance key");
+    assert_merge_refused_with(NEUTRAL, &table, "bridge: line 20: not an instance key");
     let angle = format!("{OVERLAY}\n[[review.angles]]\nkey = \"maintainability\"\ntitle = \"T\"\n");
     assert_merge_refused_with(
         NEUTRAL,
         &angle,
-        "review.angles[0].title: line 23: not an instance key",
+        "review.angles[0].title: line 22: not an instance key",
     );
 }
 
@@ -920,8 +1023,8 @@ fn the_overlay_carries_its_schema_version() {
 fn every_rule_is_checked_on_the_merge_and_names_the_file_of_its_value() {
     let repository = NEUTRAL.replace("kind = \"linear\"", "kind = \"jira\"");
     let instance = OVERLAY.replace(
-        "[release]\nrelease_please_authors = [\"app/release-app\"]\ncoordinators = [\"coordinator-login\"]",
-        "[release]\nrelease_please_authors = [\"app/release-app\"]\ncoordinators = []",
+        "[release]\ncoordinators = [\"coordinator-login\"]",
+        "[release]\ncoordinators = []",
     );
     let errs = merged(&repository, &instance).unwrap_err();
     assert!(

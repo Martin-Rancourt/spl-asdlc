@@ -38,8 +38,8 @@ jobs:
       # PRs also runs on the candidate, or carries a written exception (REQ-CI-033).
       guard-commands: '[{"name": "lint", "run": "make lint"}]'
 
-  # The project's own suite: skipped on a prose-only PR, on release-please's
-  # PRs (guards reports no code) and on drafts.
+  # The project's own suite: skipped on a prose-only PR (guards reports no
+  # code) and on drafts.
   test:
     needs: guards
     if: needs.guards.outputs.code == 'true' && github.event.pull_request.draft == false

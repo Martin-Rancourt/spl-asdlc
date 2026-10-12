@@ -2,24 +2,26 @@ name: asdlc-release-cut
 
 # The one gesture that starts or advances a release cycle
 # (docs/requirements/ci.md, REQ-CI-035..054; docs/spec/05-release-cycle.md §1,
-# §7). `open` creates the release branch from the default branch and ends;
-# `candidate` tags the next RC on the one release branch in flight, once
-# release-please has run on its tip. Nothing else: no tracker, no
-# notification, no dispatch of release-please (the branch push is its
-# trigger), no wait for another workflow's run (on one runner, a job that
-# waits holds the runner the awaited run needs), no wait for the gate, no
-# merge. The tag push starts the gate.
+# §7). `open` creates the release branch from the default branch, prepares
+# the release on it with `spl-asdlc release prepare` (the version computed
+# from the commits since the last release along the git graph, written into
+# the version files, and the CHANGELOG section that is the release notes),
+# commits `chore(release): v<X.Y.Z>`, and pushes the branch and its first
+# candidate tag, rc.1, at once. `candidate` tags the next RC on the one
+# release branch in flight, whose version is already committed. Nothing
+# else: no tracker, no notification, no wait for another workflow's run (on
+# one runner, a job that waits holds the runner the awaited run needs), no
+# wait for the gate, no merge. The tag push starts the gate.
 #
-# The first candidate of a version follows release-please: the caller is also
-# triggered by `workflow_run` of the release-please workflow (completed, on
-# the release branches), and that automatic run cuts `candidate` only when no
-# candidate of the staged version exists yet. It ends green, cutting nothing,
-# when there is nothing for it to cut. GitHub runs a `workflow_run` workflow
-# from the default branch, so the code that cuts is never the release
-# branch's; the preflight refuses a run of another repository or off the
-# release branches.
+# `open` runs the published `spl-asdlc` binary of the channel the caller
+# names (`spl-asdlc-version`: `latest`, a release tag `v<X.Y.Z>`, or
+# `staging`), downloaded from the releases of `spl-asdlc-repository` with
+# the App's token and checked against the release's SHA256SUMS before it
+# runs. `release prepare` reads the caller's `spl-asdlc.toml` (its release
+# tag pattern, version files and CHANGELOG sections), never an instance
+# overlay.
 #
-# The caller owns the triggers, the concurrency group and the job id. The
+# The caller owns the trigger, the concurrency group and the job id. The
 # bridge dispatches the caller by its file name (`[release] cut_workflow`,
 # default `release-cut.yml`) with ONE input, `action`, on the default branch
 # for `open` and on the release branch for `candidate`: every other dispatch
@@ -34,24 +36,21 @@ name: asdlc-release-cut
 #         routine_because: {type: string, default: ''}
 #         main_merge_because: {type: string, default: ''}
 #         dry_run: {type: boolean, default: false}
-#     workflow_run: {workflows: [release-please], types: [completed], branches: ['release/**']}
-#   concurrency:
-#     group: ${{ github.event_name == 'workflow_run' && 'release-cut-after-release-please' || 'release-cut' }}
-#     cancel-in-progress: false
+#   concurrency: {group: release-cut, cancel-in-progress: false}
 #   permissions: {contents: read}
 #   jobs:
 #     release:
-#       if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
 #       uses: <owner>/spl-asdlc/.github/workflows/asdlc-release-cut.yml@<ref>
 #       with:
-#         action: ${{ github.event_name == 'workflow_run' && 'candidate' || inputs.action }}
+#         action: ${{ inputs.action }}
 #         class: ${{ inputs.class }}
 #         routine-because: ${{ inputs.routine_because }}
 #         main-merge-because: ${{ inputs.main_merge_because }}
 #         dry-run: ${{ inputs.dry_run == true }}
 #         candidate-tag: acme-v{version}-rc.{rc}
 #         release-tag: acme-v{version}
-#         component: acme
+#         spl-asdlc-repository: <owner>/spl-asdlc
+#         spl-asdlc-version: latest
 #       secrets:
 #         SPL_ASDLC_APP_ID: ${{ secrets.SPL_ASDLC_APP_ID }}
 #         SPL_ASDLC_APP_PRIVATE_KEY: ${{ secrets.SPL_ASDLC_APP_PRIVATE_KEY }}
@@ -62,7 +61,7 @@ on:
   workflow_call:
     inputs:
       action:
-        description: '`open` (a new release branch from the default branch) or `candidate` (the next RC on the release branch in flight).'
+        description: '`open` (a new release branch from the default branch, prepared, with its first candidate) or `candidate` (the next RC on the release branch in flight).'
         type: string
         required: true
       candidate-tag:
@@ -73,10 +72,18 @@ on:
         description: 'The published tag pattern, as `[release] release_tag`: `{version}` once.'
         type: string
         required: true
-      component:
-        description: The release-please component whose staged version names the candidate.
+      spl-asdlc-repository:
+        description: '`<owner>/spl-asdlc`: the repository whose releases hold the `spl-asdlc` binary `open` runs.'
         type: string
         required: true
+      spl-asdlc-version:
+        description: 'The channel of that binary: `latest` (the latest release), a release tag `v<X.Y.Z>`, or `staging` (the method''s sandbox only).'
+        type: string
+        default: latest
+      config-file:
+        description: The repository's `spl-asdlc.toml`, read by `release prepare`.
+        type: string
+        default: spl-asdlc.toml
       class:
         description: Force `routine` or `sensible`; empty computes it.
         type: string
@@ -90,7 +97,7 @@ on:
         type: string
         default: ''
       dry-run:
-        description: Print the plan; create, tag and push nothing.
+        description: Print the plan; create, commit, tag and push nothing.
         type: boolean
         default: false
       class-paths-file:
@@ -105,22 +112,6 @@ on:
         description: The integration branch a cycle is opened from.
         type: string
         default: main
-      release-please-workflow:
-        description: File name of the release-please workflow the branch push starts; a candidate needs its run on the tip.
-        type: string
-        default: release-please.yml
-      release-pr-label:
-        description: Label of release-please's pending PRs.
-        type: string
-        default: 'autorelease: pending'
-      manifest-file:
-        description: release-please's manifest; only a dry run of `open` reads it (the branch, so its PR, does not exist yet).
-        type: string
-        default: .release-please-manifest.json
-      manifest-key:
-        description: The component's key in the manifest.
-        type: string
-        default: .
       gate-workflow:
         description: The gate caller the tag starts, for the summary.
         type: string
@@ -162,9 +153,6 @@ on:
       previous-tag:
         description: The previous candidate of the same version, else the last published release, else empty.
         value: ${{ jobs.cut.outputs.previous-tag }}
-      release-run-url:
-        description: The release-please run on the candidate's commit (empty on `open`).
-        value: ${{ jobs.cut.outputs.release-run-url }}
       dry-run:
         description: '`true` when nothing was pushed by design.'
         value: ${{ jobs.cut.outputs.dry-run }}
@@ -192,16 +180,12 @@ jobs:
           ROUTINE_BECAUSE: ${{ inputs.routine-because }}
           CANDIDATE_TAG: ${{ inputs.candidate-tag }}
           RELEASE_TAG: ${{ inputs.release-tag }}
-          COMPONENT: ${{ inputs.component }}
+          SPL_REPOSITORY: ${{ inputs.spl-asdlc-repository }}
+          SPL_VERSION: ${{ inputs.spl-asdlc-version }}
+          CONFIG_FILE: ${{ inputs.config-file }}
           BRANCH_PREFIX: ${{ inputs.branch-prefix }}
           DEFAULT_BRANCH: ${{ inputs.default-branch }}
           CLASS_PATHS_FILE: ${{ inputs.class-paths-file }}
-          MANIFEST_FILE: ${{ inputs.manifest-file }}
-          EVENT_NAME: ${{ github.event_name }}
-          REPOSITORY: ${{ github.repository }}
-          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          RUN_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
-          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
         shell: bash
         run: |
           set -euo pipefail
@@ -211,27 +195,10 @@ jobs:
             bad=1
           }
           case "$ACTION" in
-            open) echo "Opening a cycle: ${BRANCH_PREFIX}<YYYY-MM-DD-HH-MM>-utc from $DEFAULT_BRANCH. Its first candidate is cut once release-please has run on it." ;;
+            open) echo "Opening a cycle: ${BRANCH_PREFIX}<YYYY-MM-DD-HH-MM>-utc from $DEFAULT_BRANCH, prepared by spl-asdlc ($SPL_VERSION), with its first candidate." ;;
             candidate) echo "Cutting the next candidate on the release branch in flight." ;;
             *) refuse "Unknown action '$ACTION'. Expected 'open' or 'candidate'." ;;
           esac
-          # The automatic cut follows a release-please run: only a candidate,
-          # only after a success, only on a release branch of this repository.
-          if [ "$EVENT_NAME" = workflow_run ]; then
-            echo "Automatic cut after release-please on '$RUN_BRANCH': the first candidate of the staged version, if none exists."
-            if [ "$ACTION" != candidate ]; then
-              refuse "A cut that follows a release-please run is a 'candidate', never '$ACTION'."
-            fi
-            if [ "$RUN_REPOSITORY" != "$REPOSITORY" ]; then
-              refuse "The release-please run is of '$RUN_REPOSITORY', not of '$REPOSITORY'."
-            fi
-            if [[ "$RUN_BRANCH" != "$BRANCH_PREFIX"?* ]]; then
-              refuse "The release-please run is on '$RUN_BRANCH', not on a release branch ($BRANCH_PREFIX...)."
-            fi
-            if [ "$RUN_CONCLUSION" != success ]; then
-              refuse "The release-please run concluded '$RUN_CONCLUSION': there is no staged version to trust. Filter the caller's job on a successful run."
-            fi
-          fi
           # An unknown class must never become "cut with no class".
           case "$CLASS" in
             '') echo "No class forced: it is computed from the delta since the last published release (the repository's root for a first release)." ;;
@@ -276,11 +243,16 @@ jobs:
           if ! [[ "$DEFAULT_BRANCH" =~ $ref_re ]]; then
             refuse "default-branch '$DEFAULT_BRANCH' is not a branch name."
           fi
-          component_re='^[A-Za-z0-9._@/-]+$'
-          if ! [[ "$COMPONENT" =~ $component_re ]]; then
-            refuse "component '$COMPONENT' is not a release-please component name."
+          repository_re='^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
+          if ! [[ "$SPL_REPOSITORY" =~ $repository_re ]]; then
+            refuse "spl-asdlc-repository '$SPL_REPOSITORY' is not <owner>/<repo>."
           fi
-          for path in "$CLASS_PATHS_FILE" "$MANIFEST_FILE"; do
+          # A channel, never a branch: only a published binary runs.
+          channel_re='^(latest|staging|v[0-9]+\.[0-9]+\.[0-9]+)$'
+          if ! [[ "$SPL_VERSION" =~ $channel_re ]]; then
+            refuse "spl-asdlc-version '$SPL_VERSION' is not a channel. Expected 'latest', 'staging' or a release tag v<X.Y.Z>."
+          fi
+          for path in "$CLASS_PATHS_FILE" "$CONFIG_FILE"; do
             if [ -z "$path" ] || [[ "$path" == /* ]] || [[ "/$path/" == */../* ]]; then
               refuse "'$path' must be a path inside the repository."
             fi
@@ -299,21 +271,17 @@ jobs:
     permissions:
       contents: read
     outputs:
-      branch: ${{ steps.tag.outputs.branch || steps.open.outputs.branch }}
+      branch: ${{ steps.tag.outputs.branch }}
       tag: ${{ steps.tag.outputs.tag }}
       version: ${{ steps.tag.outputs.version }}
       round: ${{ steps.tag.outputs.round }}
       class: ${{ steps.tag.outputs.class }}
       class-reason: ${{ steps.tag.outputs.class-reason }}
       previous-tag: ${{ steps.tag.outputs.previous-tag }}
-      release-run-url: ${{ steps.release-please.outputs.release-run-url }}
       dry-run: ${{ inputs.dry-run && 'true' || 'false' }}
     env:
       ACTION: ${{ inputs.action }}
       DRY_RUN: ${{ inputs.dry-run }}
-      # `true` when the caller runs after release-please (`workflow_run`):
-      # what is not this run's to cut ends it green, with a notice.
-      AUTOMATIC: ${{ github.event_name == 'workflow_run' }}
       CANDIDATE_TAG: ${{ inputs.candidate-tag }}
       RELEASE_TAG: ${{ inputs.release-tag }}
       BRANCH_PREFIX: ${{ inputs.branch-prefix }}
@@ -322,7 +290,7 @@ jobs:
     steps:
       # Minted right before its first use. Every push below is made with it:
       # GitHub starts no workflow for an event created with GITHUB_TOKEN, and
-      # the branch push must start release-please, the tag push the gate.
+      # the tag push must start the gate.
       - name: Mint the App token
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -342,12 +310,10 @@ jobs:
           fetch-tags: true
           token: ${{ steps.app-token.outputs.token }}
 
-      # The automatic cut is on the branch release-please ran on: a
-      # `workflow_run` workflow's own ref is the default branch.
       - name: Find the cycle
         id: cycle
         env:
-          DISPATCHED_REF: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.ref_name }}
+          DISPATCHED_REF: ${{ github.ref_name }}
         shell: bash
         run: |
           set -euo pipefail
@@ -355,11 +321,6 @@ jobs:
           refuse() {
             echo "::error title=Release cut refused::$1"
             exit 1
-          }
-          nothing_to_cut() {
-            echo "::notice title=Nothing to cut::$1"
-            echo "proceed=false" >> "$out"
-            exit 0
           }
           stamp_re='^[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9]{2}-utc$'
           listing="$(mktemp)"
@@ -404,9 +365,6 @@ jobs:
             branch="${BRANCH_PREFIX}$(date -u +%Y-%m-%d-%H-%M)-utc"
           else
             if [ "${#names[@]}" -eq 0 ]; then
-              if [ "$AUTOMATIC" = true ]; then
-                nothing_to_cut "No release branch is in flight on origin any more ($DISPATCHED_REF is gone): the cycle is closed."
-              fi
               refuse "No release branch is in flight on origin: there is nothing to cut a candidate on. Open a cycle with the action 'open'."
             fi
             if [ "${#names[@]}" -gt 1 ]; then
@@ -418,9 +376,6 @@ jobs:
               refuse "'$branch' is not a release branch (${BRANCH_PREFIX}<YYYY-MM-DD-HH-MM>-utc)."
             fi
             if [ "$DISPATCHED_REF" != "$branch" ]; then
-              if [ "$AUTOMATIC" = true ]; then
-                nothing_to_cut "release-please ran on '$DISPATCHED_REF', not on the release branch in flight, '$branch'."
-              fi
               refuse "A candidate is cut on the release branch of the cycle in flight: dispatch the cut on '$branch', not on '$DISPATCHED_REF': gh workflow run <the cut workflow> --ref $branch -f action=candidate"
             fi
             tip="$(awk -F'\t' -v r="refs/heads/$branch" '$2 == r { print $1 }' "$listing")"
@@ -444,104 +399,15 @@ jobs:
             echo "proceed=true"
           } >> "$out"
 
-      # `open` ends at the push: the run it starts needs a runner, maybe this
-      # one, so nothing here waits for it. The first candidate is cut when
-      # that run completes (the caller's `workflow_run` trigger).
-      - name: Open the release branch
-        id: open
-        if: inputs.action == 'open' && !inputs.dry-run
+      # One read of a published binary, checked before it runs: the archive
+      # of this runner's target from the channel's release, and its line of
+      # the release's SHA256SUMS (docs/setup/bridge.md, "The binary").
+      - name: Fetch spl-asdlc
+        id: binary
+        if: inputs.action == 'open' && steps.cycle.outputs.proceed == 'true'
         env:
-          BRANCH: ${{ steps.cycle.outputs.branch }}
-          RP_WORKFLOW: ${{ inputs.release-please-workflow }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          out="${GITHUB_OUTPUT:-/dev/stdout}"
-          # -B: a leftover local branch of the same minute is overwritten.
-          git checkout --quiet -B "$BRANCH"
-          # The checkout persisted the App token: this push starts
-          # release-please, and nothing dispatches it a second time.
-          git push --quiet -u origin "$BRANCH"
-          echo "branch=$BRANCH" >> "$out"
-          echo "Pushed $BRANCH: $RP_WORKFLOW starts on this push."
-          echo "The first candidate is cut when that run completes, by this workflow's caller on its workflow_run trigger. Without that trigger, or if it cut nothing, dispatch the cut with the action 'candidate' on $BRANCH (never on $DEFAULT_BRANCH) once $RP_WORKFLOW has completed on it:"
-          echo "  gh workflow run <the cut workflow> --ref $BRANCH -f action=candidate"
-          echo "Abandon the cycle instead: git push origin --delete $BRANCH"
-
-      # One read, never a wait: a candidate needs a successful release-please
-      # run on the commit it tags, since that run stages the version. Not
-      # there yet is a refusal that says when to come back; for the automatic
-      # cut it is nothing to cut, since the run on the tip triggers it again.
-      - name: Check release-please on the tip
-        id: release-please
-        if: inputs.action == 'candidate' && steps.cycle.outputs.proceed == 'true'
-        env:
-          BRANCH: ${{ steps.cycle.outputs.branch }}
-          RP_WORKFLOW: ${{ inputs.release-please-workflow }}
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          out="${GITHUB_OUTPUT:-/dev/stdout}"
-          row="$(mktemp)"
-          err="$(mktemp)"
-          trap 'rm -f "$row" "$err"' EXIT
-          head="$(git rev-parse HEAD)"
-          not_yet() {
-            if [ "$AUTOMATIC" = true ]; then
-              echo "::notice title=Nothing to cut::$1 Its completion runs the automatic cut again."
-              echo "proceed=false" >> "$out"
-              exit 0
-            fi
-            echo "::error title=Release cut refused::$1"
-            echo "A candidate is cut on a commit release-please has run on: that run stages the version the candidate is named after. This cut does not wait for it."
-            echo "Once $RP_WORKFLOW has completed on $BRANCH at $head, dispatch the cut again on $BRANCH (never on $DEFAULT_BRANCH):"
-            echo "  gh workflow run <the cut workflow> --ref $BRANCH -f action=candidate"
-            exit 1
-          }
-          # jq's `//` replaces only null, and a tab-split read collapses an
-          # empty column: map an empty conclusion to '-'.
-          run_row='.[] | [(.status // ""), (if (.conclusion // "") == "" then "-" else .conclusion end), (.url // "")] | @tsv'
-          if ! gh run list --workflow "$RP_WORKFLOW" --branch "$BRANCH" --commit "$head" --limit 1 --json status,conclusion,url --jq "$run_row" > "$row" 2> "$err"; then
-            cat "$err"
-            echo "::error title=Release cut refused::gh run list failed on $RP_WORKFLOW for $BRANCH at $head. 'Not run' and 'I could not read' are different answers. Check: gh auth status"
-            exit 1
-          fi
-          if [ ! -s "$row" ]; then
-            not_yet "$RP_WORKFLOW has not run on $BRANCH at $head yet (it starts on every push to the branch)."
-          fi
-          IFS=$'\t' read -r status conclusion url < "$row" || true
-          if [ "$conclusion" = '-' ]; then
-            conclusion=''
-          fi
-          echo "release-run-url=$url" >> "$out"
-          if [ "$status" != completed ]; then
-            not_yet "$RP_WORKFLOW is still ${status:-running} on $BRANCH at $head: $url."
-          fi
-          if [ "$conclusion" != success ]; then
-            if [ "$AUTOMATIC" = true ]; then
-              echo "::warning title=Nothing to cut::$RP_WORKFLOW did not succeed on $BRANCH at $head (conclusion: ${conclusion:-unknown}): $url. Its red run is the signal; rerun it once fixed."
-              echo "proceed=false" >> "$out"
-              exit 0
-            fi
-            echo "::error title=Release cut refused::$RP_WORKFLOW did not succeed on $BRANCH at $head (conclusion: ${conclusion:-unknown}): $url"
-            echo "Without a successful release-please run there is no staged version to trust. Fix it and rerun it (gh run rerun), then dispatch the cut again on $BRANCH."
-            exit 1
-          fi
-          echo "$RP_WORKFLOW succeeded on $BRANCH at $head: $url"
-          echo "proceed=true" >> "$out"
-
-      # A candidate whose release-please run on the tip succeeded, or the
-      # plan of a dry run of `open`.
-      - name: Read the staged version
-        id: version
-        if: steps.release-please.outputs.proceed == 'true' || (inputs.action == 'open' && inputs.dry-run)
-        env:
-          BRANCH: ${{ steps.cycle.outputs.branch }}
-          COMPONENT: ${{ inputs.component }}
-          PR_LABEL: ${{ inputs.release-pr-label }}
-          MANIFEST_FILE: ${{ inputs.manifest-file }}
-          MANIFEST_KEY: ${{ inputs.manifest-key }}
+          SPL_REPOSITORY: ${{ inputs.spl-asdlc-repository }}
+          SPL_VERSION: ${{ inputs.spl-asdlc-version }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         shell: bash
         run: |
@@ -551,85 +417,133 @@ jobs:
             echo "::error title=Release cut refused::$1"
             exit 1
           }
-          semver_re='^[0-9]+\.[0-9]+\.[0-9]+$'
+          case "$(uname -s)/$(uname -m)" in
+            Linux/x86_64) target=x86_64-unknown-linux-gnu ;;
+            Darwin/arm64) target=aarch64-apple-darwin ;;
+            Darwin/x86_64) target=x86_64-apple-darwin ;;
+            *) refuse "No spl-asdlc binary is published for this runner ($(uname -s)/$(uname -m)): run the cut on a Linux x86_64 runner (runs-on)." ;;
+          esac
+          case "$SPL_VERSION" in
+            latest)
+              if ! tag="$(gh release view --repo "$SPL_REPOSITORY" --json tagName --jq .tagName)" || [ -z "$tag" ]; then
+                refuse "Could not read the latest release of $SPL_REPOSITORY. Check that the App's token reads it: gh release view --repo $SPL_REPOSITORY"
+              fi
+              ;;
+            *) tag="$SPL_VERSION" ;;
+          esac
+          if [ "$tag" = staging ]; then
+            if [ "$target" != x86_64-unknown-linux-gnu ]; then
+              refuse "The staging channel builds $target for no runner but Linux x86_64."
+            fi
+            name="spl-asdlc-staging-$target"
+          else
+            name="spl-asdlc-$tag-$target"
+          fi
+          dir="$(mktemp -d)"
+          if ! gh release download "$tag" --repo "$SPL_REPOSITORY" --pattern "$name.tar.gz" --pattern SHA256SUMS --dir "$dir"; then
+            refuse "Could not download $name.tar.gz and SHA256SUMS from the release $tag of $SPL_REPOSITORY."
+          fi
+          # The archive's own line of SHA256SUMS, and nothing else, is checked.
+          if ! grep -E "^[0-9a-f]{64}  $name\.tar\.gz$" "$dir/SHA256SUMS" > "$dir/expected"; then
+            refuse "The SHA256SUMS of $tag lists no $name.tar.gz: nothing unverified runs."
+          fi
+          if command -v sha256sum > /dev/null; then
+            check() { sha256sum -c "$1"; }
+          else
+            check() { shasum -a 256 -c "$1"; }
+          fi
+          if ! (cd "$dir" && check expected); then
+            refuse "$name.tar.gz does not match its SHA256SUMS line: nothing unverified runs."
+          fi
+          tar -xzf "$dir/$name.tar.gz" -C "$dir"
+          bin="$dir/$name/spl-asdlc"
+          if ! [ -x "$bin" ] || ! version="$("$bin" --version)"; then
+            refuse "$name.tar.gz holds no spl-asdlc that runs here."
+          fi
+          echo "Using $version, from the release $tag of $SPL_REPOSITORY ($name.tar.gz, checksum verified)."
+          echo "bin=$bin" >> "$out"
+
+      # The release branch from the default branch's tip, prepared at once:
+      # the version, the version files and the CHANGELOG committed on it.
+      # Nothing is pushed here: the branch and its first candidate are pushed
+      # together, once the candidate is computed (the tag step). A dry run
+      # prints the plan on the default branch and commits nothing.
+      - name: Open and prepare the release branch
+        id: open
+        if: steps.binary.outputs.bin != ''
+        env:
+          BRANCH: ${{ steps.cycle.outputs.branch }}
+          BIN: ${{ steps.binary.outputs.bin }}
+          CONFIG_FILE: ${{ inputs.config-file }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${GITHUB_OUTPUT:-/dev/stdout}"
+          refuse() {
+            echo "::error title=Release cut refused::$1"
+            exit 1
+          }
           work="$(mktemp -d)"
           trap 'rm -rf "$work"' EXIT
-          if [ "$ACTION" = open ] && [ "$DRY_RUN" = true ]; then
-            # The branch does not exist yet, so neither can its release PR:
-            # the manifest gives an estimate. Only the branch name is exact.
-            if ! git show "HEAD:$MANIFEST_FILE" > "$work/manifest"; then
-              refuse "Could not read $MANIFEST_FILE at HEAD for the dry run."
-            fi
-            if ! version="$(jq -r --arg k "$MANIFEST_KEY" '.[$k] // "" | strings' "$work/manifest")"; then
-              refuse "$MANIFEST_FILE is not JSON."
-            fi
-            if ! [[ "$version" =~ $semver_re ]]; then
-              refuse "$MANIFEST_FILE has no version under '$MANIFEST_KEY'."
-            fi
-            echo "Version: $version (estimate from $MANIFEST_FILE: release-please cannot stage one before the branch exists; the branch name is exact, the version and the round may differ)."
-            {
-              echo "version=$version"
-              echo "proceed=true"
-            } >> "$out"
-            exit 0
+          if ! git cat-file -e "HEAD:$CONFIG_FILE" 2> /dev/null; then
+            refuse "$DEFAULT_BRANCH carries no $CONFIG_FILE: release prepare reads the release's shape there."
           fi
-          # Found by base and label, never by head name (release-please names
-          # its head after its target), and never without --base: a
-          # repository-wide listing finds the PR that targets the default
-          # branch. Each read is its own statement: a failed gh is a refusal,
-          # not "no PR".
-          fields=number,title,body,headRefName
-          if ! gh pr list --state open --base "$BRANCH" --label "$PR_LABEL" --limit 100 --json "$fields" > "$work/prs"; then
-            refuse "Could not read the open release PRs against $BRANCH (the PR listing failed). Check: gh auth status"
+          args=(release prepare --file "$CONFIG_FILE" --repository "$GH_REPO" --notes "$work/notes.md")
+          if [ "$DRY_RUN" = true ]; then
+            args+=(--dry-run)
+          else
+            # -B: a leftover local branch of the same minute is overwritten.
+            git checkout --quiet -B "$BRANCH"
           fi
-          if [ "$(jq 'length' "$work/prs")" -eq 0 ]; then
-            if ! gh pr list --state open --base "$BRANCH" --limit 100 --json "$fields" > "$work/all"; then
-              refuse "Could not read the open PRs against $BRANCH (the PR listing failed). Check: gh auth status"
-            fi
-            # An installation that has not labelled its PRs yet.
-            jq '[.[] | select((.headRefName // "") | startswith("release-please--"))]' "$work/all" > "$work/prs"
+          if ! "$BIN" "${args[@]}" > "$work/prepared"; then
+            refuse "spl-asdlc release prepare refused to prepare $BRANCH (above): nothing was created."
           fi
-          # The bridge's own reading (`notes::staged_version`), so the cut and
-          # the GO agree: the first X.Y.Z right after the component's name
-          # (a whole name, any case), in a title first, then in a body; else,
-          # in a body with no <summary> (one component's note), its first
-          # `## [X.Y.Z]` heading, unless the head is another component's.
-          # Another component's PR never names the candidate.
-          version="$(jq -r --arg c "$COMPONENT" '
-            def versions: ascii_downcase as $s | ($c | ascii_downcase) as $n
-              | [ ($s | indices($n))[]
-                  | select(. == 0 or (($s[(. - 1):.]) | test("[A-Za-z0-9_.@/-]") | not))
-                  | ($s[(. + ($n | length)):]
-                     | capture("^(?:[[:space:]]+|[[:space:]]*:[[:space:]]*)(?<v>[0-9]+\\.[0-9]+\\.[0-9]+)")
-                     | .v) ];
-            def heading: (.body // "") as $b | (.headRefName // "") as $h
-              | ($h | index("--components--")) as $i
-              | select(($b | contains("<summary>") | not)
-                  and ($i == null or ($h[($i + 14):] | ascii_downcase) == ($c | ascii_downcase)))
-              | [$b | match("(?:^|\n)## \\[(?<v>[0-9]+\\.[0-9]+\\.[0-9]+)\\]"; "g") | .captures[0].string][0] // empty;
-            ([.[] | (.title // "") | versions[]]
-              + [.[] | (.body // "") | versions[]]
-              + [.[] | heading]) | .[0] // ""
-          ' "$work/prs")"
-          if [ -n "$version" ]; then
-            echo "Version: $version (staged by release-please against $BRANCH)."
-            {
-              echo "version=$version"
-              echo "proceed=true"
-            } >> "$out"
-            exit 0
+          version="$(sed -n 's/^version=//p' "$work/prepared")"
+          previous="$(sed -n 's/^previous-tag=//p' "$work/prepared")"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            refuse "release prepare printed no version."
           fi
-          # The automatic cut tags a staged version's first candidate only:
-          # without a release PR, the version would be an existing
-          # candidate's, or a published one (the run that followed the GO).
-          if [ "$AUTOMATIC" = true ]; then
-            echo "::warning title=Nothing to cut::release-please completed on $BRANCH, but no open release PR against it names '$COMPONENT'. Right after 'open', most likely nothing is staged to release: abandon the cycle with git push origin --delete $BRANCH. The manifest is never a fallback here: it holds the version already published."
-            echo "proceed=false" >> "$out"
-            exit 0
+          if [ -n "$previous" ]; then
+            echo "Version: $version, from the commits since $previous."
+          else
+            echo "Version: $version, from the whole history: a first release."
           fi
-          # No release PR on the candidate path (its version PR already
-          # merged and fixes followed it): the newest candidate of this cycle
-          # names the version, provided that version is not published.
+          echo "Release notes:"
+          sed 's/^/  /' "$work/notes.md"
+          if [ "$DRY_RUN" != true ]; then
+            git add -A
+            # The login is built here, never written out: a bot login is
+            # installation data.
+            committer="${APP_SLUG}[bot]"
+            git -c user.name="$committer" -c user.email="${committer}@users.noreply.github.com" \
+              commit --quiet -m "chore(release): v$version"
+            echo "Committed $(git log -1 --format='%h %s') on $BRANCH (not pushed yet)."
+          fi
+          {
+            echo "branch=$BRANCH"
+            echo "version=$version"
+            echo "proceed=true"
+          } >> "$out"
+
+      # The version of a later candidate is already committed on the branch:
+      # its first candidate names it. A version already published is never
+      # tagged again.
+      - name: Read the cycle's version
+        id: version
+        if: inputs.action == 'candidate' && steps.cycle.outputs.proceed == 'true'
+        env:
+          BRANCH: ${{ steps.cycle.outputs.branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${GITHUB_OUTPUT:-/dev/stdout}"
+          refuse() {
+            echo "::error title=Release cut refused::$1"
+            exit 1
+          }
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
           cand_glob="$(printf '%s' "$CANDIDATE_TAG" | sed -e 's/{version}/*/' -e 's/{rc}/*/')"
           cand_re="^$(printf '%s' "$CANDIDATE_TAG" | sed -e 's/\./\\./g' -e 's/{version}/([0-9]+\\.[0-9]+\\.[0-9]+)/' -e 's/{rc}/([0-9]+)/')\$"
           if ! git tag --merged HEAD --list "$cand_glob" > "$work/tags"; then
@@ -645,15 +559,15 @@ jobs:
             fi
           done < "$work/tags"
           if [ ! -s "$work/ranked" ]; then
-            refuse "No open release PR against $BRANCH names '$COMPONENT', and no candidate of this cycle exists to take the version from. Most likely nothing is staged to release: abandon the cycle with git push origin --delete $BRANCH."
+            refuse "No candidate of this cycle is on $BRANCH to take the version from: 'open' tags the first one. Abandon the cycle with git push origin --delete $BRANCH, then open a new one."
           fi
           sort "$work/ranked" > "$work/sorted"
           version="$(tail -n 1 "$work/sorted" | awk '{ print $5 }')"
           released="$(printf '%s' "$RELEASE_TAG" | sed -e "s/{version}/$version/")"
           if git rev-parse --quiet --verify "refs/tags/$released" > /dev/null; then
-            refuse "No open release PR against $BRANCH names '$COMPONENT', and the newest candidate's version $version is already published ($released): nothing is staged."
+            refuse "The version $version of this cycle is already published ($released): nothing is left to cut on $BRANCH."
           fi
-          echo "No open release PR against $BRANCH: the version $version is the newest candidate's of this cycle."
+          echo "Version: $version, prepared on $BRANCH when the cycle opened."
           {
             echo "version=$version"
             echo "proceed=true"
@@ -661,10 +575,10 @@ jobs:
 
       - name: Compute the candidate
         id: candidate
-        if: steps.version.outputs.proceed == 'true'
+        if: steps.open.outputs.proceed == 'true' || steps.version.outputs.proceed == 'true'
         env:
           BRANCH: ${{ steps.cycle.outputs.branch }}
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ steps.open.outputs.version || steps.version.outputs.version }}
           CLASS: ${{ inputs.class }}
           ROUTINE_BECAUSE: ${{ inputs.routine-because }}
           MAIN_MERGE_BECAUSE: ${{ inputs.main-merge-because }}
@@ -694,13 +608,6 @@ jobs:
             round=$((round + 1))
           done
           tag="$(tag_of "$VERSION" "$round")"
-          # The automatic cut tags a staged version's first candidate; the
-          # next ones are the coordinator's (or the bridge's) dispatch.
-          if [ "$AUTOMATIC" = true ] && [ "$round" -gt 1 ]; then
-            echo "::notice title=Nothing to cut::$(tag_of "$VERSION" 1) exists: the automatic cut tags only the first candidate of a staged version. The next one, $tag, is dispatched with the action 'candidate' on $BRANCH."
-            echo "proceed=false" >> "$out"
-            exit 0
-          fi
           if [ "$round" -gt 2 ]; then
             echo "::warning title=Third round::$tag is round $round. Two rounds is the cap; at the third the problem is usually the scope, not the code."
           fi
@@ -859,7 +766,7 @@ jobs:
               while read -r sha; do
                 git log -1 --format='  %h %s' "$sha"
               done < "$work/first"
-              echo "A fix during a cycle is a PR based on the release branch, never $DEFAULT_BRANCH merged into it; release-please does not read a merge commit, so these changes are not in the release note either."
+              echo "A fix during a cycle is a PR based on the release branch, never $DEFAULT_BRANCH merged into it: these changes were prepared into the notes of no release, and no candidate has covered them."
               echo "If the merge is deliberate, cut again with main-merge-because saying why and what came in."
               refuse "Refusing $tag: $DEFAULT_BRANCH was merged into $BRANCH since $previous."
             fi
@@ -910,19 +817,22 @@ jobs:
           } >> "$out"
           if [ "$DRY_RUN" = true ]; then
             if [ "$ACTION" = open ]; then
-              echo "(dry run: $BRANCH not created, nothing tagged, nothing pushed; its first candidate is cut once release-please has run on it)"
+              echo "(dry run: $BRANCH not created, nothing committed, tagged or pushed)"
             else
               echo "(dry run: nothing tagged, nothing pushed)"
             fi
           fi
 
       # Tag locally, push last: nothing irreversible happens before the push.
+      # For `open`, the new branch and its first candidate go in one atomic
+      # push: a cycle never exists without its rc.1, nor rc.1 without its
+      # branch.
       - name: Tag and push the candidate
         id: tag
         if: "!inputs.dry-run && steps.candidate.outputs.proceed == 'true'"
         env:
           BRANCH: ${{ steps.cycle.outputs.branch }}
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ steps.open.outputs.version || steps.version.outputs.version }}
           TAG: ${{ steps.candidate.outputs.tag }}
           ROUND: ${{ steps.candidate.outputs.round }}
           CLASS_OUT: ${{ steps.candidate.outputs.class }}
@@ -946,13 +856,27 @@ jobs:
           # unclassified. Two paragraphs, so the trailers are the body.
           git -c user.name="$tagger" -c user.email="${tagger}@users.noreply.github.com" \
             tag -a "$TAG" -m "Release candidate $TAG" -m "$TRAILERS"
-          # A fresh ref, never forced: a push onto an existing tag fails.
-          if ! git push --quiet origin "refs/tags/$TAG"; then
+          refs=("refs/tags/$TAG")
+          what="$TAG"
+          if [ "$ACTION" = open ]; then
+            refs=("refs/heads/$BRANCH" "${refs[@]}")
+            what="$BRANCH and $TAG"
+          fi
+          # Fresh refs, never forced: a push onto an existing tag or branch
+          # fails, and an atomic push fails whole.
+          if ! git push --quiet --atomic origin "${refs[@]}"; then
             git tag -d "$TAG" > /dev/null
-            echo "::error title=Release cut failed::Could not push $TAG; nothing remains of it."
+            echo "::error title=Release cut failed::Could not push $what; nothing of it reached origin."
             exit 1
           fi
-          echo "Pushed $TAG on $BRANCH: the gate starts on it."
+          if [ "$ACTION" = open ]; then
+            echo "Pushed $BRANCH and its first candidate $TAG: the gate starts on it."
+            echo "Every later candidate is a dispatch on $BRANCH (never on $DEFAULT_BRANCH):"
+            echo "  gh workflow run <the cut workflow> --ref $BRANCH -f action=candidate"
+            echo "Abandon the cycle instead: git push origin --delete $BRANCH"
+          else
+            echo "Pushed $TAG on $BRANCH: the gate starts on it."
+          fi
           {
             echo "branch=$BRANCH"
             echo "tag=$TAG"
@@ -967,11 +891,9 @@ jobs:
         if: always()
         env:
           BRANCH: ${{ steps.cycle.outputs.branch }}
-          OPENED: ${{ steps.open.outputs.branch }}
-          RP_WORKFLOW: ${{ inputs.release-please-workflow }}
           TAG: ${{ steps.candidate.outputs.tag }}
           PUSHED: ${{ steps.tag.outputs.tag }}
-          STOPPED: ${{ steps.cycle.outputs.proceed == 'false' || steps.release-please.outputs.proceed == 'false' || steps.version.outputs.proceed == 'false' || steps.candidate.outputs.proceed == 'false' }}
+          VERSION: ${{ steps.open.outputs.version || steps.version.outputs.version }}
           ROUND: ${{ steps.candidate.outputs.round }}
           CLASS_OUT: ${{ steps.candidate.outputs.class }}
           CLASS_REASON: ${{ steps.candidate.outputs.class-reason }}
@@ -984,22 +906,14 @@ jobs:
           set -euo pipefail
           summary="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
           {
-            if [ "$AUTOMATIC" = true ]; then
-              echo "## Release cut ($ACTION, after $RP_WORKFLOW)"
-            else
-              echo "## Release cut ($ACTION)"
-            fi
+            echo "## Release cut ($ACTION)"
             echo
-            if [ -n "$OPENED" ]; then
-              echo "Opened \`$OPENED\`. $RP_WORKFLOW starts on its push; the first candidate is cut when that run completes."
-              exit 0
+            if [ -n "$PUSHED" ] && [ "$ACTION" = open ]; then
+              echo "Opened \`$BRANCH\`, prepared \`$VERSION\` on it, and pushed its first candidate \`$PUSHED\`."
             elif [ -n "$PUSHED" ]; then
               echo "Pushed \`$PUSHED\` on \`$BRANCH\`."
             elif [ "$DRY_RUN" = true ] && [ -n "$TAG" ]; then
-              echo "Dry run: \`$TAG\` would be cut on \`${BRANCH:-?}\`; nothing was pushed."
-            elif [ "$STOPPED" = true ]; then
-              echo "Nothing to cut: see the run's notice or warning."
-              exit 0
+              echo "Dry run: \`$TAG\` would be cut on \`${BRANCH:-?}\`; nothing was committed or pushed."
             else
               echo "No candidate was pushed: see the log of the step that failed."
             fi

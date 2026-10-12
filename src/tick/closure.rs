@@ -1,7 +1,6 @@
 //! The closure of a cycle (`docs/spec/05-release-cycle.md` §11-12),
-//! triggered by facts, never assumed: the release published, every
-//! embarked component deployed (multi-component), the release branch merged
-//! back. Then each member of the release is judged; the release note is sent;
+//! triggered by facts, never assumed: the release published, the release
+//! branch merged back. Then each member of the release is judged; the release note is sent;
 //! the release item moves to Done only once every ticket that cites a rule
 //! was judged and the note went out (a failed send is a failed closure step,
 //! retried, never dropped). Once the release item is Done, the items the
@@ -40,7 +39,7 @@ pub fn close(
     published: &Release,
 ) {
     let object = item.key.clone();
-    match ready_to_close(t, shape, c, item, published) {
+    match ready_to_close(t, shape, c, published) {
         Ok(None) => {}
         Ok(Some(waiting)) => {
             // A fact the closure waits for: nothing written, nothing to say
@@ -100,7 +99,7 @@ pub fn close(
     let marker = texts::marker("closure", &[("tag", &published.tag)]);
     match tracker_said(t, &item.key, &marker) {
         Ok(false) => {
-            let go = go_merger(t, shape, c, published);
+            let go = prs::go_publisher_line(published, &t.github_login);
             let body = for_tracker(
                 t,
                 &format!("{}\n\n{go}\n\n{marker}", closure::comment(&result)),
@@ -287,49 +286,12 @@ fn archive_resolved(
     }
 }
 
-/// Who merged the release PR that made the published release's commit, for
-/// the closure's record (spec 09): the bridge, or a human in GitHub. Read
-/// from the merged PRs around the candidate (the release commit is on the
-/// default branch by now, where GitHub no longer associates it with its
-/// merged PR). A read that fails is said, never guessed, and holds nothing.
-fn go_merger(t: &Tick, shape: &Shape, c: &Candidate, published: &Release) -> String {
-    let label = super::release::section(t)
-        .map(|r| r.release_pr_label.as_str())
-        .unwrap_or_default();
-    let since = c
-        .tagged_at
-        .or(published.published_at)
-        .map(|at| crate::github::Timestamp(at.0 - time::Duration::days(1)));
-    let read = t
-        .github
-        .commit(&t.repo, &published.tag)
-        .map_err(|e| e.to_string())
-        .and_then(|commit| {
-            t.github
-                .merged_pulls(&t.repo, None, since, 500)
-                .map(|merged| (commit.sha, merged))
-                .map_err(|e| e.to_string())
-        });
-    match read {
-        Ok((sha, merged)) => prs::go_merger_line(
-            &published.tag,
-            prs::go_pull(&merged, &sha, &shape.branch_prefix, label),
-            &t.github_login,
-        ),
-        Err(e) => format!(
-            "Who merged the release PR of `{}` could not be read: {e}.",
-            published.tag
-        ),
-    }
-}
-
 /// `Ok(None)` when every fact of the closure is there; `Ok(Some(why))` when
 /// one is still awaited.
 fn ready_to_close(
     t: &Tick,
     shape: &Shape,
     c: &Candidate,
-    item: &Item,
     published: &Release,
 ) -> Result<Option<String>, String> {
     // No release branch still holds the candidate: the branch was merged back
@@ -360,38 +322,6 @@ fn ready_to_close(
             "{} is not merged back into {default}",
             published.tag
         )));
-    }
-    // A component deliberately not deployed is waived by `release close`
-    // (spec 09), recorded on the release item.
-    let waived = tracker_said(
-        t,
-        &item.key,
-        &texts::marker("waiver", &[("tag", &published.tag)]),
-    )?;
-    if shape.multi_component() && !waived {
-        // The component release PRs are merged on GO, after the candidate
-        // was tagged: the window starts a day before the tag.
-        let since = c
-            .tagged_at
-            .or(published.published_at)
-            .map(|at| crate::github::Timestamp(at.0 - time::Duration::days(1)));
-        // Component release PRs are merged into the release branch, not
-        // into the default branch: read every base, the ledger keeps only
-        // the release PRs of the declared components.
-        let merged = t
-            .github
-            .merged_pulls(&t.repo, None, since, 500)
-            .map_err(|e| e.to_string())?;
-        let ledger =
-            prs::ledger(&merged, shape).ok_or("the deployment ledger could not be read")?;
-        let undeployed: Vec<String> = ledger
-            .iter()
-            .filter(|e| e.version == c.version.to_string() && !e.deployed)
-            .map(|e| e.component.clone())
-            .collect();
-        if !undeployed.is_empty() {
-            return Ok(Some(format!("not deployed yet: {}", undeployed.join(", "))));
-        }
     }
     Ok(None)
 }

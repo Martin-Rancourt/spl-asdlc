@@ -2,7 +2,7 @@
 #
 # Copy this file to the root of the repository, then replace every placeholder:
 # `acme` (the product), `example-org/acme` (the repository), `ABC` (the tracker
-# team) and the `*-handle` / `*-login` / `app/example-app` identities. The file
+# team) and the `*-handle` / `*-login` identities. The file
 # is valid as written (the crate's test suite parses it), so `spl-asdlc config
 # check --file spl-asdlc.toml` tells you what you broke while editing, never
 # what you forgot to replace: read it through once.
@@ -73,17 +73,20 @@ angles = []                            # no base angle: layer 1 replaces it
 # key = "maintainability"
 #
 # 2. The release cycle with its gate (standard; docs/spec/05-release-cycle.md).
-#    Uncomment the section, then add the release workflows, the release and
-#    tag rulesets and release-please's files (docs/setup/repository.md, "A
-#    light project"). Merged tickets now wait To Deploy for a release. With
-#    `angles = []` the release has no QA angle: its GO rests on the gate. The
-#    other release keys have defaults (docs/spec/08-configuration.md).
+#    Uncomment the section, then add the release workflows and the release
+#    and tag rulesets (docs/setup/repository.md, "A light project"). Merged
+#    tickets now wait To Deploy for a release. With `angles = []` the release
+#    has no QA angle: its GO rests on the gate. The cut's `release prepare`
+#    computes each version from the commits since the last release and
+#    writes it into Cargo.toml and Cargo.lock and the CHANGELOG; a project
+#    whose version lives in other files lists them, after the section's keys,
+#    as `[[release.version_files]]` tables (a `path` and a `pattern` holding
+#    `{version}`). The other release keys have defaults
+#    (docs/spec/08-configuration.md).
 #
 # [release]
 # candidate_tag = "acme-v{version}-rc.{rc}"    # {version} once, {rc} once (never in release_tag); the callers pass the same patterns
 # release_tag = "acme-v{version}"
-# release_please_authors = ["app/example-app"] # the App that runs release-please (`app/<slug>`)
-# bookkeeping_paths = [".release-please-manifest.json", "CHANGELOG.md"] # add the version files release-please writes
 # angles = []                                  # no QA angle: layer 3 replaces it
 #
 # 3. Release QA angles (full; docs/spec/05-release-cycle.md §3). Replace

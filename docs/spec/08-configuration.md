@@ -1,6 +1,6 @@
 # 08 — Configuration
 
-One file per repository, `spl-asdlc.toml` at the root, read by the bridge and validated by `spl-asdlc config check`. Everything the method leaves to the project is here; nothing here is read by CI workflows (they take explicit inputs). The identities of the installation (who and where) may instead come from an instance overlay kept on the host that runs the bridge, outside the repository, so that the repository's file stays neutral (see "The instance overlay"). An invalid file, or an invalid merge of the two, stops the bridge for that repository; nothing falls back to a default shape.
+One file per repository, `spl-asdlc.toml` at the root, read by the bridge and validated by `spl-asdlc config check`. Everything the method leaves to the project is here; nothing here is read by CI workflows (they take explicit inputs) but by the cut's `spl-asdlc release prepare`, which reads the release's shape from the checked-out file (the product's name, the release tag pattern, `release.version_files`, `release.changelog_sections`), never an identity nor an instance overlay: it accepts a file whose instance keys an overlay carries, and refuses an unknown key as always. The identities of the installation (who and where) may instead come from an instance overlay kept on the host that runs the bridge, outside the repository, so that the repository's file stays neutral (see "The instance overlay"). An invalid file, or an invalid merge of the two, stops the bridge for that repository; nothing falls back to a default shape.
 
 ## Example
 
@@ -25,8 +25,7 @@ later_passes = "full"                  # "full" | "gate-and-coordinator"
 go_policy = "computed"                 # "computed" | "human"
 nits = "shared"                        # "shared" | "per-nit": one nits ticket per release, or one per nit
 record = ".spl-asdlc/qa/{candidate}/"  # where angle reports live
-release_pr_label = "autorelease: pending"
-bookkeeping_paths = [".release-please-manifest.json", "CHANGELOG.md"]
+bookkeeping_paths = []                  # files allowed to change after the candidate
 registry_path = "docs/business-rules.md"
 business_rule_paths = ["docs/business-rules.md", "**/business-rules.md"]
 stagnation_hours = 2
@@ -36,13 +35,15 @@ cut_workflow = "release-cut.yml"
 gate_workflow = "release-gate.yml"
 gate_rerun_workflow = "release-gate-auto-rerun.yml"
 gate_rerun_wait_minutes = 30
-release_please_workflow = "release-please.yml"
-release_please_config = "release-please-config.json"
-release_please_manifest = ".release-please-manifest.json"
-# Multi-component products
-# components = ["app", "website", "admin"]
-# version_component = "app"
-# gate_record = "docs/releases/v{version}.md"
+# changelog_sections: the defaults, one section per Conventional Commit type
+
+[[release.version_files]]               # Cargo.toml and Cargo.lock need no entry
+path = "web/package.json"
+pattern = '"version": "{version}"'
+
+[[release.version_files]]
+path = "docs/version.txt"
+pattern = "acme {version}"
 
 [[release.angles]]
 key = "security"
@@ -94,7 +95,6 @@ service_identity = "spl-asdlc"         # the service account that writes
 team_keys = ["ABC"]                    # identifier prefixes of the team's items
 
 [release]
-release_please_authors = ["app/release-app"]
 coordinators = ["coordinator-login"]
 coordinator_assignee = "coordinator-handle" # optional: receives each candidate's consolidation item, and each angle item In Review
 
@@ -117,14 +117,14 @@ events = ["release-note", "escalation", "stagnation", "stuck-pr", "blind-pass"]
 ## Rules
 
 1. Secrets are never in the file. A channel's `target` and `token` are references `env:<VARIABLE>` (`VARIABLE`: capital letters, digits and `_`, not starting with a digit) resolved from the environment of the host that runs the bridge; a literal value there is an error. Identities (`service_identity`, logins, `github_identity`) are names, never credentials: the credentials themselves come from the host (`docs/setup/bridge.md`).
-2. Tag patterns must contain `{version}` exactly once and `{rc}` exactly once for the candidate; the release tag contains `{version}` exactly once and no `{rc}`; `record` contains `{candidate}` exactly once and `gate_record` `{version}` exactly once; no other placeholder is accepted. A multi-component product must name its components, its version component and its gate record; a version component without components is an error.
-3. Angle keys name branches (`qa/<candidate>/<angle>`) and files (`<angle>.json`): lower-case letters, digits and hyphens, not starting with a hyphen, unique per list. Product and component names follow the same shape (they appear in tags and labels). The bridge embeds in each angle sub-item the method's file of that key under `docs/agents/angles/` of this product, compiled into its binary, or a line saying the method has no notes for an angle of the project's own; the project's notes (`notes`) are linked from the item, never embedded (BR-ASDLC-015).
+2. Tag patterns must contain `{version}` exactly once and `{rc}` exactly once for the candidate; the release tag contains `{version}` exactly once and no `{rc}`; `record` contains `{candidate}` exactly once and a version file's `pattern` `{version}` exactly once; no other placeholder is accepted. A multi-component product (a non-empty `release.components`, a `release.version_component` or a `release.gate_record`) is refused: the release cycle prepares one version per product (`05-release-cycle.md` §1, §9), and a product whose components ship their own versions is not supported yet.
+3. Angle keys name branches (`qa/<candidate>/<angle>`) and files (`<angle>.json`): lower-case letters, digits and hyphens, not starting with a hyphen, unique per list. Product names follow the same shape (they appear in tags and labels). The bridge embeds in each angle sub-item the method's file of that key under `docs/agents/angles/` of this product, compiled into its binary, or a line saying the method has no notes for an angle of the project's own; the project's notes (`notes`) are linked from the item, never embedded (BR-ASDLC-015).
 4. `go_policy = "human"` adds the owner's approval on the release issue to the computed conditions; it never replaces them.
 5. The sensitive-path file follows the format of `.github/review-paths.json`: a list of globs and a list of documented exceptions; it is read at the PR's base ref, so a PR cannot weaken the list that judges it. When `sensitive_paths` is declared, the file must exist and be valid at the base: absent or unreadable, the PR waits, one human notice says "configuration invalid for this repository", and `doctor` reports it — never "no sensitive path". Only when the key is not declared at all are there no sensitive paths.
 6. Unknown keys are errors (a misspelt key is never a silently ignored setting). `config check` lists every problem of a well-formed file; a file that is not valid TOML, carries an unknown key or a value of the wrong type (a string where a number is expected) is reported by its first such error, with its line.
 7. Every default below is what the bridge uses when the key is absent; a present key with an invalid value is an error, never replaced by its default.
-8. A list never names the same entry twice (paths, logins, components, events): a repeated entry is an error, not a harmless duplicate, because it usually hides a typo next to it.
-9. Write a GitHub App as `<slug>[bot]` or `app/<slug>` (the one alias, read as `<slug>[bot]`); a bare login is a person (or a user account), never an App. The bridge reads every review and PR author in the REST spelling: GitHub's GraphQL API names an App by its bare slug, and the bridge normalises it to `<slug>[bot]` when it reads it. It then compares a configured login with an author exactly, ignoring case only. In `release.coordinators` and `review.coordinators`, `<slug>[bot]` matches only the App, and a person who registered the login `<slug>` never approves in its name; a bare `<slug>` matches only the account `<slug>`, never the App (fail closed). `release.release_please_authors` and `review.ticketless_authors` name only Apps (a human author never qualifies), so there a bare `<slug>` means the App too.
+8. A list never names the same entry twice (paths, logins, version files, CHANGELOG types, events): a repeated entry is an error, not a harmless duplicate, because it usually hides a typo next to it.
+9. Write a GitHub App as `<slug>[bot]` or `app/<slug>` (the one alias, read as `<slug>[bot]`); a bare login is a person (or a user account), never an App. The bridge reads every review and PR author in the REST spelling: GitHub's GraphQL API names an App by its bare slug, and the bridge normalises it to `<slug>[bot]` when it reads it. It then compares a configured login with an author exactly, ignoring case only. In `release.coordinators` and `review.coordinators`, `<slug>[bot]` matches only the App, and a person who registered the login `<slug>` never approves in its name; a bare `<slug>` matches only the account `<slug>`, never the App (fail closed). `review.ticketless_authors` names only Apps (a human author never qualifies), so there a bare `<slug>` means the App too.
 10. No PR review is an explicit choice (`04-pr-review.md` §11): `angles = []` under `[review]` means no base angle, while a file that writes neither `angles = []` nor a `[[review.angles]]` table is invalid, never read as "no angle". A PR can get an angle when the project has a base angle, a `[[review.path_angles]]` entry, a declared `sensitive_paths` or a `diff_size_extra_angle` above 0 (the size trigger is off by default); `review.coordinators` is required whenever one can, and optional when none can (the project then has no PR review: a PR merges on its CI and the other merge conditions, with no round and no approval). `human_approval` other than `never` is accepted with no possible angle: the human's approval is then the only one required.
 
 ## The instance overlay
@@ -139,7 +139,7 @@ The repository's file carries the method's shape (tags, angles, review rules, wo
 | `product.repository` | Where the product lives. |
 | `owner.tracker_user`, `owner.github_login` | Who the owner is. |
 | `tracker.team`, `tracker.service_identity`, `tracker.team_keys` | Which team, under which account. |
-| `release.coordinators`, `release.release_please_authors` | Logins. |
+| `release.coordinators` | Logins. |
 | `review.coordinators`, `review.human_reviewer` | Logins. |
 | `release.coordinator_assignee`, `review.coordinator_assignee` | Participants. |
 | the `assignee` of a `[[release.angles]]` or `[[review.angles]]` entry | A participant. Given as an entry with `key` and `assignee` only; `key` must name an angle the repository's file declares, never declare one. |
@@ -188,7 +188,7 @@ The configuration maps no status: the tracker names each canonical status (`03-v
 
 ### `[release]`
 
-The section is optional, and so is the release cycle it configures (`05-release-cycle.md`, "Without a release cycle"): without it, none of the keys below is read or required, `release.release_please_authors`, `release.coordinators` and `[[release.angles]]` included, and a merged ticket whose every box is ticked is Done. Three defaults still serve the PR review: its business-rule guard reads the registry at `docs/business-rules.md` (`release.registry_path`), and the PR pass leaves alone a PR whose head branch starts with `release/` or that carries the `autorelease: pending` label (`release.branch_prefix`, `release.release_pr_label`), so that a PR shaped like the release machinery is never squashed. Present, the section is the release cycle and every row below applies; adding it later switches to the full cycle at the next tick, with no migration.
+The section is optional, and so is the release cycle it configures (`05-release-cycle.md`, "Without a release cycle"): without it, none of the keys below is read or required, `release.coordinators` and `[[release.angles]]` included, and a merged ticket whose every box is ticked is Done. Two defaults still serve the PR review: its business-rule guard reads the registry at `docs/business-rules.md` (`release.registry_path`), and the PR pass leaves alone a PR whose head branch starts with `release/` (`release.branch_prefix`), so that a merge back is never squashed. Present, the section is the release cycle and every row below applies; adding it later switches to the full cycle at the next tick, with no migration.
 
 | Key | Default | Meaning | Fail-closed |
 |---|---|---|---|
@@ -200,12 +200,7 @@ The section is optional, and so is the release cycle it configures (`05-release-
 | `release.go_policy` | `"computed"` | `human` adds the owner's approval to the computed GO. | Other value: file invalid. |
 | `release.nits` | `"shared"` | How the nits of a release become tickets (`05-release-cycle.md` §6), chosen for the tracker: `shared`, one nits ticket per release whose boxes are the nits, for a tracker that limits its ticket count (Linear's free plan); `per-nit`, one ticket per nit in `Triage`, keyed by candidate, angle and finding id, for a tracker that does not (Livela). Either way each ticket carries a full contract whose goal is to triage. | Other value: file invalid. A shared nits ticket that carries no contract: left alone, said at each tick. |
 | `release.record` | `.spl-asdlc/qa/{candidate}/` | Directory of the angle reports (`06-qa-report.md`). | Without `{candidate}`: file invalid. |
-| `release.components` | `[]` | Components of a multi-component product, each with its own release PR. | Invalid names: file invalid. |
-| `release.version_component` | none; required with components | The component whose release ends the cycle; merged last. | Missing, or not a component: file invalid. |
-| `release.gate_record` | none; required with components | Path of the gate record (`{version}` once) the deployment reads. | Missing with components: file invalid. |
-| `release.release_pr_label` | `autorelease: pending` | Label that identifies release-please PRs. | — |
-| `release.release_please_authors` | required with `[release]` | GitHub logins allowed to author release-please PRs (`<slug>`, `<slug>[bot]` and `app/<slug>` are all accepted, rule 9). | A release-shaped PR by anyone else is ignored and logged, never merged. |
-| `release.bookkeeping_paths` | `[]` | Files allowed to differ between the latest RC and the release branch tip (release-please manifest, changelog, version files), as exact paths. The gate record and the reports of the latest RC's own angles (`record` rendered for that RC) are always allowed and need no entry (`05-release-cycle.md` §8). | Empty: the RC must equal the tip, but for those; anything else is a tip gap and the GO is false. |
+| `release.bookkeeping_paths` | `[]` | Files allowed to differ between the latest RC and the release branch tip (a file the project's own tooling writes on the branch after the candidate), as exact paths. The reports of the latest RC's own angles (`record` rendered for that RC) are always allowed and need no entry (`05-release-cycle.md` §8). The release itself is tagged on the RC's commit, so none of these files reaches it. | Empty: the RC must equal the tip, but for those; anything else is a tip gap and the GO is false. |
 | `release.registry_path` | `docs/business-rules.md` | The business-rule registry (`02-business-rules.md`). | Unreadable at the judged ref: the guard fails closed. |
 | `release.business_rule_paths` | `["docs/business-rules.md", "**/business-rules.md"]` | Paths whose change the brief singles out as "business rules touched". | — |
 | `release.stagnation_hours` | `2` | A GO false for longer than this is reported once. | Not a positive integer: file invalid. |
@@ -217,10 +212,11 @@ The section is optional, and so is the release cycle it configures (`05-release-
 | `release.gate_workflow` | `release-gate.yml` | Workflow whose run on the RC tag is the gate. | No run on the tag: the gate is not green. |
 | `release.gate_rerun_workflow` | `release-gate-auto-rerun.yml` | Workflow whose `workflow_run` of a red gate reruns it once (a runner abort, known flakes); the bridge opens a red gate's gate-fix ticket once this run of the gate's first attempt completed, or once `gate_rerun_wait_minutes` passed with no such run (`05-release-cycle.md` §3). | Not a file name: file invalid; its runs unreadable: no gate-fix ticket yet, said at each tick; absent on GitHub: said at each tick, and read as no run, so the bounded wait opens the ticket; never run for the gate run: the bounded wait opens the ticket. |
 | `release.gate_rerun_wait_minutes` | `30` | How long after a red gate run completed the bridge waits for a run of `gate_rerun_workflow` to show up; past it with none visible, it opens the gate-fix ticket anyway, saying no rerun was seen (the rerun workflow may be absent or broken). A rerun run that showed up and is still running keeps the wait (`05-release-cycle.md` §3). | Not a positive integer: file invalid. |
-| `release.release_please_workflow` | `release-please.yml` | Workflow redispatched once when release-please's PR is stale. | — |
-| `release.release_please_config` | `release-please-config.json` | release-please's configuration (its `config-file`), read at the release PR's head for each component's changelog path. | Unreadable for a multi-component product: a note gap, the GO is false. |
-| `release.release_please_manifest` | `.release-please-manifest.json` | release-please's manifest (its `manifest-file`). | — |
+| `[[release.version_files]]` | none | The files besides Rust's own that `release prepare` writes the version into, each a `path` inside the repository and a `pattern` holding `{version}` once (literal text around it, such as `"version": "{version}"`); every match of the pattern, its `{version}` any semantic version, gets the new one. `Cargo.toml` (`[package]` or `[workspace.package]`) and `Cargo.lock` (the local packages at the old version) need no entry: `release prepare` writes them natively, with no network. | A pattern without `{version}` once, or a path outside the repository: file invalid. A file absent, or one nothing matches, at the cut: `release prepare` refuses and the cut creates nothing; `doctor` reports a missing file. |
+| `[[release.changelog_sections]]` | one section per type `asdlc-pr-title.yml` allows by default: `feat` Features, `fix` Bug Fixes, `perf` Performance, `revert` Reverts, `docs` Documentation, `style` Style, `chore` Chores, `refactor` Refactoring, `test` Tests, `build` Build, `ci` Continuous Integration | The CHANGELOG sections of the release notes, in order: a Conventional Commit `type` (lower-case letters) and its `section` title. A type no section lists is left out of the notes and bumps nothing; a breaking change is always listed, first, under `⚠ BREAKING CHANGES`. Keep it equal to the types the PR title check allows (REQ-CI-016). | A type twice, not lower-case, or `[]`: file invalid. |
 | `[[release.angles]]` | required with `[release]`: at least one entry, or `angles = []` written under `[release]` | `key` (required), `title` (default `<Key> review`), `assignee` (participant hint: the angle item is created assigned to it, and is assigned to it again when a coordinator sends its angle PR back, `05-release-cycle.md` §4), `notes` (path). `angles = []` is a release with no QA angle: the bridge opens no angle sub-item and no consolidation item, the brief says no QA angle is configured, and the GO rests on the gate and the conditions that involve no angle (`05-release-cycle.md` §3, §8). Angles configured later apply from the next candidate: a candidate recorded with none keeps none. | No angle written at all: file invalid — the file forgot them, it never means none. An `assignee` unknown to the tracker: the angle item is created unassigned, and unassigned when sent back; `doctor` reports it. |
+
+*Superseded 2026-10-12 (SID-1058)*: `release.release_pr_label`, `release.release_please_authors`, `release.release_please_workflow`, `release.release_please_config` and `release.release_please_manifest` are gone with release-please, and are unknown keys (rule 6); `release.components`, `release.version_component` and `release.gate_record` are refused (rule 2).
 
 ### `[review]`
 

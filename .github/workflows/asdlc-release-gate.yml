@@ -87,7 +87,7 @@ on:
         type: string
         default: '[]'
       changelog-path:
-        description: File copied to release-please-CHANGELOG.md in the pack.
+        description: File copied to CHANGELOG.md in the pack (the CHANGELOG the cut prepared).
         type: string
         default: ''
       evidence-retention-days:
@@ -463,7 +463,7 @@ jobs:
               echo "::error title=Release gate::changelog-path $CHANGELOG_PATH is not in the candidate."
               bad=1
             else
-              cp "$CHANGELOG_PATH" "$EVIDENCE_DIR/release-please-CHANGELOG.md"
+              cp "$CHANGELOG_PATH" "$EVIDENCE_DIR/CHANGELOG.md"
             fi
           fi
           if [ "$bad" -ne 0 ]; then

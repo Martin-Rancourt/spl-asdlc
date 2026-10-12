@@ -2,21 +2,20 @@ name: release-cut
 
 # Example caller of asdlc-release-cut.yml: copy it to .github/workflows/ under
 # this name (`[release] cut_workflow`), replace <owner>, and set the tag
-# patterns and the component to the values of spl-asdlc.toml and of
-# release-please-config.json. The bridge dispatches it with one input,
-# `action`: `open` on the default branch, `candidate` on the release branch in
-# flight (by hand: `gh workflow run release-cut.yml --ref release/<stamp>-utc
-# -f action=candidate`, never `--ref main`). Every other input has a default.
-# Run by hand, `dry_run` prints the plan and pushes nothing.
+# patterns to the values of spl-asdlc.toml. The bridge dispatches it with one
+# input, `action`: `open` on the default branch, `candidate` on the release
+# branch in flight (by hand: `gh workflow run release-cut.yml --ref
+# release/<stamp>-utc -f action=candidate`, never `--ref main`). Every other
+# input has a default. Run by hand, `dry_run` prints the plan and pushes
+# nothing.
 #
-# `open` pushes the release branch and ends; the first candidate is cut when
-# the release-please run that push starts has succeeded: `workflow_run` names
-# the release-please workflow by its `name:`, and that run cuts `candidate`
-# only when no candidate of the staged version exists yet. Nothing waits for
-# another workflow's run, so one runner is enough. GitHub runs this file from
-# the default branch on `workflow_run`; the called workflow refuses a run of
-# another repository or off the release branches. The automatic runs have a
-# concurrency group of their own: a queued dispatch is never replaced by one.
+# `open` creates the release branch, prepares the release on it with the
+# published `spl-asdlc` binary of the channel `spl-asdlc-version` names
+# (`spl-asdlc release prepare`: the version, the version files and the
+# CHANGELOG, from the commits since the last release), commits
+# `chore(release): v<X.Y.Z>` and pushes the branch with its first candidate,
+# rc.1. It waits for no other workflow. `latest` follows the published
+# releases; pin a release tag (`v<X.Y.Z>`) to choose when to move.
 
 on:
   workflow_dispatch:
@@ -41,16 +40,12 @@ on:
         type: string
         default: ''
       dry_run:
-        description: Print the plan; create, tag and push nothing.
+        description: Print the plan; create, commit, tag and push nothing.
         type: boolean
         default: false
-  workflow_run:
-    workflows: [release-please]
-    types: [completed]
-    branches: ['release/**']
 
 concurrency:
-  group: ${{ github.event_name == 'workflow_run' && 'release-cut-after-release-please' || 'release-cut' }}
+  group: release-cut
   cancel-in-progress: false
 
 permissions:
@@ -58,20 +53,19 @@ permissions:
 
 jobs:
   release:
-    # A failed release-please run is its own signal: nothing to cut on it.
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     permissions:
       contents: read
     uses: <owner>/spl-asdlc/.github/workflows/asdlc-release-cut.yml@v1
     with:
-      action: ${{ github.event_name == 'workflow_run' && 'candidate' || inputs.action }}
+      action: ${{ inputs.action }}
       class: ${{ inputs.class }}
       routine-because: ${{ inputs.routine_because }}
       main-merge-because: ${{ inputs.main_merge_because }}
       dry-run: ${{ inputs.dry_run == true }}
       candidate-tag: acme-v{version}-rc.{rc}
       release-tag: acme-v{version}
-      component: acme
+      spl-asdlc-repository: <owner>/spl-asdlc
+      spl-asdlc-version: latest
     secrets:
       SPL_ASDLC_APP_ID: ${{ secrets.SPL_ASDLC_APP_ID }}
       SPL_ASDLC_APP_PRIVATE_KEY: ${{ secrets.SPL_ASDLC_APP_PRIVATE_KEY }}

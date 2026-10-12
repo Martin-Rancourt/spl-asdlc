@@ -30,7 +30,24 @@ pub const FILE_NAME: &str = "spl-asdlc.toml";
 /// release cycle (spec 08, `[release]`).
 pub const DEFAULT_REGISTRY_PATH: &str = "docs/business-rules.md";
 pub const DEFAULT_BRANCH_PREFIX: &str = "release/";
-pub const DEFAULT_RELEASE_PR_LABEL: &str = "autorelease: pending";
+
+/// The CHANGELOG sections `release prepare` writes when the file names none
+/// (`release.changelog_sections`): one per type `asdlc-pr-title.yml` allows
+/// by default, in this order. A type no section names is left out of the
+/// notes; a breaking change is always listed, under its own section first.
+pub const DEFAULT_CHANGELOG_SECTIONS: [(&str, &str); 11] = [
+    ("feat", "Features"),
+    ("fix", "Bug Fixes"),
+    ("perf", "Performance"),
+    ("revert", "Reverts"),
+    ("docs", "Documentation"),
+    ("style", "Style"),
+    ("chore", "Chores"),
+    ("refactor", "Refactoring"),
+    ("test", "Tests"),
+    ("build", "Build"),
+    ("ci", "Continuous Integration"),
+];
 
 /// Canonical statuses of a work item (`docs/spec/03-vocabulary.md`).
 pub const CANONICAL_STATUSES: [&str; 9] = [
@@ -156,11 +173,6 @@ pub struct Release {
     pub go_policy: GoPolicy,
     pub nits: NitsGrouping,
     pub record: String,
-    pub components: Vec<String>,
-    pub version_component: Option<String>,
-    pub release_pr_label: String,
-    pub release_please_authors: Vec<String>,
-    pub gate_record: Option<String>,
     pub bookkeeping_paths: Vec<String>,
     pub registry_path: String,
     pub business_rule_paths: Vec<String>,
@@ -180,18 +192,52 @@ pub struct Release {
     /// `gate_rerun_workflow` to show up before it opens the gate-fix ticket
     /// anyway (the rerun workflow may be absent or broken).
     pub gate_rerun_wait_minutes: u32,
-    pub release_please_workflow: String,
-    /// release-please's configuration and manifest, at the repository root
-    /// unless the product names them otherwise.
-    pub release_please_config: String,
-    pub release_please_manifest: String,
+    /// The files besides Rust's own that `release prepare` writes the
+    /// version into.
+    pub version_files: Vec<VersionFile>,
+    /// The CHANGELOG sections, by Conventional Commit type, in order.
+    pub changelog_sections: Vec<ChangelogSection>,
     pub angles: Vec<Angle>,
 }
 
-impl Release {
-    pub fn multi_component(&self) -> bool {
-        !self.components.is_empty()
-    }
+/// A file `release prepare` writes the next version into
+/// (`[[release.version_files]]`): every match of `pattern`, whose
+/// `{version}` stands for a semantic version, gets the new one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionFile {
+    pub path: String,
+    pub pattern: String,
+}
+
+/// A Conventional Commit type and the CHANGELOG section that lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangelogSection {
+    pub kind: String,
+    pub section: String,
+}
+
+/// The default sections, [`DEFAULT_CHANGELOG_SECTIONS`].
+pub fn default_changelog_sections() -> Vec<ChangelogSection> {
+    DEFAULT_CHANGELOG_SECTIONS
+        .iter()
+        .map(|(k, s)| ChangelogSection {
+            kind: k.to_string(),
+            section: s.to_string(),
+        })
+        .collect()
+}
+
+/// What `release prepare` reads of the repository's file: the shape of the
+/// release, never an identity. It runs in the cut workflow, where no
+/// instance overlay exists, so the instance keys are not required.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Preparation {
+    pub product: String,
+    /// `product.repository`, when the repository's file carries it.
+    pub repository: Option<String>,
+    pub release_tag: String,
+    pub version_files: Vec<VersionFile>,
+    pub changelog_sections: Vec<ChangelogSection>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -383,16 +429,14 @@ impl Config {
             .map_or(DEFAULT_REGISTRY_PATH, |r| r.registry_path.as_str())
     }
 
-    /// The release branch prefix and the release-please label by which the
-    /// PR pass leaves the release machinery's PRs alone (spec 04 §8): the
-    /// configured ones, or their defaults when the project has no release
-    /// cycle, so that a PR shaped like a release PR is never squashed.
-    pub fn release_machinery(&self) -> (&str, &str) {
+    /// The release branch prefix by which the PR pass leaves the release
+    /// machinery's PRs alone (spec 04 §8): the configured one, or its
+    /// default when the project has no release cycle, so that a merge back
+    /// is never squashed.
+    pub fn release_machinery(&self) -> &str {
         self.release
             .as_ref()
-            .map_or((DEFAULT_BRANCH_PREFIX, DEFAULT_RELEASE_PR_LABEL), |r| {
-                (r.branch_prefix.as_str(), r.release_pr_label.as_str())
-            })
+            .map_or(DEFAULT_BRANCH_PREFIX, |r| r.branch_prefix.as_str())
     }
 
     /// Read and validate a file on disk, merged with its instance overlay
@@ -430,6 +474,69 @@ impl Config {
         let config = v.config(raw);
         match config {
             Some(c) if v.errors.is_empty() => Ok(c),
+            _ => Err(ConfigErrors(v.errors)),
+        }
+    }
+
+    /// What `release prepare` needs of the repository's file alone (spec
+    /// 08): the product's name, the release tag pattern, the version files
+    /// and the CHANGELOG sections, each validated as the bridge validates
+    /// it. A file that is not valid TOML or carries an unknown key is
+    /// refused, as always; the instance keys, which an overlay on the
+    /// bridge's host may carry, are not required here.
+    pub fn preparation(text: &str) -> Result<Preparation, ConfigErrors> {
+        let raw: RawConfig = toml::from_str(text).map_err(|e| {
+            ConfigErrors(vec![ConfigError {
+                file: None,
+                key: String::new(),
+                message: format!("not a valid {FILE_NAME}: {}", e.to_string().trim_end()),
+            }])
+        })?;
+        let mut v = Validator::default();
+        let product = match raw.product {
+            Some(p) => {
+                let repository = p.repository;
+                v.required("product.name", p.name).map(|n| (n, repository))
+            }
+            None => {
+                v.err("product", "the [product] table is required");
+                None
+            }
+        };
+        if let Some((name, _)) = &product {
+            if !is_product_name(name) {
+                v.err(
+                    "product.name",
+                    format!("\"{name}\" must be lower-case letters, digits and hyphens"),
+                );
+            }
+        }
+        let Some(release) = raw.release else {
+            v.err(
+                "release",
+                "the file has no [release] section: the project has no release cycle, nothing to prepare",
+            );
+            return Err(ConfigErrors(v.errors));
+        };
+        let name = product.as_ref().map_or("product", |(n, _)| n.as_str());
+        let release_tag = release
+            .release_tag
+            .unwrap_or_else(|| format!("{name}-v{{version}}"));
+        v.template(
+            "release.release_tag",
+            &release_tag,
+            &[("{version}", 1), ("{rc}", 0)],
+        );
+        let version_files = v.version_files(release.version_files);
+        let changelog_sections = v.changelog_sections(release.changelog_sections);
+        match product {
+            Some((product, repository)) if v.errors.is_empty() => Ok(Preparation {
+                product,
+                repository,
+                release_tag,
+                version_files,
+                changelog_sections,
+            }),
             _ => Err(ConfigErrors(v.errors)),
         }
     }
@@ -883,48 +990,18 @@ impl Validator {
             .unwrap_or_else(|| ".spl-asdlc/qa/{candidate}/".to_string());
         self.template("release.record", &record, &[("{candidate}", 1)]);
 
-        let components = self.list("release.components", raw.components, Vec::new(), false);
-        for (i, c) in components.iter().enumerate() {
-            if !is_angle_key(c) {
-                self.err(
-                    &format!("release.components[{i}]"),
-                    format!("\"{c}\" must be lower-case letters, digits and hyphens"),
-                );
-            }
+        // One version per product: a multi-component product, whose
+        // components each ship their own version, is not supported by the
+        // release cycle yet (spec 08), and fails closed.
+        const MULTI: &str = "a multi-component product is not supported by the release cycle yet: it prepares one version per product (`release prepare`); remove the key";
+        if raw.components.as_ref().is_some_and(|c| !c.is_empty()) {
+            self.err("release.components", MULTI);
         }
-        let version_component = self.optional("release.version_component", raw.version_component);
-        match (&version_component, components.is_empty()) {
-            (Some(v), true) => self.err(
-                "release.version_component",
-                format!("\"{v}\" is set but release.components is empty"),
-            ),
-            (Some(v), false) if !components.contains(v) => self.err(
-                "release.version_component",
-                format!("\"{v}\" is not one of release.components"),
-            ),
-            (None, false) => self.err(
-                "release.version_component",
-                "is required for a multi-component product (the component whose release ends the cycle)",
-            ),
-            _ => {}
+        if raw.version_component.is_some() {
+            self.err("release.version_component", MULTI);
         }
-        let release_pr_label = self
-            .optional("release.release_pr_label", raw.release_pr_label)
-            .unwrap_or_else(|| DEFAULT_RELEASE_PR_LABEL.to_string());
-        let release_please_authors = self.list(
-            "release.release_please_authors",
-            raw.release_please_authors,
-            Vec::new(),
-            true,
-        );
-        let gate_record = self.optional("release.gate_record", raw.gate_record);
-        match &gate_record {
-            Some(g) => self.template("release.gate_record", g, &[("{version}", 1), ("{rc}", 0)]),
-            None if !components.is_empty() => self.err(
-                "release.gate_record",
-                "is required for a multi-component product: every component's deployment reads it",
-            ),
-            None => {}
+        if raw.gate_record.is_some() {
+            self.err("release.gate_record", MULTI);
         }
         let bookkeeping_paths = self.list(
             "release.bookkeeping_paths",
@@ -997,20 +1074,8 @@ impl Validator {
             raw.gate_rerun_wait_minutes,
             30,
         );
-        let release_please_workflow = self.workflow(
-            "release.release_please_workflow",
-            raw.release_please_workflow,
-            "release-please.yml",
-        );
-        let release_please_config = self
-            .optional("release.release_please_config", raw.release_please_config)
-            .unwrap_or_else(|| "release-please-config.json".to_string());
-        let release_please_manifest = self
-            .optional(
-                "release.release_please_manifest",
-                raw.release_please_manifest,
-            )
-            .unwrap_or_else(|| ".release-please-manifest.json".to_string());
+        let version_files = self.version_files(raw.version_files);
+        let changelog_sections = self.changelog_sections(raw.changelog_sections);
         Some(Release {
             candidate_tag,
             release_tag,
@@ -1020,11 +1085,6 @@ impl Validator {
             go_policy: go_policy?,
             nits: nits?,
             record,
-            components,
-            version_component,
-            release_pr_label,
-            release_please_authors,
-            gate_record,
             bookkeeping_paths,
             registry_path,
             business_rule_paths,
@@ -1037,9 +1097,8 @@ impl Validator {
             gate_workflow,
             gate_rerun_workflow,
             gate_rerun_wait_minutes,
-            release_please_workflow,
-            release_please_config,
-            release_please_manifest,
+            version_files,
+            changelog_sections,
             angles,
         })
     }
@@ -1265,6 +1324,77 @@ impl Validator {
                     token,
                     events,
                 });
+            }
+        }
+        out
+    }
+
+    /// `[[release.version_files]]`: a relative path and a pattern holding
+    /// `{version}` once, each pair listed once.
+    fn version_files(&mut self, raw: Option<Vec<raw::RawVersionFile>>) -> Vec<VersionFile> {
+        let mut out: Vec<VersionFile> = Vec::new();
+        for (i, f) in raw.unwrap_or_default().into_iter().enumerate() {
+            let key = format!("release.version_files[{i}]");
+            let path = self.required(&format!("{key}.path"), f.path);
+            let pattern = self.required(&format!("{key}.pattern"), f.pattern);
+            if let Some(p) = &path {
+                if p.starts_with('/')
+                    || p.contains('\\')
+                    || p.split('/').any(|s| s.is_empty() || s == "." || s == "..")
+                {
+                    self.err(
+                        &format!("{key}.path"),
+                        format!("\"{p}\" must be a path inside the repository (`dir/file`)"),
+                    );
+                }
+            }
+            if let Some(p) = &pattern {
+                self.template(&format!("{key}.pattern"), p, &[("{version}", 1)]);
+            }
+            if let (Some(path), Some(pattern)) = (path, pattern) {
+                let entry = VersionFile { path, pattern };
+                if out.contains(&entry) {
+                    self.err(&key, "is listed twice");
+                } else {
+                    out.push(entry);
+                }
+            }
+        }
+        out
+    }
+
+    /// `[[release.changelog_sections]]`: a lower-case type, each listed
+    /// once, and a section title; absent, the defaults.
+    fn changelog_sections(
+        &mut self,
+        raw: Option<Vec<raw::RawChangelogSection>>,
+    ) -> Vec<ChangelogSection> {
+        let Some(raw) = raw else {
+            return default_changelog_sections();
+        };
+        if raw.is_empty() {
+            self.err(
+                "release.changelog_sections",
+                "must name at least one type (leave the key out for the defaults)",
+            );
+        }
+        let mut out: Vec<ChangelogSection> = Vec::new();
+        for (i, s) in raw.into_iter().enumerate() {
+            let key = format!("release.changelog_sections[{i}]");
+            let kind = self.required(&format!("{key}.type"), s.kind);
+            let section = self.required(&format!("{key}.section"), s.section);
+            if let Some(k) = &kind {
+                if k.is_empty() || !k.chars().all(|c| c.is_ascii_lowercase()) {
+                    self.err(
+                        &format!("{key}.type"),
+                        format!("\"{k}\" must be a Conventional Commit type (lower-case letters)"),
+                    );
+                } else if out.iter().any(|o| &o.kind == k) {
+                    self.err(&format!("{key}.type"), format!("\"{k}\" is listed twice"));
+                }
+            }
+            if let (Some(kind), Some(section)) = (kind, section) {
+                out.push(ChangelogSection { kind, section });
             }
         }
         out

@@ -117,6 +117,12 @@ pub trait GitHub {
     fn update_branch(&self, repo: &RepoSlug, number: u64, head_sha: &str) -> Write<()>;
     fn delete_branch(&self, repo: &RepoSlug, branch: &str) -> Write<()>;
     fn create_branch(&self, repo: &RepoSlug, branch: &str, sha: &str) -> Write<()>;
+    /// Create the annotated tag `tag` on the commit `sha`, under the
+    /// bridge's identity: the tag object, then its ref. GitHub refuses a tag
+    /// that exists.
+    fn create_tag(&self, repo: &RepoSlug, tag: &str, sha: &str, message: &str) -> Write<()>;
+    /// Publish the GitHub release of an existing tag, with its notes.
+    fn create_release(&self, repo: &RepoSlug, tag: &str, name: &str, body: &str) -> Write<Release>;
     fn add_labels(&self, repo: &RepoSlug, number: u64, labels: &[String]) -> Write<()>;
     /// Removing a label the PR does not carry is a success.
     fn remove_label(&self, repo: &RepoSlug, number: u64, label: &str) -> Write<()>;

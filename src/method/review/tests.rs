@@ -31,26 +31,25 @@ fn facts<'a>(
 // ---- exclusions (REQ-MERGE-003..005) ----
 
 #[test]
-fn a_release_please_pr_is_never_touched() {
-    let mut pr = pull_request(1);
-    pr.head_ref = "release-please--branches--release/2026-10-05-14-03-utc".into();
-    assert!(excluded_from_merge_pass(&pr, "release/", "autorelease: pending").is_some());
-    let mut titled = pull_request(2);
-    titled.title = "chore(main): release acme 1.2.3".into();
-    assert!(excluded_from_merge_pass(&titled, "release/", "autorelease: pending").is_some());
-    let mut labelled = pull_request(3);
-    labelled.labels = s(&["autorelease: pending"]);
-    assert!(excluded_from_merge_pass(&labelled, "release/", "autorelease: pending").is_some());
-}
-
-#[test]
-fn a_gate_record_pr_is_never_merged_by_the_pass() {
-    let mut pr = pull_request(1);
-    pr.head_ref = "release-record/acme-v1.2.3-rc.1".into();
-    assert_eq!(
-        excluded_from_merge_pass(&pr, "release/", "autorelease: pending"),
-        Some("gate-record PR — the release cycle merges it")
-    );
+fn a_release_shaped_pr_is_an_ordinary_pr_now_that_the_cycle_has_no_release_pr() {
+    // The cycle tags its release itself (spec 05 §9): a PR from a
+    // release-please head, a release title or label, or a former gate-record
+    // head is judged like any other PR, never merged on a GO.
+    for (head, title, labels) in [
+        (
+            "release-please--branches--main",
+            "chore(main): release acme 1.2.3",
+            vec![],
+        ),
+        ("feat/x", "feat: x", s(&["autorelease: pending"])),
+        ("release-record/acme-v1.2.3-rc.1", "docs: record", vec![]),
+    ] {
+        let mut pr = pull_request(1);
+        pr.head_ref = head.into();
+        pr.title = title.into();
+        pr.labels = labels;
+        assert_eq!(excluded_from_merge_pass(&pr, "release/"), None, "{head}");
+    }
 }
 
 #[test]
@@ -58,23 +57,23 @@ fn a_merge_back_is_recognised_by_its_head_never_its_base() {
     let mut back = pull_request(1);
     back.head_ref = "release/2026-10-05-14-03-utc".into();
     assert!(
-        excluded_from_merge_pass(&back, "release/", "x")
+        excluded_from_merge_pass(&back, "release/")
             .unwrap()
             .contains("merge back")
     );
     let mut hotfix = pull_request(2);
     hotfix.base_ref = "release/2026-10-05-14-03-utc".into();
     assert_eq!(
-        excluded_from_merge_pass(&hotfix, "release/", "x"),
+        excluded_from_merge_pass(&hotfix, "release/"),
         None,
         "a hotfix is ordinary"
     );
     let mut resolution = pull_request(3);
     resolution.head_ref = "chore/merge-back-2026-10-05".into();
-    assert!(excluded_from_merge_pass(&resolution, "release/", "x").is_some());
+    assert!(excluded_from_merge_pass(&resolution, "release/").is_some());
     let mut backlog = pull_request(4);
     backlog.head_ref = "chore/merge-backlog".into();
-    assert_eq!(excluded_from_merge_pass(&backlog, "release/", "x"), None);
+    assert_eq!(excluded_from_merge_pass(&backlog, "release/"), None);
 }
 
 #[test]
@@ -82,7 +81,7 @@ fn an_unreadable_head_is_treated_as_a_merge_back() {
     let mut pr = pull_request(1);
     pr.head_ref = String::new();
     assert!(
-        excluded_from_merge_pass(&pr, "release/", "x")
+        excluded_from_merge_pass(&pr, "release/")
             .unwrap()
             .contains("could not be read")
     );
@@ -93,7 +92,7 @@ fn an_angle_pr_belongs_to_the_release_cycle() {
     let mut pr = pull_request(1);
     pr.head_ref = "qa/acme-v1.2.3-rc.1/security".into();
     pr.base_ref = "release/2026-10-05-14-03-utc".into();
-    assert!(excluded_from_merge_pass(&pr, "release/", "x").is_some());
+    assert!(excluded_from_merge_pass(&pr, "release/").is_some());
 }
 
 // ---- up to date (REQ-MERGE-016) ----

@@ -1296,6 +1296,7 @@ impl GitHub for RestGitHub {
             draft: v["draft"].as_bool().unwrap_or(false),
             prerelease: v["prerelease"].as_bool().unwrap_or(false),
             published_at: time_of(&v, "published_at"),
+            author: actor_rest(&v["author"]),
         })
     }
 
@@ -1491,6 +1492,54 @@ impl GitHub for RestGitHub {
             &[201],
         )
         .map(|_| ())
+    }
+
+    fn create_tag(&self, repo: &RepoSlug, tag: &str, sha: &str, message: &str) -> Write<()> {
+        let object = self.write(
+            repo,
+            &format!("tag object {tag}"),
+            "POST",
+            &format!("/repos/{repo}/git/tags"),
+            Some(json!({"tag": tag, "message": message, "object": sha, "type": "commit"})),
+            &[201],
+        )?;
+        let object_sha = object["sha"].as_str().unwrap_or_default().to_string();
+        if object_sha.is_empty() {
+            return Err(WriteError {
+                what: format!("tag object {tag}"),
+                status: Some(201),
+                detail: "GitHub returned no tag object sha".to_string(),
+            });
+        }
+        self.write(
+            repo,
+            &format!("creation of tag {tag}"),
+            "POST",
+            &format!("/repos/{repo}/git/refs"),
+            Some(json!({"ref": format!("refs/tags/{tag}"), "sha": object_sha})),
+            &[201],
+        )
+        .map(|_| ())
+    }
+
+    fn create_release(&self, repo: &RepoSlug, tag: &str, name: &str, body: &str) -> Write<Release> {
+        let v = self.write(
+            repo,
+            &format!("release {tag}"),
+            "POST",
+            &format!("/repos/{repo}/releases"),
+            Some(json!({"tag_name": tag, "name": name, "body": body, "draft": false, "prerelease": false})),
+            &[201],
+        )?;
+        Ok(Release {
+            tag: str_of(&v, "tag_name"),
+            url: str_of(&v, "html_url"),
+            body: str_of(&v, "body"),
+            draft: v["draft"].as_bool().unwrap_or(false),
+            prerelease: v["prerelease"].as_bool().unwrap_or(false),
+            published_at: time_of(&v, "published_at"),
+            author: actor_rest(&v["author"]),
+        })
     }
 
     fn add_labels(&self, repo: &RepoSlug, number: u64, labels: &[String]) -> Write<()> {

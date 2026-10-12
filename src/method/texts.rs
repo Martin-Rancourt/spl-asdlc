@@ -176,7 +176,7 @@ pub fn release_description(
     };
     format!(
         "{marker}\n\n## Goal\nDeliver {product} {v} to production: the gate green on the latest candidate,{angle_condition} \
-         no open blocker, the release-please note covering the range, the fixes in the candidate. The GO belongs \
+         no open blocker, the fixes in the candidate, nothing but its own QA reports after it. The GO belongs \
          to nobody: it is computed. Nobody closes this item by hand: the closure does.\n\n\
          ## Release note\n\n_{placeholder}_\n\n\
          ## Candidates\n\n\
@@ -732,9 +732,6 @@ pub struct Brief {
     pub evidence_url: Option<String>,
     pub tickets: Vec<BriefTicket>,
     pub untracked: Vec<String>,
-    /// The commits of the range release-please never reads (`<sha12>`
-    /// and subject): not in the release note by construction (spec 05 §8).
-    pub not_in_note: Vec<String>,
     pub rule_files_touched: Vec<String>,
     /// The candidate has no QA angle (`release.angles = []`).
     pub no_qa_angle: bool,
@@ -768,7 +765,7 @@ pub fn brief(b: &Brief) -> String {
     }
     if b.no_qa_angle {
         out.push_str(
-            "\n#### QA angles\n\nNo QA angle is configured (`release.angles = []`): no angle sub-item and no consolidation item are opened for this candidate. The GO rests on the gate green on the latest candidate, no open blocker, the release-please note covering the range and the staged version being the one judged.\n",
+            "\n#### QA angles\n\nNo QA angle is configured (`release.angles = []`): no angle sub-item and no consolidation item are opened for this candidate. The GO rests on the gate green on the latest candidate, no open blocker and nothing but bookkeeping after the candidate.\n",
         );
     }
     out.push_str("\n#### Tickets included\n\n");
@@ -824,15 +821,6 @@ pub fn brief(b: &Brief) -> String {
         out.push_str("\n#### No linked ticket\n\n");
         for u in &b.untracked {
             out.push_str(&format!("- {u}\n"));
-        }
-    }
-    if !b.not_in_note.is_empty() {
-        out.push_str(&format!(
-            "\n#### Not in the release note by construction\n\nrelease-please reads the history newest first and stops at the last release's commit (`{}`). These commits of the range were committed before that commit without being part of it (merged into the default branch while that cycle was open, then brought in by its merge-back): release-please never reads them, so its note cannot name them. They ship with this release and do not hold the GO.\n\n",
-            b.last_release.as_deref().unwrap_or("?")
-        ));
-        for c in &b.not_in_note {
-            out.push_str(&format!("- {c}\n"));
         }
     }
     if !b.rule_files_touched.is_empty() {
@@ -973,66 +961,6 @@ pub fn stagnation_message(
     }
     out.push_str(&format!("\nRelease item: {release} — {url}"));
     out
-}
-
-/// The gate record (REQ-REL-078); the `Blockers-Carried:` line is the GO's.
-#[allow(clippy::too_many_arguments)]
-pub fn gate_record(
-    version: &str,
-    candidate: &str,
-    sha: &str,
-    branch: &str,
-    release: &str,
-    release_url: &str,
-    computed_at: &str,
-    go: &crate::method::release::go::GoDecision,
-    angles: &[(String, String)],
-    prs: &[(String, String, u64)],
-) -> Option<String> {
-    // A record only ever attests a computed GO.
-    if !go.go {
-        return None;
-    }
-    let blockers_carried = go.blockers_carried();
-    let rows: String = angles
-        .iter()
-        .map(|(a, s)| format!("| {a} | {s} |\n"))
-        .collect();
-    let qa = if angles.is_empty() {
-        "The gate is green on the candidate, no QA angle is configured, no blocker is open.\n"
-            .to_string()
-    } else {
-        format!(
-            "The gate is green on the candidate, every angle PR is merged, no blocker is open.\n\n| angle | state |\n|---|---|\n{rows}"
-        )
-    };
-    let prs: String = prs
-        .iter()
-        .map(|(c, v, n)| format!("- `{c}` {v}: #{n}\n"))
-        .collect();
-    Some(format!(
-        "# Release v{version}\n\n{marker}\n\n- Candidate: {candidate} ({sha12}) on {branch}\n- Release item: [{release}]({release_url})\n\
-         - GO computed at {computed_at} UTC by the release pass\n\nBlockers-Carried: {blockers_carried}\n\n## Computed GO\n\n\
-         {qa}\n## Release PRs of the cycle\n\n{prs}",
-        marker = record_marker(candidate),
-        sha12 = short(sha),
-    ))
-}
-
-pub fn record_marker(candidate: &str) -> String {
-    marker("release-record", &[("candidate", candidate)])
-}
-
-/// A record attests `candidate` iff its marker is a line of its own and it
-/// carries exactly one `Blockers-Carried:` line whose value is `none`.
-pub fn record_names(text: &str, candidate: &str) -> bool {
-    let m = record_marker(candidate);
-    let has_marker = text.lines().any(|l| l.trim() == m);
-    let carried: Vec<&str> = text
-        .lines()
-        .filter_map(|l| l.strip_prefix("Blockers-Carried:"))
-        .collect();
-    has_marker && carried.len() == 1 && carried[0].trim().eq_ignore_ascii_case("none")
 }
 
 /// The comment on a ticket when one of its PRs is merged (REQ-MERGE-062 as
