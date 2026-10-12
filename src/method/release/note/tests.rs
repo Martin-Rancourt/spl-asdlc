@@ -60,6 +60,7 @@ fn an_orphan_pr_is_described_by_the_changelog_then_its_description() {
         Untracked::Commit(CommitSummary {
             sha: "abcdef01abcdef01".into(),
             subject: "fix: direct".into(),
+            committed_at: None,
         }),
     ];
     let b = block("rc", &[], &untracked, Some(changelog));

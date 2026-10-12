@@ -145,6 +145,10 @@ pub struct ReviewPlan {
     pub holds: Vec<String>,
     /// Sensitive paths touched (also used by `human_approval`).
     pub sensitive_hits: Vec<String>,
+    /// The diff was read, so every path trigger ran: the angles are all the
+    /// current configuration gives the PR, and an angle missing from them is
+    /// one it no longer asks for (spec 04 §11).
+    pub diff_read: bool,
 }
 
 fn push_unique(list: &mut Vec<String>, item: &str) {
@@ -185,6 +189,7 @@ pub fn plan(facts: &ReviewFacts<'_>, review: &config::Review) -> ReviewPlan {
             }
         }
         Some(paths) => {
+            plan.diff_read = true;
             match facts.sensitive {
                 SensitivePaths::NotDeclared => {}
                 SensitivePaths::Invalid(why) => {

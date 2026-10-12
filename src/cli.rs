@@ -373,6 +373,7 @@ fn tick(
             now: crate::github::Timestamp::now(),
             deadline: None,
             dry_run,
+            hands_off: None,
         };
         let mut log = match log_file {
             Some(p) => ActionLog::at(p),
@@ -400,6 +401,9 @@ fn tick(
             let _ = writeln!(err, "{}: {f}", c.repo);
         }
         for line in report.waiting_lines() {
+            let _ = writeln!(out, "{}: {line}", c.repo);
+        }
+        for line in report.hands_off_lines() {
             let _ = writeln!(out, "{}: {line}", c.repo);
         }
         let _ = writeln!(out, "{}: {}", c.repo, report.summary());
@@ -452,6 +456,7 @@ fn release(
         now: crate::github::Timestamp::now(),
         deadline: None,
         dry_run: false,
+        hands_off: None,
     };
     let mut log = match crate::action_log::ActionLog::default_path(&c.repo, &env) {
         Some(p) => crate::action_log::ActionLog::at(p),

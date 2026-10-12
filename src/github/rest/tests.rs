@@ -351,7 +351,9 @@ fn a_comparison_reads_every_commit_and_refuses_a_cut_file_list() {
         &url(path),
         200,
         r#"{"status":"ahead","ahead_by":2,"behind_by":0,"total_commits":2,
-            "commits":[{"sha":"a1","commit":{"message":"feat: one\n\nbody"}}],
+            "base_commit":{"sha":"r0","commit":{"committer":{"date":"2026-10-11T13:46:10Z"}}},
+            "commits":[{"sha":"a1","commit":{"message":"feat: one\n\nbody",
+                "committer":{"date":"2026-10-11T12:19:55Z"}}}],
             "files":[{"filename":"src/x.rs"}]}"#,
     );
     t.on(
@@ -372,6 +374,17 @@ fn a_comparison_reads_every_commit_and_refuses_a_cut_file_list() {
         vec!["feat: one", "fix: two"]
     );
     assert_eq!(c.files, vec!["src/x.rs"]);
+    // The dates that order release-please's walk; one GitHub did not give
+    // is unknown, never a guess.
+    assert_eq!(
+        c.base_committed_at,
+        Timestamp::parse("2026-10-11T13:46:10Z")
+    );
+    assert_eq!(
+        c.commits[0].committed_at,
+        Timestamp::parse("2026-10-11T12:19:55Z")
+    );
+    assert_eq!(c.commits[1].committed_at, None);
 
     let (gh, t) = client();
     let files: Vec<String> = (0..300)

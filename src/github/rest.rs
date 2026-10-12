@@ -854,6 +854,7 @@ impl GitHub for RestGitHub {
                 .next()
                 .unwrap_or("")
                 .to_string(),
+            committed_at: time_of(&c["commit"]["committer"], "date"),
         };
         let mut commits: Vec<CommitSummary> = first["commits"]
             .as_array()
@@ -896,6 +897,7 @@ impl GitHub for RestGitHub {
             behind_by: first["behind_by"].as_u64().unwrap_or(0),
             commits,
             files,
+            base_committed_at: time_of(&first["base_commit"]["commit"]["committer"], "date"),
         })
     }
 

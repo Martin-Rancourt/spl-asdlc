@@ -123,6 +123,7 @@ pub fn pass_with(host: &Host, config: &Config, github: &dyn GitHub) -> PassOutco
         now: Timestamp::now(),
         deadline: host.budget.map(|b| started + b),
         dry_run: false,
+        hands_off: None,
     };
     let mut log = match path {
         Some(p) => ActionLog::at(p),
@@ -135,6 +136,9 @@ pub fn pass_with(host: &Host, config: &Config, github: &dyn GitHub) -> PassOutco
         message.push_str(&format!("; the action log could not be written: {e}"));
     }
     for line in report.waiting_lines() {
+        message.push_str(&format!("\n{repo}: {line}"));
+    }
+    for line in report.hands_off_lines() {
         message.push_str(&format!("\n{repo}: {line}"));
     }
     PassOutcome {

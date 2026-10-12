@@ -631,6 +631,28 @@ fn tracker_checks(config: &Config, tracker: &dyn Tracker) -> Vec<Check> {
             Err(e) => check(name, Verdict::Missing, e.to_string()),
         });
     }
+    // The hands-off label: never required. A person adds it to an item (or,
+    // under the same name, to a PR) to take it over by hand; the bridge never
+    // creates it.
+    let name = "bridge.hands_off_label";
+    let label = &config.bridge.hands_off_label;
+    out.push(match tracker.label_exists(label) {
+        Ok(true) => check(
+            name,
+            Verdict::Ok,
+            format!("{label}: an item or PR carrying it is left to people; it exists in the tracker"),
+        ),
+        Ok(false) => check(
+            name,
+            Verdict::Ok,
+            format!("{label}: an item or PR carrying it is left to people; it does not exist in the tracker, which is fine until someone takes an item over"),
+        ),
+        Err(e) => check(
+            name,
+            Verdict::Ok,
+            format!("{label}: an item or PR carrying it is left to people; whether the tracker has it could not be read ({e}), and it is never required"),
+        ),
+    });
     // The participants the bridge assigns items to: an unknown one leaves
     // its items unassigned, so it is reported here rather than at a tick.
     for (key, name) in participants(config) {
@@ -831,6 +853,32 @@ mod tests {
         assert_eq!(
             label.to_string(),
             "release.escalation_label: ok — blocked-by-human exists in the tracker"
+        );
+    }
+
+    #[test]
+    fn the_hands_off_label_is_reported_and_never_required() {
+        let c = config();
+        let t = FakeTracker::default();
+        let line = |t: &FakeTracker| {
+            tracker_checks(&c, t)
+                .into_iter()
+                .find(|c| c.name == "bridge.hands_off_label")
+                .unwrap_or_else(|| panic!("no hands-off line"))
+        };
+        let absent = line(&t);
+        assert_eq!(absent.verdict, Verdict::Ok, "{absent}");
+        assert!(
+            absent.detail.starts_with("spl-asdlc:hands-off: ")
+                && absent.detail.contains("does not exist in the tracker"),
+            "{absent}"
+        );
+        t.ensure_label("spl-asdlc:hands-off").unwrap();
+        let present = line(&t);
+        assert_eq!(present.verdict, Verdict::Ok, "{present}");
+        assert!(
+            present.detail.ends_with("it exists in the tracker"),
+            "{present}"
         );
     }
 

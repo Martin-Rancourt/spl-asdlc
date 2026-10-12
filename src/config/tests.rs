@@ -108,6 +108,7 @@ fn a_minimal_file_gets_every_documented_default() {
     assert_eq!(c.bridge.poll_minutes, 5);
     assert_eq!(c.bridge.github_identity, GithubIdentity::App);
     assert_eq!(c.bridge.sweep_hours, 24);
+    assert_eq!(c.bridge.hands_off_label, "spl-asdlc:hands-off");
     assert_eq!(c.tracker.link_fallback, LinkFallback::None);
     assert!(c.notify.is_empty());
 }
@@ -539,6 +540,19 @@ fn non_positive_counts_are_refused_never_defaulted_silently() {
     assert_refused_with(
         &format!("{MINIMAL}\n[bridge]\npoll_minutes = -5\n"),
         "bridge.poll_minutes: must be a positive integer",
+    );
+}
+
+#[test]
+fn the_hands_off_label_is_configurable_and_never_empty() {
+    let c = Config::parse(&format!(
+        "{MINIMAL}\n[bridge]\nhands_off_label = \"by-hand\"\n"
+    ))
+    .expect("a hands-off label is valid");
+    assert_eq!(c.bridge.hands_off_label, "by-hand");
+    assert_refused_with(
+        &format!("{MINIMAL}\n[bridge]\nhands_off_label = \" \"\n"),
+        "bridge.hands_off_label: must not be empty when given",
     );
 }
 

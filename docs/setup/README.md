@@ -7,6 +7,8 @@ Four steps, in this order. `spl-asdlc doctor` verifies every point below and nam
 3. `tracker-linear.md` or `tracker-livela.md` — the service identity and the statuses.
 4. `bridge.md` — where the bridge runs (a tracker's runner, a cron, a timer, a skill) and with which secrets.
 
+Once it runs, any step of the flow can be taken over by hand: `manual-gestures.md` gives each step's command or click, what the bridge does at its next tick, and the commands an AI session needs permission for to take them on the owner's go.
+
 ## Start light, add layers
 
 A project starts light and adds the method's layers as it grows. Each layer is a few keys in `spl-asdlc.toml` (the template shows them, commented, under "Layers") plus, for the release cycle, the setup steps of `repository.md` it needs. There is no mode to set: the configuration's keys are the choice.

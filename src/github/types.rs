@@ -234,6 +234,9 @@ impl Commit {
 pub struct CommitSummary {
     pub sha: String,
     pub subject: String,
+    /// The committer date, which orders release-please's walk of the
+    /// history; `None` when GitHub did not give it.
+    pub committed_at: Option<Timestamp>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -256,6 +259,9 @@ pub struct Comparison {
     pub commits: Vec<CommitSummary>,
     /// Files changed between the merge base and `head`.
     pub files: Vec<String>,
+    /// The committer date of `base`'s commit; `None` when GitHub did not
+    /// give it.
+    pub base_committed_at: Option<Timestamp>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

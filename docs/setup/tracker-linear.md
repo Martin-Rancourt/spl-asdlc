@@ -2,7 +2,7 @@
 
 - **Service identity**: a dedicated member of the workspace named after the product's service identity (the reference installation names it `spl-asdlc`), with an API key stored where the bridge runs. Every transition and comment the bridge writes is attributed to it, never to a person or to an LLM agent.
 - **Statuses**: the team's workflow must contain a state named exactly as each canonical status (`docs/spec/03-vocabulary.md`), case included: "To Deploy", not "To deploy". The configuration maps no status. "To Deploy" and "Post Deploy" are usually created for this purpose; rename any state whose name differs.
-- **Labels**: `qa-finding`; the bridge creates `release/<product>-v<version>` labels as it goes, and the escalation label (`release.escalation_label`, default `blocked-by-human`) at the first escalation if the team lacks it.
+- **Labels**: `qa-finding`; the bridge creates `release/<product>-v<version>` labels as it goes, and the escalation label (`release.escalation_label`, default `blocked-by-human`) at the first escalation if the team lacks it. The hands-off label (`bridge.hands_off_label`, default `spl-asdlc:hands-off`) is never created by the bridge: create it when someone first takes an issue over by hand (spec 07, "Hands off"); `doctor` says whether it exists.
 - **PR ↔ ticket link**: Linear's GitHub integration attaches a PR to an issue when the branch name or the PR body carries the issue id; the bridge reads attachments by PR URL. Turn **off** any Linear automation that moves issues on PR events: the bridge is the only writer of statuses.
 - **Team key**: in `spl-asdlc.toml` `[tracker] team`.
 

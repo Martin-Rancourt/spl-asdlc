@@ -380,6 +380,7 @@ fn the_brief_names_tickets_criteria_rules_and_distinguishes_first_from_unresolva
             BriefTicket { id: "ABC-2".into(), title: "Two".into(), state: "?".into(), prs: vec![], description: None },
         ],
         untracked: vec!["PR #12".into(), "commit abcdef01abcd".into()],
+        not_in_note: vec![],
         rule_files_touched: vec!["docs/business-rules.md".into()],
         no_qa_angle: false,
     };
@@ -389,6 +390,13 @@ fn the_brief_names_tickets_criteria_rules_and_distinguishes_first_from_unresolva
     assert!(text.contains("Business rules cited: BR-ACME-001"));
     assert!(text.contains("(ticket unreadable: its criteria are not shown)"));
     assert!(text.contains("Each rule touched must have a named test that is green."));
+    assert!(!text.contains("Not in the release note"), "none to list");
+    b.not_in_note = vec!["`abcdef012345` fix: merged during the last cycle (#47)".into()];
+    let text = brief(&b);
+    assert!(text.contains(
+        "#### Not in the release note by construction\n\nrelease-please reads the history newest first and stops at the last release's commit (`acme-v1.2.2`)."
+    ));
+    assert!(text.contains("They ship with this release and do not hold the GO.\n\n- `abcdef012345` fix: merged during the last cycle (#47)\n"));
     b.previous_candidate = None;
     assert!(brief(&b).contains("first candidate of this version"));
     b.last_release = None;
@@ -889,6 +897,7 @@ fn a_release_with_no_qa_angle_says_so_in_its_texts() {
         evidence_url: None,
         tickets: vec![],
         untracked: vec![],
+        not_in_note: vec![],
         rule_files_touched: vec![],
         no_qa_angle: true,
     };

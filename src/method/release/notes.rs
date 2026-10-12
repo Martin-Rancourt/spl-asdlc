@@ -1,6 +1,7 @@
 //! The release-please note and the range it must cover (REQ-REL-020..024,
-//! REQ-REL-073): every Conventional commit of the candidate's range is named
-//! in the note; unreadable is a gap, never coverage.
+//! REQ-REL-073): every Conventional commit of the candidate's range that
+//! release-please reads is named in the note; unreadable is a gap, never
+//! coverage.
 
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
@@ -9,7 +10,7 @@ use regex::Regex;
 use serde_json::Value;
 
 use super::shape::Version;
-use crate::github::CommitSummary;
+use crate::github::{CommitSummary, Timestamp};
 
 const ALL_TYPES: [&str; 11] = [
     "feat", "fix", "perf", "revert", "docs", "style", "chore", "refactor", "test", "build", "ci",
@@ -60,6 +61,40 @@ pub fn missing_entries(
         .filter(|c| owed(c, types) && !named(c, note))
         .cloned()
         .collect()
+}
+
+/// The commits of a range split by release-please's walk (spec 05 §8,
+/// REQ-REL-020).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Walk {
+    /// The commits release-please reads: the note owes them a line.
+    pub seen: Vec<CommitSummary>,
+    /// The commits release-please never reads: not in the note by
+    /// construction. They ship, and never hold the GO.
+    pub unseen: Vec<CommitSummary>,
+}
+
+/// Split a range (the Git range, REQ-REL-018) by what release-please reads
+/// of it. release-please lists the branch's history newest first, in
+/// `git log` order (by committer date), and stops at the previous release's
+/// commit. A commit of the range committed before that commit is listed
+/// after it and never read: one merged into the default branch while the
+/// previous cycle was open, which the merge-back brought in. A date that
+/// cannot be read relaxes nothing: the commit is owed.
+pub fn walk(commits: &[CommitSummary], release_committed_at: Option<Timestamp>) -> Walk {
+    let mut out = Walk::default();
+    for c in commits {
+        let before_release = matches!(
+            (c.committed_at, release_committed_at),
+            (Some(at), Some(release)) if at < release
+        );
+        if before_release {
+            out.unseen.push(c.clone());
+        } else {
+            out.seen.push(c.clone());
+        }
+    }
+    out
 }
 
 fn owed(c: &CommitSummary, types: Option<&BTreeSet<String>>) -> bool {

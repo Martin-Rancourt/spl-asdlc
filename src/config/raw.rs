@@ -130,6 +130,7 @@ pub(super) struct RawBridge {
     pub poll_minutes: Option<i64>,
     pub github_identity: Option<String>,
     pub sweep_hours: Option<i64>,
+    pub hands_off_label: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
