@@ -51,9 +51,11 @@ fn cmp(status: CompareStatus, commits: &[&str], files: &[&str]) -> crate::github
             .map(|c| CommitSummary {
                 sha: c.to_string(),
                 subject: format!("feat: {c}"),
+                committed_at: None,
             })
             .collect(),
         files: files.iter().map(|f| f.to_string()).collect(),
+        base_committed_at: None,
     })
 }
 
@@ -964,6 +966,115 @@ fn a_release_pr_staging_another_version_is_no_go() {
     w.open_on_branch(vec![release_pr(&w, "1.3.0")]);
     w.tick();
     assert!(!w.github.writes().iter().any(|l| l.starts_with("merge")));
+}
+
+/// The v0.2.0 → v0.3.0 history shape (spec 05 §8): the previous release
+/// commit (`acme-v1.1.0`, 09:46) squash-merged on its release branch; two
+/// fixes merged into `main` at 09:19 and 09:28 while that cycle was open;
+/// the merge-back at 10:10, then the feature of PR #5 and `extra`. The Git
+/// range holds them all, but release-please lists the history newest first
+/// and stops at the release commit: it never reads the two fixes.
+fn merged_back_range(w: &World, extra: &[(&str, &str, &str)]) {
+    let commit = |sha: &str, subject: &str, at: &str| CommitSummary {
+        sha: sha.into(),
+        subject: subject.into(),
+        committed_at: Timestamp::parse(at),
+    };
+    let mut commits = vec![
+        commit(
+            "f47",
+            "fix(config): the QA report is release bookkeeping (#47)",
+            "2026-10-05T09:19:55Z",
+        ),
+        commit(
+            "f48",
+            "fix(config): the QA report is release bookkeeping (#48)",
+            "2026-10-05T09:28:52Z",
+        ),
+        commit(
+            "mb",
+            "Merge pull request #53 from example-org/release/2026-10-04-16-54-utc",
+            "2026-10-05T10:10:09Z",
+        ),
+        commit("m1", "feat: m1", "2026-10-05T10:30:00Z"),
+    ];
+    commits.extend(extra.iter().map(|(s, subject, at)| commit(s, subject, at)));
+    let mut s = w.github.state.borrow_mut();
+    for c in &commits {
+        if c.sha != "m1" {
+            s.commit_pulls
+                .insert((repo(), c.sha.clone()), Ok(Vec::new()));
+        }
+    }
+    s.compares.insert(
+        (repo(), "acme-v1.1.0".into(), "c1".into()),
+        Ok(Comparison {
+            status: CompareStatus::Diverged,
+            ahead_by: commits.len() as u64,
+            behind_by: 1,
+            commits,
+            files: vec!["src/a.rs".into()],
+            base_committed_at: Timestamp::parse("2026-10-05T09:46:10Z"),
+        }),
+    );
+}
+
+#[test]
+fn a_commit_release_please_cannot_read_never_holds_the_go_and_the_brief_lists_it() {
+    let w = World::new();
+    merged_back_range(&w, &[]);
+    w.tick();
+    let briefs = w.briefs(CAND);
+    assert_eq!(briefs.len(), 1);
+    let brief = &briefs[0];
+    let (_, listed) = brief
+        .split_once("#### Not in the release note by construction")
+        .expect("the brief lists what release-please cannot read");
+    assert!(listed.contains("`acme-v1.1.0`"), "{brief}");
+    assert!(listed.contains("- `f47` fix(config)"), "{brief}");
+    assert!(listed.contains("- `f48` fix(config)"), "{brief}");
+    assert!(!listed.contains("`m1`"), "{brief}");
+    // release-please's note names PR #5's feature, never #47 nor #48: the GO
+    // holds and the release PR is merged.
+    all_angles_merged(&w);
+    let rp = release_pr(&w, "1.2.0");
+    w.open_on_branch(vec![rp.clone()]);
+    let r = w.tick();
+    assert!(
+        w.github.writes().contains(&format!(
+            "merge example-org/acme#40 at {} squash",
+            rp.head_sha
+        )),
+        "{r:?} {:?}",
+        w.github.writes()
+    );
+}
+
+#[test]
+fn a_commit_release_please_reads_and_its_note_omits_still_holds_the_go() {
+    let w = World::new();
+    merged_back_range(
+        &w,
+        &[(
+            "f55",
+            "fix: committed after the release commit (#55)",
+            "2026-10-05T10:40:00Z",
+        )],
+    );
+    w.tick();
+    all_angles_merged(&w);
+    w.open_on_branch(vec![release_pr(&w, "1.2.0")]);
+    w.tick();
+    assert!(!w.github.writes().iter().any(|l| l.starts_with("merge")));
+    let (_, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
+    assert!(!d.go);
+    let said = d.reasons.join("\n");
+    assert!(
+        said.contains("f55 fix: committed after the release commit (#55)"),
+        "{said}"
+    );
+    assert!(!said.contains("f47"), "{said}");
+    assert!(!said.contains("f48"), "{said}");
 }
 
 /// Spec 09 (BR-ASDLC-021): a human merges the release-please PR in GitHub

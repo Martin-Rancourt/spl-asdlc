@@ -7,6 +7,7 @@ fn c(sha: &str, subject: &str) -> CommitSummary {
     CommitSummary {
         sha: sha.into(),
         subject: subject.into(),
+        committed_at: None,
     }
 }
 
@@ -302,4 +303,87 @@ fn the_single_component_staged_version_is_read_off_the_title_then_the_heading() 
         None,
         "another component's PR never names the version"
     );
+}
+
+fn at(sha: &str, subject: &str, when: &str) -> CommitSummary {
+    CommitSummary {
+        committed_at: Timestamp::parse(when),
+        ..c(sha, subject)
+    }
+}
+
+/// The 0.2.0 → 0.3.0 shape: the 0.2.0 release commit, squash-merged on its
+/// release branch at 13:46; two fixes merged into `main` at 12:19 and 12:28
+/// while that cycle was open; the merge-back at 17:10, then a feature.
+fn range_0_3_0() -> Vec<CommitSummary> {
+    vec![
+        at(
+            "f47",
+            "fix(config): the QA report is release bookkeeping (#47)",
+            "2026-10-11T12:19:55Z",
+        ),
+        at(
+            "f48",
+            "fix(config): the QA report is release bookkeeping (#48)",
+            "2026-10-11T12:28:52Z",
+        ),
+        at(
+            "mb",
+            "Merge pull request #53 from example-org/release/2026-10-10-16-54-utc",
+            "2026-10-11T17:10:09Z",
+        ),
+        at(
+            "f54",
+            "feat(config): this repository runs the light setup (#54)",
+            "2026-10-11T18:33:36Z",
+        ),
+    ]
+}
+
+const RELEASE_0_2_0_AT: &str = "2026-10-11T13:46:10Z";
+
+#[test]
+fn release_please_never_reads_a_commit_older_than_the_last_release_commit() {
+    let w = walk(&range_0_3_0(), Timestamp::parse(RELEASE_0_2_0_AT));
+    let shas = |l: &[CommitSummary]| l.iter().map(|c| c.sha.clone()).collect::<Vec<_>>();
+    assert_eq!(shas(&w.unseen), vec!["f47", "f48"]);
+    assert_eq!(shas(&w.seen), vec!["mb", "f54"]);
+    // release-please's own 0.3.0 note: the feature, never #47 nor #48.
+    let note = "## [0.3.0](x) (2026-10-11)\n\n### Features\n\n* **config:** this repository runs the light setup ([#54](u))\n";
+    assert!(coverage(v("0.3.0"), Some(note), None, Ok(&w.seen)).covered());
+    assert_eq!(
+        coverage(v("0.3.0"), Some(note), None, Ok(&range_0_3_0()))
+            .missing
+            .len(),
+        2,
+        "the Git range would owe the two commits the walk never reads"
+    );
+}
+
+#[test]
+fn a_commit_release_please_reads_is_still_owed_its_line() {
+    let mut range = range_0_3_0();
+    range.push(at(
+        "f55",
+        "docs(setup): a light template (#55)",
+        "2026-10-11T19:02:12Z",
+    ));
+    let w = walk(&range, Timestamp::parse(RELEASE_0_2_0_AT));
+    let note = "## [0.3.0](x)\n\n* **config:** this repository runs the light setup ([#54](u))\n";
+    let cov = coverage(v("0.3.0"), Some(note), None, Ok(&w.seen));
+    assert_eq!(cov.gaps(), vec!["f55 docs(setup): a light template (#55)"]);
+}
+
+#[test]
+fn a_date_that_cannot_be_read_relaxes_nothing() {
+    let range = range_0_3_0();
+    assert!(walk(&range, None).unseen.is_empty(), "no release date");
+    let mut undated = range.clone();
+    undated[0].committed_at = None;
+    let w = walk(&undated, Timestamp::parse(RELEASE_0_2_0_AT));
+    assert_eq!(w.unseen.len(), 1, "an undated commit is owed");
+    assert_eq!(w.seen[0].sha, "f47");
+    // A commit of the release commit's own second is owed too.
+    let tie = [at("t", "fix: same second (#9)", RELEASE_0_2_0_AT)];
+    assert_eq!(walk(&tie, Timestamp::parse(RELEASE_0_2_0_AT)).seen.len(), 1);
 }

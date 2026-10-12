@@ -1090,14 +1090,20 @@ fn brief_facts(
             Some(c.version),
         )
         .map(|(tag, _)| tag);
-    let paths_since_release = match &last {
+    let (paths_since_release, not_in_note) = match &last {
         Some(tag) => {
-            t.github
+            let cmp = t
+                .github
                 .compare(&t.repo, tag, &c.sha)
-                .map_err(|e| e.to_string())?
-                .files
+                .map_err(|e| e.to_string())?;
+            let unseen = notes::walk(&cmp.commits, cmp.base_committed_at)
+                .unseen
+                .iter()
+                .map(|u| format!("`{}` {}", notes::short(&u.sha), u.subject))
+                .collect();
+            (cmp.files, unseen)
         }
-        None => Vec::new(),
+        None => (Vec::new(), Vec::new()),
     };
     let paths_since_candidate = match previous {
         Some(p) => Some(
@@ -1134,6 +1140,7 @@ fn brief_facts(
         evidence_url: Some(evidence_url),
         tickets,
         untracked: Vec::new(),
+        not_in_note,
         rule_files_touched,
         no_qa_angle: false,
     })
@@ -2028,7 +2035,9 @@ fn release_prs(
     };
     let rp_path = release.release_please_config.as_str();
     let rp_config = |pr: &PullRequest| t.github.file(&t.repo, rp_path, &pr.head_sha);
-    // The range, read once: unreadable is a gap, never an empty range.
+    // The range, read once: unreadable is a gap, never an empty range. The
+    // note owes a line only to the commits release-please reads of it; the
+    // others are not in the note by construction (the brief lists them).
     let range: Result<Vec<crate::github::CommitSummary>, String> = t
         .github
         .tags(&t.repo, shape.release_tag_prefix())
@@ -2038,7 +2047,7 @@ fn release_prs(
                 Some((tag, _)) => t
                     .github
                     .compare(&t.repo, &tag, &c.sha)
-                    .map(|cmp| cmp.commits)
+                    .map(|cmp| notes::walk(&cmp.commits, cmp.base_committed_at).seen)
                     .map_err(|e| e.to_string()),
                 // The first release: no previous tag bounds it.
                 None => Ok(Vec::new()),

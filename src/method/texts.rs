@@ -732,6 +732,9 @@ pub struct Brief {
     pub evidence_url: Option<String>,
     pub tickets: Vec<BriefTicket>,
     pub untracked: Vec<String>,
+    /// The commits of the range release-please never reads (`<sha12>`
+    /// and subject): not in the release note by construction (spec 05 §8).
+    pub not_in_note: Vec<String>,
     pub rule_files_touched: Vec<String>,
     /// The candidate has no QA angle (`release.angles = []`).
     pub no_qa_angle: bool,
@@ -818,6 +821,15 @@ pub fn brief(b: &Brief) -> String {
         out.push_str("\n#### No linked ticket\n\n");
         for u in &b.untracked {
             out.push_str(&format!("- {u}\n"));
+        }
+    }
+    if !b.not_in_note.is_empty() {
+        out.push_str(&format!(
+            "\n#### Not in the release note by construction\n\nrelease-please reads the history newest first and stops at the last release's commit (`{}`). These commits of the range were committed before that commit without being part of it (merged into the default branch while that cycle was open, then brought in by its merge-back): release-please never reads them, so its note cannot name them. They ship with this release and do not hold the GO.\n\n",
+            b.last_release.as_deref().unwrap_or("?")
+        ));
+        for c in &b.not_in_note {
+            out.push_str(&format!("- {c}\n"));
         }
     }
     if !b.rule_files_touched.is_empty() {
