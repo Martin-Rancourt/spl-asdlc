@@ -49,6 +49,8 @@ A candidate's range is Git's: the commits of the candidate that the highest publ
 - Publication and deployment steps (inputs of `release-publish`); the binary channel of the cut (`spl-asdlc-version`).
 - Notification channels for the release note.
 
+**One product, one version.** A release has one version, one tag, one CHANGELOG section and one publication. A product built for several platforms from that version (desktop, mobile, web, server binaries) is still one product: its publication job builds and deploys every target, and a target that reaches production later (a store's review) is verified through the ticket's `## Post deploy` section. Deliverables versioned and released independently of each other (multi-component products) are not supported: such a product is set up as one repository per deliverable, or waits for that support.
+
 ## Without a release cycle
 
 A project before its first release adopts the method without the cycle: its configuration has no `[release]` section (`08-configuration.md`). The absence of the section is the choice; there is no mode to set, and the layer is added later by adding the section.
