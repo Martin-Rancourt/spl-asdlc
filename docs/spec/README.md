@@ -1,5 +1,7 @@
 # The method — specification
 
+> The method in ten minutes is `docs/method.md`. These files are the reference behind it: the same rules with every edge case, for whoever implements or debugs the bridge.
+
 One file per topic. Each file states invariants (numbered), the vocabulary it introduces, and what is configurable per project. Nothing here names a runtime, a tracker or a product: those are adapters and configuration. Every layer above the fixed core is optional per project: the PR review, the release cycle, its QA angles, the sensitive paths; the core is the contract, the registry, CI, the bridge, and CI that only publishes facts (`00-overview.md`).
 
 | File | Topic |

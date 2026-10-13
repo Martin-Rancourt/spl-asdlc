@@ -6,6 +6,8 @@ SPL-ASDLC is agnostic to the agent runtime (AgentForge, a Claude Code session, C
 
 Each of these layers is optional, chosen in `spl-asdlc.toml`: the PR review, the release cycle (`[release]`), its QA angles and the sensitive paths (`docs/setup/README.md`, "Start light, add layers"). What every project runs is the ticket contract, the business-rule registry with its tests, CI, the bridge, and CI that only publishes facts.
 
+**Start with [`docs/method.md`](docs/method.md): the method in ten minutes.** The rest is reference.
+
 ## The three parts
 
 1. **The method** — `docs/spec/`. What a ticket must contain before anyone takes it, how a PR is reviewed and merged, how a release is cut, reviewed, gated and closed, and the vocabulary everything else uses.
