@@ -27,7 +27,7 @@ The other workflows in `.github/workflows/` are this repository's own CI. spl-as
 
 ## Status
 
-In use. The bridge is released, with binaries for Linux, macOS and Windows, and a sandbox repository runs the method end to end before each release. The repository is private until its public switch; it is published under the Apache License 2.0 (see `LICENSE`).
+In use. The bridge is released, with binaries for Linux, macOS and Windows. The repository is private until its public switch; it is published under the Apache License 2.0 (see `LICENSE`).
 
 ## Rule zero
 
