@@ -21,7 +21,7 @@ It works with any agent runtime that can read a ticket and open a pull request (
 ## The tooling
 
 - **The bridge**: the Rust crate `spl-asdlc` and its binary. It runs at a regular interval on a host the project chooses, reads GitHub facts, moves the tickets, merges what may be merged, and drives the release.
-- **The reusable workflows**: `.github/workflows/asdlc-*.yml` and the composite action `actions/required-check`, which a project calls from its own workflows. They only publish facts and never write to a tracker.
+- **The reusable workflows**: `.github/workflows/asdlc-*.yml` and the composite action `actions/required-check`, which a project calls from its own workflows, pinned to a major tag (`@v1`). They only publish facts and never write to a tracker. They live in this repository, beside the bridge, because the two are released together under one version; the `asdlc-` prefix sets them apart from this repository's own workflows (GitHub requires a reusable workflow to sit directly in `.github/workflows/`).
 
 The other workflows in `.github/workflows/` are this repository's own CI. spl-asdlc does not run the method on itself; `.spl-asdlc/development.md` explains how it is developed and released.
 
