@@ -1,98 +1,115 @@
 # SPL-ASDLC in ten minutes
 
-This is the method as a person needs to know it: what happens to a ticket, what the bridge does, which layers a project can add, how a release goes, and how a person takes any step over. It is the text to read and approve. The files in `docs/spec/` are the reference behind it: the same rules with every edge case, for whoever implements or debugs the bridge. When they disagree, the spec wins and this page is fixed.
+SPL-ASDLC is a delivery method for software written by agents, with the tooling that applies it. This page is the method: what happens to a ticket, what the bridge does, how a release goes, which parts are optional and how a person takes any step over. The files in `docs/reference/` give the same rules with every detail, for whoever implements or operates the bridge; this page is authoritative when they differ.
 
 ## The idea
 
-Agents write the code. A deterministic program, **the bridge**, keeps the tracker and GitHub in step. It reads GitHub facts (branches, PRs, checks, tags, releases), moves the tickets, merges what may be merged and drives the release. CI only produces facts and never writes to the tracker. Every layer beyond the core is optional and is switched on in the project's `spl-asdlc.toml`.
+Agents write the code. A deterministic program, **the bridge**, keeps the tracker and GitHub in step. It reads GitHub facts (branches, PRs, checks, tags, releases) at a regular interval, moves the tickets, merges what may be merged and drives the release. CI only produces facts and never writes to the tracker.
 
-## The core: every project has it
+Everything the method needs in a repository lives in one folder, `.spl-asdlc/`:
+- `config.toml`, the project's configuration;
+- `business-rules/`, one file per rule;
+- `qa/`, the reports of release QA.
+
+The rest of the repository is organised as the project likes.
+
+## From ticket to To Deploy
 
 ```mermaid
 flowchart LR
-  T[Ticket with a contract] -->|refinement| R(Ready)
-  R -->|branch or PR appears| P(In Progress)
-  P -->|PR ready, CI green, a box ticked| M{Bridge merges}
-  M -->|no release cycle| D(Done)
-  M -->|release cycle| TD(To Deploy)
-  TD -->|the release is published| D
+  B["Backlog<br/>(refined or not)"] -->|a person releases it to agents| R(Ready)
+  R -->|"an agent or a person starts<br/>(the bridge, as a backup,<br/>when a branch or PR appears)"| P(In Progress)
+  P -->|the PR is opened| V(In Review)
+  V -->|"CI green, then the reviews<br/>if configured"| M{Merged by the bridge}
+  M -->|something to deploy| TD(To Deploy)
+  M -->|nothing to deploy| D(Done)
 ```
 
-**The ticket contract.** A ticket is taken only when its description has:
-- a `## Goal`;
-- `## Acceptance criteria` written as checkboxes;
-- a `## Business rules` section, which may say "None.".
+**Backlog.**
+- A ticket starts in Backlog. Refinement turns it into a contract:
+  - a `## Goal`;
+  - `## Acceptance criteria` written as checkboxes;
+  - a `## Business rules` section, which may say "None.".
 
-A `## Non-goals` and a `## Release note` paragraph are recommended. A person, or a refinement agent, checks the contract (`spl-asdlc ticket check` judges it) and sets the ticket **Ready**.
+  A `## Non-goals` and a `## Release note` paragraph are recommended.
+- `spl-asdlc ticket check` judges the contract.
+- A refined ticket stays in Backlog and is marked refined: a label in Linear, a dedicated state in Livela.
 
-**The PR.**
-- One PR delivers one ticket. Its branch starts from `main` and is never stacked on another PR.
-- The author ticks the boxes the PR delivers before it is reviewed or merged.
-- CI must be green: the project's own checks, plus the method's PR-title and guard checks, gathered in one `required-check`.
+**Ready.** A person moves a refined ticket to Ready when it may be taken. Implementing agents take work from Ready only, so Ready is how a person controls what agents work on, and when.
 
-**The bridge.** It runs every five minutes on a host the project chooses: a small machine, a cron job, a runner. At each pass, one at a time, it:
-- moves the ticket to In Progress when a branch or PR appears;
-- merges the PR (squash, as the GitHub App) when CI is green and every merge condition holds;
-- moves the ticket to To Deploy when the project has a release cycle, or to Done when it has none.
+**In Progress.** Whoever starts the ticket, agent or person, moves it to In Progress. With Livela, the agent's verb ("implement the next ticket") does it. If nobody did, the bridge does it when a branch or a PR appears.
 
-Every write is logged, and `--dry-run` shows what a pass would do.
+**In Review.** The ticket moves to In Review as soon as its PR is opened.
+- CI runs first: the project's own checks, plus the method's PR-title and guard checks, gathered in one `required-check`.
+- Once CI is green, the configured reviews start, if any (below).
+- The author ticks the boxes the PR delivers.
 
-**Business rules.** A rule that holds for the whole product is written in `docs/business-rules.md` with the name of the test that proves it. A ticket that introduces one says so in its contract.
+One PR delivers one ticket. Its branch starts from `main` and is never stacked on another PR. A PR in draft is never merged: a person holds a PR back by putting it in draft.
 
-**Statuses.** There are eight: Triage, Backlog, Ready, In Progress, In Review, To Deploy, Post Deploy, Done, plus Canceled.
-- A person writes the first three, and Canceled.
-- The bridge writes the rest, from GitHub facts.
-- An implementer never changes a status.
+**Merge.** When CI is green, the reviews are done and their fixes are in, the bridge merges the PR (squash, as the GitHub App). The ticket moves to **To Deploy**: it is on `main`, waiting for the next release. A ticket with nothing to deploy, such as documentation, goes straight to **Done**.
 
-## Layers a project adds when it needs them
+**Business rules.** A rule that holds for the whole product is one file in `.spl-asdlc/business-rules/`, with the name of the test that proves it. One file per rule means two PRs that touch different rules never conflict. A ticket that introduces a rule says so in its contract.
 
-Each layer is one block in `spl-asdlc.toml`. Adding one needs no migration; removing one releases what it was holding.
+## PR review (optional)
 
-| Layer | What it adds | How |
-|---|---|---|
-| **PR review** | Each PR gets a review round. One sub-ticket per review angle (security, maintainability…) is served to a reviewer agent. A consolidation item goes to a coordinator, who approves at the head. The bridge merges only after that approval. | `[[review.angles]]` |
-| **Sensitive paths** | A PR touching listed files (workflows, auth, billing…) gets the security angle even when the base review is off. | `review.sensitive_paths` |
-| **Release cycle** | Merged tickets wait in To Deploy for a release. The cycle is described below. | `[release]` |
-| **Release QA** | Each release candidate is reviewed by angle agents on their own branches. Their fixes make a new candidate. | `[[release.angles]]` |
-| **Post deploy checks** | Boxes under `## Post deploy` are verified in production after the release. An urgent validation sub-task is served to an agent, then the owner. | A section in the ticket |
+Review is configured by angle: security, maintainability, design, or any angle the project defines. Each angle is reviewed by an agent or a person.
+- An angle can run on every PR, or only on PRs that touch its paths. For example, a security angle runs on the workflows and the authentication code, and a design angle only on the front end.
+- Each angle that applies gets a sub-ticket, served to its reviewer.
+- A coordinator consolidates the findings and approves the PR. The bridge merges after that approval.
 
-The default template (`docs/setup/templates/spl-asdlc.toml`) is the core alone, with every layer shown commented out.
+With no angle configured, a PR merges on green CI.
 
 ## The release cycle
 
-One product has one version: a release has one tag and one CHANGELOG section. If the product is built for several platforms, its publication job builds and deploys each one.
+Every project has one. It takes the tickets in To Deploy, which are already on `main`, to production.
 
-1. **Open.** A person dispatches the cut workflow on `main` (or runs `spl-asdlc release cut --open`). It creates `release/<date>-utc`. It computes the next version from the commits since the last release (Conventional Commits: `feat` gives a minor version, `fix` a patch). It writes the version files and the CHANGELOG, then tags the first candidate, `v1.4.0-rc.1`.
-2. **Gate.** The candidate's tag starts the project's test suites. A red gate opens an urgent fix ticket.
-3. **QA**, if the layer is on. Angle agents review the candidate. A fix merged to the release branch makes the next candidate (rc.2), up to a limit. Past the limit, the release goes to the owner.
+```mermaid
+flowchart TD
+  C["Cut: release branch from main,<br/>version and CHANGELOG prepared,<br/>first candidate tagged"] --> G{Release CI}
+  G -->|red| F["Urgent fix ticket<br/>for whoever fixes release problems"] --> N[Next candidate] --> G
+  G -->|green| Q{"QA angles<br/>(if configured)"}
+  Q -->|"in parallel, each on its angle;<br/>a fix makes the next candidate"| N
+  Q -->|"all done, or none configured"| GO{GO}
+  GO --> P["Release tagged and published;<br/>the project's publication deploys;<br/>the branch merged back into main"]
+  P --> CL["Closure: each ticket Done,<br/>Post Deploy, or back In Progress"]
+```
+
+1. **Cut.** A person dispatches the cut workflow on `main`, or runs `spl-asdlc release cut --open`. It:
+   - creates `release/<date>-utc`;
+   - computes the next version from the commits since the last release (Conventional Commits: `feat` gives a minor version, `fix` a patch);
+   - writes the version files and the CHANGELOG;
+   - tags the first candidate, `v1.4.0-rc.1`.
+2. **Release CI.** The candidate's tag runs the project's release test suites. When it is red, the bridge opens an urgent fix ticket for whoever fixes release problems. Each fix merged to the release branch makes a new candidate.
+3. **QA** (optional). Once CI is green, QA starts: agents or people, several angles in parallel, each reviewing the candidate from its angle. A fix made by QA also makes a new candidate. After a configured number of candidates, the release goes to the owner.
 4. **GO.** It is computed, never declared:
-   - the gate of the latest candidate is green;
-   - every QA angle has merged;
+   - the latest candidate's CI is green;
+   - every QA angle is done;
    - no blocker is open;
    - nothing but the candidate's own QA reports landed after it.
 
    On GO, the bridge tags `v1.4.0` on the candidate and publishes the GitHub release with its CHANGELOG section.
-5. **Publication.** The release starts the project's publish workflow. It checks that the release is the candidate, builds and deploys, then merges the release branch back into `main` and deletes it.
-6. **Closure.** The bridge judges every ticket of the release:
+5. **Publication.** The release starts the project's publish workflow. It checks that the release is the candidate, builds and deploys every target the product has (desktop, mobile, web…), then merges the release branch back into `main`.
+6. **Closure.** The bridge judges each ticket of the release:
    - every box ticked: **Done**;
-   - only `## Post deploy` boxes left: **Post Deploy**;
-   - anything else open: back to In Progress.
+   - only boxes under `## Post deploy` left, which can only be verified in production: **Post Deploy**, with an urgent validation sub-task;
+   - anything else open: back to **In Progress**.
 
-   It closes and archives the release issue, then sends the release note.
+   It closes the release issue and sends the release note.
 
-Work merged to `main` during a cycle simply goes into the next release.
+One product has one version: one tag and one CHANGELOG section per release, whatever the number of platforms. Work merged to `main` during a cycle goes into the next release.
 
-## A person can do every step
+## A person can take any step
 
 The bridge automates; it never owns a step.
 
 | Step | By hand |
 |---|---|
+| Move a ticket | Move it in the tracker. |
+| Hold a PR back | Put it in draft. |
 | Merge a PR | Merge it in GitHub. The bridge moves the ticket at its next pass. |
-| Open a cycle, cut the next candidate | Dispatch the cut workflow (`open` on `main`, `candidate` on the release branch). |
+| Cut a release, cut the next candidate | Dispatch the cut workflow (`open` on `main`, `candidate` on the release branch). |
 | Give the GO | Tag the candidate `vX.Y.Z` and publish the release with `gh release create`. The publication accepts it. |
-| Publish when a build failed | Attach the built archives to the release, then rerun the merge-back (`replay`). |
-| Keep the bridge away from something | Put the `spl-asdlc:hands-off` label on the ticket, PR or release issue. The bridge writes nothing to it until the label is removed. |
+| Publish when a build failed | Attach the built archives to the release, then rerun the merge back (`replay`). |
 | Stop a cycle | `spl-asdlc release abandon`. |
 
 Every command is in `docs/setup/manual-gestures.md`.
@@ -101,21 +118,14 @@ Every command is in `docs/setup/manual-gestures.md`.
 
 1. Install the GitHub App on the repository and set its two secrets.
 2. Protect `main` with a ruleset that requires `required-check`, with the App allowed to bypass it.
-3. Copy the example workflow callers (`docs/setup/examples/`): PR checks always, release workflows if the release layer is on.
-4. Copy the template `spl-asdlc.toml`. The identities go in an instance file beside it, on the bridge's host, never in the repository.
-5. Run the bridge on a timer, then check the setup with `spl-asdlc doctor`.
+3. Copy the example workflow callers from `docs/setup/examples/`.
+4. Copy the template `.spl-asdlc/config.toml`. The identities (the repository, the tracker team, the people) go in an instance file beside it, on the bridge's host, never in the repository.
+5. Run the bridge on a timer, at the interval the host chooses, and check the setup with `spl-asdlc doctor`.
 
 `docs/setup/README.md` has the details.
 
 ## Not there yet
 
-- A GO given by a person's approval comment, and one more QA pass granted from the ticket. Today a person tags and publishes, or raises `max_rc_passes`.
-- Products whose parts are versioned separately (multi-component).
+- A GO given by a person's approval comment, and one more QA pass granted from the ticket. Today a person tags and publishes, or raises the configured number of candidates.
+- Products whose parts are versioned separately.
 - Trackers other than Linear and Livela.
-
-## How the method is tested
-
-Before each release of the bridge, a sandbox repository runs this whole page end to end against the latest build:
-- a ticket, its PR, and the merge by the bridge;
-- a release cycle, from the cut to the closure;
-- a PR merged during the cycle, found in the next release's notes.
