@@ -1,4 +1,4 @@
-//! The PR-review pass (`docs/spec/04-pr-review.md`, spec 07 step 3): per
+//! The PR-review pass (`docs/reference/04-pr-review.md`, spec 07 step 3): per
 //! open PR, in order, stopping at the first thing that holds it: exclusions,
 //! the linked ticket, the review reconciliation, the PR opened (its ticket In
 //! Review, a draft keeping it In Progress), CI, the ticket's contract, the
@@ -120,7 +120,7 @@ pub fn dismiss(
 ) -> bool {
     let message = format!(
         "Dismissed by the bridge before the merge: {approved_by} approved this PR at its head \
-         `{}`, which supersedes this request for changes from an App (`docs/spec/04-pr-review.md` §6).",
+         `{}`, which supersedes this request for changes from an App (`docs/reference/04-pr-review.md` §6).",
         pr.head_sha
     );
     dismissals.iter().all(|d| {
@@ -355,7 +355,7 @@ fn one(
                 &[("pr", &pr.url)],
                 &format!(
                     "Several tickets are linked to this PR ({}); a PR implements exactly one ticket \
-                     (`docs/spec/01-ticket-contract.md` §7). The bridge waits until one link remains.",
+                     (`docs/reference/01-ticket-contract.md` §7). The bridge waits until one link remains.",
                     keys.join(", ")
                 ),
             );
@@ -550,7 +550,7 @@ fn one(
             &[("ticket", &ticket.key), ("missing", &digest)],
             &format!(
                 "The contract of {} is incomplete, so this PR is not reviewed yet \
-                 (`docs/spec/01-ticket-contract.md`):\n\n{}\n\n`spl-asdlc ticket check {}` says the same.",
+                 (`docs/reference/01-ticket-contract.md`):\n\n{}\n\n`spl-asdlc ticket check {}` says the same.",
                 ticket.key,
                 missing
                     .iter()
@@ -805,7 +805,7 @@ fn one(
             "it needs a human approval besides the coordinator's",
         );
         // Whose approval counts as the human one is the owner's to say
-        // (`docs/open-points.md` #4); until then the PR waits and a human is asked once.
+        // (`.spl-asdlc/open-points.md` #4); until then the PR waits and a human is asked once.
         ask_human(t, log, report, &pr, true);
         return None;
     }
@@ -967,7 +967,7 @@ fn drop_unasked(
                     t,
                     &format!(
                         "The configuration no longer asks for {what} of {}: it now gives this PR {asked}. \
-                         The bridge cancels this item (`docs/spec/04-pr-review.md` §11).\n\n{marker}",
+                         The bridge cancels this item (`docs/reference/04-pr-review.md` §11).\n\n{marker}",
                         pr.url
                     ),
                 );

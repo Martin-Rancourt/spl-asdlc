@@ -1,4 +1,4 @@
-//! A ticket and its PRs (`docs/spec/04-pr-review.md` §10): one PR per ticket
+//! A ticket and its PRs (`docs/reference/04-pr-review.md` §10): one PR per ticket
 //! by default, every PR independently deployable, and the state of the
 //! ticket decided by two rules applied in order (BR-ASDLC-008) whenever one
 //! of its PRs resolves (merged, or closed without merge) or a ticket past the

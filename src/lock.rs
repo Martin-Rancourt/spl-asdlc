@@ -1,4 +1,4 @@
-//! One tick at a time per repository (`docs/spec/07-the-bridge.md`
+//! One tick at a time per repository (`docs/reference/07-the-bridge.md`
 //! invariant 8): a tick holds an exclusive lock on a file beside its action
 //! log for as long as it runs, so that two overlapping ticks (a timer and a
 //! run by hand) never decide on the same facts at once. A second tick finds

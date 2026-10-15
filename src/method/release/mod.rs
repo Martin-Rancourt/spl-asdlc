@@ -1,4 +1,4 @@
-//! The release cycle (`docs/spec/05-release-cycle.md`), as pure functions.
+//! The release cycle (`docs/reference/05-release-cycle.md`), as pure functions.
 
 pub mod closure;
 pub mod findings;

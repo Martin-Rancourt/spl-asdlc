@@ -4,7 +4,7 @@ Status: Proposed
 
 ## Rule
 
-A ticket has as many commits as needed and one PR; a second PR needs a real reason, which its implementer records in the ticket's comments (`docs/spec/00-overview.md` invariant 2, `docs/spec/01-ticket-contract.md` §7). A PR is linked to exactly one ticket.
+A ticket has as many commits as needed and one PR; a second PR needs a real reason, which its implementer records in the ticket's comments (`docs/reference/00-overview.md` invariant 2, `docs/reference/01-ticket-contract.md` §7). A PR is linked to exactly one ticket.
 
 ## Evidence
 

@@ -1,4 +1,4 @@
-//! The instance overlay (`docs/spec/08-configuration.md`, "The instance
+//! The instance overlay (`docs/reference/08-configuration.md`, "The instance
 //! overlay"): the identities of one installation, kept on the host that runs
 //! the bridge, outside the repository, and merged at load time with the
 //! repository's `.spl-asdlc/config.toml`, which then carries the method's shape only.

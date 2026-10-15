@@ -1,5 +1,5 @@
 # .spl-asdlc/config.toml: the configuration of one repository
-# (docs/spec/08-configuration.md).
+# (docs/reference/08-configuration.md).
 #
 # Copy this file to `.spl-asdlc/config.toml`, then replace every placeholder:
 # `acme` (the product), `example-org/acme` (the repository), `ABC` (the tracker
@@ -19,11 +19,11 @@
 # its section shows it, commented: adding one is an edit of this file, with
 # no migration (docs/setup/README.md, "Start light, add layers").
 #
-# 1. PR review (docs/spec/04-pr-review.md), under [review]: remove
+# 1. PR review (docs/reference/04-pr-review.md), under [review]: remove
 #    `angles = []` there, uncomment `coordinators`, and uncomment or write
 #    one `[[review.angles]]` table per angle. An angle without `paths` runs
 #    on every PR; one with `paths` only on a PR that touches them.
-# 2. Release QA angles (docs/spec/05-release-cycle.md §3), under [release]:
+# 2. Release QA angles (docs/reference/05-release-cycle.md §3), under [release]:
 #    replace `angles = []` there with the `coordinators` line and the
 #    `[[release.angles]]` tables below it, and list the same keys in the
 #    publication caller's `qa-angles`. Angles apply from the next candidate.
@@ -46,7 +46,7 @@ team_keys = ["ABC"]                    # identifier prefixes of the team's items
 # link_fallback = "none"               # "none" | "body-url"
 # no_deploy_label = "no-deploy"        # a ticket carrying it has nothing to deploy: Done at its merge
 # No status mapping: the tracker names each canonical status exactly so
-# (docs/spec/03-vocabulary.md, docs/setup/tracker-linear.md).
+# (docs/reference/03-vocabulary.md, docs/setup/tracker-linear.md).
 
 [review]
 # merge_method = "squash"              # "squash" | "merge"
@@ -61,7 +61,7 @@ require_up_to_date = false
 # human_reviewer = "owner-login"       # asked to look at a green PR stuck on a human
 # ticketless_authors = []              # Apps whose PRs need no ticket, e.g. ["dependabot"]
 
-# No PR review (docs/spec/04-pr-review.md §11), an explicit choice: no PR
+# No PR review (docs/reference/04-pr-review.md §11), an explicit choice: no PR
 # gets an angle, and each merges on its CI (contract complete, checks green,
 # branch up to date, business-rule guard) with no round and no approval.
 # Leaving the angles out altogether makes the file invalid.
@@ -75,7 +75,7 @@ angles = []                            # no review angle: layer 1 replaces it
 # paths = [".github/workflows/**", "**/auth/**"]
 
 [release]
-# Every project has the release cycle (docs/spec/05-release-cycle.md): merged
+# Every project has the release cycle (docs/reference/05-release-cycle.md): merged
 # tickets wait To Deploy for a release; a release is cut, its CI runs, and,
 # with no QA angle, its GO rests on that CI. It needs the release workflows
 # and the release and tag rulesets (docs/setup/repository.md). The cut's
@@ -84,7 +84,7 @@ angles = []                            # no review angle: layer 1 replaces it
 # project whose version lives in other files lists them, after the section's
 # keys, as `[[release.version_files]]` tables (a `path` and a `pattern`
 # holding `{version}`). The other release keys have defaults
-# (docs/spec/08-configuration.md).
+# (docs/reference/08-configuration.md).
 candidate_tag = "acme-v{version}-rc.{rc}"    # {version} once, {rc} once (never in release_tag); the callers pass the same patterns
 release_tag = "acme-v{version}"
 # fix_assignee = "fixer-handle"              # tracker participant who fixes release problems: the urgent fix tickets go to them; unset, they are taken by role

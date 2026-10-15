@@ -4,7 +4,7 @@ Status: Enforced
 
 ## Rule
 
-Its angle sub-items and its consolidation item close when that PR resolves, Done at a merge and Canceled at a close without merge, whatever becomes of the ticket, which stays open for a later PR; a ticket In Review for another of its PRs gives a new PR its own round (`docs/spec/04-pr-review.md` §3, §10).
+Its angle sub-items and its consolidation item close when that PR resolves, Done at a merge and Canceled at a close without merge, whatever becomes of the ticket, which stays open for a later PR; a ticket In Review for another of its PRs gives a new PR its own round (`docs/reference/04-pr-review.md` §3, §10).
 
 ## Evidence
 

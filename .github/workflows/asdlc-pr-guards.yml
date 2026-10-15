@@ -2,7 +2,7 @@ name: asdlc-pr-guards
 
 # Everything a pull request runs before merge that is not the project's own
 # test suite, and nothing that can release or deploy
-# (docs/requirements/ci.md, REQ-CI-022..034): the "does anything beyond prose
+# (.spl-asdlc/requirements/ci.md, REQ-CI-022..034): the "does anything beyond prose
 # change?" detector, the project's extra detectors, and its guard commands.
 #
 # The caller owns the trigger (pull_request on main and release/**, no path

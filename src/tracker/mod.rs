@@ -1,4 +1,4 @@
-//! The tracker behind an interface (`docs/spec/00-overview.md` invariant 8,
+//! The tracker behind an interface (`docs/reference/00-overview.md` invariant 8,
 //! `07-the-bridge.md`, REQ-REL-098): read an item and its contract, set a
 //! status by canonical name, comment, label, relate, link a PR, find by PR
 //! URL, create the bridge's items, archive what a closed cycle resolved.
@@ -261,8 +261,8 @@ pub trait Tracker {
 }
 
 /// The status table of a project: the identity. A tracker names its
-/// statuses exactly as the canonical ones (`docs/spec/03-vocabulary.md`);
-/// the configuration maps none (`docs/spec/08-configuration.md`). An adapter
+/// statuses exactly as the canonical ones (`docs/reference/03-vocabulary.md`);
+/// the configuration maps none (`docs/reference/08-configuration.md`). An adapter
 /// whose tracker keys statuses by its own ids maps them in its code.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StatusTable;

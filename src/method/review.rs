@@ -1,4 +1,4 @@
-//! PR review judgements (`docs/spec/04-pr-review.md`, REQ-MERGE-003..005,
+//! PR review judgements (`docs/reference/04-pr-review.md`, REQ-MERGE-003..005,
 //! 016, 044..055): which PRs the merge pass leaves alone, which angles a
 //! review round gets, what holds a PR whatever its approval, whether the
 //! coordinator's approval qualifies, and whether the branch is up to date.

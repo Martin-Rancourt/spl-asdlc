@@ -1,4 +1,4 @@
-//! Notifications (`docs/spec/05-release-cycle.md` §12, REQ-REL-094/095):
+//! Notifications (`docs/reference/05-release-cycle.md` §12, REQ-REL-094/095):
 //! signals sent where a human reads them, never the only record (the
 //! tracker comment is). A notice no configured channel takes has nothing to
 //! send: done, never a failure. A send through a channel that takes it and

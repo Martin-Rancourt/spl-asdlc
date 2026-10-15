@@ -44,7 +44,7 @@ Only the file's name registers an id; an id mentioned in another file vouches fo
 
 ## Transverse rules of the method
 
-The method has its own rules, which hold for every project that uses it. They are numbered `SR-<NNN>` and live in `docs/spec/02-business-rules.md` of this repository, under this heading, in the table below. The first ones, carried over from the previous implementation:
+The method has its own rules, which hold for every project that uses it. They are numbered `SR-<NNN>` and live in `docs/reference/02-business-rules.md` of this repository, under this heading, in the table below. The first ones, carried over from the previous implementation:
 
 | ID | Rule |
 |---|---|

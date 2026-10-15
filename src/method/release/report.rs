@@ -1,4 +1,4 @@
-//! The angle report (`docs/spec/06-qa-report.md`): the mandatory file every
+//! The angle report (`docs/reference/06-qa-report.md`): the mandatory file every
 //! angle commits, validated before its PR is merged and read after to file
 //! the tickets. A report that fails validation is a failed review, never a GO.
 //!

@@ -47,7 +47,7 @@ jobs:
       head-ref: ${{ github.event.pull_request.head.ref }}
       base-ref: ${{ github.event.pull_request.base.ref }}
       head-repo: ${{ github.event.pull_request.head.repo.full_name }}
-      # Nothing here is prose: the tests read docs/spec/, .spl-asdlc/business-rules/,
+      # Nothing here is prose: the tests read docs/reference/, .spl-asdlc/business-rules/,
       # docs/setup/templates/ and docs/setup/examples/, and rule zero reads
       # every file. Only the licence text, which no test reads, skips the suite.
       prose-regex: '^LICENSE$'

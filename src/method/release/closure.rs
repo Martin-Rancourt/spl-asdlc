@@ -1,4 +1,4 @@
-//! The closure of a cycle (`docs/spec/05-release-cycle.md` §11,
+//! The closure of a cycle (`docs/reference/05-release-cycle.md` §11,
 //! REQ-REL-084..091): what happens to each member of the release, judged by
 //! code, and the comment that says so.
 

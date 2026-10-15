@@ -1,6 +1,6 @@
 name: asdlc-release-gate-auto-rerun
 
-# The executing half of the gate's one automatic rerun (docs/requirements/ci.md,
+# The executing half of the gate's one automatic rerun (.spl-asdlc/requirements/ci.md,
 # REQ-CI-070..073): a red gate run, at its first attempt, whose suites job
 # never reported (a runner abort) or whose every failed suite is an unexpired
 # known flake, is rerun once with `gh run rerun --failed`. Nothing else: no

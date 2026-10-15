@@ -1,4 +1,4 @@
-//! PR ↔ ticket (`docs/spec/01-ticket-contract.md` §7): a ticket is linked
+//! PR ↔ ticket (`docs/reference/01-ticket-contract.md` §7): a ticket is linked
 //! to exactly one PR at a time and a PR to exactly one ticket. The link is
 //! the tracker's own (an attachment or web link carrying the PR URL), or,
 //! when the configuration declares `link_fallback = "body-url"`, the

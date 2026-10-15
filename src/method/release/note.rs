@@ -1,4 +1,4 @@
-//! The release note (`docs/spec/05-release-cycle.md` §12, spec 01 §6,
+//! The release note (`docs/reference/05-release-cycle.md` §12, spec 01 §6,
 //! REQ-REL-093/094): built from what the candidate actually embarks — each
 //! shipped ticket's `## Release note` snippet, the changelog line for a change
 //! no ticket describes — written into the release item at every candidate,

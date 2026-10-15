@@ -4,11 +4,11 @@ Status: Enforced
 
 ## Rule
 
-Whether the closure sends it back for its Done gate or for a cited rule the registry lacks, the bridge clears the assignee in the same write as the state, and says so in its comment; it never keeps the ticket on its current assignee and never resolves someone to hand it to (no rework assignee, no author marker). Rework is distributed by being pickable. A replay finds the ticket In Progress and writes nothing (`docs/spec/05-release-cycle.md` §11, REQ-REL-089).
+Whether the closure sends it back for its Done gate or for a cited rule the registry lacks, the bridge clears the assignee in the same write as the state, and says so in its comment; it never keeps the ticket on its current assignee and never resolves someone to hand it to (no rework assignee, no author marker). Rework is distributed by being pickable. A replay finds the ticket In Progress and writes nothing (`docs/reference/05-release-cycle.md` §11, REQ-REL-089).
 
 ## Evidence
 
-The owner's decision on `docs/open-points.md` #9 (2026-10-07).
+The owner's decision on `.spl-asdlc/open-points.md` #9 (2026-10-07).
 
 ## Test
 

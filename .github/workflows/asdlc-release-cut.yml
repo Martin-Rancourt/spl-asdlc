@@ -1,7 +1,7 @@
 name: asdlc-release-cut
 
 # The one gesture that starts or advances a release cycle
-# (docs/requirements/ci.md, REQ-CI-035..054; docs/spec/05-release-cycle.md §1,
+# (.spl-asdlc/requirements/ci.md, REQ-CI-035..054; docs/reference/05-release-cycle.md §1,
 # §7). `open` creates the release branch from the default branch, prepares
 # the release on it with `spl-asdlc release prepare` (the version computed
 # from the commits since the last release along the git graph, written into

@@ -1,5 +1,5 @@
 //! The Livela adapter: in process, on the Livela core's `Store`
-//! (`docs/livela-contract.md`, `docs/setup/tracker-livela.md`).
+//! (`docs/reference/livela-contract.md`, `docs/setup/tracker-livela.md`).
 //!
 //! The adapter is written against [`LivelaStore`], the slice of the store
 //! the contract promises. The Livela runner implements it for its `Store`
@@ -469,7 +469,7 @@ impl<S: LivelaStore> Tracker for Livela<S> {
     fn update_comment(&self, comment_id: &str, _body: &str) -> TResult<()> {
         Err(TrackerError::refused(
             format!("edit of comment {comment_id}"),
-            "the Livela core offers no comment edit (docs/livela-contract.md, missing point)",
+            "the Livela core offers no comment edit (docs/reference/livela-contract.md, missing point)",
         ))
     }
 
@@ -547,7 +547,7 @@ impl<S: LivelaStore> Tracker for Livela<S> {
     }
 
     // Livela counts no open items against a limit: nothing to archive
-    // (`docs/livela-contract.md` §7).
+    // (`docs/reference/livela-contract.md` §7).
     fn archives(&self) -> bool {
         false
     }

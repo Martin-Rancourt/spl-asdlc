@@ -1,4 +1,4 @@
-//! Canonical names (`docs/spec/03-vocabulary.md`). A tracker names statuses
+//! Canonical names (`docs/reference/03-vocabulary.md`). A tracker names statuses
 //! exactly so; an adapter may map backend-specific IDs internally. The method
 //! speaks only these.
 
@@ -126,7 +126,7 @@ impl StateKind {
     }
 }
 
-/// The verdict of a release angle report (`docs/spec/06-qa-report.md`):
+/// The verdict of a release angle report (`docs/reference/06-qa-report.md`):
 /// `hold` when at least one finding is blocking, `go` otherwise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {

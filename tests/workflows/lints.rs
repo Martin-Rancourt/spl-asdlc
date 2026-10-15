@@ -1,5 +1,5 @@
 //! Repository lints over every workflow and composite action
-//! (`docs/requirements/ci.md`, REQ-CI-001..010, 018).
+//! (`.spl-asdlc/requirements/ci.md`, REQ-CI-001..010, 018).
 
 use std::collections::BTreeSet;
 

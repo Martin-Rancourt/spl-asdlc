@@ -1,5 +1,5 @@
 //! GitHub: the facts the bridge reads and the few writes it makes
-//! (`docs/spec/07-the-bridge.md`, REQ-REL-099).
+//! (`docs/reference/07-the-bridge.md`, REQ-REL-099).
 //!
 //! Every read answers with a value, [`ReadError::NotFound`] (GitHub said 404)
 //! or [`ReadError::Unreadable`] (anything else, including a list GitHub cut):

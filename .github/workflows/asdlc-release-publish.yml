@@ -1,7 +1,7 @@
 name: asdlc-release-publish
 
-# The publication of a release (docs/spec/05-release-cycle.md §9;
-# docs/requirements/ci.md, REQ-CI-076..097), as one reusable workflow in two
+# The publication of a release (docs/reference/05-release-cycle.md §9;
+# .spl-asdlc/requirements/ci.md, REQ-CI-076..097), as one reusable workflow in two
 # stages: `verify` (the release tag names the commit of its latest
 # candidate, or differs from it only by that candidate's own QA reports; the
 # candidate's gate was green; the release was published by the bridge's App
@@ -9,7 +9,7 @@ name: asdlc-release-publish
 # `closing-guard`). Every stage reads the state GitHub is in, so a step a
 # human did by hand (the release tag and the release published, the release
 # branch merged back) is taken as done, never refused or redone
-# (docs/spec/09-requalification-and-human-gestures.md).
+# (docs/reference/09-requalification-and-human-gestures.md).
 #
 # The publication and deployment steps are the project's own jobs, and they
 # sit between the stages: a reusable workflow runs as one job of its caller

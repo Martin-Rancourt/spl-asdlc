@@ -1,6 +1,6 @@
 # SPL-ASDLC business rules
 
-One file per rule, `<ID>.md`, in the format of `docs/spec/02-business-rules.md`. Ids are `BR-ASDLC-NNN` and are never reused. A rule is `Enforced` only when the test its file names runs in CI; until then it is `Proposed`.
+One file per rule, `<ID>.md`, in the format of `docs/reference/02-business-rules.md`. Ids are `BR-ASDLC-NNN` and are never reused. A rule is `Enforced` only when the test its file names runs in CI; until then it is `Proposed`.
 
 This page is an index for people, kept by hand; the method never reads it, and a test checks that it lists every rule file and nothing else.
 

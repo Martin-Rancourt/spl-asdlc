@@ -1,4 +1,4 @@
-//! The method, as pure functions over facts (`docs/spec/`): no network, no
+//! The method, as pure functions over facts (`docs/reference/`): no network, no
 //! tracker, no clock unless one is passed in. Everything the bridge decides
 //! is decided here; the `tick` only reads the facts and applies the answers.
 

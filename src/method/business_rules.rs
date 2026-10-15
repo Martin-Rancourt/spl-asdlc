@@ -1,4 +1,4 @@
-//! The business-rule guard (`docs/spec/02-business-rules.md`,
+//! The business-rule guard (`docs/reference/02-business-rules.md`,
 //! REQ-MERGE-034..043, REQ-REL-088): the rules a ticket cites, the rule it
 //! states, and the judgement against the registry read at a ref. The
 //! registry is a directory, one file per rule (`<ID>.md`): the guard reads
@@ -268,7 +268,7 @@ pub fn parse_registry(files: &[(String, String)]) -> RegistryFiles {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Registry {
     /// The directory is absent at a ref that exists. The guard still holds
-    /// (`docs/spec/02-business-rules.md` §4-5): a cited id must exist, so
+    /// (`docs/reference/02-business-rules.md` §4-5): a cited id must exist, so
     /// none does; a stated rule must reach the registry, so its PR creates it.
     Absent,
     Ids(BTreeSet<String>),

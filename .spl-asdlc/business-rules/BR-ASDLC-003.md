@@ -8,7 +8,7 @@ The ticket in Post Deploy is never served to an implementer. When the bridge mov
 
 ## Evidence
 
-The owner's decision of 2026-10-07: post-release verification needs someone to do it, and the validation states are never served (`docs/spec/03-vocabulary.md`).
+The owner's decision of 2026-10-07: post-release verification needs someone to do it, and the validation states are never served (`docs/reference/03-vocabulary.md`).
 
 ## Test
 

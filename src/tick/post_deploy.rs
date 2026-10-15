@@ -1,4 +1,4 @@
-//! Post-deploy validation (`docs/spec/05-release-cycle.md` §11,
+//! Post-deploy validation (`docs/reference/05-release-cycle.md` §11,
 //! BR-ASDLC-002/003). When the closure (or, for a ticket with nothing to
 //! deploy, the merge) moves a ticket to Post Deploy it labels it `post-deploy-validation` and creates one validation sub-task,
 //! unassigned in Ready and urgent (BR-ASDLC-017: production is waiting on

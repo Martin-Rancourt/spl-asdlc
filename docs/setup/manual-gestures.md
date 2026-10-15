@@ -1,6 +1,6 @@
 # Manual gestures
 
-The bridge automates every step of the flow, and is never the only actor able to perform one (BR-ASDLC-021). This page gives, for each step, the exact command or GitHub click to do it by hand, and what the bridge does at its next tick. The normative list of gestures, and what a step done by hand implies, is spec 09's audit (`docs/spec/09-requalification-and-human-gestures.md`, "Every step can be done by a human in GitHub"); this page is its runbook: it adds the commands and clicks, and the gestures a step done by hand needs on the way (rerun the gate, publish when the publication's build failed, dismiss a review, hold a PR back).
+The bridge automates every step of the flow, and is never the only actor able to perform one (BR-ASDLC-021). This page gives, for each step, the exact command or GitHub click to do it by hand, and what the bridge does at its next tick. The normative list of gestures, and what a step done by hand implies, is spec 09's audit (`docs/reference/09-requalification-and-human-gestures.md`, "Every step can be done by a human in GitHub"); this page is its runbook: it adds the commands and clicks, and the gestures a step done by hand needs on the way (rerun the gate, publish when the publication's build failed, dismiss a review, hold a PR back).
 
 Conventions:
 
@@ -23,7 +23,7 @@ gh pr merge <n> --repo OWNER/REPO --squash --delete-branch --match-head-commit <
 
 Or in GitHub: the PR, **Squash and merge**. Use the merge method `[review]` configures (squash by default). An angle PR into the release branch is merged as a merge commit (`--merge`), as the bridge merges it.
 
-**The bridge, next tick**: the sweep sees the PR merged and gives the ticket the same transition the bridge's own merge would have (`docs/spec/04-pr-review.md` §7, §10), once, with a comment that names who merged; the PR's review round closes. The ticket goes To Deploy when every box is ticked and no other PR of it is open, or Done when it has nothing to deploy. For an angle PR, the release pass reads it from the PRs merged into the release branch: its sub-item Done, the findings of its report filed, once each.
+**The bridge, next tick**: the sweep sees the PR merged and gives the ticket the same transition the bridge's own merge would have (`docs/reference/04-pr-review.md` §7, §10), once, with a comment that names who merged; the PR's review round closes. The ticket goes To Deploy when every box is ticked and no other PR of it is open, or Done when it has nothing to deploy. For an angle PR, the release pass reads it from the PRs merged into the release branch: its sub-item Done, the findings of its report filed, once each.
 
 ## Open a release cycle
 

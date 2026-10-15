@@ -167,7 +167,7 @@ fn the_rule_template_is_a_valid_rule_file_under_its_ids_name() {
     // Under its template name it is not one: the name is the id.
     assert!(business_rules::parse_rule_file(RULE, &text).is_err());
     // The spec documents the template.
-    let spec = read("docs/spec/02-business-rules.md");
+    let spec = read("docs/reference/02-business-rules.md");
     assert!(
         spec.contains("templates/business-rule.md"),
         "spec 02 names the template"
@@ -176,7 +176,7 @@ fn the_rule_template_is_a_valid_rule_file_under_its_ids_name() {
 
 #[test]
 fn the_ticket_template_is_the_template_of_spec_01() {
-    let spec = read("docs/spec/01-ticket-contract.md");
+    let spec = read("docs/reference/01-ticket-contract.md");
     assert_eq!(read(TICKET), fenced(&spec, "markdown"));
 }
 

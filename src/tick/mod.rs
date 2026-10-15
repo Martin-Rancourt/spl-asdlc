@@ -1,4 +1,4 @@
-//! `spl-asdlc tick` (`docs/spec/07-the-bridge.md`): one pass over one
+//! `spl-asdlc tick` (`docs/reference/07-the-bridge.md`): one pass over one
 //! repository. It reads GitHub and the tracker, decides with the method
 //! (`crate::method`), writes the effects, and records each action in the
 //! action log.

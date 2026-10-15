@@ -1,5 +1,5 @@
 //! `.spl-asdlc/config.toml`: the per-repository configuration
-//! (`docs/spec/08-configuration.md`).
+//! (`docs/reference/08-configuration.md`).
 //!
 //! The file is parsed into [`Config`] with every default applied, or refused
 //! with the full list of what is wrong. Nothing falls back to a default shape
@@ -57,7 +57,7 @@ pub const DEFAULT_CHANGELOG_SECTIONS: [(&str, &str); 11] = [
     ("ci", "Continuous Integration"),
 ];
 
-/// Canonical statuses of a work item (`docs/spec/03-vocabulary.md`).
+/// Canonical statuses of a work item (`docs/reference/03-vocabulary.md`).
 pub const CANONICAL_STATUSES: [&str; 9] = [
     "Triage",
     "Backlog",
@@ -84,7 +84,7 @@ pub struct Config {
     pub product: Product,
     pub owner: Owner,
     pub tracker: Tracker,
-    /// The release cycle (`docs/spec/05-release-cycle.md`): every project
+    /// The release cycle (`docs/reference/05-release-cycle.md`): every project
     /// has one, so a file without a `[release]` section is refused.
     pub release: Release,
     pub review: Review,
@@ -99,7 +99,7 @@ pub struct Product {
     pub repository: String,
 }
 
-/// The human of the method (`docs/spec/00-overview.md`): takes escalations
+/// The human of the method (`docs/reference/00-overview.md`): takes escalations
 /// and, under `go_policy = "human"`, approves the GO.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Owner {
@@ -1432,13 +1432,13 @@ fn default_title(key: &str) -> String {
     format!("{} review", words.join(" "))
 }
 
-/// The example of `docs/spec/08-configuration.md`, as the tests read it:
+/// The example of `docs/reference/08-configuration.md`, as the tests read it:
 /// the repository's file and its instance overlay.
 #[cfg(test)]
 pub(crate) mod spec_example {
     use super::{Config, FILE_NAME, INSTANCE_FILE_NAME, Source};
 
-    const SPEC: &str = include_str!("../../docs/spec/08-configuration.md");
+    const SPEC: &str = include_str!("../../docs/reference/08-configuration.md");
 
     /// The `n`-th ```toml block of spec 08, from 0.
     fn block(n: usize) -> &'static str {

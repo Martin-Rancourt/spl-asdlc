@@ -27,7 +27,7 @@ fn check_with(path: &std::path::Path, extra: &[&std::ffi::OsStr]) -> std::proces
 /// The `n`-th ```toml block of spec 08: 0 is the repository's file of the
 /// example, 1 its instance overlay.
 fn spec_block(n: usize) -> &'static str {
-    let spec = include_str!("../docs/spec/08-configuration.md");
+    let spec = include_str!("../docs/reference/08-configuration.md");
     let mut start = 0;
     for _ in 0..=n {
         start += spec[start..].find("```toml\n").unwrap() + "```toml\n".len();

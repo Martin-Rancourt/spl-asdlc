@@ -1,4 +1,4 @@
-//! The ticket contract (`docs/spec/01-ticket-contract.md`): the headings
+//! The ticket contract (`docs/reference/01-ticket-contract.md`): the headings
 //! that make it, the refinement gate (`ticket check`), the zero-boxes guard
 //! and the "requires deployment" reading.
 

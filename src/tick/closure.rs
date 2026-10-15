@@ -1,4 +1,4 @@
-//! The closure of a cycle (`docs/spec/05-release-cycle.md` §11-12),
+//! The closure of a cycle (`docs/reference/05-release-cycle.md` §11-12),
 //! triggered by facts, never assumed: the release published, the release
 //! branch merged back. Then each member of the release is judged; the release note is sent;
 //! the release item moves to Done only once every ticket that cites a rule

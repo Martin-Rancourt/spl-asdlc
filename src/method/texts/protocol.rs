@@ -17,8 +17,8 @@ pub const REVIEW_PR: &str = include_str!("../../../docs/agents/review-pr.md");
 pub const REVIEW_RELEASE: &str = include_str!("../../../docs/agents/review-release.md");
 /// `docs/agents/consolidate.md`: consolidate a PR review or a release QA.
 pub const CONSOLIDATE: &str = include_str!("../../../docs/agents/consolidate.md");
-/// `docs/spec/06-qa-report.md`: the report every release angle ends with.
-const QA_REPORT: &str = include_str!("../../../docs/spec/06-qa-report.md");
+/// `docs/reference/06-qa-report.md`: the report every release angle ends with.
+const QA_REPORT: &str = include_str!("../../../docs/reference/06-qa-report.md");
 
 /// The method's notes of each angle, `docs/agents/angles/<key>.md`, by key.
 pub const ANGLES: &[(&str, &str)] = &[
@@ -95,7 +95,7 @@ pub fn section(job: Job, angle: Option<&str>) -> String {
         }
     }
     if matches!(job, Job::ReleaseAngle | Job::ReleaseConsolidation) {
-        sources.push("the schema and rules of `docs/spec/06-qa-report.md`".to_string());
+        sources.push("the schema and rules of `docs/reference/06-qa-report.md`".to_string());
         parts.push(format!("### The angle report\n\n{}", report_schema()));
     }
     format!(

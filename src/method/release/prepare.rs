@@ -1,4 +1,4 @@
-//! What `release prepare` computes (`docs/spec/05-release-cycle.md` §1), as
+//! What `release prepare` computes (`docs/reference/05-release-cycle.md` §1), as
 //! pure functions: the next version from the commits of the range, the
 //! CHANGELOG section and release notes in release-please's format, and the
 //! version written into the version files. The range is Git's, read along

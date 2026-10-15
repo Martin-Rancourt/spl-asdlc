@@ -1,4 +1,4 @@
-//! The action log (`docs/spec/07-the-bridge.md` invariants 4 and 7): one
+//! The action log (`docs/reference/07-the-bridge.md` invariants 4 and 7): one
 //! JSON line per decision that acted or tried to act (when, repository,
 //! object, action, inputs, outcome), appended, never rewritten.
 //!

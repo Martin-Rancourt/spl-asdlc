@@ -4,7 +4,7 @@ Status: Enforced
 
 ## Rule
 
-Once the release issue is closed, the bridge archives the resolved children of the release issue (angle sub-items, consolidation item, any other child), the nits ticket once resolved, the resolved PR review round items of the embarked tickets (recognised by their bridge markers) and the embarked tickets in Done, the release issue last. A ticket in Post Deploy or In Progress, a finding in Triage, an open nits ticket, an item with an open sub-item or in a state the status table does not place is never archived. An item already archived is skipped; a failed archive is reported and retried at the next tick and never blocks nor undoes the closure. Archiving is a tracker capability: Linear archives (`issueArchive`: searchable, restorable); Livela has no open-item limit and archives nothing (`docs/livela-contract.md`).
+Once the release issue is closed, the bridge archives the resolved children of the release issue (angle sub-items, consolidation item, any other child), the nits ticket once resolved, the resolved PR review round items of the embarked tickets (recognised by their bridge markers) and the embarked tickets in Done, the release issue last. A ticket in Post Deploy or In Progress, a finding in Triage, an open nits ticket, an item with an open sub-item or in a state the status table does not place is never archived. An item already archived is skipped; a failed archive is reported and retried at the next tick and never blocks nor undoes the closure. Archiving is a tracker capability: Linear archives (`issueArchive`: searchable, restorable); Livela has no open-item limit and archives nothing (`docs/reference/livela-contract.md`).
 
 ## Evidence
 

@@ -8,7 +8,7 @@ A finding's ticket, blocking or not (BR-ASDLC-022), is written with a goal, non-
 
 ## Evidence
 
-The owner's decision of 2026-10-07: the bridge wrote the shared nits ticket as bare checkbox lines, which a contract guard at pickup refused (`docs/open-points.md` #14, spec 05 §6). The owner's decision on QA findings (2026-10-14, BR-ASDLC-022): one ticket per finding, no shared nits ticket, no `release.nits`.
+The owner's decision of 2026-10-07: the bridge wrote the shared nits ticket as bare checkbox lines, which a contract guard at pickup refused (`.spl-asdlc/open-points.md` #14, spec 05 §6). The owner's decision on QA findings (2026-10-14, BR-ASDLC-022): one ticket per finding, no shared nits ticket, no `release.nits`.
 
 ## Test
 

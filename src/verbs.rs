@@ -1,4 +1,4 @@
-//! The human gestures of a cycle (`docs/spec/09-human-gestures.md`) and the
+//! The human gestures of a cycle (`docs/reference/09-human-gestures.md`) and the
 //! GO status, written against the traits so that the command line and the
 //! tests drive the same code. Each writes through [`Tick::act`], so each is
 //! in the action log.

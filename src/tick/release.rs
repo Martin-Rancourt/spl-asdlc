@@ -1,4 +1,4 @@
-//! The release pass (`docs/spec/05-release-cycle.md`, spec 07 step 2), for
+//! The release pass (`docs/reference/05-release-cycle.md`, spec 07 step 2), for
 //! the newest candidate of the product:
 //!
 //! 1. the release item, found by its label and marker or created;
@@ -23,7 +23,7 @@
 //!    closure (`closure.rs`).
 //!
 //! Points the specification leaves open are not settled here; each waits,
-//! as `docs/open-points.md` lists them (the human GO, a raised `max_rc_passes`).
+//! as `.spl-asdlc/open-points.md` lists them (the human GO, a raised `max_rc_passes`).
 
 use serde_json::json;
 
@@ -2028,7 +2028,7 @@ pub fn decide(
     };
     let policy = match release.go_policy {
         crate::config::GoPolicy::Computed => Policy::Computed,
-        // Whose approval counts is the owner's to settle (`docs/open-points.md` #3): never given.
+        // Whose approval counts is the owner's to settle (`.spl-asdlc/open-points.md` #3): never given.
         crate::config::GoPolicy::Human => Policy::Human { approved: None },
     };
     let facts = GoFacts {

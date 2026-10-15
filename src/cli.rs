@@ -1,4 +1,4 @@
-//! The `spl-asdlc` command line (`docs/spec/07-the-bridge.md`, Verbs).
+//! The `spl-asdlc` command line (`docs/reference/07-the-bridge.md`, Verbs).
 //!
 //! Exit codes: 0 success, 1 a judgement says no (invalid configuration,
 //! incomplete contract, no GO), 2 the command could not run (usage, I/O).
@@ -47,7 +47,7 @@ enum Command {
         #[arg(long)]
         log: Option<PathBuf>,
     },
-    /// The release cycle's verbs (`docs/spec/09-human-gestures.md`).
+    /// The release cycle's verbs (`docs/reference/09-human-gestures.md`).
     Release {
         #[command(subcommand)]
         command: ReleaseCommand,
@@ -124,7 +124,7 @@ enum ReleaseCommand {
 
 #[derive(Debug, Subcommand)]
 enum TicketCommand {
-    /// The refinement gate (`docs/spec/01-ticket-contract.md`): says whether a
+    /// The refinement gate (`docs/reference/01-ticket-contract.md`): says whether a
     /// ticket's contract is complete, or lists what is missing (exit 1).
     Check {
         /// The ticket's identifier in the configured tracker.

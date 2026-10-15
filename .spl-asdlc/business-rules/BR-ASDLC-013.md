@@ -8,7 +8,7 @@ For each finding of a release QA report, blocking or not, it makes sure the repo
 
 ## Evidence
 
-The owner's decision of 2026-10-07 on the nits work (`docs/open-points.md` #14), and its scope confirmed by the owner the same day: fixed at the PR, accumulated at the QA. Extended to every release finding by the owner's decision on QA findings (2026-10-14, BR-ASDLC-022).
+The owner's decision of 2026-10-07 on the nits work (`.spl-asdlc/open-points.md` #14), and its scope confirmed by the owner the same day: fixed at the PR, accumulated at the QA. Extended to every release finding by the owner's decision on QA findings (2026-10-14, BR-ASDLC-022).
 
 ## Test
 

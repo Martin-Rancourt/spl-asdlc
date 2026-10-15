@@ -2,7 +2,7 @@ name: required-check
 description: >-
   The one required status check of a PR workflow: fails unless every gated job
   succeeded, or was skipped while the caller declared it may be
-  (docs/requirements/ci.md, REQ-CI-024). Run it as the only step of a job named
+  (.spl-asdlc/requirements/ci.md, REQ-CI-024). Run it as the only step of a job named
   `required-check`, with `if: always()`, `needs:` every other job of the
   workflow, on a hosted runner.
 

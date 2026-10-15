@@ -1,6 +1,6 @@
 //! The one reader of ticket descriptions every guard uses (REQ-MERGE-030,
 //! REQ-MERGE-032, REQ-MERGE-067): fenced blocks, checkboxes, headings and
-//! sections. One reading, never two (`docs/spec/01-ticket-contract.md`).
+//! sections. One reading, never two (`docs/reference/01-ticket-contract.md`).
 
 use std::sync::LazyLock;
 

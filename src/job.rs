@@ -1,4 +1,4 @@
-//! One pass of the bridge for a host (`docs/spec/07-the-bridge.md`
+//! One pass of the bridge for a host (`docs/reference/07-the-bridge.md`
 //! invariant 1): the Livela runner's daemon job, a timer, a shell. The host
 //! gives the configuration file, the tracker and a time budget; the pass
 //! reads its secrets from the environment, runs one tick, appends the action

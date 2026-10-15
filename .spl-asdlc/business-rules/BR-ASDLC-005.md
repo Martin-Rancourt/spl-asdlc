@@ -4,7 +4,7 @@ Status: Proposed
 
 ## Rule
 
-A merged PR can ship to production at any time, even when it does not close its ticket: the release embarks its ticket whatever the ticket's state (but Canceled), and the closure judges only a ticket in To Deploy or Post Deploy, leaving one still In Progress or In Review to its next PR (`docs/spec/04-pr-review.md` §10, `docs/spec/05-release-cycle.md` §2, §11).
+A merged PR can ship to production at any time, even when it does not close its ticket: the release embarks its ticket whatever the ticket's state (but Canceled), and the closure judges only a ticket in To Deploy or Post Deploy, leaving one still In Progress or In Review to its next PR (`docs/reference/04-pr-review.md` §10, `docs/reference/05-release-cycle.md` §2, §11).
 
 ## Evidence
 

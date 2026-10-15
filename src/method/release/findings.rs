@@ -1,4 +1,4 @@
-//! Findings turned into tickets (`docs/spec/06-qa-report.md` rules 3-5,
+//! Findings turned into tickets (`docs/reference/06-qa-report.md` rules 3-5,
 //! BR-ASDLC-022): their markers, identity keys and bodies (a blocking
 //! finding an urgent fix ticket, a non-blocking one a ticket logged for
 //! later, each a contract), the `blocks` cycle check, and the

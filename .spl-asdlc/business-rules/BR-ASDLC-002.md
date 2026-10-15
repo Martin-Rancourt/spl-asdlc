@@ -8,7 +8,7 @@ Checking the boxes, once verified in production, is the whole gesture. At each t
 
 ## Evidence
 
-The owner's decision of 2026-10-07: the closure comment named a `release post-release-check` verb the bridge does not have, so nothing ever moved a ticket out of Post Deploy (`docs/open-points.md` #1).
+The owner's decision of 2026-10-07: the closure comment named a `release post-release-check` verb the bridge does not have, so nothing ever moved a ticket out of Post Deploy (`.spl-asdlc/open-points.md` #1).
 
 ## Test
 
