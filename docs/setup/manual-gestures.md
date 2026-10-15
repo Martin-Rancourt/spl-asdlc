@@ -135,13 +135,13 @@ Move it in the tracker. A ticket starts in Backlog; refinement marks it refined 
 
 ## Take a PR out of the flow
 
-Put it in draft: a draft PR is out of the flow, and the bridge ignores it entirely (it moves no ticket for it, opens no review round, never merges it, does not read its CI, and counts it for nothing among its ticket's PRs); `required-check` fails on a draft:
+Put it in draft: a draft PR is out of the flow, and the bridge ignores it entirely (it moves no ticket for it, opens no review round, never merges it, does not read its CI, and counts it for nothing among its ticket's PRs); no job of the PR workflow runs on a draft:
 
 ```sh
 gh pr ready <n> --repo OWNER/REPO --undo
 ```
 
-Or in GitHub: the PR, **Convert to draft**. `gh pr ready <n> --repo OWNER/REPO` (or **Ready for review**) brings it back into the flow: its `ready_for_review` run reports `required-check`, a review round already open goes on where it stood, and the bridge merges the PR once every condition holds again.
+Or in GitHub: the PR, **Convert to draft**. `gh pr ready <n> --repo OWNER/REPO` (or **Ready for review**) brings it back into the flow: its `ready_for_review` run is the PR's CI and reports `required-check` (the bridge counts only its success, never the draft run's skipped one), a review round already open goes on where it stood, and the bridge merges the PR once every condition holds again.
 
 **The bridge, next tick**: nothing for the draft, which its report lists as `waiting: pr#<n> it is a draft, out of the flow until it is marked ready`; the ticket stays where it is.
 

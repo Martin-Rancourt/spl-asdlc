@@ -8,8 +8,12 @@ name: asdlc-pr-guards
 # The caller owns the trigger (pull_request on main and release/**, no path
 # filter), the concurrency group keyed on the ref and the draft state, its test
 # jobs gated on this job's `code` output, and the `required-check` aggregator
-# (actions/required-check), which never passes on a draft PR. The job this
-# workflow guarantees is `guards`.
+# (actions/required-check). The job this workflow guarantees is `guards`.
+#
+# A draft PR is out of the flow: no job of the caller runs on it, the job that
+# calls this workflow included (`if: github.event.pull_request.draft ==
+# false`). `guards` holds the same condition, so a caller that lost it still
+# starts no runner on a draft; outside a pull request event it runs.
 
 on:
   workflow_call:
@@ -84,6 +88,7 @@ permissions:
 jobs:
   guards:
     name: guards
+    if: github.event.pull_request.draft != true
     runs-on: ${{ startsWith(inputs.runs-on, '[') && fromJSON(inputs.runs-on) || inputs.runs-on }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:

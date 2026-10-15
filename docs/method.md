@@ -46,7 +46,7 @@ flowchart LR
 
 **One PR per ticket, by default.** A ticket gets a second PR only for a real reason, typically a deployment that must happen before the rest can go on; the implementer records the reason on the ticket. Every PR stands alone: once merged, it can be deployed at any time. Its branch starts from `main` and is never stacked on another PR.
 
-**A draft PR is out of the flow.** The bridge ignores it entirely: it moves no ticket for it, opens no review for it, never merges it, does not read its CI, and counts it for nothing among the ticket's PRs. `required-check` never passes on a draft. A person takes a PR out of the flow by putting it in draft, and back in by marking it ready; a review already open stays as it is and goes on once the PR is ready again.
+**A draft PR is out of the flow.** The bridge ignores it entirely: it moves no ticket for it, opens no review for it, never merges it, does not read its CI, and counts it for nothing among the ticket's PRs. No CI runs on a draft, so a draft costs no runner minute; marking it ready starts its CI. A person takes a PR out of the flow by putting it in draft, and back in by marking it ready; a review already open stays as it is and goes on once the PR is ready again.
 
 **Merge.** When CI is green, the reviews are done and their fixes are in, the bridge merges the PR (squash, as the GitHub App) and says on the ticket which conditions held: green, approved when the PR had a review, up to date with `main` when the project requires it. The ticket moves to **To Deploy**: it is on `main`, waiting for the next release. A ticket with nothing to deploy, such as documentation, goes straight to **Done**; the closure of the release that ships its PR archives it with the release's tickets.
 

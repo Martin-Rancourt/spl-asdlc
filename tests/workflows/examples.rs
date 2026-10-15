@@ -397,6 +397,28 @@ fn the_title_check_is_its_own_workflow_and_reruns_on_edits() {
     );
 }
 
+/// The condition of a job that never runs on a draft PR.
+pub(crate) const NOT_A_DRAFT: &str = "github.event.pull_request.draft == false";
+
+/// No job of a PR workflow runs on a draft PR, `required-check` included
+/// (the owner's decision, 2026-10-15): a draft costs no runner minute. Each
+/// job's `if:` is the draft condition, alone or first of an `&&`, and nothing
+/// can `||` it away; `required-check`'s is `always() &&` it.
+pub(crate) fn check_no_job_runs_on_a_draft(doc: &Yaml, what: &str) {
+    for (id, job) in jobs(doc) {
+        let cond = job["if"].as_str().unwrap_or_default();
+        if id == "required-check" {
+            assert_eq!(cond, format!("always() && {NOT_A_DRAFT}"), "{what}: {id}");
+            continue;
+        }
+        assert!(
+            cond == NOT_A_DRAFT || cond.starts_with(&format!("{NOT_A_DRAFT} && ")),
+            "{what}: job {id} runs on a draft: if: {cond:?}"
+        );
+        assert!(!cond.contains("||"), "{what}: job {id}: if: {cond:?}");
+    }
+}
+
 #[test]
 fn the_pr_workflow_is_unfiltered_and_aggregates_every_job() {
     let pr = example("pr.yml");
@@ -417,7 +439,7 @@ fn the_pr_workflow_is_unfiltered_and_aggregates_every_job() {
         .collect();
     assert!(
         types.contains(&"ready_for_review"),
-        "a PR marked ready runs required-check again, which never passes on a draft: {types:?}"
+        "a PR marked ready runs the jobs a draft does not run, required-check included: {types:?}"
     );
     assert!(
         pr["concurrency"]["group"]
@@ -427,9 +449,10 @@ fn the_pr_workflow_is_unfiltered_and_aggregates_every_job() {
         "REQ-CI-023"
     );
 
+    check_no_job_runs_on_a_draft(&pr, "the example pr.yml");
+
     let aggregator = &pr["jobs"]["required-check"];
     assert_eq!(aggregator["name"].as_str(), Some("required-check"));
-    assert_eq!(aggregator["if"].as_str(), Some("always()"));
     assert_eq!(aggregator["runs-on"].as_str(), Some("ubuntu-latest"));
     let needs: BTreeSet<String> = aggregator["needs"]
         .as_vec()

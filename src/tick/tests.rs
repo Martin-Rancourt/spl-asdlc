@@ -492,6 +492,57 @@ fn a_draft_pr_counts_for_nothing_among_its_tickets_prs() {
     assert!(merge_comment(&w, "ABC-7", &pr).contains("state: To Deploy"));
 }
 
+/// One run of `name` in the `pr` workflow, completed with `conclusion`.
+fn pr_run(name: &str, conclusion: &str, started: &str) -> CheckEntry {
+    CheckEntry {
+        kind: CheckKind::Run,
+        name: name.into(),
+        workflow: Some("pr".into()),
+        status: Some("COMPLETED".into()),
+        conclusion: Some(conclusion.into()),
+        started_at: crate::github::Timestamp::parse(started),
+        details_url: None,
+    }
+}
+
+#[test]
+fn a_ready_pr_whose_required_check_is_the_draft_runs_skipped_one_waits_then_merges() {
+    // On a draft no job runs: GitHub reports every job skipped, and a
+    // skipped job passes a required check. Marked ready, the PR waits for
+    // the ready run's own success on the same head.
+    let mut w = World::new();
+    no_review(&mut w);
+    let mut pr = ready_pr(&w);
+    pr.checks = vec![
+        pr_run("guards", "SKIPPED", "2026-10-15T10:00:00Z"),
+        pr_run("required-check", "SKIPPED", "2026-10-15T10:00:00Z"),
+    ];
+    w.open(pr.clone());
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert!(!merged(&w), "{:?}", w.github_writes());
+    assert_eq!(
+        report.waiting_lines(),
+        vec![
+            "waiting: pr#7 the required check `required-check` was skipped at head-7: only a success counts"
+        ]
+    );
+    // The ready run's first job succeeded; its required-check has not.
+    pr.checks
+        .push(pr_run("guards", "SUCCESS", "2026-10-15T10:05:00Z"));
+    w.open(pr.clone());
+    w.tick(false);
+    assert!(!merged(&w), "{:?}", w.github_writes());
+    // The ready run's required-check succeeded: the PR merges.
+    pr.checks
+        .push(pr_run("required-check", "SUCCESS", "2026-10-15T10:06:00Z"));
+    w.open(pr);
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert!(merged(&w), "{:?}", w.github_writes());
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::ToDeploy));
+}
+
 #[test]
 fn an_incomplete_contract_is_said_once_on_the_pr() {
     let w = World::new();

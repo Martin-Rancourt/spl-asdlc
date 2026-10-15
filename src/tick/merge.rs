@@ -503,7 +503,20 @@ fn one(
                 "required checks have not reported at {head}: {}",
                 missing.join(", ")
             ),
-            CheckState::Pending => format!("checks are still running at {head}"),
+            CheckState::Pending if checks::running(&pr.checks) => {
+                format!("checks are still running at {head}")
+            }
+            // Only a success counts: a skipped required check, a draft
+            // run's for one, waits for a run that succeeds.
+            CheckState::Pending => match checks::skipped_required(&pr.checks, &required.contexts) {
+                Some(name) => format!(
+                    "the required check `{name}` was skipped at {head}: only a success counts"
+                ),
+                None if checks::none_succeeded(&pr.checks) => {
+                    format!("no check succeeded at {head}")
+                }
+                None => format!("checks are still running at {head}"),
+            },
             CheckState::None => format!("no check reported at {head}"),
             _ => format!("the checks of {head} could not be read whole"),
         };
