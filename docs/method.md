@@ -44,7 +44,7 @@ flowchart LR
 - Once CI is green, the configured reviews start, if any (below).
 - The author ticks the boxes the PR delivers.
 
-**One ticket, one PR.** A ticket that cannot ship in one PR is split into several tickets, and only when a deployment must happen before the rest can go on. Every PR stands alone: once merged, it can be deployed at any time. Its branch starts from `main` and is never stacked on another PR. A PR in draft is never merged: a person holds a PR back by putting it in draft.
+**One PR per ticket, by default.** A ticket gets a second PR only for a real reason, typically a deployment that must happen before the rest can go on; the implementer records the reason on the ticket. Every PR stands alone: once merged, it can be deployed at any time. Its branch starts from `main` and is never stacked on another PR. A PR in draft is never merged: a person holds a PR back by putting it in draft.
 
 **Merge.** When CI is green, the reviews are done and their fixes are in, the bridge merges the PR (squash, as the GitHub App). The ticket moves to **To Deploy**: it is on `main`, waiting for the next release. A ticket with nothing to deploy, such as documentation, goes straight to **Done**.
 
