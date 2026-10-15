@@ -18,6 +18,7 @@ use crate::method::vocabulary::Status;
 
 const POST_DEPLOY_LABEL: &str = "post-deploy-validation/acme";
 use crate::notify::Recorder;
+use crate::tracker::Priority;
 use crate::tracker::Tracker;
 use crate::tracker::fake::FakeTracker;
 
@@ -101,20 +102,37 @@ fn green(mut pr: PullRequest) -> PullRequest {
 }
 
 fn report_json(angle: &str, findings: &str) -> String {
-    let verdict = if findings.contains("blocker") {
+    let verdict = if findings.contains(r#""blocking":true"#) {
         "hold"
     } else {
         "go"
     };
     format!(
-        r#"{{"schema":"spl-asdlc/qa-report/1","candidate":"{CAND}","angle":"{angle}","item":"ABC-123",
+        r#"{{"schema":"spl-asdlc/qa-report/2","candidate":"{CAND}","angle":"{angle}","item":"ABC-123",
            "verdict":"{verdict}","checked":["the whole project"],"findings":[{findings}]}}"#
     )
 }
 
-fn finding(id: &str, severity: &str) -> String {
+fn finding(id: &str, blocking: bool) -> String {
     format!(
-        r#"{{"id":"{id}","severity":"{severity}","summary":"Finding {id}","anchor":"src/a.rs:1","evidence":"e","fixed_in_branch":false,"testable":true,"proposed_test":"test_{id}","ticket":null}}"#
+        r#"{{"id":"{id}","blocking":{blocking},"summary":"Finding {id}","anchor":"src/a.rs:1","evidence":"e","testable":true,"proposed_test":"test_{id}"}}"#
+    )
+}
+
+/// A merged report of the older schema, whose findings had a severity.
+fn legacy_report_json(angle: &str, findings: &[(&str, &str)]) -> String {
+    let findings: Vec<String> = findings
+        .iter()
+        .map(|(id, severity)| {
+            format!(
+                r#"{{"id":"{id}","severity":"{severity}","summary":"Finding {id}","anchor":"src/a.rs:1","evidence":"e","fixed_in_branch":false,"testable":false,"proposed_test":null,"ticket":null}}"#
+            )
+        })
+        .collect();
+    format!(
+        r#"{{"schema":"spl-asdlc/qa-report/1","candidate":"{CAND}","angle":"{angle}","item":"ABC-123",
+           "verdict":"go-with-note","checked":["the whole project"],"findings":[{}]}}"#,
+        findings.join(",")
     )
 }
 
@@ -266,6 +284,16 @@ impl World {
             .insert(repo(), Ok(prs));
     }
 
+    /// The changes of an angle PR at `head` since it left the release
+    /// branch: its report and nothing else.
+    fn report_only(&self, head: &str, angle: &str) {
+        let path = format!(".spl-asdlc/qa/{CAND}/{angle}.json");
+        self.github.state.borrow_mut().compares.insert(
+            (repo(), BRANCH.into(), head.into()),
+            cmp(CompareStatus::Ahead, &["q1"], &[&path]),
+        );
+    }
+
     fn angle_pr(&self, number: u64, angle: &str, report: &str) -> PullRequest {
         let sub = self.sub_item(angle);
         let mut pr = green(pull_request(number));
@@ -281,6 +309,7 @@ impl World {
             submitted_at: None,
         }];
         let path = format!(".spl-asdlc/qa/{CAND}/{angle}.json");
+        self.report_only(&pr.head_sha, angle);
         let mut s = self.github.state.borrow_mut();
         s.files.insert(
             (repo(), pr.head_sha.clone(), path.clone()),
@@ -614,7 +643,7 @@ fn a_release_rounds_items_carry_their_protocol_and_keep_it_while_open() {
                     texts::protocol::VERSION
                 ))
                 && i.description
-                    .contains("\"schema\": \"spl-asdlc/qa-report/1\""),
+                    .contains("\"schema\": \"spl-asdlc/qa-report/2\""),
             "{}",
             i.description
         );
@@ -802,12 +831,21 @@ fn an_angle_pr_dismisses_an_apps_superseded_request_for_changes_and_a_person_hol
 
 #[test]
 fn an_approved_angle_pr_with_a_valid_report_is_merged_and_its_findings_filed_once() {
-    let w = World::new();
+    let mut w = World::new();
+    w.config.release.as_mut().unwrap().fix_assignee = Some("fixer-handle".into());
+    w.tracker
+        .state
+        .borrow_mut()
+        .users
+        .push(crate::tracker::User {
+            id: "u-fixer".into(),
+            name: "fixer-handle".into(),
+        });
     w.tick();
     let findings = [
-        finding("security-1", "blocker"),
-        finding("security-2", "should-fix"),
-        finding("security-3", "nit"),
+        finding("security-1", true),
+        finding("security-2", false),
+        finding("security-3", false),
     ]
     .join(",");
     let pr = w.angle_pr(30, "security", &report_json("security", &findings));
@@ -822,33 +860,57 @@ fn an_approved_angle_pr_with_a_valid_report_is_merged_and_its_findings_filed_onc
     w.tick();
     let release = w.release_item();
     let labelled = w.tracker.list_by_label(LABEL).unwrap();
-    let blocker = labelled
+    // The blocking finding: an urgent fix ticket for the release fixer,
+    // which blocks the release issue.
+    let blocking = labelled
         .iter()
         .find(|i| i.title.starts_with("Finding security-1"))
-        .expect("blocker");
+        .expect("the blocking finding's ticket");
+    assert_eq!(blocking.title, "Finding security-1 (blocking — security)");
+    assert_eq!(w.tracker.priority(&blocking.key), Some(Priority::Urgent));
+    assert_eq!(
+        blocking.assignee.as_ref().map(|u| u.name.as_str()),
+        Some("fixer-handle")
+    );
+    assert_eq!(blocking.state.status, Some(Status::Ready));
+    assert!(!blocking.labels.contains(&"qa-finding".to_string()));
+    assert!(crate::method::contract::missing_from_contract(&blocking.description).is_empty());
     assert!(
         w.tracker
             .relations(&release.key)
             .unwrap()
             .blocked_by
             .iter()
-            .any(|b| b.other == blocker.key)
+            .any(|b| b.other == blocking.key)
     );
-    assert!(
-        labelled
+    // Each non-blocking finding: a ticket of its own, logged for later.
+    for id in ["security-2", "security-3"] {
+        let logged = labelled
             .iter()
-            .any(|i| i.title.starts_with("Finding security-2")
-                && i.labels.contains(&"qa-finding".to_string()))
-    );
-    let nits = labelled
-        .iter()
-        .find(|i| i.title == "Nits — acme v1.2.0")
-        .expect("nits");
+            .find(|i| i.title.starts_with(&format!("Finding {id}")))
+            .expect("a non-blocking finding's ticket");
+        assert_eq!(
+            logged.title,
+            format!("Finding {id} (non-blocking — security)")
+        );
+        assert!(logged.labels.contains(&"qa-finding".to_string()));
+        assert_eq!(w.tracker.priority(&logged.key), Some(Priority::Normal));
+        assert_eq!(logged.assignee, None);
+        assert_eq!(logged.state.status, Some(Status::Triage));
+        assert!(crate::method::contract::missing_from_contract(&logged.description).is_empty());
+        assert!(
+            w.tracker
+                .relations(&logged.key)
+                .unwrap()
+                .related
+                .iter()
+                .any(|r| r.other == release.key)
+        );
+    }
     assert!(
-        nits.description
-            .contains("Finding security-3 — where: `src/a.rs:1` — context: e")
+        labelled.iter().all(|i| !i.title.starts_with("Nits")),
+        "no nits ticket"
     );
-    assert!(crate::method::contract::has_contract(&nits.description));
     let before = w.tracker.writes().len();
     w.tick();
     assert_eq!(
@@ -1350,13 +1412,22 @@ fn release_status_says_why_there_is_no_go() {
 }
 
 #[test]
-fn a_blocker_requalified_as_should_fix_stops_blocking() {
-    let w = World::new();
+fn a_blocking_finding_requalified_as_non_blocking_stops_blocking_and_back() {
+    let mut w = World::new();
+    w.config.release.as_mut().unwrap().fix_assignee = Some("fixer-handle".into());
+    w.tracker
+        .state
+        .borrow_mut()
+        .users
+        .push(crate::tracker::User {
+            id: "u-fixer".into(),
+            name: "fixer-handle".into(),
+        });
     w.tick();
     let pr = w.angle_pr(
         30,
         "security",
-        &report_json("security", &finding("security-1", "blocker")),
+        &report_json("security", &finding("security-1", true)),
     );
     w.open_on_branch(vec![pr]);
     w.tick();
@@ -1368,22 +1439,18 @@ fn a_blocker_requalified_as_should_fix_stops_blocking() {
     let t = w.tick_ctx();
     let mut log = ActionLog::in_memory();
     assert!(
-        crate::verbs::requalify(
-            &t,
-            &mut log,
-            &blocker,
-            crate::method::vocabulary::Severity::ShouldFix,
-            " ",
-            "me"
-        )
-        .is_err(),
+        crate::verbs::requalify(&t, &mut log, &blocker, false, " ", "me").is_err(),
         "a reason is required"
+    );
+    assert_eq!(
+        crate::verbs::requalify(&t, &mut log, &blocker, true, "Still a defect.", "me").unwrap(),
+        format!("{blocker} is already blocking: nothing to do")
     );
     crate::verbs::requalify(
         &t,
         &mut log,
         &blocker,
-        crate::method::vocabulary::Severity::ShouldFix,
+        false,
         "Not reachable in production.",
         "me",
     )
@@ -1399,12 +1466,39 @@ fn a_blocker_requalified_as_should_fix_stops_blocking() {
     assert!(crate::method::release::findings::parse_blocker_marker(&item.description).is_none());
     assert!(item.labels.contains(&"qa-finding".to_string()));
     assert_eq!(item.state.status, Some(Status::Triage));
+    assert_eq!(item.assignee, None, "logged for later, unassigned");
     assert!(
         w.tracker
-            .comments(&release.key)
+            .relations(&blocker)
             .unwrap()
+            .related
             .iter()
-            .any(|c| c.body.starts_with("Requalified by me"))
+            .any(|r| r.other == release.key)
+    );
+    assert!(w.tracker.comments(&release.key).unwrap().iter().any(|c| {
+        c.body
+            .starts_with("Requalified by me: `blocking` → `non-blocking`.")
+    }));
+    // And back: blocking again, served to the release fixer.
+    crate::verbs::requalify(&t, &mut log, &blocker, true, "Reachable after all.", "me").unwrap();
+    let item = w.tracker.item(&blocker);
+    assert_eq!(
+        crate::method::release::findings::parse_blocker_marker(&item.description).as_deref(),
+        Some(release.key.as_str())
+    );
+    assert!(!item.labels.contains(&"qa-finding".to_string()));
+    assert_eq!(item.state.status, Some(Status::Ready));
+    assert_eq!(
+        item.assignee.as_ref().map(|u| u.name.as_str()),
+        Some("fixer-handle")
+    );
+    assert!(
+        w.tracker
+            .relations(&release.key)
+            .unwrap()
+            .blocked_by
+            .iter()
+            .any(|b| b.other == blocker)
     );
 }
 
@@ -1425,7 +1519,7 @@ fn escalating() -> World {
     w.tick();
     let mut merged = Vec::new();
     for (n, angle, findings) in [
-        (30, "security", finding("security-1", "blocker")),
+        (30, "security", finding("security-1", true)),
         (31, "product", String::new()),
     ] {
         let mut pr = w.angle_pr(n, angle, &report_json(angle, &findings));
@@ -1790,7 +1884,7 @@ fn a_blocker_canceled_as_a_false_alarm_is_not_filed_again() {
     let pr = w.angle_pr(
         30,
         "security",
-        &report_json("security", &finding("security-1", "blocker")),
+        &report_json("security", &finding("security-1", true)),
     );
     w.open_on_branch(vec![pr]);
     w.tick();
@@ -1813,190 +1907,80 @@ fn a_blocker_canceled_as_a_false_alarm_is_not_filed_again() {
 }
 
 #[test]
-fn two_nits_of_one_report_share_one_nits_ticket() {
+fn a_merged_report_of_the_older_schema_is_still_filed_blocker_as_blocking() {
     let w = World::new();
     w.tick();
-    let findings = [finding("security-1", "nit"), finding("security-2", "nit")].join(",");
-    let pr = w.angle_pr(30, "security", &report_json("security", &findings));
-    w.open_on_branch(vec![pr]);
-    w.tick();
-    w.tick();
-    let nits: Vec<_> = w
-        .tracker
-        .list_by_label(LABEL)
-        .unwrap()
-        .into_iter()
-        .filter(|i| i.title.starts_with("Nits"))
-        .collect();
-    assert_eq!(nits.len(), 1);
-    assert!(
-        nits[0].description.contains("Finding security-1")
-            && nits[0].description.contains("Finding security-2")
+    let old = legacy_report_json(
+        "security",
+        &[("security-1", "blocker"), ("security-2", "nit")],
     );
-}
-
-/// The nits of one merged report, under `release.nits`.
-fn nits_world(grouping: crate::config::NitsGrouping) -> World {
-    let mut w = World::new();
-    w.config.release.as_mut().unwrap().nits = grouping;
-    w.tick();
-    let findings = [finding("security-1", "nit"), finding("security-2", "nit")].join(",");
-    let pr = w.angle_pr(30, "security", &report_json("security", &findings));
-    w.open_on_branch(vec![pr]);
-    w
-}
-
-#[test]
-fn the_shared_nits_ticket_is_a_full_contract_that_asks_to_triage() {
-    let w = nits_world(crate::config::NitsGrouping::Shared);
-    w.tick();
-    w.tick();
-    let nits = w
-        .tracker
-        .list_by_label(LABEL)
-        .unwrap()
-        .into_iter()
-        .find(|i| i.title == "Nits — acme v1.2.0")
-        .expect("nits");
-    let d = &nits.description;
-    // What `ticket check` judges, and nothing exempts it by marker.
-    assert!(
-        crate::method::contract::missing_from_contract(d).is_empty(),
-        "{d}"
-    );
-    assert_eq!(crate::method::business_rules::new_rule_statement(d), None);
-    assert!(texts::bridge_item(d, None).is_none(), "{d}");
-    assert!(d.contains("## Business rules\nNo new rule."), "{d}");
-    assert!(
-        d.contains("classify each box below as **kept** or **dropped**"),
-        "{d}"
-    );
-    let boxes = crate::method::markdown::checkboxes_in_sections(
-        d,
-        crate::method::contract::is_acceptance_heading,
-    );
-    assert_eq!(boxes.len(), 2, "{d}");
-    assert!(
-        boxes[0]
-            .line
-            .contains(&format!("`{CAND}/security/security-1`"))
-    );
-    assert!(
-        boxes[1]
-            .line
-            .contains(&format!("`{CAND}/security/security-2`"))
-    );
-    assert_eq!(nits.state.status, Some(Status::Triage));
-    let (r, writes) = w.writes_of_a_tick();
+    let mut pr = w.angle_pr(30, "security", &old);
+    pr.state = PrState::Merged;
+    pr.merge_commit_sha = Some("merge-of-30".into());
+    w.github
+        .state
+        .borrow_mut()
+        .merged_pulls
+        .insert(repo(), Ok(vec![pr]));
+    let r = w.tick();
     assert!(r.ok(), "{r:?}");
-    assert!(writes.is_empty(), "{writes:?}");
-}
-
-#[test]
-fn a_nits_ticket_of_the_older_format_is_left_alone_and_said() {
-    let w = nits_world(crate::config::NitsGrouping::Shared);
-    let older = "- [ ] src/b.rs:2: an older nit\n";
-    w.tracker.seed(
-        "ABC-77",
-        "Nits — acme v1.2.0",
-        older,
-        Status::Triage,
-        &[LABEL],
-    );
-    w.tick();
-    let (r, writes) = w.writes_of_a_tick();
-    assert!(writes.iter().all(|x| !x.contains("ABC-77")), "{writes:?}");
-    assert_eq!(w.tracker.item("ABC-77").description, older);
-    assert!(
-        r.failures
-            .iter()
-            .any(|f| f.starts_with("ABC-77: the nits ticket carries no contract")),
-        "{r:?}"
-    );
-}
-
-#[test]
-fn per_nit_grouping_files_one_contract_ticket_per_nit_in_triage_once() {
-    let w = nits_world(crate::config::NitsGrouping::PerNit);
-    w.tick();
-    w.tick();
+    let release = w.release_item();
     let labelled = w.tracker.list_by_label(LABEL).unwrap();
-    assert!(labelled.iter().all(|i| !i.title.starts_with("Nits")));
-    let nits: Vec<_> = labelled
+    let blocking = labelled
         .iter()
-        .filter(|i| i.title.ends_with("(nit — security)"))
-        .collect();
-    assert_eq!(nits.len(), 2, "{labelled:?}");
-    for n in &nits {
-        assert!(
-            crate::method::contract::has_contract(&n.description),
-            "{}",
-            n.description
-        );
-        assert!(n.description.contains("## Goal\nTriage the nit"));
-        assert_eq!(n.state.status, Some(Status::Triage));
-        assert!(!n.labels.contains(&"qa-finding".to_string()));
-        assert!(crate::method::release::findings::parse_finding_marker(&n.description).is_some());
-    }
-    let (r, writes) = w.writes_of_a_tick();
-    assert!(r.ok(), "{r:?}");
-    assert!(writes.is_empty(), "{writes:?}");
+        .find(|i| i.title == "Finding security-1 (blocking — security)")
+        .expect("a blocker reads as blocking");
+    assert_eq!(w.tracker.priority(&blocking.key), Some(Priority::Urgent));
+    assert!(
+        w.tracker
+            .relations(&release.key)
+            .unwrap()
+            .blocked_by
+            .iter()
+            .any(|b| b.other == blocking.key)
+    );
+    let logged = labelled
+        .iter()
+        .find(|i| i.title == "Finding security-2 (non-blocking — security)")
+        .expect("a nit reads as non-blocking");
+    assert!(logged.labels.contains(&"qa-finding".to_string()));
+    assert!(labelled.iter().all(|i| !i.title.starts_with("Nits")));
 }
 
 #[test]
-fn a_dry_run_writes_no_nit_in_either_grouping() {
-    for grouping in [
-        crate::config::NitsGrouping::Shared,
-        crate::config::NitsGrouping::PerNit,
-    ] {
-        let w = nits_world(grouping);
-        // The angle PR already merged: the dry tick reads its report.
-        {
-            let mut s = w.github.state.borrow_mut();
-            let mut pr = match s.open_pulls.insert(repo(), Ok(Vec::new())) {
-                Some(Ok(mut list)) => list.remove(0),
-                _ => unreachable!(),
-            };
-            pr.state = PrState::Merged;
-            pr.merge_commit_sha = Some("merge-of-30".into());
-            s.merged_pulls.insert(repo(), Ok(vec![pr]));
-        }
-        let before = w.tracker.writes().len();
-        let intents = crate::dry::Intents::default();
-        let gh = crate::dry::DryGitHub {
-            inner: &w.github,
-            intents: &intents,
-        };
-        let tr = crate::dry::DryTracker {
-            inner: &w.tracker,
-            intents: &intents,
-        };
-        let sig = crate::dry::DrySignal { intents: &intents };
-        let t = Tick {
-            config: &w.config,
-            repo: repo(),
-            github: &gh,
-            tracker: &tr,
-            signal: &sig,
-            github_login: bot("spl-asdlc"),
-            now: Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
-            deadline: None,
-            dry_run: true,
-            hands_off: None,
-        };
-        let mut log = ActionLog::in_memory();
-        let r = run(&t, &mut log);
-        assert!(r.failures.is_empty(), "{grouping:?}: {r:?}");
-        assert_eq!(w.tracker.writes().len(), before, "{grouping:?}");
-        assert!(
-            intents
-                .lines()
-                .iter()
-                .any(|l| l.contains("Nits — acme") || l.contains("Finding security-1 (nit")),
-            "{grouping:?}: {:?}",
-            intents.lines()
+fn an_angle_pr_that_carries_more_than_its_report_is_not_merged_and_told_once_per_head() {
+    let w = World::new();
+    w.tick();
+    let pr = w.angle_pr(30, "security", &report_json("security", ""));
+    let path = format!(".spl-asdlc/qa/{CAND}/security.json");
+    {
+        let mut s = w.github.state.borrow_mut();
+        s.compares.insert(
+            (repo(), BRANCH.into(), pr.head_sha.clone()),
+            cmp(CompareStatus::Ahead, &["q1", "q2"], &[&path, "src/a.rs"]),
         );
+        s.comments.insert((repo(), 30), Ok(Vec::new()));
     }
+    w.open_on_branch(vec![pr.clone()]);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    w.tick();
+    assert!(
+        !w.github.writes().iter().any(|l| l.starts_with("merge")),
+        "{:?}",
+        w.github.writes()
+    );
+    let said: Vec<_> = w
+        .github
+        .writes()
+        .into_iter()
+        .filter(|l| {
+            l.starts_with("comment example-org/acme#30 ") && l.contains("besides its report")
+        })
+        .collect();
+    assert_eq!(said.len(), 1, "told once: {said:?}");
+    assert!(said[0].contains("`src/a.rs`"), "{}", said[0]);
+    assert_ne!(w.sub_item("security").state.status, Some(Status::Done));
 }
 
 #[test]
@@ -2534,6 +2518,36 @@ fn a_red_gate_opens_one_urgent_gate_fix_ticket_once_its_rerun_settled() {
         writes.is_empty(),
         "a second tick writes nothing: {writes:?}"
     );
+}
+
+#[test]
+fn a_gate_fix_ticket_is_assigned_to_the_release_fixer_when_one_is_known() {
+    let mut w = World::new();
+    w.config.release.as_mut().unwrap().fix_assignee = Some("fixer-handle".into());
+    w.tracker
+        .state
+        .borrow_mut()
+        .users
+        .push(crate::tracker::User {
+            id: "u-fixer".into(),
+            name: "fixer-handle".into(),
+        });
+    w.red_settled(1, CAND, "c1", r#""tests""#);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let fixes = w.gate_fixes();
+    assert_eq!(fixes.len(), 1);
+    assert_eq!(
+        fixes[0].assignee.as_ref().map(|u| u.name.as_str()),
+        Some("fixer-handle")
+    );
+    // A fixer the tracker does not know: unassigned, taken by role.
+    let mut w = World::new();
+    w.config.release.as_mut().unwrap().fix_assignee = Some("no-such-fixer".into());
+    w.red_settled(1, CAND, "c1", r#""tests""#);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(w.gate_fixes()[0].assignee, None);
 }
 
 #[test]
@@ -3494,6 +3508,7 @@ fn a_release_angle_item_follows_its_pr_to_review_back_to_work_and_done_at_the_me
     // Review, merged, Done (never To Deploy).
     let path = format!(".spl-asdlc/qa/{CAND}/security.json");
     pr.head_sha = "fixedhead0000001".into();
+    w.report_only(&pr.head_sha, "security");
     w.github.state.borrow_mut().files.insert(
         (repo(), pr.head_sha.clone(), path),
         Ok(report_json("security", "")),
@@ -3881,6 +3896,7 @@ fn in_review_serves_the_coordinator_and_changes_requested_serve_the_angle_again(
     // Fixed and approved: In Review for the coordinator, then Done at the
     // merge, the assignee left as it is.
     pr.head_sha = "fixedhead0000001".into();
+    w.report_only(&pr.head_sha, "security");
     w.github.state.borrow_mut().files.insert(
         (
             repo(),
@@ -4059,15 +4075,7 @@ fn without_a_release_section_the_release_verbs_say_there_is_no_cycle() {
         crate::verbs::cut(&t, &mut log, true).unwrap_err(),
         crate::verbs::status(&t).err().unwrap(),
         crate::verbs::abandon(&t, &mut log, "someone").unwrap_err(),
-        crate::verbs::requalify(
-            &t,
-            &mut log,
-            "ABC-5",
-            crate::method::vocabulary::Severity::Nit,
-            "a reason",
-            "someone",
-        )
-        .unwrap_err(),
+        crate::verbs::requalify(&t, &mut log, "ABC-5", false, "a reason", "someone").unwrap_err(),
     ] {
         assert_eq!(
             refused,

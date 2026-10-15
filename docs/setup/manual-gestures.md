@@ -171,10 +171,10 @@ It keeps the tags, merges the release branch back into `main`, cancels the relea
 On the bridge's host:
 
 ```sh
-spl-asdlc release requalify <ticket> --severity <blocker|should-fix|nit> --reason "<text>"
+spl-asdlc release requalify <ticket> --blocking <true|false> --reason "<text>"
 ```
 
-It changes the finding ticket's severity, adds or removes its `blocks` relation to the release issue, and records who, when and why on the ticket and on the release issue. **The bridge, next tick**: the GO is recomputed.
+It makes the finding's ticket blocking (`true`: its `blocks` relation to the release issue, Ready for the release fixer `release.fix_assignee`) or not (`false`: no relation, logged for later in Triage, labelled `qa-finding`), and records who, when and why on the ticket and on the release issue. Its priority is left as it is: change it in the tracker if needed. **The bridge, next tick**: the GO is recomputed.
 
 ## Commands a session needs permission for
 

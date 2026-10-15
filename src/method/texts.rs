@@ -272,13 +272,13 @@ pub fn release_angle_item(
          ## Non-goals\n- Another angle's review: the angles run in parallel.\n\n\
          ## Acceptance criteria\n\
          - [ ] The branch `qa/{candidate}/{key}` is cut from `{branch}`.\n\
-         - [ ] Every blocking finding is fixed in that branch, with a test each.\n\
+         - [ ] Every finding is documented in the report, blocking or not, and nothing is fixed in that branch.\n\
          - [ ] The report `{report_path}` is committed (mandatory, even when nothing was found).\n\
          - [ ] A PR from `qa/{candidate}/{key}` to `{branch}` names this item.\n\n\
          ## Business rules\n{absence}\n\n\
          ## What closes this item\nThe bridge sets this sub-item Done when it merges your angle PR into `{branch}`, \
          which it does once the PR is ready (not a draft), names this item's key in its title or body, carries a valid \
-         report at `{report_path}` on its head, is approved at its head by a release coordinator with no request for \
+         report at `{report_path}` on its head and no other change, is approved at its head by a release coordinator with no request for \
          changes standing, has its required checks green and is up to date with `{branch}`. A report that is missing or \
          invalid is said in a comment here and the PR is not merged. An item still open when the cycle closes is closed \
          with the release.\n\n\

@@ -28,7 +28,7 @@
 use serde_json::json;
 
 use crate::action_log::ActionLog;
-use crate::config::{LaterPasses, NitsGrouping, Release};
+use crate::config::{LaterPasses, Release};
 use crate::github::{CompareStatus, Comparison, GitRef, ObjectType, PullRequest};
 use crate::method::checks::{self, CheckState};
 use crate::method::release::findings;
@@ -40,7 +40,7 @@ use crate::method::release::report::{self, Report as AngleReport};
 use crate::method::release::shape::{Shape, Version};
 use crate::method::review::{self, Approval, BranchState};
 use crate::method::texts::{self, AngleLine, AngleScope, BridgeItem};
-use crate::method::vocabulary::{self, Severity, Status};
+use crate::method::vocabulary::{self, Status};
 use crate::tracker::{Item, NewItem, Priority, RelationKind};
 
 use super::hands_off;
@@ -1323,12 +1323,13 @@ fn gate_fix(
     };
     let (title, body) = texts::gate_fix_ticket(&facts);
     let body = for_tracker(t, &body);
+    let assignee = fixer(t);
     t.act(
         log,
         report,
         &item.key,
         "create gate-fix ticket",
-        json!({"candidate": c.tag, "run": run.url, "attempt": run.attempt, "priority": "urgent", "rerun_seen": unseen.is_none()}),
+        json!({"candidate": c.tag, "run": run.url, "attempt": run.attempt, "priority": "urgent", "rerun_seen": unseen.is_none(), "assignee": assignee.as_ref().map(|u| u.name.as_str())}),
         || {
             t.tracker
                 .create_item(&NewItem {
@@ -1337,12 +1338,21 @@ fn gate_fix(
                     labels: vec![label.to_string()],
                     status: Status::Ready,
                     priority: Some(Priority::Urgent),
-                    assignee: None,
+                    assignee: assignee.clone(),
                     parent: Some(item.key.clone()),
                 })
                 .map_err(|e| e.to_string())
         },
     );
+}
+
+/// The participant `release.fix_assignee` names, who fixes release
+/// problems (a red gate, a blocking QA finding), when the tracker knows it;
+/// otherwise the ticket is unassigned, taken by role (`doctor` reports an
+/// unknown one).
+pub(crate) fn fixer(t: &Tick) -> Option<crate::tracker::User> {
+    let name = section(t).ok()?.fix_assignee.as_ref()?;
+    t.tracker.user(name).ok()
 }
 
 /// The failed suites of a red gate run, read from `results/suites.json` of
@@ -1532,6 +1542,52 @@ fn angle_pr(
     }
     if *merged || pr.draft || !prs::names_sub_item(pr, &sub.key) {
         return AngleState::InReview;
+    }
+    // An angle PR carries its report and nothing else (BR-ASDLC-022): an
+    // angle fixes nothing, so a PR with any other file is not merged, and
+    // is told once per head. The PR's own changes are those since it left
+    // the release branch.
+    match t.github.compare(&t.repo, branch, &pr.head_sha) {
+        Ok(cmp) => {
+            let others: Vec<&String> = cmp.files.iter().filter(|f| **f != path).collect();
+            if !others.is_empty() {
+                let listed: Vec<String> = others
+                    .iter()
+                    .take(10)
+                    .map(|f| format!("`{}`", texts::inert(f).replace('`', "'")))
+                    .collect();
+                super::merge::say_once(
+                    t,
+                    log,
+                    report,
+                    pr,
+                    "angle-not-report-only",
+                    &[("pr", &pr.url), ("head", texts::short(&pr.head_sha))],
+                    &format!(
+                        "This angle PR changes {} file(s) besides its report `{path}`, so the bridge does not \
+                         merge it: an angle documents its findings and fixes nothing (`docs/agents/review-release.md`). \
+                         Remove the other changes from the branch; a blocking finding is fixed from its own ticket. \
+                         Files: {}{}.",
+                        others.len(),
+                        listed.join(", "),
+                        if others.len() > listed.len() {
+                            ", …"
+                        } else {
+                            ""
+                        }
+                    ),
+                );
+                return AngleState::InReview;
+            }
+        }
+        Err(e) => {
+            t.unreadable(
+                report,
+                &object,
+                format!("the changes of the angle PR against {branch}: {e}"),
+            );
+            return AngleState::InReview;
+        }
     }
     let Approval::Qualified { by } = review::pr_approval(pr, &release.coordinators) else {
         return AngleState::InReview;
@@ -1770,7 +1826,7 @@ fn file_merged_findings(
             .github
             .file(&t.repo, &path, &rev)
             .map_err(|e| e.to_string())
-            .and_then(|text| report::validate(&text, &c.tag, &angle).map_err(|e| e.join("; ")));
+            .and_then(|text| report::read_merged(&text, &c.tag, &angle).map_err(|e| e.join("; ")));
         match parsed {
             Ok(r) => file_findings(t, log, report, item, c, &angle, &pr.url, &path, label, &r),
             Err(e) => t.unreadable(
@@ -1809,168 +1865,77 @@ fn file_findings(
             return;
         }
     };
-    let product = &t.config.product.name;
-    let v = c.version.to_string();
-    let Ok(release) = section(t) else {
-        return;
-    };
-    let shared = release.nits == NitsGrouping::Shared;
-    // The shared nits ticket, once found or created in this call: its key
-    // and its description as this call last wrote it. `Err` once it is
-    // refused (unreadable, or no contract): no nit of this call goes in.
-    let mut nits: Option<Result<(String, String), ()>> = None;
-    for f in r.findings.iter().filter(|f| !f.fixed_in_branch) {
-        match f.severity {
-            Severity::Nit if shared => {
-                let title = findings::nits_title(product, &v);
-                let key = findings::nit_key(&c.tag, angle, &f.id);
-                let line = findings::nit_line(&c.tag, angle, f);
-                if nits.is_none() {
-                    if let Some(n) = labelled.iter().find(|i| i.title == title) {
-                        nits = Some(match t.tracker.get(&n.key) {
-                            Ok(i) => Ok((i.key, i.description)),
-                            Err(e) => {
-                                t.unreadable(report, &n.key, e);
-                                Err(())
-                            }
-                        });
-                    }
-                }
-                match &mut nits {
-                    Some(Err(())) => {}
-                    Some(Ok((key_of, current))) => {
-                        // Fail-closed: a nits ticket without a contract (the
-                        // older format) is left alone and said, never rewritten.
-                        match findings::append_nit(current, &key, &line) {
-                            Err(e) => {
-                                t.unreadable(report, key_of, format!("the nits ticket {e}"));
-                                nits = Some(Err(()));
-                            }
-                            Ok(None) => {}
-                            Ok(Some(next)) => {
-                                let next = for_tracker(t, &next);
-                                let done = t.act(
-                                    log,
-                                    report,
-                                    key_of,
-                                    "append nit",
-                                    json!({"finding": f.id}),
-                                    || {
-                                        t.tracker
-                                            .update_description(key_of, &next)
-                                            .map_err(|e| e.to_string())
-                                    },
-                                );
-                                if done.is_some() {
-                                    *current = next;
-                                }
-                            }
-                        }
-                    }
-                    None => {
-                        let body =
-                            for_tracker(t, &findings::nits_ticket(&item.key, product, &v, &[line]));
-                        let created = t.act(
-                            log,
-                            report,
-                            &item.key,
-                            "create nits ticket",
-                            json!({}),
-                            || {
-                                t.tracker
-                                    .create_item(&NewItem {
-                                        title: title.clone(),
-                                        description: body.clone(),
-                                        labels: vec![label.to_string()],
-                                        status: Status::Triage,
-                                        priority: None,
-                                        assignee: None,
-                                        parent: None,
-                                    })
-                                    .map_err(|e| e.to_string())
-                            },
-                        );
-                        if let Some(n) = created {
-                            relate(t, log, report, &n.key, &item.key, RelationKind::Related);
-                            nits = Some(Ok((n.key, body)));
-                        }
-                    }
-                }
+    let release_id = item.key.as_str();
+    // Read once, and only when a blocking finding is filed.
+    let mut fixer_of: Option<Option<crate::tracker::User>> = None;
+    for f in &r.findings {
+        // Filed once, whatever became of it: a finding canceled as a false
+        // alarm or requalified stays so (the merged report does not
+        // change). A new candidate's report is another key.
+        let filed = labelled.iter().find(|i| {
+            findings::parse_finding_marker(&i.description).is_some_and(|(rel, cand, a, id)| {
+                rel == release_id && cand == c.tag && a == angle && id == f.id
+            })
+        });
+        if let Some(ticket) = filed {
+            // A blocking finding whose relation failed after its creation:
+            // the relation is laid again (REQ-REL-058).
+            let marked =
+                findings::parse_blocker_marker(&ticket.description).as_deref() == Some(release_id);
+            if marked && !ticket.state.is_resolved() && !blocked_by.contains(&ticket.key) {
+                relate(t, log, report, &ticket.key, &item.key, RelationKind::Blocks);
             }
-            // A blocker, a should-fix, or a nit under `release.nits =
-            // "per-nit"`: a ticket of its own, keyed by its finding marker.
-            _ => {
-                let release_id = item.key.as_str();
-                // Filed once, whatever became of it: a blocker canceled as a
-                // false alarm or requalified stays so (the merged report does
-                // not change). A new candidate's report is another key.
-                let filed = labelled.iter().find(|i| {
-                    findings::parse_finding_marker(&i.description).is_some_and(
-                        |(rel, cand, a, id)| {
-                            rel == release_id && cand == c.tag && a == angle && id == f.id
-                        },
-                    )
-                });
-                if let Some(ticket) = filed {
-                    // A blocker whose relation failed after its creation: the
-                    // relation is laid again (REQ-REL-058).
-                    let marked = findings::parse_blocker_marker(&ticket.description).as_deref()
-                        == Some(release_id);
-                    if marked && !ticket.state.is_resolved() && !blocked_by.contains(&ticket.key) {
-                        relate(t, log, report, &ticket.key, &item.key, RelationKind::Blocks);
-                    }
-                    continue;
-                }
-                let (title, body) = if f.severity == Severity::Nit {
-                    findings::nit_ticket(release_id, &c.tag, angle, f, pr_url, path)
-                } else {
-                    findings::finding_ticket(release_id, &c.tag, angle, f, pr_url, path)
-                };
-                let blocker = f.severity == Severity::Blocker;
-                let mut labels = vec![label.to_string()];
-                if f.severity == Severity::ShouldFix {
-                    labels.push(vocabulary::QA_FINDING_LABEL.to_string());
-                }
-                let body = for_tracker(t, &body);
-                let created = t.act(
-                    log,
-                    report,
-                    &item.key,
-                    &format!("create finding {}", f.id),
-                    json!({"severity": f.severity.name(), "angle": angle}),
-                    || {
-                        t.tracker
-                            .create_item(&NewItem {
-                                title: title.clone(),
-                                description: body.clone(),
-                                labels: labels.clone(),
-                                status: if blocker {
-                                    Status::Ready
-                                } else {
-                                    Status::Triage
-                                },
-                                priority: blocker.then_some(Priority::Urgent),
-                                assignee: None,
-                                parent: None,
-                            })
-                            .map_err(|e| e.to_string())
-                    },
-                );
-                if let Some(ticket) = created {
-                    if blocker {
-                        relate(t, log, report, &ticket.key, &item.key, RelationKind::Blocks);
-                    } else {
-                        relate(
-                            t,
-                            log,
-                            report,
-                            &ticket.key,
-                            &item.key,
-                            RelationKind::Related,
-                        );
-                    }
-                }
-            }
+            continue;
+        }
+        // A blocking finding: an urgent fix ticket for the release fixer,
+        // which blocks the release issue. A non-blocking one: a ticket
+        // logged for later, related to it (BR-ASDLC-022).
+        let (title, body) = findings::finding_ticket(release_id, &c.tag, angle, f, pr_url, path);
+        let mut labels = vec![label.to_string()];
+        if !f.blocking {
+            labels.push(vocabulary::QA_FINDING_LABEL.to_string());
+        }
+        let new = NewItem {
+            title,
+            description: for_tracker(t, &body),
+            labels,
+            status: if f.blocking {
+                Status::Ready
+            } else {
+                Status::Triage
+            },
+            priority: Some(if f.blocking {
+                Priority::Urgent
+            } else {
+                Priority::Normal
+            }),
+            assignee: if f.blocking {
+                fixer_of.get_or_insert_with(|| fixer(t)).clone()
+            } else {
+                None
+            },
+            parent: None,
+        };
+        let created = t.act(
+            log,
+            report,
+            &item.key,
+            &format!("create finding {}", f.id),
+            json!({
+                "blocking": f.blocking,
+                "angle": angle,
+                "priority": new.priority.map(Priority::name),
+                "assignee": new.assignee.as_ref().map(|u| u.name.as_str()),
+            }),
+            || t.tracker.create_item(&new).map_err(|e| e.to_string()),
+        );
+        if let Some(ticket) = created {
+            let kind = if f.blocking {
+                RelationKind::Blocks
+            } else {
+                RelationKind::Related
+            };
+            relate(t, log, report, &ticket.key, &item.key, kind);
         }
     }
 }

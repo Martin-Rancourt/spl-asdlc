@@ -27,7 +27,10 @@ pub const INSTANCE_KEYS: [(&str, &[&str]); 5] = [
     ("product", &["repository"]),
     ("owner", &["tracker_user", "github_login"]),
     ("tracker", &["team", "service_identity", "team_keys"]),
-    ("release", &["coordinators", "coordinator_assignee"]),
+    (
+        "release",
+        &["coordinators", "coordinator_assignee", "fix_assignee"],
+    ),
     (
         "review",
         &["coordinators", "coordinator_assignee", "human_reviewer"],
@@ -175,6 +178,7 @@ pub(super) fn merge(
             "coordinator_assignee",
             r.coordinator_assignee.map(Value::from),
         );
+        m.put("release", "fix_assignee", r.fix_assignee.map(Value::from));
         m.angles("release", r.angles);
     }
     if let Some(r) = raw.review {

@@ -202,7 +202,7 @@ mod tests {
     fn the_report_schema_is_embedded_whole() {
         let s = report_schema();
         assert!(s.starts_with("#### Schema"), "{s}");
-        assert!(s.contains("\"schema\": \"spl-asdlc/qa-report/1\""), "{s}");
+        assert!(s.contains("\"schema\": \"spl-asdlc/qa-report/2\""), "{s}");
         assert!(s.contains("#### Rules"), "{s}");
         assert!(s.contains("`checked` is never empty"), "{s}");
         assert!(!s.contains("## Prompts"), "{s}");

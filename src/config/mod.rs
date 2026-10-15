@@ -153,15 +153,6 @@ pub enum GoPolicy {
     Human,
 }
 
-/// How the nits of a release become tickets (spec 05 §6): one shared
-/// ticket per release, for a tracker that limits its ticket count, or one
-/// ticket per nit, for a tracker that does not. Each carries a contract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NitsGrouping {
-    Shared,
-    PerNit,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Angle {
     pub key: String,
@@ -178,7 +169,6 @@ pub struct Release {
     pub max_rc_passes: u32,
     pub later_passes: LaterPasses,
     pub go_policy: GoPolicy,
-    pub nits: NitsGrouping,
     pub record: String,
     pub bookkeeping_paths: Vec<String>,
     pub registry_path: String,
@@ -188,6 +178,10 @@ pub struct Release {
     /// The tracker participant who receives the consolidation item of a
     /// candidate; `None` leaves it unassigned.
     pub coordinator_assignee: Option<String>,
+    /// The tracker participant who fixes release problems: the urgent fix
+    /// ticket of a blocking QA finding and the gate-fix ticket of a red gate
+    /// are assigned to it; `None` leaves them unassigned, taken by role.
+    pub fix_assignee: Option<String>,
     pub escalation_label: String,
     pub auto_candidate: bool,
     pub cut_workflow: String,
@@ -987,15 +981,6 @@ impl Validator {
             Some(GoPolicy::Computed),
             &[("computed", GoPolicy::Computed), ("human", GoPolicy::Human)],
         );
-        let nits = self.choice(
-            "release.nits",
-            raw.nits,
-            Some(NitsGrouping::Shared),
-            &[
-                ("shared", NitsGrouping::Shared),
-                ("per-nit", NitsGrouping::PerNit),
-            ],
-        );
         let record = raw
             .record
             .unwrap_or_else(|| ".spl-asdlc/qa/{candidate}/".to_string());
@@ -1064,6 +1049,7 @@ impl Validator {
         );
         let coordinator_assignee =
             self.optional("release.coordinator_assignee", raw.coordinator_assignee);
+        let fix_assignee = self.optional("release.fix_assignee", raw.fix_assignee);
         let escalation_label = self
             .optional("release.escalation_label", raw.escalation_label)
             .unwrap_or_else(|| "blocked-by-human".to_string());
@@ -1094,7 +1080,6 @@ impl Validator {
             max_rc_passes,
             later_passes: later_passes?,
             go_policy: go_policy?,
-            nits: nits?,
             record,
             bookkeeping_paths,
             registry_path,
@@ -1102,6 +1087,7 @@ impl Validator {
             stagnation_hours,
             coordinators,
             coordinator_assignee,
+            fix_assignee,
             escalation_label,
             auto_candidate,
             cut_workflow,

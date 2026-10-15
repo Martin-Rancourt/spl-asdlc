@@ -88,7 +88,8 @@ angles = []                            # no base angle: layer 1 replaces it
 # [release]
 # candidate_tag = "acme-v{version}-rc.{rc}"    # {version} once, {rc} once (never in release_tag); the callers pass the same patterns
 # release_tag = "acme-v{version}"
-# angles = []                                  # no QA angle: layer 3 replaces it
+# fix_assignee = "fixer-handle"                # optional: tracker participant who receives the urgent fix tickets (red gate, blocking finding)
+# angles = []                                # no QA angle: layer 3 replaces it
 #
 # 3. Release QA angles (full; docs/spec/05-release-cycle.md §3). Replace
 #    `angles = []` under [release] with the lines below, kept right after the

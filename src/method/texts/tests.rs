@@ -672,7 +672,7 @@ fn a_release_angle_sub_item_embeds_the_release_protocol_its_angles_notes_and_the
         "{body}"
     );
     assert!(
-        body.contains("\"schema\": \"spl-asdlc/qa-report/1\""),
+        body.contains("\"schema\": \"spl-asdlc/qa-report/2\""),
         "{body}"
     );
     assert!(body.contains("- Project notes: none"), "{body}");
@@ -701,7 +701,7 @@ fn a_consolidation_item_embeds_the_consolidation_protocol_and_says_what_closes_i
         "{pr}"
     );
     assert!(
-        !pr.contains("qa-report/1"),
+        !pr.contains("qa-report/"),
         "a PR's consolidation has no report"
     );
 
@@ -713,7 +713,7 @@ fn a_consolidation_item_embeds_the_consolidation_protocol_and_says_what_closes_i
     assert_one_contract(&rc);
     assert!(rc.contains(&embedded(protocol::CONSOLIDATE)), "{rc}");
     assert!(rc.contains("its part \"For a release candidate\""), "{rc}");
-    assert!(rc.contains("\"schema\": \"spl-asdlc/qa-report/1\""), "{rc}");
+    assert!(rc.contains("\"schema\": \"spl-asdlc/qa-report/2\""), "{rc}");
     assert!(
         rc.contains("The bridge sets it Done when a newer candidate is tagged"),
         "{rc}"

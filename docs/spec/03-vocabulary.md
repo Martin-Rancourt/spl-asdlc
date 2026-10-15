@@ -25,24 +25,25 @@ In Review, To Deploy and Post Deploy are **validation** states: the item is stil
 | **Release issue** | none | One per cycle: title names the product and the version; carries the brief and the GO decision. |
 | **Angle sub-item** | the release issue, or the PR's ticket | One per configured angle; served to a reviewer; its PR (release) or its findings (PR review) are its output. A PR review's sub-items belong to their PR's round: they close when that PR resolves, whatever becomes of the ticket. A release angle sub-item follows the normal flow of a work item, In Progress, In Review (assigned to the coordinator, who is served its PR's review), back In Progress on changes requested (assigned to its angle's assignee, or to nobody), and is Done when the bridge merges its angle PR (BR-ASDLC-020). |
 | **Consolidation item** | same parent | Served to the coordinator once every angle has reported: it is blocked by every angle sub-item of its round until each is resolved. At a PR review (BR-ASDLC-018) it closes with its round. At a release candidate (BR-ASDLC-020) it is the **overall review**, served once every angle PR of the candidate is merged (the coordinator reviewed each angle PR as it came); it is Done when a newer candidate is tagged or the release is published, and the closure closes it otherwise. |
-| **Gate-fix ticket** | the release issue | One per candidate whose gate concluded red once its automatic rerun settled, or once `gate_rerun_wait_minutes` passed with no rerun seen (`05-release-cycle.md` §3, BR-ASDLC-016): unassigned, in Ready, **urgent**, labelled with the release label, with a complete contract (the gate green on the release branch; the failing suites from the evidence pack, or "unknown", and the gate run; its one criterion, the failing suites passing on the release branch). An implementer takes it by role, fixes on the release branch and ticks that criterion as any; the ticket then goes To Deploy at its fix's merge and Done at the closure. The next candidate's gate is the verification: still red, it gets a gate-fix ticket of its own; green, the bridge closes Done a gate-fix ticket that never reached a merge (still Triage, Backlog, Ready or In Progress) and leaves any other alone. A ticket like any other, not a bridge item: its PR links to it. |
+| **Gate-fix ticket** | the release issue | One per candidate whose gate concluded red once its automatic rerun settled, or once `gate_rerun_wait_minutes` passed with no rerun seen (`05-release-cycle.md` §3, BR-ASDLC-016): assigned to `release.fix_assignee` (unassigned when unset), in Ready, **urgent**, labelled with the release label, with a complete contract (the gate green on the release branch; the failing suites from the evidence pack, or "unknown", and the gate run; its one criterion, the failing suites passing on the release branch). An implementer takes it by role, fixes on the release branch and ticks that criterion as any; the ticket then goes To Deploy at its fix's merge and Done at the closure. The next candidate's gate is the verification: still red, it gets a gate-fix ticket of its own; green, the bridge closes Done a gate-fix ticket that never reached a merge (still Triage, Backlog, Ready or In Progress) and leaves any other alone. A ticket like any other, not a bridge item: its PR links to it. |
 | **Validation sub-task** | a ticket the closure (or, without a release cycle, the merge) moved to Post Deploy | One per ticket, unassigned, in Ready, **urgent** (production is waiting on it, BR-ASDLC-017), with a complete contract: an agent verifies the parent's `## Post deploy` boxes in production and checks the ones it can verify, then closes it; a check that needs a human, or is beyond the agent, is named in a comment and the sub-task is reassigned to the owner (`owner.tracker_user`). |
-| **Finding ticket** | none, related to the release issue | A non-blocking finding to fix later; labelled `qa-finding`. |
-| **Blocker** | none, `blocks` the release issue | A blocking finding that an angle could not fix in its branch. |
+| **Finding ticket** | none, related to the release issue | A non-blocking finding, logged for later: in Triage, labelled `qa-finding`, normal priority, unassigned (BR-ASDLC-022). |
+| **Blocking finding's fix ticket** | none, `blocks` the release issue | A blocking finding: in Ready, **urgent**, assigned to `release.fix_assignee` (unassigned when unset), carrying the blocker marker; no GO while it is open (BR-ASDLC-022). |
 
-## Severities and verdicts
+## Findings and verdicts
 
-| Severity | Meaning |
+A finding of a release QA is **blocking** (the release must not ship with it) or **non-blocking** (real, to fix later); the angle documents it and fixes nothing (`06-qa-report.md`). At a PR review a finding carries a severity in its thread, and the coordinator fixes at the PR the ones it retains (`04-pr-review.md`); an angle's file grades its findings on that scale, a `blocker` reading as blocking at a release, a `should-fix` or a `nit` as non-blocking.
+
+| Severity (PR review) | Meaning |
 |---|---|
-| `blocker` | The release must not ship with it. Fixed in the angle branch, or becomes a blocker ticket. |
-| `should-fix` | Real, not blocking; becomes a finding ticket. |
-| `nit` | Cosmetic; listed in the report, documented rather than solved; a box of the release's nits ticket, or a ticket of its own (`release.nits`), to triage: kept or dropped. |
+| `blocker` | The PR must not merge with it: changes are requested. |
+| `should-fix` | Real, not blocking. |
+| `nit` | Cosmetic. |
 
-| Verdict | Meaning |
+| Verdict (release angle report) | Meaning |
 |---|---|
-| `go` | Nothing blocking from this angle. |
-| `go-with-note` | Nothing blocking; findings to carry as tickets. |
-| `hold` | At least one blocker not fixed. |
+| `go` | No blocking finding from this angle. |
+| `hold` | At least one blocking finding. |
 
 ## Labels
 

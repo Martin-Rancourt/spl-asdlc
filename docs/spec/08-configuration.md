@@ -24,7 +24,6 @@ branch_prefix = "release/"
 max_rc_passes = 2
 later_passes = "full"                  # "full" | "gate-and-coordinator"
 go_policy = "computed"                 # "computed" | "human"
-nits = "shared"                        # "shared" | "per-nit": one nits ticket per release, or one per nit
 record = ".spl-asdlc/qa/{candidate}/"  # where angle reports live
 bookkeeping_paths = []                  # files allowed to change after the candidate
 registry_path = "docs/business-rules.md"
@@ -100,6 +99,7 @@ team_keys = ["ABC"]                    # identifier prefixes of the team's items
 [release]
 coordinators = ["coordinator-login"]
 coordinator_assignee = "coordinator-handle" # optional: receives each candidate's consolidation item, and each angle item In Review
+fix_assignee = "fixer-handle"          # optional: receives the urgent fix tickets of a red gate and of a blocking finding
 
 [[release.angles]]
 key = "security"                       # an angle the repository's file declares
@@ -144,7 +144,7 @@ The repository's file carries the method's shape (tags, angles, review rules, wo
 | `tracker.team`, `tracker.service_identity`, `tracker.team_keys` | Which team, under which account. |
 | `release.coordinators` | Logins. |
 | `review.coordinators`, `review.human_reviewer` | Logins. |
-| `release.coordinator_assignee`, `review.coordinator_assignee` | Participants. |
+| `release.coordinator_assignee`, `release.fix_assignee`, `review.coordinator_assignee` | Participants. |
 | the `assignee` of a `[[release.angles]]` or `[[review.angles]]` entry | A participant. Given as an entry with `key` and `assignee` only; `key` must name an angle the repository's file declares, never declare one. |
 | `[[notify]]` | Destinations (as references, rule 1). The channels are one key: all in one file. |
 
@@ -202,7 +202,6 @@ The section is optional, and so is the release cycle it configures (`05-release-
 | `release.max_rc_passes` | `2` | RC passes with QA before escalation to the owner. | Not a positive integer: file invalid. |
 | `release.later_passes` | `"full"` | Whether passes after the first run every angle (`full`) or only the gate and the coordinator. | Other value: file invalid. |
 | `release.go_policy` | `"computed"` | `human` adds the owner's approval to the computed GO; that approval is not read yet, so under `human` the bridge never reaches a GO (rule 4). | Other value: file invalid. |
-| `release.nits` | `"shared"` | How the nits of a release become tickets (`05-release-cycle.md` §6), chosen for the tracker: `shared`, one nits ticket per release whose boxes are the nits, for a tracker that limits its ticket count (Linear's free plan); `per-nit`, one ticket per nit in `Triage`, keyed by candidate, angle and finding id, for a tracker that does not (Livela). Either way each ticket carries a full contract whose goal is to triage. | Other value: file invalid. A shared nits ticket that carries no contract: left alone, said at each tick. |
 | `release.record` | `.spl-asdlc/qa/{candidate}/` | Directory of the angle reports (`06-qa-report.md`). | Without `{candidate}`: file invalid. |
 | `release.bookkeeping_paths` | `[]` | Files allowed to differ between the latest RC and the release branch tip (a file the project's own tooling writes on the branch after the candidate), as exact paths. The reports of the latest RC's own angles (`record` rendered for that RC) are always allowed and need no entry (`05-release-cycle.md` §8). The release itself is tagged on the RC's commit, so none of these files reaches it. | Empty: the RC must equal the tip, but for those; anything else is a tip gap and the GO is false. |
 | `release.registry_path` | `docs/business-rules.md` | The business-rule registry (`02-business-rules.md`). | Unreadable at the judged ref: the guard fails closed. |
@@ -210,6 +209,7 @@ The section is optional, and so is the release cycle it configures (`05-release-
 | `release.stagnation_hours` | `2` | A GO false for longer than this is reported once. | Not a positive integer: file invalid. |
 | `release.coordinators` | required with `[release]` while there is a release angle; optional with `angles = []` | GitHub logins whose approval at the head SHA lets the bridge merge an angle PR; a coordinator App is written `<slug>[bot]` or `app/<slug>`, a bare login being a person (rule 9). | No approval by one of them: the angle PR is not merged. Absent or empty while a release angle is configured: file invalid. |
 | `release.coordinator_assignee` | none | The tracker participant (an agent the tracker serves, like an angle's `assignee`) who receives the consolidation item of each candidate, assigned when the bridge creates it (`05-release-cycle.md` §3), and each angle sub-item when it goes In Review, in the same write, to review its angle PR (§4, BR-ASDLC-020); an existing consolidation item is never reassigned. | Absent, or unknown to the tracker: the consolidation item is created unassigned, and an angle sub-item goes In Review with its assignee left as it is; `doctor` reports an unknown participant. |
+| `release.fix_assignee` | none | The tracker participant who fixes release problems (an agent the tracker serves, like an angle's `assignee`): the gate-fix ticket of a red gate (`05-release-cycle.md` §3, BR-ASDLC-016) and the urgent fix ticket of a blocking QA finding (§5, BR-ASDLC-022) are created assigned to it, as is a finding requalified as blocking (`09-requalification-and-human-gestures.md`). | Absent, or unknown to the tracker: those tickets are created unassigned, taken by role; `doctor` reports an unknown participant. |
 | `release.escalation_label` | `blocked-by-human` | Label added to the release issue when it waits for the owner; the bridge creates it at the first escalation when the tracker lacks it. | — (`doctor` says whether it exists yet) |
 | `release.auto_candidate` | `false` | When true the bridge dispatches the next RC itself once a pass is merged; otherwise the coordinator does. | — |
 | `release.cut_workflow` | `release-cut.yml` | Workflow the bridge dispatches for `release cut`. | Not a file name: file invalid; absent on GitHub: the dispatch fails and says so. |
