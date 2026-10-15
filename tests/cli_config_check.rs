@@ -105,7 +105,8 @@ fn the_default_file_is_the_one_in_the_methods_folder() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(0), "{out:?}");
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    // The overlay's path is printed with the platform's separator.
+    let stdout = String::from_utf8_lossy(&out.stdout).replace('\\', "/");
     assert!(
         stdout.starts_with(".spl-asdlc/config.toml with .spl-asdlc/config.instance.toml: valid"),
         "{stdout}"

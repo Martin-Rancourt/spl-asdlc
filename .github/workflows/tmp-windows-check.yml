@@ -1,0 +1,27 @@
+name: tmp-windows-check
+
+# Temporary: the whole test suite on Windows, every failure at once, before
+# the v1.0.1 release. Removed before this PR merges.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: stable
+      - shell: bash
+        run: cargo test --locked --no-fail-fast
