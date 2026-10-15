@@ -331,6 +331,9 @@ impl GitHub for HandsOff<'_> {
     fn file(&self, repo: &RepoSlug, path: &str, rev: &str) -> Read<String> {
         self.github.file(repo, path, rev)
     }
+    fn dir(&self, repo: &RepoSlug, path: &str, rev: &str) -> Read<Vec<String>> {
+        self.github.dir(repo, path, rev)
+    }
     fn open_pulls(&self, repo: &RepoSlug, base: Option<&str>) -> Read<Vec<PullRequest>> {
         let prs = self.github.open_pulls(repo, base);
         self.see_prs(&prs);

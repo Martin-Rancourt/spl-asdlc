@@ -57,6 +57,9 @@ impl GitHub for DryGitHub<'_> {
     fn file(&self, repo: &RepoSlug, path: &str, rev: &str) -> Read<String> {
         self.inner.file(repo, path, rev)
     }
+    fn dir(&self, repo: &RepoSlug, path: &str, rev: &str) -> Read<Vec<String>> {
+        self.inner.dir(repo, path, rev)
+    }
     fn open_pulls(&self, repo: &RepoSlug, base: Option<&str>) -> Read<Vec<github::PullRequest>> {
         self.inner.open_pulls(repo, base)
     }

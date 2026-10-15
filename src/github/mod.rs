@@ -46,6 +46,10 @@ pub trait GitHub {
     /// The text of `path` at `rev`; `NotFound` when GitHub says 404 (the
     /// caller decides whether the revision itself exists).
     fn file(&self, repo: &RepoSlug, path: &str, rev: &str) -> Read<String>;
+    /// The names of the files directly in the directory `path` at `rev`
+    /// (no sub-directory), sorted; `NotFound` when GitHub says 404 (the
+    /// caller decides whether the revision itself exists).
+    fn dir(&self, repo: &RepoSlug, path: &str, rev: &str) -> Read<Vec<String>>;
 
     // ---- pull requests ----
 

@@ -371,7 +371,7 @@ fn the_brief_names_tickets_criteria_rules_and_distinguishes_first_from_unresolva
         class: "sensible".into(),
         last_release: Some("acme-v1.2.2".into()),
         previous_candidate: Some("acme-v1.2.3-rc.1".into()),
-        paths_since_release: vec!["docs/business-rules.md".into()],
+        paths_since_release: vec![".spl-asdlc/business-rules/BR-ACME-001.md".into()],
         paths_since_candidate: None,
         gate_url: Some("https://github.com/example-org/acme/actions/runs/1".into()),
         evidence_url: Some("https://github.com/example-org/acme/actions/runs/1#artifacts".into()),
@@ -380,7 +380,7 @@ fn the_brief_names_tickets_criteria_rules_and_distinguishes_first_from_unresolva
             BriefTicket { id: "ABC-2".into(), title: "Two".into(), state: "?".into(), prs: vec![], description: None },
         ],
         untracked: vec!["PR #12".into(), "commit abcdef01abcd".into()],
-        rule_files_touched: vec!["docs/business-rules.md".into()],
+        rule_files_touched: vec![".spl-asdlc/business-rules/BR-ACME-001.md".into()],
         no_qa_angle: false,
     };
     let text = brief(&b);

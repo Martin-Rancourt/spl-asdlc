@@ -3,28 +3,48 @@
 ## Invariants
 
 1. **A business rule is a global, permanent invariant of the project.** Unlike an acceptance criterion, which lives and dies with its ticket, a rule applies to the whole current state of the application. If the existing code violates a new rule, fixing it is in scope of the ticket that introduces the rule.
-2. **Rules live in the repository**, in a registry `docs/business-rules.md`, one row per rule, with a stable id `BR-<PRODUCT>-<NNN>` that is never reused. The product prefix is two to six capital letters.
-3. **A rule is enforced only by a named test that runs in CI.** The registry row names the test. A rule without a test is `Proposed`; only `Enforced` rules block.
-4. **A rule born in a ticket is promoted to the registry in the same PR.** The bridge refuses to merge a PR whose ticket states a new rule when the PR does not touch the registry.
-5. **A rule cited by id must exist** in the registry of the product it names, read at the ref being judged: the PR head at merge time, the release tag at closure. The registry is read through the Git host, never from a working tree.
+2. **Rules live in the repository**, in the registry `.spl-asdlc/business-rules/`, one file per rule named after its stable id, `BR-<PRODUCT>-<NNN>.md`; an id is never reused. The product prefix is two to six capital letters. The place is fixed by the method, never configured. One file per rule means two PRs that touch different rules never conflict.
+3. **A rule is enforced only by a named test that runs in CI.** The rule's file names the test. A rule without a test is `Proposed`; only `Enforced` rules block.
+4. **A rule born in a ticket is promoted to the registry in the same PR.** The bridge refuses to merge a PR whose ticket states a new rule when the PR adds or changes no rule file (`.spl-asdlc/business-rules/<ID>.md`; the index alone does not count).
+5. **A rule cited by id must exist** in the registry of the product it names, read at the ref being judged: the PR head at merge time, the release tag at closure. The registry is read through the Git host, never from a working tree: the guard reads the directory's listing, and an id is registered when its file `<ID>.md` is there. A directory absent at a ref that exists is a registry with no rule.
 6. **The guard fails closed.** An unreadable registry keeps the PR waiting and, at closure, leaves the ticket in its state and reports the rule as unverified. A ticket that neither cites nor states a rule is judged without reading the registry.
 7. **Declaring the absence of a rule is explicit**: the Business rules section contains a sentence that says there is none (`None.`, `No new rule.`, `N/A`). An empty section is not a declaration. A sentence that merely begins with "No" but goes on to state something is a rule.
 
-## The registry format
+## The rule file
 
-| Column | Content |
+`.spl-asdlc/business-rules/<ID>.md`, one per rule; `docs/setup/templates/business-rule.md` is an example to copy.
+
+```markdown
+# BR-ACME-001 — Every exported file carries its signature.
+
+Status: Enforced
+
+## Rule
+
+The detail of the invariant.
+
+## Evidence
+
+Why it exists; the incident or decision that created it.
+
+## Test
+
+The test name(s) that enforce it, as CI reports them.
+```
+
+| Part | Content |
 |---|---|
-| `ID` | `BR-<PRODUCT>-<NNN>` |
-| `Rule` | The invariant, one bold sentence then the detail |
-| `Evidence` | Why it exists; the incident or decision that created it |
-| `Test` | The test name(s) that enforce it, as the CI reports them |
-| `Status` | `Proposed` or `Enforced` |
+| Title, the first line | `# <ID> — <the rule in one sentence>`; the id is the file's name |
+| `Status:` line | `Proposed` or `Enforced` |
+| `## Rule` | The invariant in detail |
+| `## Evidence` | Why it exists; the incident or decision that created it |
+| `## Test` (or `## Tests`) | The test name(s) that enforce it, as CI reports them |
 
-Only ids in the first cell of a table row count as registered. Rows may carry more columns (domain, owner decision); the five above are the contract.
+Only the file's name registers an id; an id mentioned in another file vouches for nothing. A file may carry more sections (domain, owner decision); the parts above are the contract, and none is empty. `spl-asdlc doctor` reads every file of the directory and names each one that breaks the format by its path. Beside the rules the directory may hold a `README.md`, an index for people that the method never reads.
 
 ## Transverse rules of the method
 
-The method has its own rules, which hold for every project that uses it. They are numbered `SR-<NNN>` and live in `docs/spec/02-business-rules.md` of this repository, under this heading, with the same columns. The first ones, carried over from the previous implementation:
+The method has its own rules, which hold for every project that uses it. They are numbered `SR-<NNN>` and live in `docs/spec/02-business-rules.md` of this repository, under this heading, in the table below. The first ones, carried over from the previous implementation:
 
 | ID | Rule |
 |---|---|

@@ -251,7 +251,7 @@ fn tree(base: &Path, dir: &Path, out: &mut Vec<String>) {
 
 #[test]
 fn no_file_a_test_reads_is_prose() {
-    // The tests read docs/spec/, docs/business-rules.md, docs/setup/templates/
+    // The tests read docs/spec/, .spl-asdlc/business-rules/, docs/setup/templates/
     // and docs/setup/examples/, and rule zero reads every file: a docs-only PR
     // runs the suite. Only the licence text skips it.
     let pr = own("pr.yml");
@@ -265,7 +265,7 @@ fn no_file_a_test_reads_is_prose() {
     assert_eq!(matched, ["LICENSE"], "{prose}");
     for read in [
         "docs/spec/08-configuration.md",
-        "docs/business-rules.md",
+        ".spl-asdlc/business-rules/BR-ASDLC-001.md",
         "docs/setup/templates/spl-asdlc.toml",
         "docs/setup/examples/pr.yml",
         "README.md",

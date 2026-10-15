@@ -8,7 +8,7 @@ One file per topic. Each file states invariants (numbered), the vocabulary it in
 |---|---|
 | `00-overview.md` | The ten invariants, the actors (implementer, reviewer angles, coordinator, the bridge, the human), the three moments of QA (ticket, diff, project) |
 | `01-ticket-contract.md` | Goal, non-goal, acceptance criteria, business rules; the refinement gate; the release-note snippet |
-| `02-business-rules.md` | Global, permanent rules; the registry format; one rule = one deterministic test; the guard at merge and at closure |
+| `02-business-rules.md` | Global, permanent rules; the registry, one file per rule; one rule = one deterministic test; the guard at merge and at closure |
 | `03-vocabulary.md` | Canonical statuses (Triage, Backlog, Ready, In Progress, In Review, To Deploy, Post Deploy, Done), severities, verdicts, item kinds |
 | `04-pr-review.md` | CI first; angle sub-items; findings as PR review comments; the coordinator fixes on the branch and approves; the bridge merges; "To Deploy" |
 | `05-release-cycle.md` | Cut by dispatch; release issue at the next tick; angle branches with a mandatory report; RC passes; computed GO; publish; merge-back; closure; release note |

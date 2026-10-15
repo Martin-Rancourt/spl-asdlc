@@ -26,9 +26,8 @@ pub const SCHEMA_VERSION: i64 = 1;
 /// Default file name, at the root of the repository.
 pub const FILE_NAME: &str = "spl-asdlc.toml";
 
-/// Defaults of `[release]` keys the PR pass reads too, with or without a
-/// release cycle (spec 08, `[release]`).
-pub const DEFAULT_REGISTRY_PATH: &str = "docs/business-rules.md";
+/// The default of the `[release]` key the PR pass reads too, with or
+/// without a release cycle (spec 08, `[release]`).
 pub const DEFAULT_BRANCH_PREFIX: &str = "release/";
 
 /// The CHANGELOG sections `release prepare` writes when the file names none
@@ -174,8 +173,6 @@ pub struct Release {
     pub nits: NitsGrouping,
     pub record: String,
     pub bookkeeping_paths: Vec<String>,
-    pub registry_path: String,
-    pub business_rule_paths: Vec<String>,
     pub stagnation_hours: u32,
     pub coordinators: Vec<String>,
     /// The tracker participant who receives the consolidation item of a
@@ -420,15 +417,6 @@ impl Source {
 }
 
 impl Config {
-    /// The business-rule registry (`docs/spec/02-business-rules.md`) the
-    /// PR pass's guard reads: `release.registry_path`, or its default when
-    /// the project has no release cycle.
-    pub fn registry_path(&self) -> &str {
-        self.release
-            .as_ref()
-            .map_or(DEFAULT_REGISTRY_PATH, |r| r.registry_path.as_str())
-    }
-
     /// The release branch prefix by which the PR pass leaves the release
     /// machinery's PRs alone (spec 04 §8): the configured one, or its
     /// default when the project has no release cycle, so that a merge back
@@ -1009,18 +997,6 @@ impl Validator {
             Vec::new(),
             false,
         );
-        let registry_path = self
-            .optional("release.registry_path", raw.registry_path)
-            .unwrap_or_else(|| DEFAULT_REGISTRY_PATH.to_string());
-        let business_rule_paths = self.list(
-            "release.business_rule_paths",
-            raw.business_rule_paths,
-            vec![
-                "docs/business-rules.md".to_string(),
-                "**/business-rules.md".to_string(),
-            ],
-            false,
-        );
         let stagnation_hours = self.positive("release.stagnation_hours", raw.stagnation_hours, 2);
         // `angles = []` written under [release] is a release with no QA
         // angle, whose GO rests on the gate; no angle written at all is a
@@ -1086,8 +1062,6 @@ impl Validator {
             nits: nits?,
             record,
             bookkeeping_paths,
-            registry_path,
-            business_rule_paths,
             stagnation_hours,
             coordinators,
             coordinator_assignee,

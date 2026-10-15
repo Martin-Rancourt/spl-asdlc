@@ -2586,3 +2586,85 @@ fn a_ticket_under_the_hands_off_label_is_never_written_and_is_handed_back_when_i
     assert!(report.hands_off.is_empty(), "{report:?}");
     assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::ToDeploy));
 }
+
+// ---- the business-rule guard reads `.spl-asdlc/business-rules/` (spec 02) ----
+
+/// A ready PR whose ticket cites `id` in its Business rules, every box
+/// ticked, with the registry's directory at its head holding `rules`.
+fn citing(w: &mut World, id: &str, rules: &[&str]) {
+    no_review(w);
+    ready_pr(w);
+    let description = COMPLETE
+        .replace("- [ ] it is fast", "- [x] it is fast")
+        .replace("No new rule.", &format!("- {id} applies."));
+    crate::tracker::Tracker::update_description(&w.tracker, "ABC-7", &description).unwrap();
+    let mut s = w.github.state.borrow_mut();
+    for rule in rules {
+        s.files.insert(
+            (
+                repo(),
+                "head-7".into(),
+                format!(".spl-asdlc/business-rules/{rule}.md"),
+            ),
+            Ok(format!("# {rule} — A rule.\n")),
+        );
+    }
+}
+
+#[test]
+fn a_pr_citing_a_rule_whose_file_is_in_the_registry_at_its_head_merges() {
+    let mut w = World::new();
+    citing(&mut w, "BR-ACME-001", &["BR-ACME-001"]);
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert!(merged(&w), "{:?}", w.github_writes());
+}
+
+#[test]
+fn a_pr_citing_a_rule_with_no_file_in_the_registry_is_held_and_told_so() {
+    let mut w = World::new();
+    citing(&mut w, "BR-ACME-002", &["BR-ACME-001"]);
+    w.tick(false);
+    assert!(!merged(&w));
+    let said = w.github.state.borrow().comments[&(repo(), 7)]
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|c| c.body.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(said.contains("`BR-ACME-002`"), "{said}");
+    assert!(said.contains("`.spl-asdlc/business-rules/`"), "{said}");
+}
+
+#[test]
+fn a_rule_stated_by_the_ticket_merges_once_its_pr_adds_the_rule_file() {
+    let mut w = World::new();
+    no_review(&mut w);
+    ready_pr(&w);
+    let description = COMPLETE
+        .replace("- [ ] it is fast", "- [x] it is fast")
+        .replace("No new rule.", "- Every export is signed.");
+    crate::tracker::Tracker::update_description(&w.tracker, "ABC-7", &description).unwrap();
+    w.github.state.borrow_mut().commits.insert(
+        (repo(), "head-7".into()),
+        Ok(crate::github::Commit {
+            sha: "head-7".into(),
+            message: "feat: sign exports".into(),
+            committer_date: None,
+            parents: Vec::new(),
+        }),
+    );
+    w.tick(false);
+    assert!(!merged(&w), "the PR adds no rule file");
+    w.github.state.borrow_mut().pull_files.insert(
+        (repo(), 7),
+        Ok(vec![
+            "src/lib.rs".into(),
+            ".spl-asdlc/business-rules/BR-ACME-001.md".into(),
+        ]),
+    );
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert!(merged(&w), "{:?}", w.github_writes());
+}

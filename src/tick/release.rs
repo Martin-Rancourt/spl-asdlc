@@ -1116,8 +1116,11 @@ fn brief_facts(
             description: Some(item.description),
         });
     }
-    let rule_paths = &section(t)?.business_rule_paths;
-    let rule_files_touched = crate::method::glob::hits(&paths_since_release, rule_paths);
+    let rule_files_touched: Vec<String> = paths_since_release
+        .iter()
+        .filter(|p| crate::method::business_rules::is_rule_file(p))
+        .cloned()
+        .collect();
     let evidence_url = evidence_url(t, c, run)?;
     Ok(texts::Brief {
         candidate: c.tag.clone(),
