@@ -4,7 +4,7 @@ SPL-ASDLC is a delivery method for software written by agents, with the tooling 
 
 ## The idea
 
-Agents write the code. A deterministic program, **the bridge**, keeps the tracker and GitHub in step. It reads GitHub facts (branches, PRs, checks, tags, releases) at a regular interval, moves the tickets, merges what may be merged and drives the release. CI only produces facts and never writes to the tracker.
+Agents write the code. A deterministic program, **the bridge**, keeps the tracker and GitHub in step. It reads GitHub facts (branches, PRs, checks, tags, releases) at a regular interval (Livela runs it on its own; with another tracker, a timer on a host the project chooses does), moves the tickets, merges what may be merged and drives the release. CI only produces facts and never writes to the tracker.
 
 Everything the method needs in a repository lives in one folder, `.spl-asdlc/`:
 - `config.toml`, the project's configuration;
@@ -122,7 +122,7 @@ Every command is in `docs/setup/manual-gestures.md`.
 2. Protect `main` with a ruleset that requires `required-check`, with the App allowed to bypass it.
 3. Copy the example workflow callers from `docs/setup/examples/`.
 4. Copy the configuration template to `.spl-asdlc/config.toml` and adapt it. The installation's identities (the repository, the tracker team, the people) go in it too, or, for a repository that must carry no names (a public one), in `.spl-asdlc/config.instance.toml` on the bridge's host only: list that file in `.gitignore`, so it is never committed.
-5. Run the bridge on a timer, at the interval the host chooses, and check the setup with `spl-asdlc doctor`.
+5. Run the bridge, and check the setup with `spl-asdlc doctor`. With Livela as the tracker, Livela runs the bridge itself: there is nothing to schedule. With another tracker, run the bridge on a timer, at the interval the host chooses.
 
 `docs/setup/README.md` has the details.
 
