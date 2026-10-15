@@ -16,7 +16,7 @@ A candidate asks two things of you, at two moments: you review each angle PR as 
 
 ### Each angle PR, as its reviewer
 
-The angle's own sub-item serves you this review: when its angle PR is ready (not draft) and its required checks are green, the bridge moves the sub-item to **In Review** and assigns it to you (`release.coordinator_assignee`), in the same write. Review the PR then; the sub-item stays the angle's work item, so leave its status to the bridge.
+The angle's own sub-item serves you this review: when its angle PR is ready (a draft is out of the flow) and its required checks are green, the bridge moves the sub-item to **In Review** and assigns it to you (`release.coordinator_assignee`), in the same write. Review the PR then; the sub-item stays the angle's work item, so leave its status to the bridge.
 
 1. For each angle PR (`qa/<candidate>/<angle>` → release branch): read the report file. The PR carries the report and nothing else: a fix in it is a change request to its angle. Confirm or reject each finding in a review thread of that PR, with reasons; confirm or change whether it is blocking, with the reason.
 2. Check the report is valid (the schema and rules of `docs/reference/06-qa-report.md`, which the angle's sub-item embeds, as your consolidation item does after this protocol: `checked` non-empty, verdict consistent with the findings). An invalid report is a change request to its angle.

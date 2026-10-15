@@ -5,7 +5,7 @@
 //! merge has an open PR:
 //!
 //! 1. **The review rule** has priority: while another PR of the ticket is in
-//!    review (opened, not a draft, not sent back), the ticket is In Review and
+//!    review (opened, not sent back), the ticket is In Review and
 //!    that PR's review → deploy cycle runs in full; a PR the coordinator sent
 //!    back puts it In Progress (spec 04 §5).
 //! 2. **The completeness rule**: with no PR in review, a ticket whose boxes
@@ -13,9 +13,9 @@
 //!    In Progress; an implementer resumes, and its next PR brings it to
 //!    review again.
 //!
-//! Then a PR in draft, which is work in progress, keeps a complete ticket In
-//! Progress (REQ-MERGE-028 as the spec corrects it); and only a ticket with
-//! nothing open, every box checked and a PR merged goes To Deploy.
+//! Then only a ticket with nothing open, every box checked and a PR merged
+//! goes To Deploy. A draft PR is out of the flow: it is not among the
+//! ticket's open PRs and counts for nothing here.
 //!
 //! A ticket with nothing to deploy (the `tracker.no_deploy_label`,
 //! `docs/method.md`, "Merge") waits for no release: merging is delivering, so [`delivered`] judges at once the
@@ -25,22 +25,22 @@ use super::contract;
 use super::done_gate::{self, ClosureVerdict, DoneGate};
 use super::vocabulary::Status;
 
-/// An open PR of the ticket, as the bridge sees it.
+/// An open PR of the ticket, as the bridge sees it (never a draft, which
+/// is out of the flow).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenPr {
     pub number: u64,
-    pub draft: bool,
     /// A coordinator's request for changes stands at its head (spec 04 §5).
     pub sent_back: bool,
 }
 
 impl OpenPr {
-    /// In review: opened (not a draft) and not sent back. The ticket is In
+    /// In review: opened and not sent back. The ticket is In
     /// Review as soon as its PR is opened, before its CI and its review
     /// round (spec 03); a PR whose round is done but which waits for its
     /// merge is still in review.
     pub fn in_review(&self) -> bool {
-        !self.draft && !self.sent_back
+        !self.sent_back
     }
 }
 
@@ -67,8 +67,6 @@ pub enum Why {
     /// The completeness rule: these boxes are open; empty when the ticket
     /// declares no box at all (nothing declared is not everything checked).
     BoxesOpen(Vec<String>),
-    /// An open PR in draft on a complete ticket: work in progress.
-    Draft(u64),
     /// Every box checked but no PR of the ticket merged.
     NothingMerged,
     /// Every box checked, a PR merged, nothing open.
@@ -98,9 +96,6 @@ impl Why {
             Why::BoxesOpen(open) => format!(
                 "{} box(es) of its contract remain open: its implementer resumes, and the next PR brings it back to review.",
                 open.len()
-            ),
-            Why::Draft(n) => format!(
-                "PR #{n} of this ticket is a draft, work in progress: the ticket stays `In Progress` until that PR is ready for review."
             ),
             Why::NothingMerged => {
                 "no PR of this ticket is merged: its implementer resumes.".to_string()
@@ -138,10 +133,6 @@ pub fn decide(f: &Facts) -> Option<(Status, Why)> {
         None => return Some((Status::InProgress, Why::BoxesOpen(Vec::new()))),
         Some(open) if !open.is_empty() => return Some((Status::InProgress, Why::BoxesOpen(open))),
         Some(_) => {}
-    }
-    // Only drafts are left open: work in progress (spec 04 §10).
-    if let Some(pr) = f.open.first() {
-        return Some((Status::InProgress, Why::Draft(pr.number)));
     }
     if !f.merged {
         return Some((Status::InProgress, Why::NothingMerged));
@@ -184,7 +175,6 @@ mod tests {
     fn pr(number: u64) -> OpenPr {
         OpenPr {
             number,
-            draft: false,
             sent_back: false,
         }
     }
@@ -250,7 +240,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pr_sent_back_or_a_draft_is_not_in_review() {
+    fn a_pr_sent_back_is_not_in_review() {
         let sent_back = [OpenPr {
             sent_back: true,
             ..pr(8)
@@ -258,27 +248,6 @@ mod tests {
         assert_eq!(
             decide(&facts(&sent_back, ALL)),
             Some((Status::InProgress, Why::SentBack(8)))
-        );
-        let draft = [OpenPr {
-            draft: true,
-            ..pr(8)
-        }];
-        assert_eq!(
-            decide(&facts(&draft, OPEN)).map(|d| d.0),
-            Some(Status::InProgress)
-        );
-    }
-
-    #[test]
-    fn a_draft_pr_keeps_a_complete_ticket_in_progress() {
-        // REQ-MERGE-028 as corrected: a draft is work in progress.
-        let draft = [OpenPr {
-            draft: true,
-            ..pr(8)
-        }];
-        assert_eq!(
-            decide(&facts(&draft, ALL)),
-            Some((Status::InProgress, Why::Draft(8)))
         );
     }
 

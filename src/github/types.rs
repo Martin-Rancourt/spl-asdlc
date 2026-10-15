@@ -360,10 +360,12 @@ pub struct PullRequest {
 }
 
 /// A PR GitHub associates with a commit (`commits/{sha}/pulls`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CommitPull {
     pub number: u64,
     pub url: String,
+    pub title: String,
+    pub body: String,
     pub merged_at: Option<Timestamp>,
     pub merge_commit_sha: Option<String>,
     pub base_ref: String,

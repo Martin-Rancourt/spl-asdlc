@@ -966,26 +966,63 @@ pub fn stagnation_message(
 /// The comment on a ticket when one of its PRs is merged (REQ-MERGE-062 as
 /// spec 04 §10 corrects it): the state the rules gave the ticket, and what
 /// comes next. Its `merged_pr:` line is the record of the merge
-/// (REQ-MERGE-075).
+/// (REQ-MERGE-075). It states only the conditions that applied to the merge.
 pub fn merged_comment(
     pr_url: &str,
     base: &str,
-    merged_by: Option<&str>,
+    merged_by: &MergedBy,
     state: &str,
     next: &str,
 ) -> String {
     let how = match merged_by {
-        None => format!(
-            "{pr_url} was green, approved and up to date with `{base}`, so the bridge merged it."
-        ),
-        Some(who) => format!(
+        MergedBy::Bridge {
+            approved_by,
+            up_to_date,
+        } => {
+            let mut held = vec!["green".to_string()];
+            if let Some(by) = approved_by {
+                held.push(format!("approved by `{by}`"));
+            }
+            if *up_to_date {
+                held.push(format!("up to date with `{base}`"));
+            }
+            let last = held.pop().unwrap_or_default();
+            let held = if held.is_empty() {
+                last
+            } else {
+                format!("{} and {last}", held.join(", "))
+            };
+            match approved_by {
+                Some(_) => format!("{pr_url} was {held}, so the bridge merged it."),
+                None => format!(
+                    "{pr_url} was {held}; no review angle applies to it, so the bridge merged it with no PR review."
+                ),
+            }
+        }
+        MergedBy::Outside(who) => format!(
             "{pr_url} was merged by `{who}` outside the bridge; the bridge applies the same state rule to it."
         ),
     };
-    format!(
-        "{how}\n\nmerged_by: {}\nmerged_pr: {pr_url}\nstate: {state}\nnext: {next}",
-        merged_by.unwrap_or("bridge")
-    )
+    let by = match merged_by {
+        MergedBy::Bridge { .. } => "bridge",
+        MergedBy::Outside(who) => who,
+    };
+    format!("{how}\n\nmerged_by: {by}\nmerged_pr: {pr_url}\nstate: {state}\nnext: {next}")
+}
+
+/// Who merged a PR, as the merge comment says it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergedBy<'a> {
+    /// The bridge: `approved_by` is the coordinator whose approval at the
+    /// head let it merge (`None` for a PR with no angle, merged with no PR
+    /// review, spec 04 §11); `up_to_date` when the project requires a PR up
+    /// to date with its base (`review.require_up_to_date`).
+    Bridge {
+        approved_by: Option<&'a str>,
+        up_to_date: bool,
+    },
+    /// Someone outside the bridge.
+    Outside(&'a str),
 }
 
 /// The comment on a ticket when one of its PRs is closed without merge and

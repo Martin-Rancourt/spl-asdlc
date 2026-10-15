@@ -22,7 +22,6 @@ fn a_ticket_is_described_by_its_snippet_then_its_goal() {
             ticket("ABC-10", Some(""), "The goal says it.", &[13, 14]),
         ],
         &[],
-        None,
     );
     assert!(b.contains("- **ABC-2** — Title of ABC-2: You can now export. (#12)"));
     assert!(
@@ -37,45 +36,40 @@ fn a_ticket_is_described_by_its_snippet_then_its_goal() {
 
 #[test]
 fn an_unread_ticket_is_named_and_said_unread() {
-    let b = block("rc", &[ticket("ABC-1", None, "", &[7])], &[], None);
+    let b = block("rc", &[ticket("ABC-1", None, "", &[7])], &[]);
     assert!(b.contains(
         "- **ABC-1** — Title of ABC-1 (#7) (ticket unreadable: content not carried over)"
     ));
 }
 
 #[test]
-fn an_orphan_pr_is_described_by_the_changelog_then_its_description() {
-    let changelog = "## [1.2.3]\n* **ci:** faster gate ([#21](u))\n* other ([#210](u))\n";
+fn a_pr_with_no_ticket_is_announced_by_its_release_note_then_its_title() {
     let untracked = [
-        Untracked::Pr {
+        Untracked {
             number: 21,
             title: "ci: speed".into(),
-            body: "ignored".into(),
+            body: "## Summary\nNot this.\n\n## Release note\nThe gate is faster.\n\n## Tests\nx\n"
+                .into(),
         },
-        Untracked::Pr {
+        Untracked {
             number: 22,
             title: "docs: x".into(),
             body: "## Summary\nExplains the gate.\n\n🤖 Generated".into(),
         },
-        Untracked::Commit(CommitSummary {
-            sha: "abcdef01abcdef01".into(),
-            subject: "fix: direct".into(),
-            committed_at: None,
-        }),
     ];
-    let b = block("rc", &[], &untracked, Some(changelog));
+    let b = block("rc", &[], &untracked);
     assert!(
-        b.contains("- **PR #21** — ci: speed: **ci:** faster gate"),
+        b.contains("- **PR #21** — ci: speed: The gate is faster."),
         "{b}"
     );
-    assert!(b.contains("- **PR #22** — docs: x: Explains the gate."));
-    assert!(b.contains("- **commit abcdef01abcd** — fix: direct"));
+    assert!(b.contains("- **PR #22** — docs: x\n"), "{b}");
+    assert!(!b.contains("Explains the gate"), "{b}");
     assert!(b.contains("### No linked ticket"));
 }
 
 #[test]
 fn a_release_with_no_change_says_so() {
-    assert!(block("rc", &[], &[], None).contains("No change since the last published release."));
+    assert!(block("rc", &[], &[]).contains("No change since the last published release."));
 }
 
 #[test]
@@ -184,7 +178,7 @@ fn a_ticket_cannot_close_the_block_from_its_snippet() {
         "",
         &[1],
     );
-    let b = block("rc", &[evil], &[], None);
+    let b = block("rc", &[evil], &[]);
     assert_eq!(b.matches("spl-asdlc:release-note:end").count(), 1, "{b}");
 }
 

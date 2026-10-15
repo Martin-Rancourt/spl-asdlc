@@ -1,6 +1,8 @@
 //! The colour of a PR's checks (REQ-MERGE-010, 011, 050): only the latest
 //! run of each check counts; a red wins over a pending; no check at all is
-//! not green; a required check that never reported is not green either.
+//! not green; a required check is green only by a success: one that never
+//! reported, or was skipped or neutral, is not green either; a rollup in
+//! which nothing succeeded is not green.
 
 use std::collections::BTreeSet;
 
@@ -112,13 +114,36 @@ pub fn state(checks: &[CheckEntry], required: &BTreeSet<String>) -> CheckState {
     {
         return CheckState::Pending;
     }
-    if required
-        .iter()
-        .any(|r| !latest.iter().any(|c| &c.name == r))
-    {
+    // A required check is green only by a success (the owner's decision,
+    // 2026-10-15): GitHub reports a skipped job as passing a required check,
+    // and the `required-check` of a draft PR's run is skipped. Missing,
+    // skipped or neutral, it waits for a run that succeeds.
+    if required.iter().any(|r| !required_succeeded(&latest, r)) {
+        return CheckState::Pending;
+    }
+    // Every check skipped or neutral: nothing verified anything.
+    if !latest.iter().any(|c| upper(&c.conclusion) == "SUCCESS") {
         return CheckState::Pending;
     }
     CheckState::Green
+}
+
+/// The required check `name` reported, and each of its latest runs succeeded.
+fn required_succeeded(latest: &[CheckEntry], name: &str) -> bool {
+    let mut runs = latest.iter().filter(|c| c.name == name).peekable();
+    runs.peek().is_some() && runs.all(|c| upper(&c.conclusion) == "SUCCESS")
+}
+
+/// Some check of the rollup is still running (its latest run).
+pub fn running(checks: &[CheckEntry]) -> bool {
+    latest_runs(checks).iter().any(is_pending)
+}
+
+/// No check of the rollup succeeded (its latest runs).
+pub fn none_succeeded(checks: &[CheckEntry]) -> bool {
+    !latest_runs(checks)
+        .iter()
+        .any(|c| upper(&c.conclusion) == "SUCCESS")
 }
 
 /// The colour of a PR's head: unreadable when GitHub cut its check list.
@@ -138,8 +163,8 @@ pub fn missing_required(checks: &[CheckEntry], required: &BTreeSet<String>) -> V
         .collect()
 }
 
-/// The first required check that was skipped or neutral: green does not
-/// mean tested (REQ-MERGE-050).
+/// The first required check that was skipped or neutral: it is not green
+/// (REQ-MERGE-050, as corrected), and the wait says so.
 pub fn skipped_required(checks: &[CheckEntry], required: &BTreeSet<String>) -> Option<String> {
     latest_runs(checks)
         .into_iter()
@@ -290,13 +315,74 @@ mod tests {
     }
 
     #[test]
-    fn a_skipped_required_check_buys_a_reviewer() {
+    fn a_skipped_required_check_is_named() {
         let checks = [run("CI", "required-check", "COMPLETED", "SKIPPED", T1)];
         let required: BTreeSet<String> = ["required-check".to_string()].into();
         assert_eq!(
             skipped_required(&checks, &required).as_deref(),
             Some("required-check")
         );
+    }
+
+    #[test]
+    fn a_required_check_is_green_only_by_a_success() {
+        let required: BTreeSet<String> = ["required-check".to_string()].into();
+        for conclusion in ["SKIPPED", "NEUTRAL"] {
+            let checks = [
+                run("CI", "guards", "COMPLETED", "SUCCESS", T1),
+                run("CI", "required-check", "COMPLETED", conclusion, T1),
+            ];
+            assert_eq!(
+                state(&checks, &required),
+                CheckState::Pending,
+                "{conclusion}"
+            );
+        }
+        // A commit status of the required name is read the same way.
+        let checks = [
+            run("CI", "guards", "COMPLETED", "SUCCESS", T1),
+            status("required-check", "SUCCESS"),
+        ];
+        assert_eq!(state(&checks, &required), CheckState::Green);
+    }
+
+    #[test]
+    fn the_skipped_required_check_of_a_draft_run_waits_for_the_ready_run() {
+        // The draft run skipped every job; the ready run, on the same head,
+        // is the one that reports the check.
+        let required: BTreeSet<String> = ["required-check".to_string()].into();
+        let draft = [
+            run("pr", "guards", "COMPLETED", "SKIPPED", T1),
+            run("pr", "required-check", "COMPLETED", "SKIPPED", T1),
+        ];
+        assert_eq!(state(&draft, &required), CheckState::Pending);
+        assert!(!running(&draft));
+        let mut ready = draft.to_vec();
+        ready.push(run("pr", "guards", "COMPLETED", "SUCCESS", T2));
+        assert_eq!(state(&ready, &required), CheckState::Pending);
+        ready.push(run("pr", "required-check", "QUEUED", "", None));
+        assert_eq!(state(&ready, &required), CheckState::Pending);
+        assert!(running(&ready));
+        ready.pop();
+        ready.push(run("pr", "required-check", "COMPLETED", "SUCCESS", T2));
+        assert_eq!(state(&ready, &required), CheckState::Green);
+    }
+
+    #[test]
+    fn a_rollup_in_which_nothing_succeeded_is_not_green() {
+        let checks = [
+            run("pr", "guards", "COMPLETED", "SKIPPED", T1),
+            run("pr", "test", "COMPLETED", "NEUTRAL", T1),
+        ];
+        assert_eq!(state(&checks, &none()), CheckState::Pending);
+        assert!(none_succeeded(&checks));
+        assert!(!none_succeeded(&[run(
+            "pr",
+            "a",
+            "COMPLETED",
+            "SUCCESS",
+            T1
+        )]));
     }
 
     #[test]

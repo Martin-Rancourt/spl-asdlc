@@ -15,5 +15,5 @@ One file per topic. Each file states invariants (numbered), the vocabulary it in
 | `06-qa-report.md` | The angle report schema, findings, severities, consolidation rules |
 | `07-the-bridge.md` | One deterministic process; polling; what it reads on GitHub; what it writes to the tracker; what it merges; idempotence; identity |
 | `08-configuration.md` | `.spl-asdlc/config.toml`: product, release shape, tracker, angles, `max_rc_passes`, GO policy, merge policy, channels, cadence |
-| `09-requalification-and-human-gestures.md` | Cut, requalify a finding, human GO policy, resume, hold a PR back, move a ticket; the audit of every step a person can do by hand in GitHub |
+| `09-requalification-and-human-gestures.md` | Cut, requalify a finding, human GO policy, resume, take a PR out of the flow, move a ticket; the audit of every step a person can do by hand in GitHub |
 | `10-run-journal.md` | The journal of a release cycle: its template, the gestures outside the method, the defects of the chain |

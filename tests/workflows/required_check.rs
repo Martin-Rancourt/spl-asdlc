@@ -4,10 +4,42 @@
 use crate::harness::{Ran, Scratch, run, run_body, step, workflow};
 
 fn aggregate(needs: &str, may_skip: &str) -> Ran {
+    aggregate_on(needs, may_skip, "false")
+}
+
+/// `draft` is what `github.event.pull_request.draft` gives the step.
+fn aggregate_on(needs: &str, may_skip: &str, draft: &str) -> Ran {
     let doc = workflow("actions/required-check/action.yml");
     let body = run_body(&step(&doc, "runs", "Aggregate the gated jobs"));
     let dir = Scratch::new("required");
-    run(&body, &[("NEEDS", needs), ("MAY_SKIP", may_skip)], &dir.0)
+    run(
+        &body,
+        &[("NEEDS", needs), ("MAY_SKIP", may_skip), ("DRAFT", draft)],
+        &dir.0,
+    )
+}
+
+#[test]
+fn a_draft_pr_never_passes_even_with_every_job_green() {
+    let n = needs(&[("guards", "success"), ("test", "skipped")]);
+    let r = aggregate_on(&n, "test", "true");
+    assert_eq!(r.code, 1, "{}", r.log);
+    assert!(r.log.contains("A draft PR is out of the flow"), "{}", r.log);
+    // Marked ready, the same head passes on its ready_for_review run.
+    let n = needs(&[("guards", "success"), ("test", "success")]);
+    assert_eq!(aggregate_on(&n, "test", "false").code, 0);
+    // Outside a pull request event the draft state is empty: not a draft.
+    assert_eq!(aggregate_on(&n, "test", "").code, 0);
+}
+
+#[test]
+fn the_action_reads_the_draft_state_of_the_pull_request_event() {
+    let doc = workflow("actions/required-check/action.yml");
+    let s = step(&doc, "runs", "Aggregate the gated jobs");
+    assert_eq!(
+        s["env"]["DRAFT"].as_str(),
+        Some("${{ github.event.pull_request.draft }}")
+    );
 }
 
 fn needs(pairs: &[(&str, &str)]) -> String {

@@ -42,7 +42,9 @@ jobs:
           - { os: macos-15-intel, target: x86_64-apple-darwin, archive: tar.gz }
           - { os: windows-latest, target: x86_64-pc-windows-msvc, archive: zip }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # A build takes a few minutes (seven at most, Windows); a hung runner
+    # held a macOS job, ten minutes billed for one, for an hour.
+    timeout-minutes: 15
     permissions:
       contents: read
     env:

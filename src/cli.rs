@@ -73,7 +73,8 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum ReleaseCommand {
-    /// The GO decision and its inputs (exit 1 when there is no GO).
+    /// The GO decision and its inputs (exit 1 when there is no GO), or that
+    /// no cycle is in flight once the last one closed (exit 0).
     Status {
         #[arg(long)]
         json: bool,
@@ -497,8 +498,23 @@ fn release(
         None => crate::action_log::ActionLog::in_memory(),
     };
     let result = match command {
-        ReleaseCommand::Status { json } => match crate::verbs::status(&t) {
-            Ok((cycle, d)) => {
+        ReleaseCommand::Status { json } => match crate::verbs::release_status(&t) {
+            Ok(crate::verbs::CycleStatus::Over { release_tag, item }) => {
+                if json {
+                    let _ = writeln!(
+                        out,
+                        "{}",
+                        serde_json::json!({"in_flight": false, "closed_with": release_tag, "release_item": item})
+                    );
+                } else {
+                    let _ = writeln!(
+                        out,
+                        "no cycle in flight: the last cycle closed with {release_tag} ({item})"
+                    );
+                }
+                return ExitCode::SUCCESS;
+            }
+            Ok(crate::verbs::CycleStatus::InFlight(cycle, d)) => {
                 if json {
                     let _ = writeln!(out, "{}", d.as_json());
                 } else {

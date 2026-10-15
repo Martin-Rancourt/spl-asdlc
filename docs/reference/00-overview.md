@@ -26,7 +26,7 @@ Two consequences follow from how the tooling is built, and they are invariants t
 | **Reviewer (angle)** | Reads a diff (PR review) or a whole candidate (release QA) from one angle: security, design, product, maintainability, … Posts findings. | An agent or a human; several in parallel. |
 | **Coordinator** | Reads every angle's findings, discards false alarms with a reason, confirms severities, applies the retained fixes, approves. Has the last word of a QA. | An agent or a human; one per PR or per release candidate. |
 | **The bridge** | Deterministic code. Creates the items, posts the brief, merges on approval, computes the GO, closes the release, sends the release note. | The `spl-asdlc` binary or library, hosted by the user's environment. |
-| **The human** | Cuts a release, requalifies a finding, takes an escalation; tags and publishes a release by hand, taking the GO on themselves; holds a PR back by putting it in draft, or takes any other step by hand (`09-requalification-and-human-gestures.md`). | The project owner. |
+| **The human** | Cuts a release, requalifies a finding, takes an escalation; tags and publishes a release by hand, taking the GO on themselves; takes a PR out of the flow by putting it in draft (and back in by marking it ready), or takes any other step by hand (`09-requalification-and-human-gestures.md`). | The project owner. |
 
 ## The three moments of QA
 

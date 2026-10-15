@@ -62,7 +62,6 @@ pub fn names_sub_item(pr: &PullRequest, sub_item: &str) -> bool {
 /// (BR-ASDLC-020).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AnglePrFacts {
-    pub draft: bool,
     /// Its required checks are green at its head.
     pub green: bool,
     /// A configured coordinator's request for changes stands at its head.
@@ -71,13 +70,14 @@ pub struct AnglePrFacts {
 
 /// The status a release angle sub-item goes to for its open angle PR
 /// (spec 03, `05-release-cycle.md` §4): a bridge item, not a ticket, whose
-/// work starts when the PR appears (Ready → In Progress); the PR ready (not draft) with
-/// its required checks green and not sent back is In Review; a coordinator's
+/// work starts when the PR is opened (Ready → In Progress; a draft is out of
+/// the flow and drives nothing); the PR with its required checks green and
+/// not sent back is In Review; a coordinator's
 /// request for changes at its head sends it back In Progress. `None` when it
 /// stays: a status the flow does not drive (Triage, Backlog, a resolved
 /// item) is never touched, and Done comes only from the merge.
 pub fn angle_item_status(current: Option<Status>, pr: AnglePrFacts) -> Option<Status> {
-    let ready = !pr.draft && pr.green && !pr.sent_back;
+    let ready = pr.green && !pr.sent_back;
     let to = match current? {
         Status::Ready if ready => Status::InReview,
         Status::Ready => Status::InProgress,

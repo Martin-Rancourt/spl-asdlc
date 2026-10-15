@@ -293,7 +293,7 @@ fn merged(t: &Tick, log: &mut ActionLog, report: &mut Report, open: &OpenPrs) {
             report,
             &pr,
             &ticket,
-            Some(by.as_deref().unwrap_or("someone")),
+            &texts::MergedBy::Outside(by.as_deref().unwrap_or("someone")),
             open,
         );
     }

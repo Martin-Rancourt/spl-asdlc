@@ -47,7 +47,53 @@ pub fn cycle(t: &Tick) -> Result<Cycle, String> {
     })
 }
 
-/// `release status`: the GO and its inputs, read-only.
+/// What `release status` says: the cycle in flight and its GO, or that no
+/// cycle is in flight because the newest candidate's cycle closed.
+pub enum CycleStatus {
+    InFlight(Box<Cycle>, GoDecision),
+    /// The newest candidate's release is published and its release item
+    /// closed: the cycle is over.
+    Over {
+        release_tag: String,
+        item: String,
+    },
+}
+
+/// `release status`: the cycle in flight and its GO, read-only; or, once the
+/// newest candidate's release is published and its cycle closed, that no
+/// cycle is in flight and which release closed the last one.
+pub fn release_status(t: &Tick) -> Result<CycleStatus, String> {
+    if let Some((release_tag, item)) = closed_cycle(t)? {
+        return Ok(CycleStatus::Over { release_tag, item });
+    }
+    let (cycle, decision) = status(t)?;
+    Ok(CycleStatus::InFlight(Box::new(cycle), decision))
+}
+
+/// The release tag and release item of the newest candidate's cycle when it
+/// is over: its release published (not a draft) and its release item
+/// resolved by the closure. `None` while a cycle is in flight.
+fn closed_cycle(t: &Tick) -> Result<Option<(String, String)>, String> {
+    let shape = Shape::of(&t.config.product.name, release_cycle(t));
+    let Some((candidate, _)) = release::newest(t, &shape)? else {
+        return Ok(None);
+    };
+    let Some(item) = release::find_release_item(t, &shape, candidate.version)? else {
+        return Ok(None);
+    };
+    if !item.state.is_resolved() {
+        return Ok(None);
+    }
+    let tag = shape.release_tag(candidate.version);
+    match t.github.release(&t.repo, &tag) {
+        Ok(r) if !r.draft => Ok(Some((tag, item.key))),
+        Ok(_) => Ok(None),
+        Err(e) if e.is_not_found() => Ok(None),
+        Err(e) => Err(format!("the release {tag}: {e}")),
+    }
+}
+
+/// The GO of the cycle in flight and its inputs, read-only.
 pub fn status(t: &Tick) -> Result<(Cycle, GoDecision), String> {
     let release_cfg = release_cycle(t);
     let record = &release_cfg.record;
@@ -60,10 +106,14 @@ pub fn status(t: &Tick) -> Result<(Cycle, GoDecision), String> {
         .tracker
         .children(&cy.item.key)
         .map_err(|e| e.to_string())?;
-    let open = t
+    // A draft angle PR is out of the flow and counts for nothing.
+    let open: Vec<_> = t
         .github
         .open_pulls(&t.repo, Some(&branch))
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|p| !p.draft)
+        .collect();
     let merged = t
         .github
         .merged_pulls(&t.repo, Some(&branch), None, 500)

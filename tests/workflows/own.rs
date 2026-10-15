@@ -15,7 +15,8 @@ use regex::Regex;
 use yaml_rust2::Yaml;
 
 use crate::examples::{
-    check_called_actions, check_called_workflows, check_permissions, check_pins, jobs, keys,
+    NOT_A_DRAFT, check_called_actions, check_called_workflows, check_no_job_runs_on_a_draft,
+    check_permissions, check_pins, jobs, keys,
 };
 use crate::harness::{own_workflows, relative, root, workflow};
 
@@ -172,6 +173,10 @@ fn the_pr_workflow_is_unfiltered_runs_on_prs_only_and_aggregates_every_job() {
         "GitHub Flow: every PR targets main (REQ-CI-022)"
     );
     assert!(
+        strings(&trigger["types"]).contains(&"ready_for_review"),
+        "a PR marked ready runs the jobs a draft does not run, required-check included"
+    );
+    assert!(
         pr["concurrency"]["group"]
             .as_str()
             .unwrap()
@@ -179,9 +184,10 @@ fn the_pr_workflow_is_unfiltered_runs_on_prs_only_and_aggregates_every_job() {
         "REQ-CI-023"
     );
 
+    check_no_job_runs_on_a_draft(&pr, "pr.yml");
+
     let aggregator = &pr["jobs"]["required-check"];
     assert_eq!(aggregator["name"].as_str(), Some("required-check"));
-    assert_eq!(aggregator["if"].as_str(), Some("always()"));
     let others: BTreeSet<String> = jobs(&pr)
         .into_iter()
         .map(|(id, _)| id)
@@ -202,7 +208,7 @@ fn the_pr_workflow_is_unfiltered_runs_on_prs_only_and_aggregates_every_job() {
     let step = steps.last().unwrap();
     assert_eq!(step["uses"].as_str(), Some("./actions/required-check"));
     assert_eq!(step["with"]["needs"].as_str(), Some("${{ toJSON(needs) }}"));
-    // Exactly the jobs an `if:` may skip.
+    // Exactly the jobs an `if:` may skip on a PR that is not a draft.
     let may_skip: BTreeSet<String> = step["with"]["may-skip"]
         .as_str()
         .unwrap()
@@ -211,7 +217,7 @@ fn the_pr_workflow_is_unfiltered_runs_on_prs_only_and_aggregates_every_job() {
         .collect();
     let gated: BTreeSet<String> = jobs(&pr)
         .into_iter()
-        .filter(|(id, job)| id != "required-check" && !job["if"].is_badvalue())
+        .filter(|(id, job)| id != "required-check" && job["if"].as_str() != Some(NOT_A_DRAFT))
         .map(|(id, _)| id)
         .collect();
     assert_eq!(may_skip, gated);
@@ -226,9 +232,10 @@ fn the_pr_workflow_is_unfiltered_runs_on_prs_only_and_aggregates_every_job() {
             "{id}"
         );
     }
-    // Rule zero runs on every PR, whatever guards says.
+    // Rule zero runs on every PR but a draft, whatever guards says.
     let rule_zero = &pr["jobs"]["rule-zero"];
-    assert!(rule_zero["if"].is_badvalue() && rule_zero["needs"].is_badvalue());
+    assert_eq!(rule_zero["if"].as_str(), Some(NOT_A_DRAFT));
+    assert!(rule_zero["needs"].is_badvalue());
 }
 
 /// Every file of the working tree but the build output and the VCS.
@@ -413,6 +420,32 @@ fn the_binaries_are_built_once_per_release_by_the_publication() {
             "{id}"
         );
     }
+}
+
+#[test]
+fn every_job_of_the_release_workflows_has_a_bound() {
+    // A hung runner runs to the job's timeout, six hours by default; a macOS
+    // minute counts ten. A job that calls a workflow takes its jobs' bounds.
+    for name in [
+        "binaries.yml",
+        "publish.yml",
+        "release-please.yml",
+        "staging.yml",
+    ] {
+        for (id, job) in jobs(&own(name)) {
+            if job["uses"].is_badvalue() {
+                assert!(
+                    job["timeout-minutes"].as_i64().is_some(),
+                    "{name}: job {id} has no timeout-minutes"
+                );
+            }
+        }
+    }
+    assert_eq!(
+        own("binaries.yml")["jobs"]["build"]["timeout-minutes"].as_i64(),
+        Some(15),
+        "a build takes a few minutes"
+    );
 }
 
 #[test]

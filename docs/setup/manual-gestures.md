@@ -72,7 +72,7 @@ git show <latest candidate tag>:CHANGELOG.md | awk '/^## \[?<X.Y.Z>[] ]/ {on=1; 
 gh release create <release tag> --repo OWNER/REPO --title "<product> <X.Y.Z>" --notes-file notes.md
 ```
 
-The notes are the version's section of the CHANGELOG the cut committed: copy it whole, so that the release note of the closure finds each PR's line.
+The notes are the version's section of the CHANGELOG the cut committed: copy it whole. The release issue already carries the release note: the bridge wrote it at the candidate's brief (`docs/reference/05-release-cycle.md` §12).
 
 **What follows**: the publication runs on the published release; it accepts a release published by the App or by a human account, refuses any other bot, and says which (`go-published-by-kind`, its summary). **The bridge, next tick**: a tag a person pushed on the candidate is taken as done, the bridge then only publishes the release; once the release is published it tags and publishes nothing more and posts no GO of its own; it closes the cycle from the published release, and its closure comment records who published it.
 
@@ -133,15 +133,17 @@ The closure is the bridge's, not a GitHub gesture: it writes the tracker. A pers
 
 Move it in the tracker. A ticket starts in Backlog; refinement marks it refined and leaves it there, and a person moves it to Ready when agents may take it: implementing agents take work from Ready only. Whoever starts a ticket, agent or person, moves it to In Progress; the bridge never does it for them, since a PR appearing means In Review. The later moves (In Review, To Deploy, Done) follow GitHub facts: the usual gesture is the fact in GitHub (open or merge the PR, check a box), and the bridge moves the ticket at its next tick.
 
-## Hold a PR back
+## Take a PR out of the flow
 
-Put it in draft; the bridge never merges a PR in draft:
+Put it in draft: a draft PR is out of the flow, and the bridge ignores it entirely (it moves no ticket for it, opens no review round, never merges it, does not read its CI, and counts it for nothing among its ticket's PRs); no job of the PR workflow runs on a draft:
 
 ```sh
 gh pr ready <n> --repo OWNER/REPO --undo
 ```
 
-Or in GitHub: the PR, **Convert to draft**. `gh pr ready <n> --repo OWNER/REPO` (or **Ready for review**) hands it back: the bridge merges it once every condition holds again.
+Or in GitHub: the PR, **Convert to draft**. `gh pr ready <n> --repo OWNER/REPO` (or **Ready for review**) brings it back into the flow: its `ready_for_review` run is the PR's CI and reports `required-check` (the bridge counts only its success, never the draft run's skipped one), a review round already open goes on where it stood, and the bridge merges the PR once every condition holds again.
+
+**The bridge, next tick**: nothing for the draft, which its report lists as `waiting: pr#<n> it is a draft, out of the flow until it is marked ready`; the ticket stays where it is.
 
 ## Dismiss a review
 
