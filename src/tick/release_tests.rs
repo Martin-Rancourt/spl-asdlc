@@ -357,6 +357,55 @@ fn the_first_tick_after_the_cut_opens_the_cycle_and_the_second_writes_nothing() 
     );
 }
 
+impl World {
+    /// The tracker knows the project's owner (`[owner] tracker_user`).
+    fn owner_known(&self) {
+        self.tracker
+            .state
+            .borrow_mut()
+            .users
+            .push(crate::tracker::User {
+                id: "u-owner".into(),
+                name: "owner-handle".into(),
+            });
+    }
+}
+
+#[test]
+fn the_release_item_is_assigned_to_the_owner_when_the_tracker_knows_them() {
+    let w = World::new();
+    w.owner_known();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.release_item().assignee.map(|u| u.name),
+        Some("owner-handle".to_string())
+    );
+}
+
+#[test]
+fn the_release_item_is_unassigned_when_the_tracker_does_not_know_the_owner() {
+    let w = World::new();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(w.release_item().assignee, None);
+}
+
+#[test]
+fn a_release_item_that_exists_unassigned_is_not_reassigned() {
+    let w = World::new();
+    w.tick();
+    assert_eq!(w.release_item().assignee, None);
+    // The owner becomes known in the middle of the cycle.
+    w.owner_known();
+    let before = w.tracker.writes().len();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(w.release_item().assignee, None);
+    let writes = &w.tracker.writes()[before..];
+    assert!(writes.is_empty(), "{writes:?}");
+}
+
 #[test]
 fn a_tick_against_the_candidates_log_as_linear_stores_it_writes_nothing() {
     let w = World::new();
@@ -1999,6 +2048,7 @@ fn an_angle_pr_that_carries_more_than_its_report_is_not_merged_and_told_once_per
 #[test]
 fn a_dry_run_of_the_release_pass_writes_nothing() {
     let w = World::new();
+    w.owner_known();
     let intents = crate::dry::Intents::default();
     let gh = crate::dry::DryGitHub {
         inner: &w.github,
@@ -2029,7 +2079,8 @@ fn a_dry_run_of_the_release_pass_writes_nothing() {
         intents
             .lines()
             .iter()
-            .any(|l| l.contains("create \"Release acme v1.2.0\"")),
+            .any(|l| l.contains("create \"Release acme v1.2.0\"")
+                && l.ends_with(", assigned to owner-handle")),
         "{:?}",
         intents.lines()
     );

@@ -335,7 +335,7 @@ impl Tracker for DryTracker<'_> {
     }
     fn create_item(&self, item: &NewItem) -> TResult<Item> {
         self.intents.push(format!(
-            "tracker: create \"{}\" [{}]{}{}",
+            "tracker: create \"{}\" [{}]{}{}{}",
             item.title,
             item.status,
             item.priority
@@ -344,6 +344,10 @@ impl Tracker for DryTracker<'_> {
             item.parent
                 .as_ref()
                 .map(|p| format!(" under {p}"))
+                .unwrap_or_default(),
+            item.assignee
+                .as_ref()
+                .map(|u| format!(", assigned to {}", u.name))
                 .unwrap_or_default()
         ));
         Ok(Item {

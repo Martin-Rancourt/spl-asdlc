@@ -474,12 +474,16 @@ fn release_item(
         json!({}),
         || t.tracker.ensure_label(&label).map_err(|e| e.to_string()),
     )?;
+    // The owner decides the GO: the item is theirs, so that no agent that
+    // takes unassigned items takes it; unassigned when the tracker does not
+    // know them (`doctor` reports it).
+    let assignee = t.tracker.user(&t.config.owner.tracker_user).ok();
     t.act(
         log,
         report,
         &object,
         "create release item",
-        json!({"label": label}),
+        json!({"label": label, "assignee": assignee.as_ref().map(|u| u.name.as_str())}),
         || {
             t.tracker
                 .create_item(&NewItem {
@@ -488,7 +492,7 @@ fn release_item(
                     labels: vec![label.clone()],
                     status: Status::Ready,
                     priority: Some(Priority::Urgent),
-                    assignee: None,
+                    assignee: assignee.clone(),
                     parent: None,
                 })
                 .map_err(|e| e.to_string())
