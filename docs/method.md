@@ -79,7 +79,7 @@ flowchart TD
    - creates `release/<date>-utc`;
    - computes the next version from the commits since the last release (Conventional Commits: `feat` gives a minor version, `fix` a patch);
    - writes the version files and the CHANGELOG;
-   - tags the first candidate, `v1.4.0-rc.1`.
+   - tags the first candidate, for example `v1.4.0-rc.1`.
 2. **Release CI.** The candidate's tag runs the project's release test suites. When it is red, the bridge opens an urgent fix ticket for whoever fixes release problems. Each fix merged to the release branch makes a new candidate.
 3. **QA** (optional). Once CI is green, QA starts: agents or people, several angles in parallel, each reviewing the candidate from its angle and classifying each finding as blocking or not. A blocking finding becomes an urgent fix ticket for whoever fixes release problems, as a red CI does; its fix merged to the release branch makes the next candidate. A non-blocking finding becomes a ticket logged for later. After a configured number of candidates, the release goes to the owner.
 4. **GO.** It is computed, never declared:
@@ -88,7 +88,7 @@ flowchart TD
    - no blocking finding is open;
    - nothing but the candidate's own QA reports landed after it.
 
-   On GO, the bridge tags `v1.4.0` on the candidate and publishes the GitHub release with its CHANGELOG section.
+   On GO, the bridge tags the release (`v1.4.0` in this example) on the candidate and publishes the GitHub release with its CHANGELOG section.
 5. **Publication.** The release starts the project's publish workflow. It checks that the release is the candidate, builds and deploys every target the product has (desktop, mobile, web…), then merges the release branch back into `main`.
 6. **Closure.** The bridge judges each ticket of the release:
    - every box ticked: **Done**;
@@ -111,6 +111,7 @@ The bridge automates; it never owns a step.
 | Cut a release, cut the next candidate | Dispatch the cut workflow (`open` on `main`, `candidate` on the release branch). |
 | Give the GO | Tag the candidate `vX.Y.Z` and publish the release with `gh release create`. The publication accepts it. |
 | Publish when a build failed | Attach the built archives to the release, then rerun the merge back (`replay`). |
+| Fix a failing candidate (code, tests, CI) | Open a PR to the release branch, merge it, then cut the next candidate (`candidate` on the release branch). The merge back brings the fix to `main`. |
 | Stop a cycle | `spl-asdlc release abandon`. |
 
 Every command is in `docs/setup/manual-gestures.md`.
