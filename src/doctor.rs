@@ -435,6 +435,47 @@ fn class(p: &[char], c: char) -> Option<(bool, usize)> {
     Some((hit != negated, i + 1))
 }
 
+/// The business-rule registry at `rev`, every file read and checked: each
+/// invalid one is named by its path. Absent is fine: Git keeps no empty
+/// directory, and the first rule creates it.
+fn registry_check(github: &dyn GitHub, repo: &RepoSlug, rev: &str) -> Check {
+    const NAME: &str = "business-rules";
+    let dir = business_rules::REGISTRY_DIR;
+    let names = match github.dir(repo, dir, rev) {
+        Ok(names) => names,
+        Err(e) if e.is_not_found() => {
+            return check(NAME, Verdict::Ok, format!("{dir}/: no rule yet at {rev}"));
+        }
+        Err(e) => return check(NAME, Verdict::Missing, format!("{dir}/: {e}")),
+    };
+    let mut files = Vec::new();
+    for name in names {
+        let path = format!("{dir}/{name}");
+        match github.file(repo, &path, rev) {
+            Ok(text) => files.push((path, text)),
+            Err(e) => return check(NAME, Verdict::Missing, format!("{path}: {e}")),
+        }
+    }
+    let read = business_rules::parse_registry(&files);
+    if read.invalid.is_empty() {
+        check(
+            NAME,
+            Verdict::Ok,
+            format!("{dir}/: {} rule(s)", read.rules.len()),
+        )
+    } else {
+        check(
+            NAME,
+            Verdict::Invalid,
+            read.invalid
+                .iter()
+                .map(|(path, why)| format!("{path}: {why}"))
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+    }
+}
+
 fn files(
     config: &Config,
     instance: Option<&Source>,
@@ -469,33 +510,7 @@ fn files(
     });
     // The PR pass's business-rule guard reads it, with or without a release
     // cycle.
-    let registry = config.registry_path();
-    out.push(match read(registry) {
-        Ok(text) => {
-            let dup = business_rules::duplicate_registry_ids(&text);
-            if dup.is_empty() {
-                check(
-                    "business-rules",
-                    Verdict::Ok,
-                    format!(
-                        "{registry}: {} rule(s)",
-                        business_rules::registry_ids(&text).len()
-                    ),
-                )
-            } else {
-                check(
-                    "business-rules",
-                    Verdict::Invalid,
-                    format!("{registry}: ids declared twice: {}", dup.join(", ")),
-                )
-            }
-        }
-        Err(e) => check(
-            "business-rules",
-            Verdict::Missing,
-            format!("{registry}: {e}"),
-        ),
-    });
+    out.push(registry_check(github, repo, rev));
     if let Some(path) = &config.review.sensitive_paths {
         out.push(match read(path) {
             Ok(text) => match review::parse_sensitive_paths(&text) {
@@ -770,8 +785,8 @@ mod tests {
                     .insert((repo.clone(), "main".into(), p.into()), Ok(text.into()));
             };
             file(
-                "docs/business-rules.md",
-                "| BR-ACME-001 | a | b | c | Enforced |\n",
+                ".spl-asdlc/business-rules/BR-ACME-001.md",
+                "# BR-ACME-001 — A rule.\n\nStatus: Enforced\n\n## Rule\nIt holds.\n\n## Evidence\nWhy.\n\n## Test\n`a_test`\n",
             );
             file(".github/review-paths.json", "{\"paths\": []}");
             file("web/package.json", "{\"version\": \"0.1.0\"}");
@@ -919,6 +934,62 @@ mod tests {
         );
         // The PR pass's business-rule guard still reads the registry.
         assert!(checks.iter().any(|c| c.name == "business-rules"));
+    }
+
+    #[test]
+    fn the_registry_check_reads_every_rule_file_and_names_each_invalid_one() {
+        let g = FakeGitHub::new();
+        let repo = RepoSlug::parse("example-org/acme").unwrap();
+        let checked = || registry_check(&g, &repo, "main");
+        // No directory at a revision: no rule yet, which is fine.
+        let none = checked();
+        assert_eq!(none.verdict, Verdict::Ok, "{none}");
+        assert!(none.detail.contains("no rule yet"), "{none}");
+        let put = |name: &str, text: &str| {
+            g.state.borrow_mut().files.insert(
+                (
+                    repo.clone(),
+                    "main".into(),
+                    format!(".spl-asdlc/business-rules/{name}"),
+                ),
+                Ok(text.into()),
+            );
+        };
+        let rule = |id: &str| {
+            format!(
+                "# {id} — A rule.\n\nStatus: Proposed\n\n## Rule\nIt holds.\n\n## Evidence\nWhy.\n\n## Test\nNone yet.\n"
+            )
+        };
+        put("BR-ACME-001.md", &rule("BR-ACME-001"));
+        put("README.md", "# Index\n\nNot a rule.\n");
+        let ok = checked();
+        assert_eq!(ok.verdict, Verdict::Ok, "{ok}");
+        assert!(ok.detail.contains("1 rule(s)"), "{ok}");
+        put("BR-ACME-002.md", &rule("BR-ACME-003"));
+        put("notes.md", "Anything.");
+        let bad = checked();
+        assert_eq!(bad.verdict, Verdict::Invalid, "{bad}");
+        assert!(
+            bad.detail.contains(
+                ".spl-asdlc/business-rules/BR-ACME-002.md: the title names `BR-ACME-003`"
+            ),
+            "{bad}"
+        );
+        assert!(
+            bad.detail
+                .contains(".spl-asdlc/business-rules/notes.md: the file name"),
+            "{bad}"
+        );
+        // A listing that fails is not a registry without rules.
+        g.state.borrow_mut().dirs.insert(
+            (
+                repo.clone(),
+                "main".into(),
+                ".spl-asdlc/business-rules".into(),
+            ),
+            Err(ReadError::unreadable("the listing", "HTTP 502")),
+        );
+        assert_eq!(checked().verdict, Verdict::Missing);
     }
 
     #[test]

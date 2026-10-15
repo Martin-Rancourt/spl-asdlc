@@ -45,7 +45,7 @@ fn fenced(text: &str, lang: &str) -> String {
 
 const TOML: &str = template::PATH;
 const PATHS: &str = "docs/setup/templates/review-paths.json";
-const REGISTRY: &str = "docs/setup/templates/business-rules.md";
+const RULE: &str = "docs/setup/templates/business-rule.md";
 const TICKET: &str = "docs/setup/templates/ticket.md";
 
 // ---- the templates ----
@@ -156,19 +156,26 @@ fn the_sensitive_path_template_parses_and_lists_itself() {
 }
 
 #[test]
-fn the_registry_template_is_an_empty_registry_with_the_five_columns() {
-    let text = read(REGISTRY);
-    assert!(business_rules::registry_ids(&text).is_empty(), "{text}");
-    assert!(business_rules::duplicate_registry_ids(&text).is_empty());
-    assert!(
-        text.contains("| ID | Rule | Evidence | Test | Status |"),
-        "the header row of spec 02"
-    );
-    // A first row added under the header is read as a registered rule.
-    let one = format!("{text}| BR-ACME-001 | **A rule.** | Why. | `a_test` | Proposed |\n");
+fn the_rule_template_is_a_valid_rule_file_under_its_ids_name() {
+    let text = read(RULE);
+    // Copied to `.spl-asdlc/business-rules/BR-ACME-001.md`, it is a rule.
+    let path = format!("{}/BR-ACME-001.md", business_rules::REGISTRY_DIR);
+    let rule =
+        business_rules::parse_rule_file(&path, &text).unwrap_or_else(|e| panic!("{RULE}: {e}"));
+    assert_eq!(rule.id, "BR-ACME-001");
+    assert_eq!(rule.status, business_rules::RuleStatus::Proposed);
+    assert!(business_rules::is_rule_file(&path));
     assert_eq!(
-        business_rules::registry_ids(&one),
+        business_rules::registry_ids(&[path]),
         BTreeSet::from(["BR-ACME-001".to_string()])
+    );
+    // Under its template name it is not one: the name is the id.
+    assert!(business_rules::parse_rule_file(RULE, &text).is_err());
+    // The spec documents the template.
+    let spec = read("docs/spec/02-business-rules.md");
+    assert!(
+        spec.contains("templates/business-rule.md"),
+        "spec 02 names the template"
     );
 }
 

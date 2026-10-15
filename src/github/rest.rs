@@ -994,6 +994,50 @@ impl GitHub for RestGitHub {
         }
     }
 
+    fn dir(&self, repo: &RepoSlug, path: &str, rev: &str) -> Read<Vec<String>> {
+        let what = format!("{path}/ at {rev} in {repo}");
+        let response = self
+            .call(
+                repo,
+                "GET",
+                &format!(
+                    "/repos/{repo}/contents/{}?ref={}",
+                    encode(path.trim_end_matches('/'), true),
+                    encode(rev, false)
+                ),
+                None,
+                None,
+            )
+            .map_err(|(status, detail)| ReadError::Unreadable {
+                what: what.clone(),
+                status,
+                detail,
+            })?;
+        match response.status {
+            200 => {
+                let v: Value = serde_json::from_slice(&response.body)
+                    .map_err(|_| ReadError::unreadable(&what, "the answer is not JSON"))?;
+                let entries = v
+                    .as_array()
+                    .ok_or_else(|| ReadError::unreadable(&what, "not a directory"))?;
+                let mut names: Vec<String> = entries
+                    .iter()
+                    .filter(|e| e["type"].as_str() == Some("file"))
+                    .map(|e| str_of(e, "name"))
+                    .filter(|n| !n.is_empty())
+                    .collect();
+                names.sort();
+                Ok(names)
+            }
+            404 => Err(ReadError::NotFound { what }),
+            status => Err(ReadError::Unreadable {
+                what,
+                status: Some(status),
+                detail: message_of(&response),
+            }),
+        }
+    }
+
     fn open_pulls(&self, repo: &RepoSlug, base: Option<&str>) -> Read<Vec<PullRequest>> {
         let what = format!("open PRs of {repo}");
         let mut out: Vec<PullRequest> = Vec::new();

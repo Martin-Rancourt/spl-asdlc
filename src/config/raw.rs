@@ -61,8 +61,6 @@ pub(super) struct RawRelease {
     pub version_component: Option<String>,
     pub gate_record: Option<String>,
     pub bookkeeping_paths: Option<Vec<String>>,
-    pub registry_path: Option<String>,
-    pub business_rule_paths: Option<Vec<String>>,
     pub stagnation_hours: Option<i64>,
     pub coordinators: Option<Vec<String>>,
     pub coordinator_assignee: Option<String>,

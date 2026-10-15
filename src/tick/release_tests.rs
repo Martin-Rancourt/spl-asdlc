@@ -2401,14 +2401,7 @@ fn the_closure_reopens_a_ticket_citing_an_unknown_rule_unassigned() {
         &w,
         "## Goal\nShip it.\n\n## Acceptance criteria\n- [x] shipped\n\n## Business rules\nBR-ACME-001 applies.\n\n## Release note\nYou can now ship.\n",
     );
-    w.github.state.borrow_mut().files.insert(
-        (
-            repo(),
-            "acme-v1.2.0".into(),
-            "docs/business-rules.md".into(),
-        ),
-        Ok("| ID | Rule |\n|---|---|\n| BR-ACME-002 | Another rule. |\n".into()),
-    );
+    rule_at_the_tag(&w, "BR-ACME-002");
     w.tick();
     publish(&w);
     let r = w.tick();
@@ -2416,9 +2409,43 @@ fn the_closure_reopens_a_ticket_citing_an_unknown_rule_unassigned() {
     let ticket = w.tracker.item("ABC-5");
     assert_eq!(ticket.state.status, Some(Status::InProgress));
     assert_eq!(ticket.assignee, None);
+    let said = w.tracker.comments("ABC-5").unwrap();
+    assert!(
+        said.iter()
+            .any(|c| c.body.contains("`BR-ACME-001`")
+                && c.body.contains("`.spl-asdlc/business-rules/`")),
+        "{said:?}"
+    );
     let before = w.tracker.writes().len();
     w.tick();
     assert_eq!(w.tracker.writes().len(), before, "a replay writes nothing");
+}
+
+/// The rule file `id` in the registry's directory at the release tag.
+fn rule_at_the_tag(w: &World, id: &str) {
+    w.github.state.borrow_mut().files.insert(
+        (
+            repo(),
+            "acme-v1.2.0".into(),
+            format!(".spl-asdlc/business-rules/{id}.md"),
+        ),
+        Ok(format!("# {id} — A rule.\n")),
+    );
+}
+
+#[test]
+fn the_closure_finds_a_cited_rule_by_its_file_at_the_release_tag() {
+    let w = World::new();
+    assigned_ticket(
+        &w,
+        "## Goal\nShip it.\n\n## Acceptance criteria\n- [x] shipped\n\n## Business rules\nBR-ACME-001 applies.\n\n## Release note\nYou can now ship.\n",
+    );
+    rule_at_the_tag(&w, "BR-ACME-001");
+    w.tick();
+    publish(&w);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(w.tracker.item("ABC-5").state.status, Some(Status::Done));
 }
 
 #[test]

@@ -20,7 +20,7 @@ use serde_json::json;
 
 use crate::action_log::ActionLog;
 use crate::github::{PrState, PullRequest, RequiredChecks};
-use crate::method::business_rules::{self, Registry};
+use crate::method::business_rules;
 use crate::method::checks::{self, CheckState};
 use crate::method::contract;
 use crate::method::release::findings;
@@ -622,13 +622,8 @@ fn one(
         }
     };
     if business_rules::needs_registry(&ticket.description, files.as_deref()) {
-        let registry = read_registry(t, &pr.head_sha);
-        let gate = business_rules::evaluate(
-            &ticket.description,
-            &registry,
-            files.as_deref(),
-            t.config.registry_path(),
-        );
+        let registry = business_rules::read_registry(t.github, &t.repo, &pr.head_sha);
+        let gate = business_rules::evaluate(&ticket.description, &registry, files.as_deref());
         if !gate.ok() {
             t.wait(report, &pr, "the business-rule guard refuses it");
             say_once(
@@ -641,7 +636,7 @@ fn one(
                     ("ticket", &ticket.key),
                     ("head", texts::short(&pr.head_sha)),
                 ],
-                &business_rules::refusal(&gate, &ticket.key, t.config.registry_path()),
+                &business_rules::refusal(&gate, &ticket.key),
             );
             return None;
         }
@@ -1373,19 +1368,6 @@ pub fn any_merge_recorded(t: &Tick, key: &str) -> Result<bool, String> {
         .map_err(|e| e.to_string())?
         .iter()
         .any(|c| c.by_bridge && c.body.lines().any(|l| l.trim().starts_with("merged_pr: "))))
-}
-
-fn read_registry(t: &Tick, head: &str) -> Registry {
-    let path = t.config.registry_path();
-    match t.github.file(&t.repo, path, head) {
-        Ok(text) => Registry::Ids(business_rules::registry_ids(&text)),
-        Err(e) if e.is_not_found() => match t.github.commit(&t.repo, head) {
-            // The file is absent at a revision that exists.
-            Ok(_) => Registry::Absent,
-            Err(e) => Registry::Unreadable(e.to_string()),
-        },
-        Err(e) => Registry::Unreadable(e.to_string()),
-    }
 }
 
 /// Why a PR In Review waits on its approval (Missing or Stale).

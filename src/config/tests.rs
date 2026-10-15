@@ -62,10 +62,6 @@ fn a_minimal_file_gets_every_documented_default() {
         c.release.as_ref().unwrap().record,
         ".spl-asdlc/qa/{candidate}/"
     );
-    assert_eq!(
-        c.release.as_ref().unwrap().registry_path,
-        "docs/business-rules.md"
-    );
     assert!(c.release.as_ref().unwrap().version_files.is_empty());
     assert_eq!(
         c.release.as_ref().unwrap().changelog_sections,
@@ -245,6 +241,19 @@ fn the_release_please_keys_are_unknown_keys() {
         "release_please_workflow = \"release-please.yml\"",
         "release_please_config = \"release-please-config.json\"",
         "release_please_manifest = \".release-please-manifest.json\"",
+    ] {
+        let text = MINIMAL.replace("[release]\n", &format!("[release]\n{key}\n"));
+        assert_refused_with(&text, "unknown field");
+    }
+}
+
+#[test]
+fn the_business_rules_have_a_fixed_place_and_no_key() {
+    // `.spl-asdlc/business-rules/`, one file per rule (spec 02): a key that
+    // moved it would be a second place to look.
+    for key in [
+        "registry_path = \"docs/business-rules.md\"",
+        "business_rule_paths = [\"docs/business-rules.md\"]",
     ] {
         let text = MINIMAL.replace("[release]\n", &format!("[release]\n{key}\n"));
         assert_refused_with(&text, "unknown field");
@@ -805,8 +814,7 @@ fn without_release(text: &str) -> String {
 fn without_a_release_section_the_file_is_valid_and_no_release_key_is_required() {
     let c = Config::parse(&without_release(MINIMAL)).unwrap();
     assert_eq!(c.release, None, "no section, no release cycle");
-    // What the PR pass still reads gets the defaults of the release keys.
-    assert_eq!(c.registry_path(), "docs/business-rules.md");
+    // What the PR pass still reads gets the default of its release key.
     assert_eq!(c.release_machinery(), "release/");
     let with = Config::parse(MINIMAL).unwrap();
     assert!(with.release.is_some(), "the section is the release cycle");

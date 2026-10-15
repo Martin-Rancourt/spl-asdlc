@@ -28,7 +28,7 @@ Fast, on the diff, with several angles and one coordinator. The volume is tens o
 ## What the reviewer receives
 
 - The diff, the PR description, the linked ticket's goal and acceptance criteria, and the ticket's comments, where its implementer records why it has more than one PR (§10).
-- The business rules touched by the diff (rows of the registry whose test files or cited paths intersect the diff) and the registry id format.
+- The business rules touched by the diff (the rule files of `.spl-asdlc/business-rules/` the diff changes, or whose test files or cited paths it intersects) and the registry id format.
 - Its angle protocol (`docs/agents/review-pr.md` and `docs/agents/angles/<angle>.md`), embedded in its sub-item (§3), and a link to the project's angle notes if any.
 - The severity scale and the verdict vocabulary (`03-vocabulary.md`).
 
