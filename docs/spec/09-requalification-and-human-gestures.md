@@ -17,7 +17,7 @@ The method allows exactly these human gestures in a cycle. Each is a verb or a G
 | **Hold a PR back** | Put it in draft | A draft is never merged, nor reviewed (`04-pr-review.md` §1); ready again, it takes the usual path at the next tick |
 | **Move a ticket** | Move it in the tracker | The bridge writes a status only from a GitHub fact of the ticket's PRs (a PR opened, readied, sent back, merged or closed) or a closure: the person's move stands until such a fact moves the ticket again |
 
-Everything else is either the bridge's or an agent's. In particular nobody writes a status but Ready, which a person writes when agents may take the ticket, and In Progress, which whoever starts the ticket writes, agent or person (the bridge as a backup, `03-vocabulary.md`); nobody edits a report after it was merged. Done is written by the bridge, at closure or when every `## Post deploy` box of a ticket in Post Deploy is checked; a person who moves a ticket does it in the tracker (above).
+Everything else is either the bridge's or an agent's. In particular nobody writes a status but Ready, which a person writes when agents may take the ticket, and In Progress, which whoever starts the ticket writes, agent or person, never the bridge as a backup (`03-vocabulary.md`); nobody edits a report after it was merged. Done is written by the bridge, at closure or when every `## Post deploy` box of a ticket in Post Deploy is checked; a person who moves a ticket does it in the tracker (above).
 
 ## Every step can be done by a human in GitHub
 

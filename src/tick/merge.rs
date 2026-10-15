@@ -403,27 +403,18 @@ fn one(
         }
     }
 
-    // ---- a PR appears: Ready → In Progress (spec 03) ----
+    // ---- a PR appears (spec 03) ----
+    // In Progress is the implementer's, agent or person, who starts the
+    // ticket: the bridge never writes it as a backup. A PR opened (not a
+    // draft) on a ticket not marked started (Backlog, Ready) goes straight
+    // to In Review below; a draft one leaves the ticket as it is.
     let mut status = ticket.state.status;
-    if status == Some(Status::Ready) {
-        let done = t.act(
-            log,
-            report,
-            &object,
-            "status In Progress",
-            json!({"pr": pr.url, "from": "Ready"}),
-            || {
-                t.tracker
-                    .set_status(&ticket.key, Status::InProgress, None)
-                    .map_err(|e| e.to_string())
-            },
-        );
-        done?;
-        status = Some(Status::InProgress);
-    }
-    if !matches!(status, Some(Status::InProgress | Status::InReview)) {
-        // Triage, Backlog, a ticket past the merge, or a state outside the
-        // table: the bridge never drags a ticket forward nor back here.
+    if !matches!(
+        status,
+        Some(Status::Backlog | Status::Ready | Status::InProgress | Status::InReview)
+    ) {
+        // Triage, a ticket past the merge, or a state outside the table:
+        // the bridge never drags a ticket forward nor back here.
         let state = status
             .map(Status::name)
             .unwrap_or("in a state outside the table");
@@ -431,7 +422,7 @@ fn one(
             report,
             &pr,
             format!(
-                "its ticket {} is {state}, not In Progress or In Review",
+                "its ticket {} is {state}, not Backlog, Ready, In Progress or In Review",
                 ticket.key
             ),
         );
@@ -441,10 +432,10 @@ fn one(
     let changes_at_head = review::changes_requested_at_head(&pr, &t.config.review.coordinators);
 
     // ---- the PR is opened: In Review at once, before CI (spec 03) ----
-    // A draft is work in progress and keeps the ticket In Progress. A PR
+    // A draft is work in progress and leaves the ticket where it is. A PR
     // with a round of its own that is In Progress was sent back (spec 04
     // §5): its next round, on a new head, brings the ticket back.
-    if status == Some(Status::InProgress) && !pr.draft && changes_at_head.is_none() {
+    if status != Some(Status::InReview) && !pr.draft && changes_at_head.is_none() {
         let children = match read_children.take() {
             Some(c) => c,
             None => match t.tracker.children(&ticket.key) {
@@ -455,8 +446,8 @@ fn one(
                 }
             },
         };
-        // A write that fails (or a ticket a person took over) does not hold
-        // the PR: its round, once CI is green, writes In Review again.
+        // A write that fails does not hold the PR: its round, once CI is
+        // green, writes In Review again.
         if !live_round(&children, &pr.url)
             && t.act(
                 log,
@@ -703,7 +694,7 @@ fn one(
     }
     // A ticket In Review for another of its PRs: this PR gets its own round
     // (a round is scoped to its PR, BR-ASDLC-007).
-    if status == Some(Status::InProgress) || !has_round {
+    if status != Some(Status::InReview) || !has_round {
         if let Some(by) = &changes_at_head {
             t.wait(report, &pr, changes_wait(by));
             return None;

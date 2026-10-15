@@ -131,7 +131,7 @@ The closure is the bridge's, not a GitHub gesture: it writes the tracker. A pers
 
 ## Move a ticket by hand
 
-Move it in the tracker. A ticket starts in Backlog; refinement marks it refined and leaves it there, and a person moves it to Ready when agents may take it: implementing agents take work from Ready only. Whoever starts a ticket, agent or person, moves it to In Progress; the bridge does it at its next tick, as a backup, when a branch or a PR appears. The later moves (In Review, To Deploy, Done) follow GitHub facts: the usual gesture is the fact in GitHub (open or merge the PR, check a box), and the bridge moves the ticket at its next tick.
+Move it in the tracker. A ticket starts in Backlog; refinement marks it refined and leaves it there, and a person moves it to Ready when agents may take it: implementing agents take work from Ready only. Whoever starts a ticket, agent or person, moves it to In Progress; the bridge never does it for them, since a PR appearing means In Review. The later moves (In Review, To Deploy, Done) follow GitHub facts: the usual gesture is the fact in GitHub (open or merge the PR, check a box), and the bridge moves the ticket at its next tick.
 
 ## Hold a PR back
 

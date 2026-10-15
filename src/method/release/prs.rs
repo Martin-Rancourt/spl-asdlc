@@ -69,9 +69,9 @@ pub struct AnglePrFacts {
     pub sent_back: bool,
 }
 
-/// The status a release angle sub-item goes to for its open angle PR, as a
-/// PR-review ticket's goes (spec 03, `04-pr-review.md` §5): the work starts
-/// when the PR appears (Ready → In Progress); the PR ready (not draft) with
+/// The status a release angle sub-item goes to for its open angle PR
+/// (spec 03, `05-release-cycle.md` §4): a bridge item, not a ticket, whose
+/// work starts when the PR appears (Ready → In Progress); the PR ready (not draft) with
 /// its required checks green and not sent back is In Review; a coordinator's
 /// request for changes at its head sends it back In Progress. `None` when it
 /// stays: a status the flow does not drive (Triage, Backlog, a resolved

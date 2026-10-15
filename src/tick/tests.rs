@@ -297,18 +297,18 @@ fn a_new_angle_sub_item_embeds_the_pr_review_protocol_and_links_the_projects_not
 }
 
 #[test]
-fn a_ticket_nobody_started_goes_in_progress_when_its_draft_pr_appears() {
-    // The backup: nobody moved the ticket, its PR is work in progress.
+fn a_draft_pr_on_a_ticket_nobody_marked_started_writes_nothing() {
+    // In Progress is the implementer's: the bridge is no backup for it.
     let w = World::new();
-    let mut pr = pull_request(7); // no checks yet
+    let mut pr = green(pull_request(7));
     pr.draft = true;
     w.ticket("ABC-1", Status::Ready, &pr);
     w.open(pr);
-    w.tick(false);
-    assert_eq!(
-        w.tracker.item("ABC-1").state.status,
-        Some(Status::InProgress)
-    );
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(w.tracker.item("ABC-1").state.status, Some(Status::Ready));
+    assert!(w.tracker.writes().is_empty(), "{:?}", w.tracker.writes());
+    assert!(children_of(&w, "ABC-1").is_empty(), "no round for a draft");
     quiet(&w);
 }
 
@@ -362,17 +362,25 @@ fn an_opened_pr_moves_its_ticket_to_in_review_before_its_ci() {
 }
 
 #[test]
-fn a_ready_ticket_whose_pr_is_opened_goes_through_in_progress_to_in_review() {
-    let w = World::new();
-    let pr = pull_request(7);
-    w.ticket("ABC-1", Status::Ready, &pr);
-    w.open(pr);
-    w.tick(false);
-    assert_eq!(w.tracker.item("ABC-1").state.status, Some(Status::InReview));
-    assert_eq!(
-        w.tracker.writes(),
-        vec!["status ABC-1 In Progress", "status ABC-1 In Review"]
-    );
+fn a_ready_or_backlog_ticket_whose_pr_is_opened_goes_straight_to_in_review() {
+    for from in [Status::Ready, Status::Backlog] {
+        let w = World::new();
+        let pr = pull_request(7);
+        w.ticket("ABC-1", from, &pr);
+        w.open(pr);
+        w.tick(false);
+        assert_eq!(
+            w.tracker.item("ABC-1").state.status,
+            Some(Status::InReview),
+            "{from:?}"
+        );
+        assert_eq!(
+            w.tracker.writes(),
+            vec!["status ABC-1 In Review"],
+            "{from:?}: no In Progress on the way"
+        );
+        quiet(&w);
+    }
 }
 
 #[test]
@@ -1561,7 +1569,7 @@ fn a_held_pr_says_what_holds_it() {
     w.ticket("ABC-8", Status::InProgress, &red);
     w.open(red);
     let silent = green(pull_request(9));
-    w.ticket("ABC-9", Status::Backlog, &silent);
+    w.ticket("ABC-9", Status::Triage, &silent);
     w.open(silent);
     let (report, _) = w.tick(false);
     assert_eq!(
@@ -1569,7 +1577,7 @@ fn a_held_pr_says_what_holds_it() {
         vec![
             "waiting: pr#7 it is a draft",
             "waiting: pr#8 checks are red at head-8 (`required-check`)",
-            "waiting: pr#9 its ticket ABC-9 is Backlog, not In Progress or In Review",
+            "waiting: pr#9 its ticket ABC-9 is Triage, not Backlog, Ready, In Progress or In Review",
         ]
     );
 }
