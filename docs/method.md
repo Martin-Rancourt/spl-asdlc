@@ -67,8 +67,9 @@ Every project has one. It takes the tickets in To Deploy, which are already on `
 flowchart TD
   C["Cut: release branch from main,<br/>version and CHANGELOG prepared,<br/>first candidate tagged"] --> G{Release CI}
   G -->|red| F["Urgent fix ticket<br/>for whoever fixes release problems"] --> N[Next candidate] --> G
-  G -->|green| Q{"QA angles<br/>(if configured)"}
-  Q -->|"in parallel, each on its angle;<br/>a fix makes the next candidate"| N
+  G -->|green| Q{"QA angles<br/>(if configured, in parallel)"}
+  Q -->|a blocking finding| F
+  Q -.->|a non-blocking finding| L[Ticket logged for later]
   Q -->|"all done, or none configured"| GO{GO}
   GO --> P["Release tagged and published;<br/>the project's publication deploys;<br/>the branch merged back into main"]
   P --> CL["Closure: each ticket Done,<br/>Post Deploy, or back In Progress"]
@@ -80,11 +81,11 @@ flowchart TD
    - writes the version files and the CHANGELOG;
    - tags the first candidate, `v1.4.0-rc.1`.
 2. **Release CI.** The candidate's tag runs the project's release test suites. When it is red, the bridge opens an urgent fix ticket for whoever fixes release problems. Each fix merged to the release branch makes a new candidate.
-3. **QA** (optional). Once CI is green, QA starts: agents or people, several angles in parallel, each reviewing the candidate from its angle. A fix made by QA also makes a new candidate. After a configured number of candidates, the release goes to the owner.
+3. **QA** (optional). Once CI is green, QA starts: agents or people, several angles in parallel, each reviewing the candidate from its angle and classifying each finding as blocking or not. A blocking finding becomes an urgent fix ticket for whoever fixes release problems, as a red CI does; its fix merged to the release branch makes the next candidate. A non-blocking finding becomes a ticket logged for later. After a configured number of candidates, the release goes to the owner.
 4. **GO.** It is computed, never declared:
    - the latest candidate's CI is green;
    - every QA angle is done;
-   - no blocker is open;
+   - no blocking finding is open;
    - nothing but the candidate's own QA reports landed after it.
 
    On GO, the bridge tags `v1.4.0` on the candidate and publishes the GitHub release with its CHANGELOG section.

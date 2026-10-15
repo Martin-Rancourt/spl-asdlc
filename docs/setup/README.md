@@ -19,4 +19,6 @@ A project starts light and adds the method's optional layers as it grows: PR rev
 | **Standard** | Light, plus `[[review.angles]]` tables with `review.coordinators` | Each PR gets a review round on the angles that apply to it and merges on a coordinator's approval. An angle runs on every PR, or only on PRs that touch its paths (`[[review.path_angles]]`, `docs/spec/08-configuration.md`). |
 | **Full** | Standard, plus `[[release.angles]]` with `release.coordinators` | Each candidate is reviewed on its QA angles before the GO. |
 
+At any level, `release.fix_assignee` names the tracker participant who fixes release problems: the bridge assigns them the urgent fix ticket of a red release CI and, with QA angles, that of each blocking finding. Left unset, those tickets are unassigned, taken by role.
+
 The layers are independent: a project may take them in another order, or stop at any of them. Adding one needs no migration: the bridge applies it from its next tick, tickets already Done stay Done, and release angles apply from the next candidate.
