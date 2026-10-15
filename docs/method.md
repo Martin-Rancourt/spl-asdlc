@@ -121,7 +121,7 @@ Every command is in `docs/setup/manual-gestures.md`.
 1. Install the GitHub App on the repository and set its two secrets.
 2. Protect `main` with a ruleset that requires `required-check`, with the App allowed to bypass it.
 3. Copy the example workflow callers from `docs/setup/examples/`.
-4. Copy the template `.spl-asdlc/config.toml`. The identities (the repository, the tracker team, the people) go in an instance file beside it, on the bridge's host, never in the repository.
+4. Copy the configuration template to `.spl-asdlc/config.toml` and adapt it. The installation's identities (the repository, the tracker team, the people) go in it too, or, for a repository that must carry no names (a public one), in `.spl-asdlc/config.instance.toml` on the bridge's host only: list that file in `.gitignore`, so it is never committed.
 5. Run the bridge on a timer, at the interval the host chooses, and check the setup with `spl-asdlc doctor`.
 
 `docs/setup/README.md` has the details.
