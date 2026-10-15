@@ -234,12 +234,12 @@ fn rulesets_that_cannot_be_read_whole_are_unreadable() {
 #[test]
 fn a_file_answers_its_text_not_found_or_unreadable() {
     let (gh, t) = client();
-    let path = "/repos/example-org/acme/contents/docs/business-rules.md?ref=";
+    let path = "/repos/example-org/acme/contents/.spl-asdlc/business-rules/BR-ACME-001.md?ref=";
     t.on(
         "GET",
         &url(&format!("{path}abc")),
         200,
-        "| BR-ACME-001 | rule |",
+        "# BR-ACME-001 — A rule",
     );
     t.on(
         "GET",
@@ -254,16 +254,21 @@ fn a_file_answers_its_text_not_found_or_unreadable() {
         r#"{"message":"unavailable"}"#,
     );
     assert_eq!(
-        gh.file(&repo(), "docs/business-rules.md", "abc").unwrap(),
-        "| BR-ACME-001 | rule |"
+        gh.file(&repo(), ".spl-asdlc/business-rules/BR-ACME-001.md", "abc")
+            .unwrap(),
+        "# BR-ACME-001 — A rule"
     );
     assert!(
-        gh.file(&repo(), "docs/business-rules.md", "missing")
-            .unwrap_err()
-            .is_not_found()
+        gh.file(
+            &repo(),
+            ".spl-asdlc/business-rules/BR-ACME-001.md",
+            "missing"
+        )
+        .unwrap_err()
+        .is_not_found()
     );
     assert!(matches!(
-        gh.file(&repo(), "docs/business-rules.md", "flaky")
+        gh.file(&repo(), ".spl-asdlc/business-rules/BR-ACME-001.md", "flaky")
             .unwrap_err(),
         ReadError::Unreadable {
             status: Some(503),
@@ -277,6 +282,55 @@ fn a_file_answers_its_text_not_found_or_unreadable() {
             .iter()
             .any(|(k, v)| k == "Accept" && v == "application/vnd.github.raw+json")
     );
+}
+
+#[test]
+fn a_directory_answers_its_file_names_not_found_or_unreadable() {
+    let (gh, t) = client();
+    let path = "/repos/example-org/acme/contents/.spl-asdlc/business-rules?ref=";
+    t.on(
+        "GET",
+        &url(&format!("{path}abc")),
+        200,
+        r#"[{"name":"README.md","type":"file"},{"name":"BR-ACME-002.md","type":"file"},
+            {"name":"BR-ACME-001.md","type":"file"},{"name":"old","type":"dir"}]"#,
+    );
+    t.on(
+        "GET",
+        &url(&format!("{path}file")),
+        200,
+        r#"{"name":"business-rules","type":"file"}"#,
+    );
+    t.on(
+        "GET",
+        &url(&format!("{path}missing")),
+        404,
+        r#"{"message":"Not Found"}"#,
+    );
+    t.on(
+        "GET",
+        &url(&format!("{path}flaky")),
+        503,
+        r#"{"message":"unavailable"}"#,
+    );
+    let dir = ".spl-asdlc/business-rules";
+    assert_eq!(
+        gh.dir(&repo(), dir, "abc").unwrap(),
+        ["BR-ACME-001.md", "BR-ACME-002.md", "README.md"],
+        "files only, sorted"
+    );
+    assert!(matches!(
+        gh.dir(&repo(), dir, "file").unwrap_err(),
+        ReadError::Unreadable { .. }
+    ));
+    assert!(gh.dir(&repo(), dir, "missing").unwrap_err().is_not_found());
+    assert!(matches!(
+        gh.dir(&repo(), dir, "flaky").unwrap_err(),
+        ReadError::Unreadable {
+            status: Some(503),
+            ..
+        }
+    ));
 }
 
 // ---- lists ----

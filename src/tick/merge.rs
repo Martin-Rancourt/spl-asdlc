@@ -1,7 +1,8 @@
-//! The PR-review pass (`docs/spec/04-pr-review.md`, spec 07 step 3): per
+//! The PR-review pass (`docs/reference/04-pr-review.md`, spec 07 step 3): per
 //! open PR, in order, stopping at the first thing that holds it: exclusions,
-//! the linked ticket, the review reconciliation, CI, the ticket's contract,
-//! the business-rule guard, the branch, then entering In Review, changes
+//! the linked ticket, the review reconciliation, the PR opened (its ticket In
+//! Review, a draft keeping it In Progress), CI, the ticket's contract, the
+//! business-rule guard, the branch, then the review round, changes
 //! requested, and the merge, at most one per repository per tick.
 //!
 //! A ticket may have several PRs (spec 04 §10): the pass reads the ticket of
@@ -19,12 +20,12 @@ use serde_json::json;
 
 use crate::action_log::ActionLog;
 use crate::github::{PrState, PullRequest, RequiredChecks};
-use crate::method::business_rules::{self, Registry};
+use crate::method::business_rules;
 use crate::method::checks::{self, CheckState};
 use crate::method::contract;
 use crate::method::release::findings;
 use crate::method::release::prs::trusted_author;
-use crate::method::review::{self, Approval, BranchState, ReviewFacts, SensitivePaths};
+use crate::method::review::{self, Approval, BranchState, ReviewFacts};
 use crate::method::texts::{self, BridgeItem};
 use crate::method::ticket_state::{self, Facts, OpenPr};
 use crate::method::vocabulary::{Status, TICKETLESS_LABEL};
@@ -36,7 +37,6 @@ use super::{Report, Tick};
 /// What the base of a PR says, read once per base and tick.
 struct Base {
     required: Result<RequiredChecks, String>,
-    sensitive: SensitivePaths,
 }
 
 /// A PR the pass found ready to merge.
@@ -120,7 +120,7 @@ pub fn dismiss(
 ) -> bool {
     let message = format!(
         "Dismissed by the bridge before the merge: {approved_by} approved this PR at its head \
-         `{}`, which supersedes this request for changes from an App (`docs/spec/04-pr-review.md` §6).",
+         `{}`, which supersedes this request for changes from an App (`docs/reference/04-pr-review.md` §6).",
         pr.head_sha
     );
     dismissals.iter().all(|d| {
@@ -162,7 +162,6 @@ pub struct OpenPrs {
 #[derive(Debug, Clone)]
 struct Open {
     number: u64,
-    url: String,
     draft: bool,
     sent_back: bool,
 }
@@ -174,7 +173,6 @@ impl OpenPrs {
             .or_default()
             .push(Open {
                 number: pr.number,
-                url: pr.url.clone(),
                 draft: pr.draft,
                 sent_back: review::changes_requested_at_head(pr, coordinators).is_some(),
             });
@@ -188,31 +186,37 @@ impl OpenPrs {
     }
 }
 
-/// The open PRs of a ticket but `except`, each with whether it has a review
-/// round on the ticket (open or finished, not canceled). The ticket's children are read only when it has
-/// such a PR.
-pub fn open_prs_of(
-    t: &Tick,
-    open: &OpenPrs,
-    ticket: &str,
-    except: Option<u64>,
-) -> Result<Vec<OpenPr>, String> {
-    let list = open.of(ticket, except);
-    if list.is_empty() {
-        return Ok(Vec::new());
-    }
-    let children = t.tracker.children(ticket).map_err(|e| e.to_string())?;
-    Ok(list
+/// The open PRs of a ticket but `except`, as the state rules read them: a
+/// PR opened (not a draft) and not sent back is in review, round or not
+/// (spec 03).
+pub fn open_prs_of(open: &OpenPrs, ticket: &str, except: Option<u64>) -> Vec<OpenPr> {
+    open.of(ticket, except)
         .into_iter()
         .map(|o| OpenPr {
             number: o.number,
             draft: o.draft,
             sent_back: o.sent_back,
-            in_round: children
-                .iter()
-                .any(|c| c.state.status != Some(Status::Canceled) && round_of(c, &o.url)),
         })
-        .collect())
+        .collect()
+}
+
+/// Whether a ticket has nothing to deploy, such as documentation: it
+/// carries the configured `tracker.no_deploy_label` (labels compare without
+/// regard to case, as the trackers show them). Its merge delivers it (Done
+/// rather than To Deploy, `docs/method.md`, "Merge") and no release embarks
+/// it (spec 04 §10). Every project has a release cycle: this is the one way
+/// past it.
+pub fn nothing_to_deploy(t: &Tick, ticket: &Item) -> bool {
+    let label = &t.config.tracker.no_deploy_label;
+    ticket.labels.iter().any(|l| l.eq_ignore_ascii_case(label))
+}
+
+/// Whether the PR has a review round on the ticket that was not canceled:
+/// angle sub-items or a consolidation item scoped to it, open or done.
+fn live_round(children: &[Item], pr_url: &str) -> bool {
+    children
+        .iter()
+        .any(|c| c.state.status != Some(Status::Canceled) && round_of(c, pr_url))
 }
 
 /// Whether an item is an angle sub-item or the consolidation item of a
@@ -274,10 +278,6 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> Pass {
             report.out_of_time = true;
             break;
         }
-        // Taken over by hand: still live work on its ticket, never judged.
-        if t.by_hand(report, &pr) {
-            continue;
-        }
         let base = bases
             .entry(pr.base_ref.clone())
             .or_insert_with(|| read_base(t, &pr.base_ref));
@@ -293,21 +293,7 @@ fn read_base(t: &Tick, base: &str) -> Base {
         .github
         .required_checks(&t.repo, base)
         .map_err(|e| e.to_string());
-    let sensitive = match &t.config.review.sensitive_paths {
-        None => SensitivePaths::NotDeclared,
-        // Read at the base: a PR cannot weaken the list that judges it.
-        Some(path) => match t.github.file(&t.repo, path, base) {
-            Ok(text) => match review::parse_sensitive_paths(&text) {
-                Ok(paths) => SensitivePaths::Paths(paths),
-                Err(e) => SensitivePaths::Invalid(format!("{path} is invalid: {e}")),
-            },
-            Err(e) => SensitivePaths::Invalid(format!("{path} could not be read at {base}: {e}")),
-        },
-    };
-    Base {
-        required,
-        sensitive,
-    }
+    Base { required }
 }
 
 /// One PR, up to the point where something holds it. The exclusions were
@@ -369,7 +355,7 @@ fn one(
                 &[("pr", &pr.url)],
                 &format!(
                     "Several tickets are linked to this PR ({}); a PR implements exactly one ticket \
-                     (`docs/spec/01-ticket-contract.md` §7). The bridge waits until one link remains.",
+                     (`docs/reference/01-ticket-contract.md` §7). The bridge waits until one link remains.",
                     keys.join(", ")
                 ),
             );
@@ -417,27 +403,18 @@ fn one(
         }
     }
 
-    // ---- a PR appears: Ready → In Progress (spec 03) ----
+    // ---- a PR appears (spec 03) ----
+    // In Progress is the implementer's, agent or person, who starts the
+    // ticket: the bridge never writes it as a backup. A PR opened (not a
+    // draft) on a ticket not marked started (Backlog, Ready) goes straight
+    // to In Review below; a draft one leaves the ticket as it is.
     let mut status = ticket.state.status;
-    if status == Some(Status::Ready) {
-        let done = t.act(
-            log,
-            report,
-            &object,
-            "status In Progress",
-            json!({"pr": pr.url, "from": "Ready"}),
-            || {
-                t.tracker
-                    .set_status(&ticket.key, Status::InProgress, None)
-                    .map_err(|e| e.to_string())
-            },
-        );
-        done?;
-        status = Some(Status::InProgress);
-    }
-    if !matches!(status, Some(Status::InProgress | Status::InReview)) {
-        // Triage, Backlog, a ticket past the merge, or a state outside the
-        // table: the bridge never drags a ticket forward nor back here.
+    if !matches!(
+        status,
+        Some(Status::Backlog | Status::Ready | Status::InProgress | Status::InReview)
+    ) {
+        // Triage, a ticket past the merge, or a state outside the table:
+        // the bridge never drags a ticket forward nor back here.
         let state = status
             .map(Status::name)
             .unwrap_or("in a state outside the table");
@@ -445,13 +422,75 @@ fn one(
             report,
             &pr,
             format!(
-                "its ticket {} is {state}, not In Progress or In Review",
+                "its ticket {} is {state}, not Backlog, Ready, In Progress or In Review",
                 ticket.key
             ),
         );
         return None;
     }
+    let head = texts::short(&pr.head_sha);
+    let changes_at_head = review::changes_requested_at_head(&pr, &t.config.review.coordinators);
+
+    // ---- the PR is opened: In Review at once, before CI (spec 03) ----
+    // A draft is work in progress and leaves the ticket where it is. A PR
+    // with a round of its own that is In Progress was sent back (spec 04
+    // §5): its next round, on a new head, brings the ticket back.
+    if status != Some(Status::InReview) && !pr.draft && changes_at_head.is_none() {
+        let children = match read_children.take() {
+            Some(c) => c,
+            None => match t.tracker.children(&ticket.key) {
+                Ok(c) => c,
+                Err(e) => {
+                    t.unreadable(report, &object, format!("the ticket's children: {e}"));
+                    return None;
+                }
+            },
+        };
+        // A write that fails does not hold the PR: its round, once CI is
+        // green, writes In Review again.
+        if !live_round(&children, &pr.url)
+            && t.act(
+                log,
+                report,
+                &object,
+                "status In Review",
+                json!({"pr": pr.url, "head": pr.head_sha, "opened": true}),
+                || {
+                    t.tracker
+                        .set_status(&ticket.key, Status::InReview, None)
+                        .map_err(|e| e.to_string())
+                },
+            )
+            .is_some()
+        {
+            status = Some(Status::InReview);
+            has_round = false;
+        }
+        read_children = Some(children);
+    }
     if pr.draft {
+        // Put back in draft before its round opened: the ticket is work in
+        // progress again, unless another of its PRs is in review.
+        let alone = !open_prs_of(open, &ticket.key, Some(pr.number))
+            .iter()
+            .any(OpenPr::in_review);
+        let round = read_children
+            .as_deref()
+            .is_some_and(|c| live_round(c, &pr.url));
+        if status == Some(Status::InReview) && !round && alone && open.known {
+            t.act(
+                log,
+                report,
+                &object,
+                "status In Progress",
+                json!({"pr": pr.url, "draft": true}),
+                || {
+                    t.tracker
+                        .set_status(&ticket.key, Status::InProgress, None)
+                        .map_err(|e| e.to_string())
+                },
+            );
+        }
         t.wait(report, &pr, "it is a draft");
         return None;
     }
@@ -511,7 +550,7 @@ fn one(
             &[("ticket", &ticket.key), ("missing", &digest)],
             &format!(
                 "The contract of {} is incomplete, so this PR is not reviewed yet \
-                 (`docs/spec/01-ticket-contract.md`):\n\n{}\n\n`spl-asdlc ticket check {}` says the same.",
+                 (`docs/reference/01-ticket-contract.md`):\n\n{}\n\n`spl-asdlc ticket check {}` says the same.",
                 ticket.key,
                 missing
                     .iter()
@@ -559,13 +598,8 @@ fn one(
         }
     };
     if business_rules::needs_registry(&ticket.description, files.as_deref()) {
-        let registry = read_registry(t, &pr.head_sha);
-        let gate = business_rules::evaluate(
-            &ticket.description,
-            &registry,
-            files.as_deref(),
-            t.config.registry_path(),
-        );
+        let registry = business_rules::read_registry(t.github, &t.repo, &pr.head_sha);
+        let gate = business_rules::evaluate(&ticket.description, &registry, files.as_deref());
         if !gate.ok() {
             t.wait(report, &pr, "the business-rule guard refuses it");
             say_once(
@@ -578,7 +612,7 @@ fn one(
                     ("ticket", &ticket.key),
                     ("head", texts::short(&pr.head_sha)),
                 ],
-                &business_rules::refusal(&gate, &ticket.key, t.config.registry_path()),
+                &business_rules::refusal(&gate, &ticket.key),
             );
             return None;
         }
@@ -626,27 +660,10 @@ fn one(
             changed_paths: files.as_deref(),
             additions: pr.additions,
             deletions: pr.deletions,
-            sensitive: &base.sensitive,
             skipped_required: skipped.as_deref(),
         },
         &t.config.review,
     );
-    if let SensitivePaths::Invalid(why) = &base.sensitive {
-        notify_once(
-            t,
-            log,
-            report,
-            &pr,
-            "stuck-pr",
-            "config-invalid",
-            &format!(
-                "{}: configuration invalid for this repository — {why}. The PR waits.",
-                pr.url
-            ),
-        );
-    }
-    let head = texts::short(&pr.head_sha);
-    let changes_at_head = review::changes_requested_at_head(&pr, &t.config.review.coordinators);
     let changes_wait =
         |by: &str| format!("{by} requested changes at {head}: the implementer's turn");
     // No angle under the current configuration (spec 04 §11): no round is
@@ -655,6 +672,7 @@ fn one(
     if plan.unreviewed() {
         if let Some(by) = &changes_at_head {
             t.wait(report, &pr, changes_wait(by));
+            send_back(t, log, report, &pr, &ticket, status, open, by);
             return None;
         }
         let children = match read_children {
@@ -676,12 +694,12 @@ fn one(
     }
     // A ticket In Review for another of its PRs: this PR gets its own round
     // (a round is scoped to its PR, BR-ASDLC-007).
-    if status == Some(Status::InProgress) || !has_round {
+    if status != Some(Status::InReview) || !has_round {
         if let Some(by) = &changes_at_head {
             t.wait(report, &pr, changes_wait(by));
             return None;
         }
-        enter_review(t, log, report, &pr, &ticket, &plan);
+        enter_review(t, log, report, &pr, &ticket, status, &plan);
         return None;
     }
     // Fewer angles than the round has: the angle sub-items the current
@@ -709,30 +727,7 @@ fn one(
             return None;
         }
         t.wait(report, &pr, changes_wait(by));
-        // The review rule first: while another PR of the ticket is in
-        // review, the ticket stays In Review (BR-ASDLC-008); when an open
-        // PR's ticket could not be read, it may be one: the state waits.
-        let another = match open_prs_of(t, open, &ticket.key, Some(pr.number)) {
-            Ok(others) => others.iter().any(OpenPr::in_review),
-            Err(e) => {
-                t.unreadable(report, &object, format!("the ticket's children: {e}"));
-                return None;
-            }
-        };
-        if !another && open.known {
-            t.act(
-                log,
-                report,
-                &object,
-                "status In Progress",
-                json!({"changes_requested_by": by, "head": pr.head_sha}),
-                || {
-                    t.tracker
-                        .set_status(&ticket.key, Status::InProgress, None)
-                        .map_err(|e| e.to_string())
-                },
-            );
-        }
+        send_back(t, log, report, &pr, &ticket, status, open, by);
         return None;
     }
     let by = match approval {
@@ -803,14 +798,14 @@ fn one(
         t.wait(report, &pr, format!("it is behind {}", pr.base_ref));
         return None;
     }
-    if review::needs_human_approval(&t.config.review, &plan) {
+    if review::needs_human_approval(&t.config.review) {
         t.wait(
             report,
             &pr,
             "it needs a human approval besides the coordinator's",
         );
         // Whose approval counts as the human one is the owner's to say
-        // (`docs/open-points.md` #4); until then the PR waits and a human is asked once.
+        // (`.spl-asdlc/open-points.md` #4); until then the PR waits and a human is asked once.
         ask_human(t, log, report, &pr, true);
         return None;
     }
@@ -822,14 +817,50 @@ fn one(
     })
 }
 
+/// A coordinator requested changes at the head (spec 04 §5): the ticket In
+/// Review goes back In Progress, its implementer's turn. The review rule
+/// first: while another PR of the ticket is in review, the ticket stays In
+/// Review (BR-ASDLC-008); when an open PR's ticket could not be read, it
+/// may be one: the state waits.
+#[allow(clippy::too_many_arguments)]
+fn send_back(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    pr: &PullRequest,
+    ticket: &Item,
+    status: Option<Status>,
+    open: &OpenPrs,
+    by: &str,
+) {
+    let another = open_prs_of(open, &ticket.key, Some(pr.number))
+        .iter()
+        .any(OpenPr::in_review);
+    if status != Some(Status::InReview) || another || !open.known {
+        return;
+    }
+    t.act(
+        log,
+        report,
+        &format!("pr#{} {}", pr.number, ticket.key),
+        "status In Progress",
+        json!({"changes_requested_by": by, "head": pr.head_sha}),
+        || {
+            t.tracker
+                .set_status(&ticket.key, Status::InProgress, None)
+                .map_err(|e| e.to_string())
+        },
+    );
+}
+
 /// A PR with no angle (spec 04 §11): no round, no sub-item, no approval (a
 /// round opened under an earlier configuration was canceled first). It
 /// merges on what the pass already checked (CI green, the contract complete
 /// with a box ticked, the business-rule guard), once nothing holds it, no
-/// thread is open and its branch is current; the ticket is never set In
-/// Review for it. A coordinator's standing request for changes still holds
-/// it, and a human approval, when the project asks for one, is then the only
-/// approval required.
+/// thread is open and its branch is current; its ticket went In Review when
+/// the PR was opened, as any. A coordinator's standing request for changes
+/// still holds it, and a human approval, when the project asks for one, is
+/// then the only approval required.
 fn unreviewed(
     t: &Tick,
     log: &mut ActionLog,
@@ -871,7 +902,7 @@ fn unreviewed(
     if branch != BranchState::Current {
         return None;
     }
-    if review::needs_human_approval(&t.config.review, plan) {
+    if review::needs_human_approval(&t.config.review) {
         ask_human(t, log, report, &pr, false);
         return None;
     }
@@ -936,7 +967,7 @@ fn drop_unasked(
                     t,
                     &format!(
                         "The configuration no longer asks for {what} of {}: it now gives this PR {asked}. \
-                         The bridge cancels this item (`docs/spec/04-pr-review.md` §11).\n\n{marker}",
+                         The bridge cancels this item (`docs/reference/04-pr-review.md` §11).\n\n{marker}",
                         pr.url
                     ),
                 );
@@ -1105,7 +1136,7 @@ pub fn close_round(
 
 /// An open PR on a ticket past the merge (To Deploy, Done) puts the ticket
 /// back where the state rules say (REQ-MERGE-028 under BR-ASDLC-008): In
-/// Review, unless a request for changes or an open box sends it In
+/// Review, unless a request for changes, an open box or a draft sends it In
 /// Progress. The PR is not operated on this tick. Post Deploy is not
 /// reopened; the bridge's own items are not tickets.
 fn reopen_for_open_pr(
@@ -1117,13 +1148,7 @@ fn reopen_for_open_pr(
     open: &OpenPrs,
 ) {
     let object = format!("pr#{} {}", pr.number, ticket.key);
-    let prs = match open_prs_of(t, open, &ticket.key, None) {
-        Ok(p) => p,
-        Err(e) => {
-            t.unreadable(report, &object, format!("the ticket's children: {e}"));
-            return;
-        }
-    };
+    let prs = open_prs_of(open, &ticket.key, None);
     let facts = Facts {
         open: &prs,
         open_known: open.known,
@@ -1156,10 +1181,11 @@ fn reopen_for_open_pr(
 
 /// A merged PR's ticket goes where the state rules say (spec 04 §10,
 /// BR-ASDLC-008): In Review while another of its PRs is in review, In
-/// Progress while a box of its contract is open, otherwise To Deploy, or,
-/// without a release cycle, Done (Post Deploy while its own `## Post
-/// deploy` boxes wait); never backwards past the merge (REQ-MERGE-062 as the
-/// spec corrects it). The merge comment records it, once.
+/// Progress while a box of its contract is open or another PR of it is a
+/// draft, otherwise To Deploy, or, with nothing to deploy
+/// ([`nothing_to_deploy`]), Done (Post Deploy while its own `## Post deploy`
+/// boxes wait); never backwards past the merge (REQ-MERGE-062 as the spec
+/// corrects it). The merge comment records it, once.
 pub fn after_merge(
     t: &Tick,
     log: &mut ActionLog,
@@ -1176,13 +1202,7 @@ pub fn after_merge(
         state,
         Some(Status::InProgress | Status::InReview | Status::Ready)
     ) {
-        let prs = match open_prs_of(t, open, &ticket.key, Some(pr.number)) {
-            Ok(p) => p,
-            Err(e) => {
-                t.unreadable(report, &object, format!("the ticket's children: {e}"));
-                return;
-            }
-        };
+        let prs = open_prs_of(open, &ticket.key, Some(pr.number));
         let facts = Facts {
             open: &prs,
             open_known: open.known,
@@ -1240,19 +1260,19 @@ pub fn after_merge(
     }
 }
 
-/// Without a release cycle (no `[release]`, `docs/spec/05-release-cycle.md`,
-/// "Without a release cycle") merging is delivering: a ticket the state
-/// rules put To Deploy goes where the Done gate says
-/// ([`ticket_state::delivered`]). With a release cycle, or for any other
-/// state, the rules' answer stands. `Err` when the contract could not be
-/// read in full: nothing is written, the next tick retries.
+/// For a ticket with nothing to deploy ([`nothing_to_deploy`]) merging is
+/// delivering: a ticket the state rules put To Deploy goes where the Done
+/// gate says ([`ticket_state::delivered`]). For any other ticket, or any
+/// other state, the rules' answer stands: To Deploy waits for the release.
+/// `Err` when the contract could not be read in full: nothing is written,
+/// the next tick retries.
 pub fn delivered(
     t: &Tick,
     ticket: &Item,
     to: Status,
     why: ticket_state::Why,
 ) -> Result<(Status, ticket_state::Why), String> {
-    if to != Status::ToDeploy || t.config.release.is_some() {
+    if to != Status::ToDeploy || !nothing_to_deploy(t, ticket) {
         return Ok((to, why));
     }
     let gate = super::closure::contract_gate(t, ticket)?;
@@ -1263,7 +1283,7 @@ pub fn delivered(
 }
 
 /// Write the status the state rules gave a ticket whose PR resolved; whether
-/// it is in place. Post Deploy (only without a release cycle, at a merge)
+/// it is in place. Post Deploy (only with nothing to deploy, at a merge)
 /// gets its index label first and its validation sub-task after, as at the
 /// closure (BR-ASDLC-003): a replay writes none of them again.
 pub fn set_state(
@@ -1310,19 +1330,6 @@ pub fn any_merge_recorded(t: &Tick, key: &str) -> Result<bool, String> {
         .any(|c| c.by_bridge && c.body.lines().any(|l| l.trim().starts_with("merged_pr: "))))
 }
 
-fn read_registry(t: &Tick, head: &str) -> Registry {
-    let path = t.config.registry_path();
-    match t.github.file(&t.repo, path, head) {
-        Ok(text) => Registry::Ids(business_rules::registry_ids(&text)),
-        Err(e) if e.is_not_found() => match t.github.commit(&t.repo, head) {
-            // The file is absent at a revision that exists.
-            Ok(_) => Registry::Absent,
-            Err(e) => Registry::Unreadable(e.to_string()),
-        },
-        Err(e) => Registry::Unreadable(e.to_string()),
-    }
-}
-
 /// Why a PR In Review waits on its approval (Missing or Stale).
 fn approval_wait(pr: &PullRequest, approval: &Approval) -> String {
     let head = texts::short(&pr.head_sha);
@@ -1341,16 +1348,20 @@ fn approval_wait(pr: &PullRequest, approval: &Approval) -> String {
     }
 }
 
-/// Open the review round: the angle sub-items and the consolidation item
-/// (each linked to the PR), the consolidation item blocked by every angle
-/// sub-item (BR-ASDLC-018), the round comment, then In Review last, so that
-/// a tick cut short re-creates nothing (spec 04 §3).
+/// Open the review round once CI is green: the angle sub-items and the
+/// consolidation item (each linked to the PR), the consolidation item
+/// blocked by every angle sub-item (BR-ASDLC-018), the round comment, then
+/// In Review last for a ticket not In Review yet (one sent back), so that a
+/// tick cut short re-creates nothing (spec 04 §3). `status` is the ticket's
+/// as this tick left it.
+#[allow(clippy::too_many_arguments)]
 fn enter_review(
     t: &Tick,
     log: &mut ActionLog,
     report: &mut Report,
     pr: &PullRequest,
     ticket: &Item,
+    status: Option<Status>,
     plan: &review::ReviewPlan,
 ) {
     let object = format!("pr#{} {}", pr.number, ticket.key);
@@ -1527,8 +1538,9 @@ fn enter_review(
             return;
         }
     }
-    // A ticket already In Review for another of its PRs stays so.
-    if ticket.state.status == Some(Status::InReview) {
+    // A ticket In Review (its PR opened, or another of its PRs in review)
+    // stays so.
+    if status == Some(Status::InReview) {
         return;
     }
     t.act(
@@ -1988,65 +2000,6 @@ pub fn say_once(
             t.unreadable(report, &object, format!("the PR's comments: {e}"));
             false
         }
-    }
-}
-
-/// Send a notice once per PR and cause; the marker is written on the PR
-/// after the notice went out (a failed send is retried).
-fn notify_once(
-    t: &Tick,
-    log: &mut ActionLog,
-    report: &mut Report,
-    pr: &PullRequest,
-    event: &str,
-    cause: &str,
-    text: &str,
-) {
-    let object = format!("pr#{}", pr.number);
-    let marker = texts::marker("notice", &[("event", event), ("cause", cause)]);
-    if !t.signal.takes(event) {
-        // No channel takes it: the PR comment is the notice.
-        say_once(
-            t,
-            log,
-            report,
-            pr,
-            "notice",
-            &[("event", event), ("cause", cause)],
-            text,
-        );
-        return;
-    }
-    match pr_said(t, pr.number, &marker) {
-        Ok(true) => {}
-        Ok(false) => {
-            if t.act(
-                log,
-                report,
-                &object,
-                &format!("notify {event}"),
-                json!({"cause": cause}),
-                || t.signal.signal(event, text).map(|_| ()),
-            )
-            .is_some()
-            {
-                let body = format!("{text}\n\n{marker}");
-                t.act(
-                    log,
-                    report,
-                    &object,
-                    &format!("comment {event}"),
-                    json!({}),
-                    || {
-                        t.github
-                            .comment(&t.repo, pr.number, &body)
-                            .map(|_| ())
-                            .map_err(|e| e.to_string())
-                    },
-                );
-            }
-        }
-        Err(e) => t.unreadable(report, &object, format!("the PR's comments: {e}")),
     }
 }
 

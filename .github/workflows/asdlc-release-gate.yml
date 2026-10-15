@@ -1,7 +1,7 @@
 name: asdlc-release-gate
 
-# The deterministic half of a release's QA (docs/requirements/ci.md,
-# REQ-CI-055..075; docs/spec/05-release-cycle.md §3): the project's suites run
+# The deterministic half of a release's QA (.spl-asdlc/requirements/ci.md,
+# REQ-CI-055..075; docs/reference/05-release-cycle.md §3): the project's suites run
 # against the exact candidate commit, and the verdict is published as data
 # only: the run conclusion, `results/suites.json` in the evidence artifact
 # `release-gate-evidence-<sha>`, and the commit status `release-gate`. Binary:

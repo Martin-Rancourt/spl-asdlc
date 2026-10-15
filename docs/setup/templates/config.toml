@@ -1,0 +1,109 @@
+# .spl-asdlc/config.toml: the configuration of one repository
+# (docs/reference/08-configuration.md).
+#
+# Copy this file to `.spl-asdlc/config.toml`, then replace every placeholder:
+# `acme` (the product), `example-org/acme` (the repository), `ABC` (the tracker
+# team) and the `*-handle` / `*-login` identities. The file is valid as
+# written (the crate's test suite parses it), so `spl-asdlc config check`
+# (its `--file` defaults to `.spl-asdlc/config.toml`) tells you what you broke
+# while editing, never what you forgot to replace: read it through once.
+#
+# Keys commented out show their default; uncomment one only to change it. An
+# unknown key, a wrong type or a repeated list entry makes the file invalid:
+# nothing falls back to a default shape. No secret ever goes here: a channel's
+# credentials are `env:<VARIABLE>` references resolved on the bridge's host.
+#
+# This is the light configuration: tickets, PRs, CI, the bridge and the
+# release cycle, with no PR review (a PR merges on its CI) and no release QA
+# angle (a release's GO rests on its CI). Two layers add the rest, each where
+# its section shows it, commented: adding one is an edit of this file, with
+# no migration (docs/setup/README.md, "Start light, add layers").
+#
+# 1. PR review (docs/reference/04-pr-review.md), under [review]: remove
+#    `angles = []` there, uncomment `coordinators`, and uncomment or write
+#    one `[[review.angles]]` table per angle. An angle without `paths` runs
+#    on every PR; one with `paths` only on a PR that touches them.
+# 2. Release QA angles (docs/reference/05-release-cycle.md §3), under [release]:
+#    replace `angles = []` there with the `coordinators` line and the
+#    `[[release.angles]]` tables below it, and list the same keys in the
+#    publication caller's `qa-angles`. Angles apply from the next candidate.
+
+schema = 1
+
+[product]
+name = "acme"                          # lower-case letters, digits, hyphens; used in tags, labels, release issue titles
+repository = "example-org/acme"        # <owner>/<repo> on GitHub
+
+[owner]                                # the human of the method: escalations, human GO
+tracker_user = "owner-handle"          # the owner as the tracker knows them
+# github_login = "owner-login"         # required when release.go_policy = "human"
+
+[tracker]
+kind = "linear"                        # "linear" | "livela"
+team = "ABC"                           # team key (Linear) or workspace id (Livela)
+service_identity = "spl-asdlc"         # the service account the bridge writes as
+team_keys = ["ABC"]                    # identifier prefixes of the team's items; [] asks the tracker
+# link_fallback = "none"               # "none" | "body-url"
+# no_deploy_label = "no-deploy"        # a ticket carrying it has nothing to deploy: Done at its merge
+# No status mapping: the tracker names each canonical status exactly so
+# (docs/reference/03-vocabulary.md, docs/setup/tracker-linear.md).
+
+[review]
+# merge_method = "squash"              # "squash" | "merge"
+# A light project merges a PR without first bringing it up to date with the
+# default branch; set true (and the ruleset's "up to date" option) to require it.
+require_up_to_date = false
+# An angle by size is off by default: set both keys to add one above a threshold.
+# diff_size_extra_angle = 0            # changed lines above which diff_size_angle is added; 0 adds none
+# diff_size_angle = "maintainability"  # required while diff_size_extra_angle is above 0
+# human_approval = "never"             # "never" | "always"
+# coordinator_assignee = "coordinator-handle" # tracker participant who receives each PR round's consolidation item
+# human_reviewer = "owner-login"       # asked to look at a green PR stuck on a human
+# ticketless_authors = []              # Apps whose PRs need no ticket, e.g. ["dependabot"]
+
+# No PR review (docs/reference/04-pr-review.md §11), an explicit choice: no PR
+# gets an angle, and each merges on its CI (contract complete, checks green,
+# branch up to date, business-rule guard) with no round and no approval.
+# Leaving the angles out altogether makes the file invalid.
+angles = []                            # no review angle: layer 1 replaces it
+# coordinators = ["coordinator-login"] # layer 1: GitHub logins whose approval at the head SHA merges a reviewed PR
+
+# [[review.angles]]                    # layer 1; no paths: on every PR
+# key = "maintainability"
+# [[review.angles]]                    # paths: only on a PR that touches one
+# key = "security"
+# paths = [".github/workflows/**", "**/auth/**"]
+
+[release]
+# Every project has the release cycle (docs/reference/05-release-cycle.md): merged
+# tickets wait To Deploy for a release; a release is cut, its CI runs, and,
+# with no QA angle, its GO rests on that CI. It needs the release workflows
+# and the release and tag rulesets (docs/setup/repository.md). The cut's
+# `release prepare` computes each version from the commits since the last
+# release and writes it into Cargo.toml and Cargo.lock and the CHANGELOG; a
+# project whose version lives in other files lists them, after the section's
+# keys, as `[[release.version_files]]` tables (a `path` and a `pattern`
+# holding `{version}`). The other release keys have defaults
+# (docs/reference/08-configuration.md).
+candidate_tag = "acme-v{version}-rc.{rc}"    # {version} once, {rc} once (never in release_tag); the callers pass the same patterns
+release_tag = "acme-v{version}"
+# fix_assignee = "fixer-handle"              # tracker participant who fixes release problems: the urgent fix tickets go to them; unset, they are taken by role
+angles = []                                  # no QA angle: layer 2 replaces it
+
+# coordinators = ["coordinator-login"]       # layer 2: GitHub logins whose approval at the head SHA merges an angle PR
+# [[release.angles]]
+# key = "security"
+# [[release.angles]]
+# key = "product"
+
+# [bridge]
+# poll_minutes = 5                     # a hint for the host: the interval is the host's choice
+# github_identity = "app"              # "app" | "token"
+# sweep_hours = 24
+
+# Notification channels (optional). References only, never values.
+# [[notify]]
+# kind = "telegram"
+# target = "env:SPL_ASDLC_TELEGRAM_CHAT"
+# token = "env:SPL_ASDLC_TELEGRAM_TOKEN"
+# events = ["release-note", "escalation", "stagnation", "stuck-pr", "blind-pass"]

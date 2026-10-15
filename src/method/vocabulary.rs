@@ -1,4 +1,4 @@
-//! Canonical names (`docs/spec/03-vocabulary.md`). A tracker names statuses
+//! Canonical names (`docs/reference/03-vocabulary.md`). A tracker names statuses
 //! exactly so; an adapter may map backend-specific IDs internally. The method
 //! speaks only these.
 
@@ -31,7 +31,7 @@ impl Status {
         Status::Canceled,
     ];
 
-    /// The canonical name, as `spl-asdlc.toml` writes it.
+    /// The canonical name, as the tracker and the bridge write it.
     pub fn name(self) -> &'static str {
         match self {
             Status::Triage => "Triage",
@@ -126,42 +126,11 @@ impl StateKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Severity {
-    Blocker,
-    ShouldFix,
-    Nit,
-}
-
-impl Severity {
-    pub fn name(self) -> &'static str {
-        match self {
-            Severity::Blocker => "blocker",
-            Severity::ShouldFix => "should-fix",
-            Severity::Nit => "nit",
-        }
-    }
-
-    pub fn from_name(name: &str) -> Option<Severity> {
-        match name {
-            "blocker" => Some(Severity::Blocker),
-            "should-fix" => Some(Severity::ShouldFix),
-            "nit" => Some(Severity::Nit),
-            _ => None,
-        }
-    }
-}
-
-impl fmt::Display for Severity {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.name())
-    }
-}
-
+/// The verdict of a release angle report (`docs/reference/06-qa-report.md`):
+/// `hold` when at least one finding is blocking, `go` otherwise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
     Go,
-    GoWithNote,
     Hold,
 }
 
@@ -169,7 +138,6 @@ impl Verdict {
     pub fn name(self) -> &'static str {
         match self {
             Verdict::Go => "go",
-            Verdict::GoWithNote => "go-with-note",
             Verdict::Hold => "hold",
         }
     }
@@ -177,7 +145,6 @@ impl Verdict {
     pub fn from_name(name: &str) -> Option<Verdict> {
         match name {
             "go" => Some(Verdict::Go),
-            "go-with-note" => Some(Verdict::GoWithNote),
             "hold" => Some(Verdict::Hold),
             _ => None,
         }

@@ -8,7 +8,6 @@ use crate::config::{Config, Source};
 use crate::github::{GitHub, Read, RepoSlug, Ruleset};
 use crate::method::business_rules;
 use crate::method::release::shape::Shape;
-use crate::method::review;
 use crate::tracker::{StatusTable, Tracker};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,7 +103,7 @@ pub fn run(
     out
 }
 
-/// What reviews a PR (spec 04 §11): its base angles and what can add one,
+/// What reviews a PR (spec 04 §11): its angles on every PR and what can add one,
 /// or none, when no PR can get an angle and a PR merges on its CI.
 fn pr_review(config: &Config) -> Check {
     let r = &config.review;
@@ -116,23 +115,19 @@ fn pr_review(config: &Config) -> Check {
         );
     }
     let mut parts = Vec::new();
-    parts.push(if r.angles.is_empty() {
-        "no base angle".to_string()
+    let every: Vec<&str> = r
+        .angles
+        .iter()
+        .filter(|a| a.paths.is_empty())
+        .map(|a| a.key.as_str())
+        .collect();
+    parts.push(if every.is_empty() {
+        "no angle on every PR".to_string()
     } else {
-        format!(
-            "base angles {}",
-            r.angles
-                .iter()
-                .map(|a| a.key.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
+        format!("on every PR: {}", every.join(", "))
     });
-    for pa in &r.path_angles {
-        parts.push(format!("{} on its paths", pa.angle));
-    }
-    if r.sensitive_paths.is_some() {
-        parts.push(format!("{} on sensitive paths", r.sensitive_angle));
+    for a in r.angles.iter().filter(|a| !a.paths.is_empty()) {
+        parts.push(format!("{} on its paths", a.key));
     }
     if let (true, Some(angle)) = (r.diff_size_extra_angle > 0, &r.diff_size_angle) {
         parts.push(format!(
@@ -140,7 +135,7 @@ fn pr_review(config: &Config) -> Check {
             r.diff_size_extra_angle
         ));
     }
-    let detail = if r.angles.is_empty() {
+    let detail = if every.is_empty() {
         format!(
             "{}; a PR that gets no angle merges on its CI with no round",
             parts.join("; ")
@@ -191,8 +186,7 @@ struct Required {
 }
 
 /// One line per ruleset the procedure asks for: the default branch, the
-/// release branches and the release and candidate tags (these two only with
-/// a release cycle). Rulesets are read by
+/// release branches and the release and candidate tags. Rulesets are read by
 /// id, so that a release branch or a tag that does not exist yet is judged
 /// against the configured shape. Only an
 /// `active` ruleset counts; one that covers a ref but is `evaluate` or
@@ -206,9 +200,8 @@ fn ruleset_checks(config: &Config, default: &str, rulesets: &Read<Vec<Ruleset>>)
         tag_templates: Vec::new(),
         needs: vec![Need::Check("required-check")],
     }];
-    // Without a release cycle there is no release branch nor release tag
-    // to protect (spec 05, "Without a release cycle").
-    if let Some(release) = &config.release {
+    {
+        let release = &config.release;
         let shape = Shape::of(&config.product.name, release);
         let prefix = &release.branch_prefix;
         required.push(Required {
@@ -435,6 +428,47 @@ fn class(p: &[char], c: char) -> Option<(bool, usize)> {
     Some((hit != negated, i + 1))
 }
 
+/// The business-rule registry at `rev`, every file read and checked: each
+/// invalid one is named by its path. Absent is fine: Git keeps no empty
+/// directory, and the first rule creates it.
+fn registry_check(github: &dyn GitHub, repo: &RepoSlug, rev: &str) -> Check {
+    const NAME: &str = "business-rules";
+    let dir = business_rules::REGISTRY_DIR;
+    let names = match github.dir(repo, dir, rev) {
+        Ok(names) => names,
+        Err(e) if e.is_not_found() => {
+            return check(NAME, Verdict::Ok, format!("{dir}/: no rule yet at {rev}"));
+        }
+        Err(e) => return check(NAME, Verdict::Missing, format!("{dir}/: {e}")),
+    };
+    let mut files = Vec::new();
+    for name in names {
+        let path = format!("{dir}/{name}");
+        match github.file(repo, &path, rev) {
+            Ok(text) => files.push((path, text)),
+            Err(e) => return check(NAME, Verdict::Missing, format!("{path}: {e}")),
+        }
+    }
+    let read = business_rules::parse_registry(&files);
+    if read.invalid.is_empty() {
+        check(
+            NAME,
+            Verdict::Ok,
+            format!("{dir}/: {} rule(s)", read.rules.len()),
+        )
+    } else {
+        check(
+            NAME,
+            Verdict::Invalid,
+            read.invalid
+                .iter()
+                .map(|(path, why)| format!("{path}: {why}"))
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+    }
+}
+
 fn files(
     config: &Config,
     instance: Option<&Source>,
@@ -444,17 +478,21 @@ fn files(
 ) -> Vec<Check> {
     let mut out = Vec::new();
     let read = |path: &str| github.file(repo, path, rev);
-    out.push(match read(crate::config::FILE_NAME) {
+    out.push(match read(crate::config::DEFAULT_PATH) {
         Ok(text) => match Config::parse_with(
             &Source {
-                label: format!("{} at {rev}", crate::config::FILE_NAME),
+                label: format!("{} at {rev}", crate::config::DEFAULT_PATH),
                 text,
             },
             instance,
         ) {
-            Ok(_) => check("spl-asdlc.toml", Verdict::Ok, format!("valid at {rev}")),
+            Ok(_) => check(
+                crate::config::DEFAULT_PATH,
+                Verdict::Ok,
+                format!("valid at {rev}"),
+            ),
             Err(e) => check(
-                "spl-asdlc.toml",
+                crate::config::DEFAULT_PATH,
                 Verdict::Invalid,
                 e.0.iter()
                     .map(|x| x.to_string())
@@ -462,72 +500,24 @@ fn files(
                     .join("; "),
             ),
         },
-        Err(e) if e.is_not_found() => {
-            check("spl-asdlc.toml", Verdict::Missing, format!("not at {rev}"))
-        }
-        Err(e) => check("spl-asdlc.toml", Verdict::Missing, e.to_string()),
-    });
-    // The PR pass's business-rule guard reads it, with or without a release
-    // cycle.
-    let registry = config.registry_path();
-    out.push(match read(registry) {
-        Ok(text) => {
-            let dup = business_rules::duplicate_registry_ids(&text);
-            if dup.is_empty() {
-                check(
-                    "business-rules",
-                    Verdict::Ok,
-                    format!(
-                        "{registry}: {} rule(s)",
-                        business_rules::registry_ids(&text).len()
-                    ),
-                )
-            } else {
-                check(
-                    "business-rules",
-                    Verdict::Invalid,
-                    format!("{registry}: ids declared twice: {}", dup.join(", ")),
-                )
-            }
-        }
-        Err(e) => check(
-            "business-rules",
+        Err(e) if e.is_not_found() => check(
+            crate::config::DEFAULT_PATH,
             Verdict::Missing,
-            format!("{registry}: {e}"),
+            format!("not at {rev}"),
         ),
+        Err(e) => check(crate::config::DEFAULT_PATH, Verdict::Missing, e.to_string()),
     });
-    if let Some(path) = &config.review.sensitive_paths {
-        out.push(match read(path) {
-            Ok(text) => match review::parse_sensitive_paths(&text) {
-                Ok(p) => check(
-                    "review-paths",
-                    Verdict::Ok,
-                    format!("{path}: {} glob(s)", p.len()),
-                ),
-                Err(e) => check("review-paths", Verdict::Invalid, format!("{path}: {e}")),
-            },
-            Err(e) => check(
-                "review-paths",
-                Verdict::Missing,
-                format!("{path}: {e} — every PR waits until it is fixed"),
-            ),
-        });
-    }
-    // Without a release cycle, the release-only checks are skipped: the
-    // project carries none of these files (spec 05, "Without a release
-    // cycle").
-    let Some(release) = &config.release else {
-        out.push(check(
-            "release cycle",
-            Verdict::Ok,
-            "none (no [release] section: a merged ticket is Done; the version files and the release workflows are not checked)",
-        ));
-        return out;
-    };
+    // The PR pass's business-rule guard reads it.
+    out.push(registry_check(github, repo, rev));
+    let release = &config.release;
     out.push(check(
         "release cycle",
         Verdict::Ok,
-        format!("[release], {} angle(s)", release.angles.len()),
+        if release.angles.is_empty() {
+            "no QA angle: the GO rests on the release CI".to_string()
+        } else {
+            format!("{} QA angle(s)", release.angles.len())
+        },
     ));
     // The base a candidate is measured from. None is no setup step: the
     // first release is measured from the repository's root.
@@ -631,7 +621,8 @@ fn tracker_checks(config: &Config, tracker: &dyn Tracker) -> Vec<Check> {
     });
     // The hold label of an escalation: absent is fine, the bridge creates it
     // the first time it escalates.
-    if let Some(release) = &config.release {
+    {
+        let release = &config.release;
         let name = "release.escalation_label";
         let label = &release.escalation_label;
         out.push(match tracker.label_exists(label) {
@@ -644,26 +635,27 @@ fn tracker_checks(config: &Config, tracker: &dyn Tracker) -> Vec<Check> {
             Err(e) => check(name, Verdict::Missing, e.to_string()),
         });
     }
-    // The hands-off label: never required. A person adds it to an item (or,
-    // under the same name, to a PR) to take it over by hand; the bridge never
-    // creates it.
-    let name = "bridge.hands_off_label";
-    let label = &config.bridge.hands_off_label;
+    // The label of a ticket with nothing to deploy: informational, never
+    // required. A person (or refinement) puts it on a ticket; the bridge
+    // reads it at the merge and never creates it.
+    let name = "tracker.no_deploy_label";
+    let label = &config.tracker.no_deploy_label;
+    let does = "a ticket carrying it goes Done at its merge, never embarked by a release";
     out.push(match tracker.label_exists(label) {
         Ok(true) => check(
             name,
             Verdict::Ok,
-            format!("{label}: an item or PR carrying it is left to people; it exists in the tracker"),
+            format!("{label}: {does}; it exists in the tracker"),
         ),
         Ok(false) => check(
             name,
             Verdict::Ok,
-            format!("{label}: an item or PR carrying it is left to people; it does not exist in the tracker, which is fine until someone takes an item over"),
+            format!("{label}: {does}; it does not exist in the tracker, which is fine until a ticket has nothing to deploy"),
         ),
         Err(e) => check(
             name,
             Verdict::Ok,
-            format!("{label}: an item or PR carrying it is left to people; whether the tracker has it could not be read ({e}), and it is never required"),
+            format!("{label}: {does}; whether the tracker has it could not be read ({e}), and it is never required"),
         ),
     });
     // The participants the bridge assigns items to: an unknown one leaves
@@ -686,13 +678,14 @@ fn tracker_checks(config: &Config, tracker: &dyn Tracker) -> Vec<Check> {
 }
 
 /// The configured assignees, named by their key: each angle's `assignee`
-/// and each round's `coordinator_assignee`.
+/// each round's `coordinator_assignee`, and the release fixer.
 fn participants(config: &Config) -> Vec<(String, &str)> {
     let mut out = Vec::new();
-    let release = config
-        .release
-        .as_ref()
-        .map(|r| ("release", &r.angles, &r.coordinator_assignee));
+    let release = Some((
+        "release",
+        &config.release.angles,
+        &config.release.coordinator_assignee,
+    ));
     let review = Some((
         "review",
         &config.review.angles,
@@ -707,6 +700,9 @@ fn participants(config: &Config) -> Vec<(String, &str)> {
         if let Some(name) = coordinator {
             out.push((format!("{table}.coordinator_assignee"), name.as_str()));
         }
+    }
+    if let Some(name) = &config.release.fix_assignee {
+        out.push(("release.fix_assignee".to_string(), name.as_str()));
     }
     out
 }
@@ -740,10 +736,9 @@ mod tests {
                     .insert((repo.clone(), "main".into(), p.into()), Ok(text.into()));
             };
             file(
-                "docs/business-rules.md",
-                "| BR-ACME-001 | a | b | c | Enforced |\n",
+                ".spl-asdlc/business-rules/BR-ACME-001.md",
+                "# BR-ACME-001 — A rule.\n\nStatus: Enforced\n\n## Rule\nIt holds.\n\n## Evidence\nWhy.\n\n## Test\n`a_test`\n",
             );
-            file(".github/review-paths.json", "{\"paths\": []}");
             file("web/package.json", "{\"version\": \"0.1.0\"}");
             s.rulesets.insert(repo.clone(), Ok(procedure_rulesets()));
             // A candidate, never a published release: the first release.
@@ -765,7 +760,8 @@ mod tests {
             id: "u-coordinator".into(),
             name: "coordinator-handle".into(),
         });
-        c.release.as_mut().unwrap().coordinator_assignee = Some("nobody-known".into());
+        c.release.coordinator_assignee = Some("nobody-known".into());
+        c.release.fix_assignee = Some("no-such-fixer".into());
         let checks = run(&c, None, &g, &t, "workstation");
         let by = |n: &str| {
             checks
@@ -781,12 +777,11 @@ mod tests {
                 .any(|c| c.to_string() == "instance overlay: ok — none"),
             "{checks:#?}"
         );
-        assert_eq!(by("spl-asdlc.toml"), Verdict::Missing);
+        assert_eq!(by(".spl-asdlc/config.toml"), Verdict::Missing);
         assert_eq!(by("business-rules"), Verdict::Ok);
-        assert_eq!(
-            by("review-paths"),
-            Verdict::Invalid,
-            "an empty list makes nothing sensitive"
+        assert!(
+            checks.iter().all(|c| c.name != "review-paths"),
+            "no sensitive-path list is read: {checks:#?}"
         );
         assert_eq!(by("version file web/package.json"), Verdict::Ok);
         assert_eq!(by("version file docs/version.txt"), Verdict::Missing);
@@ -808,6 +803,7 @@ mod tests {
             .unwrap_or_else(|| panic!("{checks:#?}"));
         assert_eq!(unknown.verdict, Verdict::Missing, "{unknown}");
         assert!(unknown.detail.contains("unassigned"), "{unknown}");
+        assert_eq!(by("release.fix_assignee"), Verdict::Missing);
         assert_eq!(by("release.angles.security.assignee"), Verdict::Missing);
         assert!(checks.iter().any(|c| {
             c.to_string()
@@ -816,7 +812,7 @@ mod tests {
         assert!(
             checks
                 .iter()
-                .any(|c| c.to_string() == "release cycle: ok — [release], 2 angle(s)"),
+                .any(|c| c.to_string() == "release cycle: ok — 2 QA angle(s)"),
             "{checks:#?}"
         );
         // No published release is no setup step: the first candidate is
@@ -854,39 +850,59 @@ mod tests {
     }
 
     #[test]
-    fn without_a_release_section_the_release_checks_are_skipped() {
-        let mut c = config();
-        c.release = None;
+    fn the_registry_check_reads_every_rule_file_and_names_each_invalid_one() {
         let g = FakeGitHub::new();
         let repo = RepoSlug::parse("example-org/acme").unwrap();
-        g.state
-            .borrow_mut()
-            .default_branch
-            .insert(repo, "main".into());
-        let t = FakeTracker::default();
-        let checks = run(&c, None, &g, &t, "workstation");
-        let cycle = checks
-            .iter()
-            .find(|c| c.name == "release cycle")
-            .unwrap_or_else(|| panic!("{checks:#?}"));
+        let checked = || registry_check(&g, &repo, "main");
+        // No directory at a revision: no rule yet, which is fine.
+        let none = checked();
+        assert_eq!(none.verdict, Verdict::Ok, "{none}");
+        assert!(none.detail.contains("no rule yet"), "{none}");
+        let put = |name: &str, text: &str| {
+            g.state.borrow_mut().files.insert(
+                (
+                    repo.clone(),
+                    "main".into(),
+                    format!(".spl-asdlc/business-rules/{name}"),
+                ),
+                Ok(text.into()),
+            );
+        };
+        let rule = |id: &str| {
+            format!(
+                "# {id} — A rule.\n\nStatus: Proposed\n\n## Rule\nIt holds.\n\n## Evidence\nWhy.\n\n## Test\nNone yet.\n"
+            )
+        };
+        put("BR-ACME-001.md", &rule("BR-ACME-001"));
+        put("README.md", "# Index\n\nNot a rule.\n");
+        let ok = checked();
+        assert_eq!(ok.verdict, Verdict::Ok, "{ok}");
+        assert!(ok.detail.contains("1 rule(s)"), "{ok}");
+        put("BR-ACME-002.md", &rule("BR-ACME-003"));
+        put("notes.md", "Anything.");
+        let bad = checked();
+        assert_eq!(bad.verdict, Verdict::Invalid, "{bad}");
         assert!(
-            cycle.to_string().starts_with("release cycle: ok — none"),
-            "{cycle}"
+            bad.detail.contains(
+                ".spl-asdlc/business-rules/BR-ACME-002.md: the title names `BR-ACME-003`"
+            ),
+            "{bad}"
         );
         assert!(
-            checks.iter().all(|c| !c.name.starts_with("version file ")),
-            "{checks:#?}"
+            bad.detail
+                .contains(".spl-asdlc/business-rules/notes.md: the file name"),
+            "{bad}"
         );
-        assert!(
-            checks.iter().all(|c| !c.name.starts_with("workflow ")),
-            "{checks:#?}"
+        // A listing that fails is not a registry without rules.
+        g.state.borrow_mut().dirs.insert(
+            (
+                repo.clone(),
+                "main".into(),
+                ".spl-asdlc/business-rules".into(),
+            ),
+            Err(ReadError::unreadable("the listing", "HTTP 502")),
         );
-        assert!(
-            checks.iter().all(|c| !c.name.starts_with("release.")),
-            "no release participant: {checks:#?}"
-        );
-        // The PR pass's business-rule guard still reads the registry.
-        assert!(checks.iter().any(|c| c.name == "business-rules"));
+        assert_eq!(checked().verdict, Verdict::Missing);
     }
 
     #[test]
@@ -906,23 +922,23 @@ mod tests {
     }
 
     #[test]
-    fn the_hands_off_label_is_reported_and_never_required() {
+    fn the_no_deploy_label_is_reported_and_never_required() {
         let c = config();
         let t = FakeTracker::default();
         let line = |t: &FakeTracker| {
             tracker_checks(&c, t)
                 .into_iter()
-                .find(|c| c.name == "bridge.hands_off_label")
-                .unwrap_or_else(|| panic!("no hands-off line"))
+                .find(|c| c.name == "tracker.no_deploy_label")
+                .unwrap_or_else(|| panic!("no no-deploy line"))
         };
         let absent = line(&t);
         assert_eq!(absent.verdict, Verdict::Ok, "{absent}");
         assert!(
-            absent.detail.starts_with("spl-asdlc:hands-off: ")
+            absent.detail.starts_with("no-deploy: ")
                 && absent.detail.contains("does not exist in the tracker"),
             "{absent}"
         );
-        t.ensure_label("spl-asdlc:hands-off").unwrap();
+        t.ensure_label("no-deploy").unwrap();
         let present = line(&t);
         assert_eq!(present.verdict, Verdict::Ok, "{present}");
         assert!(
@@ -951,15 +967,14 @@ mod tests {
         let mut c = config();
         let line = pr_review(&c).to_string();
         assert!(
-            line.starts_with("PR review: ok — base angles maintainability"),
+            line.starts_with("PR review: ok — on every PR: maintainability; security on its paths"),
             "{line}"
         );
-        c.review.angles.clear();
+        c.review.angles.retain(|a| !a.paths.is_empty());
         let line = pr_review(&c).to_string();
-        assert!(line.contains("no base angle"), "{line}");
-        assert!(line.contains("security on sensitive paths"), "{line}");
-        c.review.path_angles.clear();
-        c.review.sensitive_paths = None;
+        assert!(line.contains("no angle on every PR"), "{line}");
+        assert!(line.contains("security on its paths"), "{line}");
+        c.review.angles.clear();
         c.review.diff_size_extra_angle = 0;
         c.review.coordinators.clear();
         assert_eq!(
@@ -991,7 +1006,7 @@ mod tests {
             });
             s.default_branch.insert(repo.clone(), "main".into());
             s.files.insert(
-                (repo.clone(), "main".into(), "spl-asdlc.toml".into()),
+                (repo.clone(), "main".into(), ".spl-asdlc/config.toml".into()),
                 Ok(spec_example::repository().into()),
             );
         }
@@ -1006,12 +1021,12 @@ mod tests {
                     .unwrap_or_else(|| panic!("{n}: {checks:#?}"))
                     .clone()
             };
-            (line("instance overlay"), line("spl-asdlc.toml"))
+            (line("instance overlay"), line(".spl-asdlc/config.toml"))
         };
         let (instance, file) = verdict(Some(&overlay));
         assert_eq!(
             instance.to_string(),
-            "instance overlay: ok — spl-asdlc.instance.toml"
+            "instance overlay: ok — config.instance.toml"
         );
         assert_eq!(file.verdict, Verdict::Ok, "{file}");
         let (instance, file) = verdict(None);

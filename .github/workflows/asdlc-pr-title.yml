@@ -1,7 +1,7 @@
 name: asdlc-pr-title
 
 # Refuse a pull request whose title is not a Conventional Commit
-# (docs/requirements/ci.md, REQ-CI-015..021). Every delivery PR is squash-merged
+# (.spl-asdlc/requirements/ci.md, REQ-CI-015..021). Every delivery PR is squash-merged
 # and the squash commit's subject is the PR title: the cut's `release
 # prepare` reads it to pick the version bump and the release-note section,
 # and lists no title it cannot parse.

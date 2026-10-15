@@ -1,6 +1,6 @@
 name: staging
 
-# The staging channel of the bridge (docs/setup/bridge.md, "Channels"): on
+# The staging channel of the bridge (.spl-asdlc/development.md, "Testing the method"): on
 # every push to main, build the Linux binary and replace the assets of the
 # rolling `staging` prerelease, which a host on the staging channel installs
 # (the sandbox's bridge, never a real project's). The prerelease is never the

@@ -371,7 +371,7 @@ fn the_brief_names_tickets_criteria_rules_and_distinguishes_first_from_unresolva
         class: "sensible".into(),
         last_release: Some("acme-v1.2.2".into()),
         previous_candidate: Some("acme-v1.2.3-rc.1".into()),
-        paths_since_release: vec!["docs/business-rules.md".into()],
+        paths_since_release: vec![".spl-asdlc/business-rules/BR-ACME-001.md".into()],
         paths_since_candidate: None,
         gate_url: Some("https://github.com/example-org/acme/actions/runs/1".into()),
         evidence_url: Some("https://github.com/example-org/acme/actions/runs/1#artifacts".into()),
@@ -380,7 +380,7 @@ fn the_brief_names_tickets_criteria_rules_and_distinguishes_first_from_unresolva
             BriefTicket { id: "ABC-2".into(), title: "Two".into(), state: "?".into(), prs: vec![], description: None },
         ],
         untracked: vec!["PR #12".into(), "commit abcdef01abcd".into()],
-        rule_files_touched: vec!["docs/business-rules.md".into()],
+        rule_files_touched: vec![".spl-asdlc/business-rules/BR-ACME-001.md".into()],
         no_qa_angle: false,
     };
     let text = brief(&b);
@@ -672,7 +672,7 @@ fn a_release_angle_sub_item_embeds_the_release_protocol_its_angles_notes_and_the
         "{body}"
     );
     assert!(
-        body.contains("\"schema\": \"spl-asdlc/qa-report/1\""),
+        body.contains("\"schema\": \"spl-asdlc/qa-report/2\""),
         "{body}"
     );
     assert!(body.contains("- Project notes: none"), "{body}");
@@ -701,7 +701,7 @@ fn a_consolidation_item_embeds_the_consolidation_protocol_and_says_what_closes_i
         "{pr}"
     );
     assert!(
-        !pr.contains("qa-report/1"),
+        !pr.contains("qa-report/"),
         "a PR's consolidation has no report"
     );
 
@@ -713,7 +713,7 @@ fn a_consolidation_item_embeds_the_consolidation_protocol_and_says_what_closes_i
     assert_one_contract(&rc);
     assert!(rc.contains(&embedded(protocol::CONSOLIDATE)), "{rc}");
     assert!(rc.contains("its part \"For a release candidate\""), "{rc}");
-    assert!(rc.contains("\"schema\": \"spl-asdlc/qa-report/1\""), "{rc}");
+    assert!(rc.contains("\"schema\": \"spl-asdlc/qa-report/2\""), "{rc}");
     assert!(
         rc.contains("The bridge sets it Done when a newer candidate is tagged"),
         "{rc}"

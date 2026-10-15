@@ -1,5 +1,5 @@
 //! GitHub: the facts the bridge reads and the few writes it makes
-//! (`docs/spec/07-the-bridge.md`, REQ-REL-099).
+//! (`docs/reference/07-the-bridge.md`, REQ-REL-099).
 //!
 //! Every read answers with a value, [`ReadError::NotFound`] (GitHub said 404)
 //! or [`ReadError::Unreadable`] (anything else, including a list GitHub cut):
@@ -46,6 +46,10 @@ pub trait GitHub {
     /// The text of `path` at `rev`; `NotFound` when GitHub says 404 (the
     /// caller decides whether the revision itself exists).
     fn file(&self, repo: &RepoSlug, path: &str, rev: &str) -> Read<String>;
+    /// The names of the files directly in the directory `path` at `rev`
+    /// (no sub-directory), sorted; `NotFound` when GitHub says 404 (the
+    /// caller decides whether the revision itself exists).
+    fn dir(&self, repo: &RepoSlug, path: &str, rev: &str) -> Read<Vec<String>>;
 
     // ---- pull requests ----
 

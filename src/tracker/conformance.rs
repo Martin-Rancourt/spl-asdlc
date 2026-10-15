@@ -1,5 +1,5 @@
 //! The conformance suite every `Tracker` adapter must pass
-//! (`docs/livela-contract.md`, Conformance): create a release item with two
+//! (`docs/reference/livela-contract.md`, Conformance): create a release item with two
 //! angle children, link a PR URL and find the item back by it, move a child
 //! through In Review → To Deploy → Post Deploy → Done, lay a `blocks`
 //! relation and read it back from both ends (and only there), comment twice

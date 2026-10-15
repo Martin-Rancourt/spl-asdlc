@@ -1,5 +1,5 @@
 //! The dependency arrow points toward this crate, never outward
-//! (BR-ASDLC-010, `docs/livela-contract.md` §3): the public crate depends on
+//! (BR-ASDLC-010, `docs/reference/livela-contract.md` §3): the public crate depends on
 //! no consumer. Each runtime or tracker (the Livela runner's `BridgeJob`, for
 //! one) writes its own wrapper on its side, depending on `spl-asdlc` by
 //! version. A Git dependency would also name an account in `Cargo.lock`

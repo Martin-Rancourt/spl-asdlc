@@ -1,4 +1,4 @@
-//! `spl-asdlc release prepare` (`docs/spec/05-release-cycle.md` §1): run by
+//! `spl-asdlc release prepare` (`docs/reference/05-release-cycle.md` §1): run by
 //! the cut's `open` in a checkout of the new release branch, it reads the
 //! range along the git graph, computes the next version, writes it into the
 //! version files and the CHANGELOG, and writes the release notes. It writes

@@ -1,9 +1,7 @@
-//! PR review judgements (`docs/spec/04-pr-review.md`, REQ-MERGE-003..005,
+//! PR review judgements (`docs/reference/04-pr-review.md`, REQ-MERGE-003..005,
 //! 016, 044..055): which PRs the merge pass leaves alone, which angles a
 //! review round gets, what holds a PR whatever its approval, whether the
 //! coordinator's approval qualifies, and whether the branch is up to date.
-
-use serde_json::Value;
 
 use super::glob;
 use super::vocabulary::NEEDS_REVIEW_LABEL;
@@ -63,34 +61,6 @@ pub fn branch_state(pr: &PullRequest) -> BranchState {
     }
 }
 
-/// The sensitive-path list of a base (REQ-MERGE-045, spec 08 rule 5).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SensitivePaths {
-    /// `[review] sensitive_paths` is not declared: no path is sensitive.
-    NotDeclared,
-    Paths(Vec<String>),
-    /// Declared, but absent or invalid at the base: the PR waits.
-    Invalid(String),
-}
-
-/// Parse `.github/review-paths.json`: an object whose `paths` is a
-/// non-empty list of non-empty strings; every other key is ignored.
-pub fn parse_sensitive_paths(text: &str) -> Result<Vec<String>, String> {
-    let v: Value = serde_json::from_str(text).map_err(|e| format!("not JSON: {e}"))?;
-    let obj = v.as_object().ok_or("not a JSON object")?;
-    let paths = obj.get("paths").ok_or("no `paths` list")?;
-    let list = paths.as_array().ok_or("`paths` is not a list")?;
-    if list.is_empty() {
-        return Err("`paths` is empty: an empty list would make nothing sensitive".into());
-    }
-    list.iter()
-        .map(|p| match p.as_str() {
-            Some(s) if !s.trim().is_empty() => Ok(s.to_string()),
-            _ => Err("`paths` holds an entry that is not a non-empty string".to_string()),
-        })
-        .collect()
-}
-
 /// The facts a review round is planned from.
 #[derive(Debug, Clone)]
 pub struct ReviewFacts<'a> {
@@ -99,7 +69,6 @@ pub struct ReviewFacts<'a> {
     pub changed_paths: Option<&'a [String]>,
     pub additions: u64,
     pub deletions: u64,
-    pub sensitive: &'a SensitivePaths,
     /// A required check that was skipped or neutral.
     pub skipped_required: Option<&'a str>,
 }
@@ -108,15 +77,14 @@ pub struct ReviewFacts<'a> {
 /// holds the merge whatever the approval says.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ReviewPlan {
-    /// Base angles first, then the ones the triggers add, each once.
+    /// The angles on every PR first, then the ones the triggers add (the
+    /// paths an angle carries, the size), each once.
     pub angles: Vec<String>,
     /// Every trigger that matched, in order of certainty.
     pub reasons: Vec<String>,
-    /// Holds no approval lifts: the diff could not be read, the configuration
-    /// is invalid, a required check was skipped.
+    /// Holds no approval lifts: the diff could not be read, a required
+    /// check was skipped.
     pub holds: Vec<String>,
-    /// Sensitive paths touched (also used by `human_approval`).
-    pub sensitive_hits: Vec<String>,
     /// The diff was read, so every path trigger ran: the angles are all the
     /// current configuration gives the PR, and an angle missing from them is
     /// one it no longer asks for (spec 04 §11).
@@ -132,7 +100,7 @@ fn push_unique(list: &mut Vec<String>, item: &str) {
 /// Plan a review round (REQ-MERGE-044..052 as the target defines them).
 pub fn plan(facts: &ReviewFacts<'_>, review: &config::Review) -> ReviewPlan {
     let mut plan = ReviewPlan::default();
-    for a in &review.angles {
+    for a in review.angles.iter().filter(|a| a.paths.is_empty()) {
         push_unique(&mut plan.angles, &a.key);
     }
     if facts
@@ -151,51 +119,39 @@ pub fn plan(facts: &ReviewFacts<'_>, review: &config::Review) -> ReviewPlan {
     };
     match paths {
         None => {
-            let reason = "the diff could not be read, so the reviewed-path rule could not run";
+            let reason = "the diff could not be read, so the angles' paths could not be matched";
             plan.reasons.push(reason.to_string());
             plan.holds.push(reason.to_string());
-            // A project with no PR review has no round to add it to: the
-            // hold alone keeps the PR waiting until the diff is read.
-            if review.angle_possible() {
-                push_unique(&mut plan.angles, &review.sensitive_angle);
+            // Fail closed: whether an angle's paths are touched is unknown,
+            // so every angle on paths is in the round; the hold keeps the PR
+            // waiting until the diff is read.
+            for a in review.angles.iter().filter(|a| !a.paths.is_empty()) {
+                push_unique(&mut plan.angles, &a.key);
             }
         }
         Some(paths) => {
             plan.diff_read = true;
-            match facts.sensitive {
-                SensitivePaths::NotDeclared => {}
-                SensitivePaths::Invalid(why) => {
-                    let reason = format!(
-                        "configuration invalid for this repository: the sensitive-path list could not be read ({why})"
-                    );
-                    plan.reasons.push(reason.clone());
-                    plan.holds.push(reason);
-                    push_unique(&mut plan.angles, &review.sensitive_angle);
+            for a in review.angles.iter().filter(|a| !a.paths.is_empty()) {
+                let hits = glob::hits(paths, &a.paths);
+                if hits.is_empty() {
+                    continue;
                 }
-                SensitivePaths::Paths(patterns) => {
-                    plan.sensitive_hits = glob::hits(paths, patterns);
-                    if !plan.sensitive_hits.is_empty() {
-                        let shown = plan
-                            .sensitive_hits
-                            .iter()
-                            .take(5)
-                            .map(|p| format!("`{p}`"))
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        let more = plan.sensitive_hits.len().saturating_sub(5);
-                        plan.reasons.push(if more > 0 {
-                            format!("it touches reviewed paths: {shown} (+{more} more)")
-                        } else {
-                            format!("it touches reviewed paths: {shown}")
-                        });
-                        push_unique(&mut plan.angles, &review.sensitive_angle);
-                    }
-                }
-            }
-            for pa in &review.path_angles {
-                if !glob::hits(paths, &pa.paths).is_empty() {
-                    push_unique(&mut plan.angles, &pa.angle);
-                }
+                let shown = hits
+                    .iter()
+                    .take(5)
+                    .map(|p| format!("`{p}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let more = hits.len().saturating_sub(5);
+                plan.reasons.push(if more > 0 {
+                    format!(
+                        "it touches the paths of the `{}` angle: {shown} (+{more} more)",
+                        a.key
+                    )
+                } else {
+                    format!("it touches the paths of the `{}` angle: {shown}", a.key)
+                });
+                push_unique(&mut plan.angles, &a.key);
             }
         }
     }
@@ -227,15 +183,9 @@ impl ReviewPlan {
 }
 
 /// Whether a human must approve besides the coordinator, or alone when the
-/// PR has no angle (spec 04).
-pub fn needs_human_approval(review: &config::Review, plan: &ReviewPlan) -> bool {
-    match review.human_approval {
-        config::HumanApproval::Never => false,
-        config::HumanApproval::Always => true,
-        config::HumanApproval::SensitivePaths => {
-            !plan.sensitive_hits.is_empty() || !plan.holds.is_empty()
-        }
-    }
+/// PR has no angle (spec 04): `review.human_approval = "always"`.
+pub fn needs_human_approval(review: &config::Review) -> bool {
+    review.human_approval == config::HumanApproval::Always
 }
 
 /// Where the approvals of a PR stand at its head.

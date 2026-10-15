@@ -1,5 +1,5 @@
 //! Carried from `tests/test_pr_merge.py` (exclusions, triggers, approval,
-//! up-to-date) and `tests/test_review_paths.py` (the list's format).
+//! up-to-date); the angles' paths replace its sensitive-path list.
 
 use super::*;
 use crate::github::ReviewThread;
@@ -13,17 +13,12 @@ fn s(v: &[&str]) -> Vec<String> {
     v.iter().map(|x| x.to_string()).collect()
 }
 
-fn facts<'a>(
-    paths: Option<&'a [String]>,
-    sensitive: &'a SensitivePaths,
-    labels: &'a [String],
-) -> ReviewFacts<'a> {
+fn facts<'a>(paths: Option<&'a [String]>, labels: &'a [String]) -> ReviewFacts<'a> {
     ReviewFacts {
         labels,
         changed_paths: paths,
         additions: 10,
         deletions: 2,
-        sensitive,
         skipped_required: None,
     }
 }
@@ -114,63 +109,36 @@ fn conflicting_behind_and_everything_else() {
     }
 }
 
-// ---- the sensitive-path list (REQ-MERGE-045) ----
+// ---- an angle's paths (spec 08 rule 5) ----
 
 #[test]
-fn parse_repo_paths_keeps_the_paths_and_ignores_the_rest() {
-    let text = r#"{"_doc":"x","paths":["src/auth/**",".github/review-paths.json"],"exceptions":[{"path":"a","reason":"b"}]}"#;
+fn an_angle_on_paths_comes_only_with_a_pr_that_touches_one() {
+    let config = review_config();
+    let paths = s(&["src/auth/login.rs"]);
+    let plan = plan(&facts(Some(&paths), &[]), &config);
+    assert_eq!(plan.angles, s(&["maintainability", "security"]));
     assert_eq!(
-        parse_sensitive_paths(text).unwrap(),
-        s(&["src/auth/**", ".github/review-paths.json"])
-    );
-}
-
-#[test]
-fn parse_repo_paths_refuses_what_it_cannot_trust() {
-    for bad in [
-        "not json",
-        "[]",
-        r#"{"other":1}"#,
-        r#"{"paths":[]}"#,
-        r#"{"paths":"src/**"}"#,
-        r#"{"paths":[""]}"#,
-        r#"{"paths":["  "]}"#,
-        r#"{"paths":[1]}"#,
-    ] {
-        assert!(parse_sensitive_paths(bad).is_err(), "{bad}");
-    }
-}
-
-#[test]
-fn the_repositorys_own_list_buys_a_reviewer() {
-    let config = review_config();
-    let paths = s(&["src/auth/login.rs"]);
-    let sensitive = SensitivePaths::Paths(s(&["src/auth/**"]));
-    let plan = plan(&facts(Some(&paths), &sensitive, &[]), &config);
-    assert!(plan.angles.contains(&"security".to_string()));
-    assert!(plan.reasons[0].contains("`src/auth/login.rs`"));
-    assert!(plan.holds.is_empty());
-}
-
-#[test]
-fn an_unreadable_list_fails_closed_and_never_falls_back() {
-    let config = review_config();
-    let paths = s(&["docs/readme.md"]);
-    let sensitive = SensitivePaths::Invalid(".github/review-paths.json is absent at main".into());
-    let plan = plan(&facts(Some(&paths), &sensitive, &[]), &config);
-    assert!(plan.holds[0].starts_with("configuration invalid for this repository"));
-}
-
-#[test]
-fn no_declared_list_means_no_sensitive_path() {
-    let config = review_config();
-    let paths = s(&["src/auth/login.rs"]);
-    let plan = plan(
-        &facts(Some(&paths), &SensitivePaths::NotDeclared, &[]),
-        &config,
+        plan.reasons,
+        vec!["it touches the paths of the `security` angle: `src/auth/login.rs`"]
     );
     assert!(plan.holds.is_empty());
-    assert!(plan.sensitive_hits.is_empty());
+    let docs = s(&["docs/readme.md"]);
+    let plan = super::plan(&facts(Some(&docs), &[]), &config);
+    assert_eq!(plan.angles, s(&["maintainability"]), "on every PR only");
+    assert!(plan.reasons.is_empty());
+}
+
+#[test]
+fn angles_on_paths_alone_review_only_the_prs_that_touch_them() {
+    let mut config = review_config();
+    config.angles.retain(|a| !a.paths.is_empty());
+    let docs = s(&["docs/readme.md"]);
+    let plan = super::plan(&facts(Some(&docs), &[]), &config);
+    assert!(plan.unreviewed(), "{plan:?}");
+    assert!(plan.diff_read);
+    let auth = s(&[".github/workflows/ci.yml"]);
+    let plan = super::plan(&facts(Some(&auth), &[]), &config);
+    assert_eq!(plan.angles, s(&["security"]));
 }
 
 // ---- triggers (REQ-MERGE-044..050) ----
@@ -179,10 +147,7 @@ fn no_declared_list_means_no_sensitive_path() {
 fn every_round_carries_the_base_angles() {
     let config = review_config();
     let paths = s(&["src/x.rs"]);
-    let plan = plan(
-        &facts(Some(&paths), &SensitivePaths::NotDeclared, &[]),
-        &config,
-    );
+    let plan = plan(&facts(Some(&paths), &[]), &config);
     assert_eq!(plan.angles, s(&["maintainability"]));
     assert!(plan.reasons.is_empty());
 }
@@ -192,19 +157,16 @@ fn the_authors_flag_is_a_reason() {
     let config = review_config();
     let paths = s(&["src/x.rs"]);
     let labels = s(&[" Needs-Review "]);
-    let plan = plan(
-        &facts(Some(&paths), &SensitivePaths::NotDeclared, &labels),
-        &config,
-    );
+    let plan = plan(&facts(Some(&paths), &labels), &config);
     assert_eq!(plan.reasons[0], "the author flagged it (`needs-review`)");
 }
 
 #[test]
-fn an_unreadable_diff_buys_a_reviewer_instead_of_a_merge() {
+fn an_unreadable_diff_buys_every_angle_on_paths_instead_of_a_merge() {
     let config = review_config();
-    let plan = plan(&facts(None, &SensitivePaths::NotDeclared, &[]), &config);
+    let plan = plan(&facts(None, &[]), &config);
     assert!(plan.holds[0].contains("the diff could not be read"));
-    assert!(plan.angles.contains(&"security".to_string()));
+    assert_eq!(plan.angles, s(&["maintainability", "security"]));
     // No path trigger ran: an angle missing from the plan says nothing.
     assert!(!plan.diff_read);
 }
@@ -215,17 +177,12 @@ fn an_unreadable_diff_buys_a_reviewer_instead_of_a_merge() {
 fn with_no_possible_angle_a_pr_is_unreviewed_and_an_unread_diff_only_holds_it() {
     let mut config = review_config();
     config.angles.clear();
-    config.path_angles.clear();
-    config.sensitive_paths = None;
     config.diff_size_extra_angle = 0;
     let paths = s(&["src/auth/login.rs"]);
-    let read = plan(
-        &facts(Some(&paths), &SensitivePaths::NotDeclared, &[]),
-        &config,
-    );
+    let read = plan(&facts(Some(&paths), &[]), &config);
     assert!(read.unreviewed() && read.holds.is_empty(), "{read:?}");
     assert!(read.diff_read);
-    let unread = plan(&facts(None, &SensitivePaths::NotDeclared, &[]), &config);
+    let unread = plan(&facts(None, &[]), &config);
     assert!(unread.unreviewed(), "{unread:?}");
     assert!(unread.holds[0].contains("the diff could not be read"));
 }
@@ -234,10 +191,7 @@ fn with_no_possible_angle_a_pr_is_unreviewed_and_an_unread_diff_only_holds_it() 
 fn an_empty_file_list_that_contradicts_the_pr_is_not_an_answer() {
     let config = review_config();
     let empty: Vec<String> = Vec::new();
-    let plan = plan(
-        &facts(Some(&empty), &SensitivePaths::NotDeclared, &[]),
-        &config,
-    );
+    let plan = plan(&facts(Some(&empty), &[]), &config);
     assert!(!plan.holds.is_empty());
     assert!(!plan.diff_read);
 }
@@ -246,7 +200,7 @@ fn an_empty_file_list_that_contradicts_the_pr_is_not_an_answer() {
 fn a_diff_read_as_genuinely_empty_still_merges() {
     let config = review_config();
     let empty: Vec<String> = Vec::new();
-    let mut f = facts(Some(&empty), &SensitivePaths::NotDeclared, &[]);
+    let mut f = facts(Some(&empty), &[]);
     f.additions = 0;
     f.deletions = 0;
     assert!(plan(&f, &config).holds.is_empty());
@@ -256,7 +210,7 @@ fn a_diff_read_as_genuinely_empty_still_merges() {
 fn a_skipped_required_check_holds_the_merge() {
     let config = review_config();
     let paths = s(&["src/x.rs"]);
-    let mut f = facts(Some(&paths), &SensitivePaths::NotDeclared, &[]);
+    let mut f = facts(Some(&paths), &[]);
     f.skipped_required = Some("required-check");
     let plan = plan(&f, &config);
     assert_eq!(
@@ -269,7 +223,7 @@ fn a_skipped_required_check_holds_the_merge() {
 fn a_configured_size_threshold_adds_its_angle_only_above_it() {
     let config = review_config();
     let paths = s(&["src/x.rs"]);
-    let mut f = facts(Some(&paths), &SensitivePaths::NotDeclared, &[]);
+    let mut f = facts(Some(&paths), &[]);
     f.additions = 1400;
     f.deletions = 0;
     assert!(
@@ -288,22 +242,18 @@ fn a_configured_size_threshold_adds_its_angle_only_above_it() {
 }
 
 #[test]
-fn a_path_angle_is_added_by_its_globs() {
+fn an_angle_on_paths_is_added_by_its_globs() {
     let config = review_config();
     let paths = s(&["db/migrations/001.sql"]);
-    let plan = plan(
-        &facts(Some(&paths), &SensitivePaths::NotDeclared, &[]),
-        &config,
-    );
+    let plan = plan(&facts(Some(&paths), &[]), &config);
     assert_eq!(plan.angles, s(&["maintainability", "security"]));
 }
 
 #[test]
-fn reviewed_paths_are_named_five_then_counted() {
+fn an_angles_paths_touched_are_named_five_then_counted() {
     let config = review_config();
     let paths: Vec<String> = (0..7).map(|i| format!("src/auth/{i}.rs")).collect();
-    let sensitive = SensitivePaths::Paths(s(&["src/auth/**"]));
-    let plan = plan(&facts(Some(&paths), &sensitive, &[]), &config);
+    let plan = plan(&facts(Some(&paths), &[]), &config);
     assert!(
         plan.reasons[0].ends_with("(+2 more)"),
         "{}",
@@ -442,18 +392,10 @@ fn unresolved_threads_are_counted_outdated_or_not() {
 #[test]
 fn human_approval_follows_the_policy() {
     let mut config = review_config();
-    let plan_hit = ReviewPlan {
-        sensitive_hits: s(&["src/auth/a.rs"]),
-        ..ReviewPlan::default()
-    };
-    let plan_clean = ReviewPlan::default();
     config.human_approval = config::HumanApproval::Never;
-    assert!(!needs_human_approval(&config, &plan_hit));
+    assert!(!needs_human_approval(&config));
     config.human_approval = config::HumanApproval::Always;
-    assert!(needs_human_approval(&config, &plan_clean));
-    config.human_approval = config::HumanApproval::SensitivePaths;
-    assert!(needs_human_approval(&config, &plan_hit));
-    assert!(!needs_human_approval(&config, &plan_clean));
+    assert!(needs_human_approval(&config));
 }
 
 // ---- an App's login against a person's (SID-1008) ----

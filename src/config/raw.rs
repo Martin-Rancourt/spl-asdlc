@@ -42,6 +42,7 @@ pub(super) struct RawTracker {
     pub service_identity: Option<String>,
     pub team_keys: Option<Vec<String>>,
     pub link_fallback: Option<String>,
+    pub no_deploy_label: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -53,7 +54,6 @@ pub(super) struct RawRelease {
     pub max_rc_passes: Option<i64>,
     pub later_passes: Option<String>,
     pub go_policy: Option<String>,
-    pub nits: Option<String>,
     pub record: Option<String>,
     /// Read only to refuse them: a multi-component product is not
     /// supported by the release cycle yet (spec 08).
@@ -61,11 +61,10 @@ pub(super) struct RawRelease {
     pub version_component: Option<String>,
     pub gate_record: Option<String>,
     pub bookkeeping_paths: Option<Vec<String>>,
-    pub registry_path: Option<String>,
-    pub business_rule_paths: Option<Vec<String>>,
     pub stagnation_hours: Option<i64>,
     pub coordinators: Option<Vec<String>>,
     pub coordinator_assignee: Option<String>,
+    pub fix_assignee: Option<String>,
     pub escalation_label: Option<String>,
     pub auto_candidate: Option<bool>,
     pub cut_workflow: Option<String>,
@@ -113,8 +112,6 @@ pub(super) struct RawReview {
     pub diff_size_extra_angle: Option<i64>,
     pub diff_size_angle: Option<String>,
     pub human_approval: Option<String>,
-    pub sensitive_paths: Option<String>,
-    pub sensitive_angle: Option<String>,
     pub coordinators: Option<Vec<String>>,
     pub coordinator_assignee: Option<String>,
     pub human_reviewer: Option<String>,
@@ -122,8 +119,6 @@ pub(super) struct RawReview {
     /// `None` when the file says nothing (refused: no PR review is an
     /// explicit choice); `angles = []` under `[review]` is `Some` and empty.
     pub angles: Option<Vec<RawReviewAngle>>,
-    #[serde(default)]
-    pub path_angles: Vec<RawPathAngle>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -132,13 +127,9 @@ pub(super) struct RawReviewAngle {
     pub key: Option<String>,
     pub assignee: Option<String>,
     pub notes: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct RawPathAngle {
+    /// The globs whose change brings the angle to a PR; absent, it is on
+    /// every PR.
     pub paths: Option<Vec<String>>,
-    pub angle: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -147,7 +138,6 @@ pub(super) struct RawBridge {
     pub poll_minutes: Option<i64>,
     pub github_identity: Option<String>,
     pub sweep_hours: Option<i64>,
-    pub hands_off_label: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -195,6 +185,7 @@ pub(super) struct RawOverlayTracker {
 pub(super) struct RawOverlayRelease {
     pub coordinators: Option<Vec<String>>,
     pub coordinator_assignee: Option<String>,
+    pub fix_assignee: Option<String>,
     #[serde(default)]
     pub angles: Vec<RawOverlayAngle>,
 }

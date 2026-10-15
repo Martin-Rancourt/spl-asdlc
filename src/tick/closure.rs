@@ -1,4 +1,4 @@
-//! The closure of a cycle (`docs/spec/05-release-cycle.md` §11-12),
+//! The closure of a cycle (`docs/reference/05-release-cycle.md` §11-12),
 //! triggered by facts, never assumed: the release published, the release
 //! branch merged back. Then each member of the release is judged; the release note is sent;
 //! the release item moves to Done only once every ticket that cites a rule
@@ -351,15 +351,7 @@ fn members(t: &Tick, item: &Item, label: &str) -> TResult<Vec<Item>> {
 }
 
 fn read_registry(t: &Tick, tag: &str) -> Option<Registry> {
-    let path = t.config.registry_path();
-    Some(match t.github.file(&t.repo, path, tag) {
-        Ok(text) => Registry::Ids(business_rules::registry_ids(&text)),
-        Err(e) if e.is_not_found() => match t.github.commit(&t.repo, tag) {
-            Ok(_) => Registry::Absent,
-            Err(e) => Registry::Unreadable(e.to_string()),
-        },
-        Err(e) => Registry::Unreadable(e.to_string()),
-    })
+    Some(business_rules::read_registry(t.github, &t.repo, tag))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -483,11 +475,7 @@ fn judge_member(
                 Judgement::UnknownRules(missing) => {
                     let body = for_tracker(
                         t,
-                        &closure::unknown_rules_comment(
-                            &missing,
-                            t.config.registry_path(),
-                            &t.config.product.name,
-                        ),
+                        &closure::unknown_rules_comment(&missing, &t.config.product.name),
                     );
                     // Sent back like any other reopening: unassigned (BR-ASDLC-009).
                     if set(Status::InProgress, Some(None), log, report) {

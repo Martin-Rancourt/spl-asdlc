@@ -1,4 +1,4 @@
-//! The GO (`docs/spec/05-release-cycle.md` §8, REQ-REL-066/067): a pure
+//! The GO (`docs/reference/05-release-cycle.md` §8, REQ-REL-066/067): a pure
 //! reading of facts others established. Nobody gives it; under the `human`
 //! policy the owner's approval is one more condition, never a substitute. A
 //! candidate with no QA angle (`release.angles = []`) is judged without the

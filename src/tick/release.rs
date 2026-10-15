@@ -1,4 +1,4 @@
-//! The release pass (`docs/spec/05-release-cycle.md`, spec 07 step 2), for
+//! The release pass (`docs/reference/05-release-cycle.md`, spec 07 step 2), for
 //! the newest candidate of the product:
 //!
 //! 1. the release item, found by its label and marker or created;
@@ -23,12 +23,12 @@
 //!    closure (`closure.rs`).
 //!
 //! Points the specification leaves open are not settled here; each waits,
-//! as `docs/open-points.md` lists them (the human GO, a raised `max_rc_passes`).
+//! as `.spl-asdlc/open-points.md` lists them (the human GO, a raised `max_rc_passes`).
 
 use serde_json::json;
 
 use crate::action_log::ActionLog;
-use crate::config::{LaterPasses, NitsGrouping, Release};
+use crate::config::{LaterPasses, Release};
 use crate::github::{CompareStatus, Comparison, GitRef, ObjectType, PullRequest};
 use crate::method::checks::{self, CheckState};
 use crate::method::release::findings;
@@ -40,10 +40,9 @@ use crate::method::release::report::{self, Report as AngleReport};
 use crate::method::release::shape::{Shape, Version};
 use crate::method::review::{self, Approval, BranchState};
 use crate::method::texts::{self, AngleLine, AngleScope, BridgeItem};
-use crate::method::vocabulary::{self, Severity, Status};
+use crate::method::vocabulary::{self, Status};
 use crate::tracker::{Item, NewItem, Priority, RelationKind};
 
-use super::hands_off;
 use super::merge::{for_tracker, tracker_said};
 use super::{Report, Tick, closure};
 
@@ -57,29 +56,15 @@ pub struct Candidate {
     pub tagged_at: Option<crate::github::Timestamp>,
 }
 
-/// Why the release cycle has nothing to act on.
-pub(crate) const NO_RELEASE_CYCLE: &str =
-    "the configuration has no [release] section: the project has no release cycle";
-
-/// The `[release]` section, or [`NO_RELEASE_CYCLE`]. Every reader handles
-/// its absence, never by a panic (a host's daemon runs the bridge): the
-/// pass does nothing, the verbs refuse, a step reached without it writes
-/// nothing.
-pub(crate) fn section<'a>(t: &Tick<'a>) -> Result<&'a Release, String> {
-    t.config
-        .release
-        .as_ref()
-        .ok_or_else(|| NO_RELEASE_CYCLE.to_string())
+/// The `[release]` section: every configuration has one.
+pub(crate) fn section<'a>(t: &Tick<'a>) -> &'a Release {
+    &t.config.release
 }
 
 /// Run the pass. Returns whether it merged a PR (the tick's one merge).
-/// Without a `[release]` section the project has no release cycle: nothing
-/// is read or written (spec 05, "Without a release cycle").
 pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
     let cfg = t.config;
-    let Ok(release) = section(t) else {
-        return false;
-    };
+    let release = section(t);
     let shape = Shape::of(&cfg.product.name, release);
     let (candidate, tags) = match newest(t, &shape) {
         Ok(Some(found)) => found,
@@ -267,7 +252,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
         let Some((cand, angle)) = prs::parse_angle_branch(&pr.head_ref) else {
             continue;
         };
-        if cand != candidate.tag || t.by_hand(report, pr) {
+        if cand != candidate.tag {
             continue;
         }
         let state = angle_pr(
@@ -466,9 +451,7 @@ fn release_item(
             return None;
         }
     }
-    let Ok(release) = section(t) else {
-        return None;
-    };
+    let release = section(t);
     let angles: Vec<AngleLine> = release
         .angles
         .iter()
@@ -571,11 +554,13 @@ fn record_candidate(
                     return;
                 }
             };
-            let scope = match section(t) {
-                Err(_) => AngleScope::NoQaAngle,
-                Ok(r) if r.angles.is_empty() => AngleScope::NoQaAngle,
-                Ok(r) if lighter_pass(r, c) => AngleScope::LighterPass,
-                Ok(_) => AngleScope::Configured,
+            let r = section(t);
+            let scope = if r.angles.is_empty() {
+                AngleScope::NoQaAngle
+            } else if lighter_pass(r, c) {
+                AngleScope::LighterPass
+            } else {
+                AngleScope::Configured
             };
             let offered = offered(t, c);
             let body = for_tracker(
@@ -622,7 +607,7 @@ fn record_candidate(
 /// (`release.angles = []`), or none was when the candidate was recorded
 /// (angles configured later apply from the next candidate).
 pub fn without_angles(t: &Tick, item: &Item, c: &Candidate) -> Result<bool, String> {
-    Ok(section(t)?.angles.is_empty()
+    Ok(section(t).angles.is_empty()
         || tracker_said(t, &item.key, &texts::no_qa_angle_marker(&c.tag))?)
 }
 
@@ -635,9 +620,7 @@ pub fn lighter_pass(release: &Release, c: &Candidate) -> bool {
 
 /// The angles offered on this candidate (spec 05 §7, `later_passes`).
 pub fn offered(t: &Tick, c: &Candidate) -> Vec<String> {
-    let Ok(release) = section(t) else {
-        return Vec::new();
-    };
+    let release = section(t);
     if c.rc > u64::from(release.max_rc_passes) || lighter_pass(release, c) {
         return Vec::new();
     }
@@ -658,7 +641,7 @@ pub fn first_pass_angles(
     branch: &str,
     open: &[PullRequest],
 ) -> Result<(Vec<(String, AngleState)>, bool), String> {
-    let release = section(t)?;
+    let release = section(t);
     let first = shape.candidate_tag(c.version, 1);
     if tracker_said(t, &item.key, &texts::no_qa_angle_marker(&first))? {
         return Ok((Vec::new(), true));
@@ -772,6 +755,11 @@ pub fn embarked_items(t: &Tick, shape: &Shape, c: &Candidate) -> Result<Embarked
             }
         }
         for ticket in split.tickets {
+            // Nothing to deploy: its merge delivered it, no release embarks
+            // it (spec 04 §10).
+            if super::merge::nothing_to_deploy(t, &ticket) {
+                continue;
+            }
             match out.tickets.iter_mut().find(|(k, _)| *k == ticket.key) {
                 Some((_, prs)) => prs.push(pr.number),
                 None => out.tickets.push((ticket.key, vec![pr.number])),
@@ -902,7 +890,7 @@ fn open_round(
     label: &str,
     offered: &[String],
 ) -> Option<(Vec<Item>, bool)> {
-    let release = section(t).ok()?;
+    let release = section(t);
     let mut children = match t.tracker.children(&item.key) {
         Ok(c) => c,
         Err(e) => {
@@ -1116,8 +1104,11 @@ fn brief_facts(
             description: Some(item.description),
         });
     }
-    let rule_paths = &section(t)?.business_rule_paths;
-    let rule_files_touched = crate::method::glob::hits(&paths_since_release, rule_paths);
+    let rule_files_touched: Vec<String> = paths_since_release
+        .iter()
+        .filter(|p| crate::method::business_rules::is_rule_file(p))
+        .cloned()
+        .collect();
     let evidence_url = evidence_url(t, c, run)?;
     Ok(texts::Brief {
         candidate: c.tag.clone(),
@@ -1183,13 +1174,7 @@ fn post_brief(
 fn gate_run(t: &Tick, c: &Candidate) -> Result<Option<crate::github::WorkflowRun>, String> {
     let runs = t
         .github
-        .workflow_runs(
-            &t.repo,
-            &section(t)?.gate_workflow,
-            None,
-            Some(&c.sha),
-            None,
-        )
+        .workflow_runs(&t.repo, &section(t).gate_workflow, None, Some(&c.sha), None)
         .map_err(|e| e.to_string())?;
     Ok(gate::gate_run(&runs, &c.sha, &c.tag).cloned())
 }
@@ -1214,9 +1199,10 @@ fn gate_fix(
     label: &str,
     gate: Option<&crate::github::WorkflowRun>,
 ) {
-    let (Some(first), Ok(release)) = (gate, section(t)) else {
+    let Some(first) = gate else {
         return;
     };
+    let release = section(t);
     if gate::is_green(Some(first)) {
         close_gate_fixes(t, log, report, shape, item, c, first);
         return;
@@ -1318,12 +1304,13 @@ fn gate_fix(
     };
     let (title, body) = texts::gate_fix_ticket(&facts);
     let body = for_tracker(t, &body);
+    let assignee = fixer(t);
     t.act(
         log,
         report,
         &item.key,
         "create gate-fix ticket",
-        json!({"candidate": c.tag, "run": run.url, "attempt": run.attempt, "priority": "urgent", "rerun_seen": unseen.is_none()}),
+        json!({"candidate": c.tag, "run": run.url, "attempt": run.attempt, "priority": "urgent", "rerun_seen": unseen.is_none(), "assignee": assignee.as_ref().map(|u| u.name.as_str())}),
         || {
             t.tracker
                 .create_item(&NewItem {
@@ -1332,12 +1319,21 @@ fn gate_fix(
                     labels: vec![label.to_string()],
                     status: Status::Ready,
                     priority: Some(Priority::Urgent),
-                    assignee: None,
+                    assignee: assignee.clone(),
                     parent: Some(item.key.clone()),
                 })
                 .map_err(|e| e.to_string())
         },
     );
+}
+
+/// The participant `release.fix_assignee` names, who fixes release
+/// problems (a red gate, a blocking QA finding), when the tracker knows it;
+/// otherwise the ticket is unassigned, taken by role (`doctor` reports an
+/// unknown one).
+pub(crate) fn fixer(t: &Tick) -> Option<crate::tracker::User> {
+    let name = section(t).fix_assignee.as_ref()?;
+    t.tracker.user(name).ok()
 }
 
 /// The failed suites of a red gate run, read from `results/suites.json` of
@@ -1474,9 +1470,7 @@ fn angle_pr(
     else {
         return AngleState::InReview;
     };
-    let Ok(release) = section(t) else {
-        return AngleState::InReview;
-    };
+    let release = section(t);
     let required = match t.github.required_checks(&t.repo, branch) {
         Ok(r) => r,
         Err(e) => {
@@ -1527,6 +1521,52 @@ fn angle_pr(
     }
     if *merged || pr.draft || !prs::names_sub_item(pr, &sub.key) {
         return AngleState::InReview;
+    }
+    // An angle PR carries its report and nothing else (BR-ASDLC-022): an
+    // angle fixes nothing, so a PR with any other file is not merged, and
+    // is told once per head. The PR's own changes are those since it left
+    // the release branch.
+    match t.github.compare(&t.repo, branch, &pr.head_sha) {
+        Ok(cmp) => {
+            let others: Vec<&String> = cmp.files.iter().filter(|f| **f != path).collect();
+            if !others.is_empty() {
+                let listed: Vec<String> = others
+                    .iter()
+                    .take(10)
+                    .map(|f| format!("`{}`", texts::inert(f).replace('`', "'")))
+                    .collect();
+                super::merge::say_once(
+                    t,
+                    log,
+                    report,
+                    pr,
+                    "angle-not-report-only",
+                    &[("pr", &pr.url), ("head", texts::short(&pr.head_sha))],
+                    &format!(
+                        "This angle PR changes {} file(s) besides its report `{path}`, so the bridge does not \
+                         merge it: an angle documents its findings and fixes nothing (`docs/agents/review-release.md`). \
+                         Remove the other changes from the branch; a blocking finding is fixed from its own ticket. \
+                         Files: {}{}.",
+                        others.len(),
+                        listed.join(", "),
+                        if others.len() > listed.len() {
+                            ", …"
+                        } else {
+                            ""
+                        }
+                    ),
+                );
+                return AngleState::InReview;
+            }
+        }
+        Err(e) => {
+            t.unreadable(
+                report,
+                &object,
+                format!("the changes of the angle PR against {branch}: {e}"),
+            );
+            return AngleState::InReview;
+        }
     }
     let Approval::Qualified { by } = review::pr_approval(pr, &release.coordinators) else {
         return AngleState::InReview;
@@ -1643,8 +1683,7 @@ fn follow_angle_pr(
     let facts = prs::AnglePrFacts {
         draft: pr.draft,
         green,
-        sent_back: section(t)
-            .is_ok_and(|r| review::changes_requested_at_head(pr, &r.coordinators).is_some()),
+        sent_back: review::changes_requested_at_head(pr, &section(t).coordinators).is_some(),
     };
     let Some(to) = prs::angle_item_status(sub.state.status, facts) else {
         return;
@@ -1679,14 +1718,13 @@ fn follow_angle_pr(
 /// The participant `release.coordinator_assignee` names, when the tracker
 /// knows it (`doctor` reports one it does not).
 fn coordinator(t: &Tick) -> Option<crate::tracker::User> {
-    let name = section(t).ok()?.coordinator_assignee.as_ref()?;
+    let name = section(t).coordinator_assignee.as_ref()?;
     t.tracker.user(name).ok()
 }
 
 /// The configured assignee of a release angle, when the tracker knows it.
 fn angle_assignee(t: &Tick, angle: &str) -> Option<crate::tracker::User> {
     let name = section(t)
-        .ok()?
         .angles
         .iter()
         .find(|a| a.key == angle)?
@@ -1709,9 +1747,7 @@ fn file_merged_findings(
     children: &[Item],
     states: &mut [(String, AngleState)],
 ) {
-    let Ok(release) = section(t) else {
-        return;
-    };
+    let release = section(t);
     let merged = match t.github.merged_pulls(&t.repo, Some(branch), None, 500) {
         Ok(m) => m,
         Err(e) => {
@@ -1765,7 +1801,7 @@ fn file_merged_findings(
             .github
             .file(&t.repo, &path, &rev)
             .map_err(|e| e.to_string())
-            .and_then(|text| report::validate(&text, &c.tag, &angle).map_err(|e| e.join("; ")));
+            .and_then(|text| report::read_merged(&text, &c.tag, &angle).map_err(|e| e.join("; ")));
         match parsed {
             Ok(r) => file_findings(t, log, report, item, c, &angle, &pr.url, &path, label, &r),
             Err(e) => t.unreadable(
@@ -1804,168 +1840,77 @@ fn file_findings(
             return;
         }
     };
-    let product = &t.config.product.name;
-    let v = c.version.to_string();
-    let Ok(release) = section(t) else {
-        return;
-    };
-    let shared = release.nits == NitsGrouping::Shared;
-    // The shared nits ticket, once found or created in this call: its key
-    // and its description as this call last wrote it. `Err` once it is
-    // refused (unreadable, or no contract): no nit of this call goes in.
-    let mut nits: Option<Result<(String, String), ()>> = None;
-    for f in r.findings.iter().filter(|f| !f.fixed_in_branch) {
-        match f.severity {
-            Severity::Nit if shared => {
-                let title = findings::nits_title(product, &v);
-                let key = findings::nit_key(&c.tag, angle, &f.id);
-                let line = findings::nit_line(&c.tag, angle, f);
-                if nits.is_none() {
-                    if let Some(n) = labelled.iter().find(|i| i.title == title) {
-                        nits = Some(match t.tracker.get(&n.key) {
-                            Ok(i) => Ok((i.key, i.description)),
-                            Err(e) => {
-                                t.unreadable(report, &n.key, e);
-                                Err(())
-                            }
-                        });
-                    }
-                }
-                match &mut nits {
-                    Some(Err(())) => {}
-                    Some(Ok((key_of, current))) => {
-                        // Fail-closed: a nits ticket without a contract (the
-                        // older format) is left alone and said, never rewritten.
-                        match findings::append_nit(current, &key, &line) {
-                            Err(e) => {
-                                t.unreadable(report, key_of, format!("the nits ticket {e}"));
-                                nits = Some(Err(()));
-                            }
-                            Ok(None) => {}
-                            Ok(Some(next)) => {
-                                let next = for_tracker(t, &next);
-                                let done = t.act(
-                                    log,
-                                    report,
-                                    key_of,
-                                    "append nit",
-                                    json!({"finding": f.id}),
-                                    || {
-                                        t.tracker
-                                            .update_description(key_of, &next)
-                                            .map_err(|e| e.to_string())
-                                    },
-                                );
-                                if done.is_some() {
-                                    *current = next;
-                                }
-                            }
-                        }
-                    }
-                    None => {
-                        let body =
-                            for_tracker(t, &findings::nits_ticket(&item.key, product, &v, &[line]));
-                        let created = t.act(
-                            log,
-                            report,
-                            &item.key,
-                            "create nits ticket",
-                            json!({}),
-                            || {
-                                t.tracker
-                                    .create_item(&NewItem {
-                                        title: title.clone(),
-                                        description: body.clone(),
-                                        labels: vec![label.to_string()],
-                                        status: Status::Triage,
-                                        priority: None,
-                                        assignee: None,
-                                        parent: None,
-                                    })
-                                    .map_err(|e| e.to_string())
-                            },
-                        );
-                        if let Some(n) = created {
-                            relate(t, log, report, &n.key, &item.key, RelationKind::Related);
-                            nits = Some(Ok((n.key, body)));
-                        }
-                    }
-                }
+    let release_id = item.key.as_str();
+    // Read once, and only when a blocking finding is filed.
+    let mut fixer_of: Option<Option<crate::tracker::User>> = None;
+    for f in &r.findings {
+        // Filed once, whatever became of it: a finding canceled as a false
+        // alarm or requalified stays so (the merged report does not
+        // change). A new candidate's report is another key.
+        let filed = labelled.iter().find(|i| {
+            findings::parse_finding_marker(&i.description).is_some_and(|(rel, cand, a, id)| {
+                rel == release_id && cand == c.tag && a == angle && id == f.id
+            })
+        });
+        if let Some(ticket) = filed {
+            // A blocking finding whose relation failed after its creation:
+            // the relation is laid again (REQ-REL-058).
+            let marked =
+                findings::parse_blocker_marker(&ticket.description).as_deref() == Some(release_id);
+            if marked && !ticket.state.is_resolved() && !blocked_by.contains(&ticket.key) {
+                relate(t, log, report, &ticket.key, &item.key, RelationKind::Blocks);
             }
-            // A blocker, a should-fix, or a nit under `release.nits =
-            // "per-nit"`: a ticket of its own, keyed by its finding marker.
-            _ => {
-                let release_id = item.key.as_str();
-                // Filed once, whatever became of it: a blocker canceled as a
-                // false alarm or requalified stays so (the merged report does
-                // not change). A new candidate's report is another key.
-                let filed = labelled.iter().find(|i| {
-                    findings::parse_finding_marker(&i.description).is_some_and(
-                        |(rel, cand, a, id)| {
-                            rel == release_id && cand == c.tag && a == angle && id == f.id
-                        },
-                    )
-                });
-                if let Some(ticket) = filed {
-                    // A blocker whose relation failed after its creation: the
-                    // relation is laid again (REQ-REL-058).
-                    let marked = findings::parse_blocker_marker(&ticket.description).as_deref()
-                        == Some(release_id);
-                    if marked && !ticket.state.is_resolved() && !blocked_by.contains(&ticket.key) {
-                        relate(t, log, report, &ticket.key, &item.key, RelationKind::Blocks);
-                    }
-                    continue;
-                }
-                let (title, body) = if f.severity == Severity::Nit {
-                    findings::nit_ticket(release_id, &c.tag, angle, f, pr_url, path)
-                } else {
-                    findings::finding_ticket(release_id, &c.tag, angle, f, pr_url, path)
-                };
-                let blocker = f.severity == Severity::Blocker;
-                let mut labels = vec![label.to_string()];
-                if f.severity == Severity::ShouldFix {
-                    labels.push(vocabulary::QA_FINDING_LABEL.to_string());
-                }
-                let body = for_tracker(t, &body);
-                let created = t.act(
-                    log,
-                    report,
-                    &item.key,
-                    &format!("create finding {}", f.id),
-                    json!({"severity": f.severity.name(), "angle": angle}),
-                    || {
-                        t.tracker
-                            .create_item(&NewItem {
-                                title: title.clone(),
-                                description: body.clone(),
-                                labels: labels.clone(),
-                                status: if blocker {
-                                    Status::Ready
-                                } else {
-                                    Status::Triage
-                                },
-                                priority: blocker.then_some(Priority::Urgent),
-                                assignee: None,
-                                parent: None,
-                            })
-                            .map_err(|e| e.to_string())
-                    },
-                );
-                if let Some(ticket) = created {
-                    if blocker {
-                        relate(t, log, report, &ticket.key, &item.key, RelationKind::Blocks);
-                    } else {
-                        relate(
-                            t,
-                            log,
-                            report,
-                            &ticket.key,
-                            &item.key,
-                            RelationKind::Related,
-                        );
-                    }
-                }
-            }
+            continue;
+        }
+        // A blocking finding: an urgent fix ticket for the release fixer,
+        // which blocks the release issue. A non-blocking one: a ticket
+        // logged for later, related to it (BR-ASDLC-022).
+        let (title, body) = findings::finding_ticket(release_id, &c.tag, angle, f, pr_url, path);
+        let mut labels = vec![label.to_string()];
+        if !f.blocking {
+            labels.push(vocabulary::QA_FINDING_LABEL.to_string());
+        }
+        let new = NewItem {
+            title,
+            description: for_tracker(t, &body),
+            labels,
+            status: if f.blocking {
+                Status::Ready
+            } else {
+                Status::Triage
+            },
+            priority: Some(if f.blocking {
+                Priority::Urgent
+            } else {
+                Priority::Normal
+            }),
+            assignee: if f.blocking {
+                fixer_of.get_or_insert_with(|| fixer(t)).clone()
+            } else {
+                None
+            },
+            parent: None,
+        };
+        let created = t.act(
+            log,
+            report,
+            &item.key,
+            &format!("create finding {}", f.id),
+            json!({
+                "blocking": f.blocking,
+                "angle": angle,
+                "priority": new.priority.map(Priority::name),
+                "assignee": new.assignee.as_ref().map(|u| u.name.as_str()),
+            }),
+            || t.tracker.create_item(&new).map_err(|e| e.to_string()),
+        );
+        if let Some(ticket) = created {
+            let kind = if f.blocking {
+                RelationKind::Blocks
+            } else {
+                RelationKind::Related
+            };
+            relate(t, log, report, &ticket.key, &item.key, kind);
         }
     }
 }
@@ -2012,13 +1957,7 @@ pub fn decide(
     no_qa_angle: bool,
 ) -> Option<go::GoDecision> {
     let cfg = t.config;
-    let release = match section(t) {
-        Ok(r) => r,
-        Err(e) => {
-            t.unreadable(report, &item.key, e);
-            return None;
-        }
-    };
+    let release = section(t);
     let gate_green = match gate_run(t, c) {
         Ok(run) => Some(gate::is_green(run.as_ref())),
         Err(e) => {
@@ -2089,7 +2028,7 @@ pub fn decide(
     };
     let policy = match release.go_policy {
         crate::config::GoPolicy::Computed => Policy::Computed,
-        // Whose approval counts is the owner's to settle (`docs/open-points.md` #3): never given.
+        // Whose approval counts is the owner's to settle (`.spl-asdlc/open-points.md` #3): never given.
         crate::config::GoPolicy::Human => Policy::Human { approved: None },
     };
     let facts = GoFacts {
@@ -2123,9 +2062,7 @@ fn bookkeeping(release: &Release, candidate: &str, path: &str) -> bool {
 /// prepared on the release branch. Publishing the release starts the
 /// publication workflow. Each step is read before it is written, so a tag
 /// or a release a person made by hand (spec 09) is taken as done, never
-/// made again; a tag on another commit stops the GO, fail-closed. The
-/// release item under the hands-off label means a person takes the GO: the
-/// bridge tags nothing.
+/// made again; a tag on another commit stops the GO, fail-closed.
 fn on_go(
     t: &Tick,
     log: &mut ActionLog,
@@ -2134,10 +2071,6 @@ fn on_go(
     item: &Item,
     c: &Candidate,
 ) {
-    if hands_off::carries(&item.labels, &t.config.bridge.hands_off_label) {
-        t.hold_by_hand(report, &item.key);
-        return;
-    }
     let tag = shape.release_tag(c.version);
     let notes = match t.github.file(&t.repo, crate::prepare::CHANGELOG, &c.sha) {
         Ok(text) => match prepare::section_of(&text, c.version) {
@@ -2321,9 +2254,7 @@ fn escalate(
     d: &go::GoDecision,
     _branch: &str,
 ) {
-    let Ok(release) = section(t) else {
-        return;
-    };
+    let release = section(t);
     let max = release.max_rc_passes;
     let moved = !d.tip_gaps.is_empty();
     if c.rc < u64::from(max) || !d.every_angle_answered() || (d.blockers.is_empty() && !moved) {
@@ -2427,9 +2358,7 @@ fn stagnation(
     c: &Candidate,
     d: &go::GoDecision,
 ) {
-    let Ok(release) = section(t) else {
-        return;
-    };
+    let release = section(t);
     let hours = release.stagnation_hours;
     let Some(tagged) = c.tagged_at else {
         return;

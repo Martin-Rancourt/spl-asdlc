@@ -1,7 +1,7 @@
 name: asdlc-release-cut
 
 # The one gesture that starts or advances a release cycle
-# (docs/requirements/ci.md, REQ-CI-035..054; docs/spec/05-release-cycle.md §1,
+# (.spl-asdlc/requirements/ci.md, REQ-CI-035..054; docs/reference/05-release-cycle.md §1,
 # §7). `open` creates the release branch from the default branch, prepares
 # the release on it with `spl-asdlc release prepare` (the version computed
 # from the commits since the last release along the git graph, written into
@@ -17,9 +17,11 @@ name: asdlc-release-cut
 # names (`spl-asdlc-version`: `latest`, a release tag `v<X.Y.Z>`, or
 # `staging`), downloaded from the releases of `spl-asdlc-repository` with
 # the App's token and checked against the release's SHA256SUMS before it
-# runs. `release prepare` reads the caller's `spl-asdlc.toml` (its release
-# tag pattern, version files and CHANGELOG sections), never an instance
-# overlay.
+# runs. `release prepare` reads the caller's `.spl-asdlc/config.toml` (its
+# release tag pattern, version files and CHANGELOG sections), never an
+# instance overlay. The release class reads the same file at the candidate:
+# the paths its review angles carry (`[[review.angles]] paths`) are the
+# reviewed paths.
 #
 # The caller owns the trigger, the concurrency group and the job id. The
 # bridge dispatches the caller by its file name (`[release] cut_workflow`,
@@ -83,9 +85,9 @@ on:
         type: string
         default: latest
       config-file:
-        description: The repository's `spl-asdlc.toml`, read by `release prepare`.
+        description: 'The repository''s configuration, read by `release prepare` and, at the candidate, for the reviewed paths of the class.'
         type: string
-        default: spl-asdlc.toml
+        default: .spl-asdlc/config.toml
       class:
         description: Force `routine` or `sensible`; empty computes it.
         type: string
@@ -106,10 +108,6 @@ on:
         description: Print the plan; create, commit, tag and push nothing.
         type: boolean
         default: false
-      class-paths-file:
-        description: 'The sensitive-path list (`{"paths": [glob, ...]}`), read at the candidate.'
-        type: string
-        default: .github/review-paths.json
       branch-prefix:
         description: Prefix of release branches, as `[release] branch_prefix`.
         type: string
@@ -192,7 +190,6 @@ jobs:
           CONFIG_FILE: ${{ inputs.config-file }}
           BRANCH_PREFIX: ${{ inputs.branch-prefix }}
           DEFAULT_BRANCH: ${{ inputs.default-branch }}
-          CLASS_PATHS_FILE: ${{ inputs.class-paths-file }}
         shell: bash
         run: |
           set -euo pipefail
@@ -267,11 +264,9 @@ jobs:
           if ! [[ "$SPL_VERSION" =~ $channel_re ]]; then
             refuse "spl-asdlc-version '$SPL_VERSION' is not a channel. Expected 'latest', 'staging' or a release tag v<X.Y.Z>."
           fi
-          for path in "$CLASS_PATHS_FILE" "$CONFIG_FILE"; do
-            if [ -z "$path" ] || [[ "$path" == /* ]] || [[ "/$path/" == */../* ]]; then
-              refuse "'$path' must be a path inside the repository."
-            fi
-          done
+          if [ -z "$CONFIG_FILE" ] || [[ "$CONFIG_FILE" == /* ]] || [[ "/$CONFIG_FILE/" == */../* ]]; then
+            refuse "'$CONFIG_FILE' must be a path inside the repository."
+          fi
           if [ "$bad" -ne 0 ]; then
             exit 1
           fi
@@ -630,7 +625,7 @@ jobs:
           CLASS: ${{ inputs.class }}
           ROUTINE_BECAUSE: ${{ inputs.routine-because }}
           MAIN_MERGE_BECAUSE: ${{ inputs.main-merge-because }}
-          CLASS_PATHS_FILE: ${{ inputs.class-paths-file }}
+          CONFIG_FILE: ${{ inputs.config-file }}
         shell: bash
         run: |
           set -euo pipefail
@@ -707,15 +702,42 @@ jobs:
             why="git diff $since HEAD failed"
           elif [ ! -s "$work/changed" ]; then
             why="no path changed since $since"
-          elif ! git cat-file -e "HEAD:$CLASS_PATHS_FILE" 2> /dev/null; then
-            why="the candidate carries no $CLASS_PATHS_FILE"
-          elif ! git show "HEAD:$CLASS_PATHS_FILE" > "$work/table" ||
-            ! jq -e 'type == "object" and (.paths | type == "array" and length > 0)
-                     and all(.paths[]; type == "string" and (gsub("[[:space:]]"; "") | length > 0) and (test("\n") | not))' \
-              "$work/table" > /dev/null 2>&1; then
-            why="$CLASS_PATHS_FILE at the candidate is not a non-empty {\"paths\": [glob, ...]} list"
+          elif ! git cat-file -e "HEAD:$CONFIG_FILE" 2> /dev/null; then
+            why="the candidate carries no $CONFIG_FILE"
+          elif ! git show "HEAD:$CONFIG_FILE" > "$work/config" ||
+            ! python3 - "$work/config" > "$work/patterns" 2> "$work/patterns.err" << 'PY'
+          # The reviewed paths: the union of the `paths` of the review angles
+          # (`[[review.angles]]`), each glob once, in the order written.
+          import sys
+          import tomllib
+
+          try:
+              with open(sys.argv[1], "rb") as f:
+                  config = tomllib.load(f)
+          except (OSError, tomllib.TOMLDecodeError) as e:
+              sys.exit(f"not valid TOML: {e}")
+          review = config.get("review", {})
+          angles = review.get("angles", []) if isinstance(review, dict) else None
+          if not isinstance(angles, list):
+              sys.exit("review.angles is not a list of tables")
+          seen = []
+          for angle in angles:
+              paths = angle.get("paths", []) if isinstance(angle, dict) else None
+              if not isinstance(paths, list) or not all(
+                  isinstance(p, str) and p.strip() and "\n" not in p for p in paths
+              ):
+                  sys.exit("the paths of a review angle are not a list of globs")
+              for p in paths:
+                  if p not in seen:
+                      seen.append(p)
+                      print(p)
+          PY
+          then
+            why="the review angles' paths could not be read from $CONFIG_FILE at the candidate ($(one_line "$(cat "$work/patterns.err" 2> /dev/null)"))"
+          elif [ ! -s "$work/patterns" ]; then
+            echo "No review angle of $CONFIG_FILE carries paths: no path is reviewed apart."
+            surfaces=none
           else
-            jq -r '.paths[]' "$work/table" > "$work/patterns"
             # Shell globs where `*` also crosses `/`, or a directory prefix:
             # the bridge's rule (src/method/glob.rs).
             while IFS= read -r path; do

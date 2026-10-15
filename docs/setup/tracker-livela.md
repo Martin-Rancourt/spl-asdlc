@@ -1,6 +1,6 @@
 # 3b. Tracker: Livela
 
-- **Service participant**: an `agent` participant named `spl-asdlc` (`docs/livela-contract.md`, point 4).
+- **Service participant**: an `agent` participant named `spl-asdlc` (`docs/reference/livela-contract.md`, point 4).
 - **Statuses**: `in_review`, `to_deploy` and `post_deploy` are the `validation` group: open, still blocking, never served by "what's next" (contract, point 1). `set_status` accepts the English names, so the canonical names are the tracker's (the configuration maps no status).
 - **Refined, Ready, In Progress**: a refined ticket stays in Backlog, in the dedicated refined state; a person moves it to Ready when agents may take it. An implementing agent takes work from Ready only, and its verb ("implement the next ticket") moves the ticket it takes to In Progress.
 - **Hosting**: the bridge is a `DaemonJob` of the Livela runner (contract, point 3).
@@ -202,7 +202,7 @@ The adapter reads before every write and skips a write that changes nothing. It 
 
 ### The daemon job
 
-The runner's `BridgeJob` (`docs/livela-contract.md` §3) is a wrapper of about twenty lines, registered in one line in `registered()` of `crates/livela-runner/src/jobs.rs`. What it does:
+The runner's `BridgeJob` (`docs/reference/livela-contract.md` §3) is a wrapper of about twenty lines, registered in one line in `registered()` of `crates/livela-runner/src/jobs.rs`. What it does:
 
 - its name is `spl-asdlc`, so a failed pass is recorded under `job:spl-asdlc`;
 - it fails, saying why, when `LIVELA_SPL_ASDLC_CONFIG` is not set or the configuration does not load;
@@ -218,7 +218,7 @@ use livela_core::{DaemonJob, JobContext, JobOutcome, Store};
 use spl_asdlc::tracker::StatusTable;
 use spl_asdlc::tracker::livela::Livela;
 
-/// The bridge as a job of the runner's daemon (`docs/livela-contract.md` §3).
+/// The bridge as a job of the runner's daemon (`docs/reference/livela-contract.md` §3).
 pub struct BridgeJob;
 
 impl DaemonJob for BridgeJob {

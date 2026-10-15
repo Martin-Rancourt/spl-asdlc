@@ -1,4 +1,4 @@
-//! The `spl-asdlc` command line (`docs/spec/07-the-bridge.md`, Verbs).
+//! The `spl-asdlc` command line (`docs/reference/07-the-bridge.md`, Verbs).
 //!
 //! Exit codes: 0 success, 1 a judgement says no (invalid configuration,
 //! incomplete contract, no GO), 2 the command could not run (usage, I/O).
@@ -33,10 +33,10 @@ enum Command {
     },
     /// One pass of the bridge over the repository of each configuration.
     Tick {
-        /// A `spl-asdlc.toml`; repeat for several repositories.
-        #[arg(long = "file", default_value = config::FILE_NAME)]
+        /// A configuration (`.spl-asdlc/config.toml`); repeat for several repositories.
+        #[arg(long = "file", default_value = config::DEFAULT_PATH)]
         files: Vec<PathBuf>,
-        /// The instance overlay of a single `--file` (default: `spl-asdlc.instance.toml`
+        /// The instance overlay of a single `--file` (default: `config.instance.toml`
         /// beside each file, when present).
         #[arg(long)]
         instance: Option<PathBuf>,
@@ -47,14 +47,14 @@ enum Command {
         #[arg(long)]
         log: Option<PathBuf>,
     },
-    /// The release cycle's verbs (`docs/spec/09-human-gestures.md`).
+    /// The release cycle's verbs (`docs/reference/09-human-gestures.md`).
     Release {
         #[command(subcommand)]
         command: ReleaseCommand,
         /// The configuration of the product.
-        #[arg(long, global = true, default_value = config::FILE_NAME)]
+        #[arg(long, global = true, default_value = config::DEFAULT_PATH)]
         file: PathBuf,
-        /// The instance overlay (default: `spl-asdlc.instance.toml` beside the file, when present).
+        /// The instance overlay (default: `config.instance.toml` beside the file, when present).
         #[arg(long, global = true)]
         instance: Option<PathBuf>,
         /// The product, checked against the configuration.
@@ -63,9 +63,9 @@ enum Command {
     },
     /// Verify the setup of the repository a configuration names.
     Doctor {
-        #[arg(long, default_value = config::FILE_NAME)]
+        #[arg(long, default_value = config::DEFAULT_PATH)]
         file: PathBuf,
-        /// The instance overlay (default: `spl-asdlc.instance.toml` beside the file, when present).
+        /// The instance overlay (default: `config.instance.toml` beside the file, when present).
         #[arg(long)]
         instance: Option<PathBuf>,
     },
@@ -109,11 +109,12 @@ enum ReleaseCommand {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Change a finding's severity.
+    /// Change whether a finding blocks the release.
     Requalify {
         ticket: String,
-        #[arg(long)]
-        severity: String,
+        /// `true`: the finding blocks the release; `false`: it is logged for later.
+        #[arg(long, action = clap::ArgAction::Set)]
+        blocking: bool,
         #[arg(long)]
         reason: String,
     },
@@ -123,7 +124,7 @@ enum ReleaseCommand {
 
 #[derive(Debug, Subcommand)]
 enum TicketCommand {
-    /// The refinement gate (`docs/spec/01-ticket-contract.md`): says whether a
+    /// The refinement gate (`docs/reference/01-ticket-contract.md`): says whether a
     /// ticket's contract is complete, or lists what is missing (exit 1).
     Check {
         /// The ticket's identifier in the configured tracker.
@@ -132,9 +133,9 @@ enum TicketCommand {
         #[arg(long, conflicts_with = "item")]
         description: Option<PathBuf>,
         /// The configuration naming the tracker.
-        #[arg(long, default_value = config::FILE_NAME)]
+        #[arg(long, default_value = config::DEFAULT_PATH)]
         file: PathBuf,
-        /// The instance overlay (default: `spl-asdlc.instance.toml` beside the file, when present).
+        /// The instance overlay (default: `config.instance.toml` beside the file, when present).
         #[arg(long)]
         instance: Option<PathBuf>,
     },
@@ -142,12 +143,12 @@ enum TicketCommand {
 
 #[derive(Debug, Subcommand)]
 enum ConfigCommand {
-    /// Validate a `spl-asdlc.toml`; exits 1 and lists every problem when it is invalid.
+    /// Validate a configuration; exits 1 and lists every problem when it is invalid.
     Check {
         /// The file to check.
-        #[arg(long, default_value = config::FILE_NAME)]
+        #[arg(long, default_value = config::DEFAULT_PATH)]
         file: PathBuf,
-        /// The instance overlay (default: `spl-asdlc.instance.toml` beside the file, when present).
+        /// The instance overlay (default: `config.instance.toml` beside the file, when present).
         #[arg(long)]
         instance: Option<PathBuf>,
     },
@@ -290,7 +291,7 @@ fn tick(
     if instance.is_some() && files.len() > 1 {
         let _ = writeln!(
             err,
-            "--instance names the overlay of one configuration: with several --file, each file's overlay is the one beside it ({} beside a {}, <stem>.instance.toml beside any other)",
+            "--instance names the overlay of one configuration: with several --file, each file's overlay is the one beside it (<stem>.instance.toml, {} beside a {})",
             config::INSTANCE_FILE_NAME,
             config::FILE_NAME
         );
@@ -392,7 +393,6 @@ fn tick(
             now: crate::github::Timestamp::now(),
             deadline: None,
             dry_run,
-            hands_off: None,
         };
         let mut log = match log_file {
             Some(p) => ActionLog::at(p),
@@ -420,9 +420,6 @@ fn tick(
             let _ = writeln!(err, "{}: {f}", c.repo);
         }
         for line in report.waiting_lines() {
-            let _ = writeln!(out, "{}: {line}", c.repo);
-        }
-        for line in report.hands_off_lines() {
             let _ = writeln!(out, "{}: {line}", c.repo);
         }
         let _ = writeln!(out, "{}: {}", c.repo, report.summary());
@@ -494,7 +491,6 @@ fn release(
         now: crate::github::Timestamp::now(),
         deadline: None,
         dry_run: false,
-        hands_off: None,
     };
     let mut log = match crate::action_log::ActionLog::default_path(&c.repo, &env) {
         Some(p) => crate::action_log::ActionLog::at(p),
@@ -530,14 +526,9 @@ fn release(
         ReleaseCommand::Prepare { .. } => unreachable!("prepared above, with no connection"),
         ReleaseCommand::Requalify {
             ticket,
-            severity,
+            blocking,
             reason,
-        } => match crate::method::vocabulary::Severity::from_name(&severity) {
-            Some(s) => crate::verbs::requalify(&t, &mut log, &ticket, s, &reason, &who()),
-            None => Err(format!(
-                "--severity must be blocker, should-fix or nit, not {severity}"
-            )),
-        },
+        } => crate::verbs::requalify(&t, &mut log, &ticket, blocking, &reason, &who()),
         ReleaseCommand::Abandon => crate::verbs::abandon(&t, &mut log, &who()),
     };
     let _ = log.flush();
@@ -757,15 +748,12 @@ fn config_check(
         Ok((c, _)) => {
             let _ = writeln!(
                 out,
-                "{name}: valid — product {} ({}), tracker {} team {}, {}, {}",
+                "{name}: valid — product {} ({}), tracker {} team {}, {} release angle(s), {}",
                 c.product.name,
                 c.product.repository,
                 c.tracker.kind,
                 c.tracker.team,
-                match &c.release {
-                    Some(r) => format!("{} release angle(s)", r.angles.len()),
-                    None => "no release cycle".to_string(),
-                },
+                c.release.angles.len(),
                 if c.review.angle_possible() {
                     format!("{} review angle(s)", c.review.angles.len())
                 } else {
@@ -784,5 +772,51 @@ fn config_check(
             }
             ExitCode::from(1)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn requalify(args: &[&str]) -> Result<(String, bool, String), String> {
+        let mut argv = vec!["spl-asdlc", "release", "requalify"];
+        argv.extend_from_slice(args);
+        match Cli::try_parse_from(argv)
+            .map_err(|e| e.to_string())?
+            .command
+        {
+            Command::Release {
+                command:
+                    ReleaseCommand::Requalify {
+                        ticket,
+                        blocking,
+                        reason,
+                    },
+                ..
+            } => Ok((ticket, blocking, reason)),
+            other => Err(format!("{other:?}")),
+        }
+    }
+
+    #[test]
+    fn the_requalify_verb_says_whether_the_finding_blocks() {
+        assert_eq!(
+            requalify(&["ABC-7", "--blocking", "false", "--reason", "cosmetic"]),
+            Ok(("ABC-7".into(), false, "cosmetic".into()))
+        );
+        assert_eq!(
+            requalify(&["ABC-7", "--blocking", "true", "--reason", "data loss"]),
+            Ok(("ABC-7".into(), true, "data loss".into()))
+        );
+        assert!(
+            requalify(&["ABC-7", "--blocking", "--reason", "r"]).is_err(),
+            "a value is required"
+        );
+        assert!(requalify(&["ABC-7", "--blocking", "maybe", "--reason", "r"]).is_err());
+        assert!(
+            requalify(&["ABC-7", "--severity", "nit", "--reason", "r"]).is_err(),
+            "the severities are gone"
+        );
     }
 }

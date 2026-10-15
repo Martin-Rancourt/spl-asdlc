@@ -73,10 +73,9 @@ fn preflight(extra: &[(&'static str, &str)]) -> Ran {
         ("RELEASE_TAG", "acme-v{version}".into()),
         ("SPL_REPOSITORY", "example-org/spl-asdlc".into()),
         ("SPL_VERSION", "latest".into()),
-        ("CONFIG_FILE", "spl-asdlc.toml".into()),
+        ("CONFIG_FILE", ".spl-asdlc/config.toml".into()),
         ("BRANCH_PREFIX", "release/".into()),
         ("DEFAULT_BRANCH", "main".into()),
-        ("CLASS_PATHS_FILE", ".github/review-paths.json".into()),
     ];
     for (k, v) in extra {
         e.retain(|(key, _)| key != k);
@@ -157,11 +156,9 @@ fn preflight_refuses_what_it_cannot_cut_before_touching_anything() {
         (&[("SPL_VERSION", "0.4.0")], "is not a channel"),
         (&[("SPL_VERSION", "v1.2")], "is not a channel"),
         (&[("SPL_VERSION", "")], "is not a channel"),
-        (
-            &[("CLASS_PATHS_FILE", "../x.json")],
-            "inside the repository",
-        ),
+        (&[("CONFIG_FILE", "../x.toml")], "inside the repository"),
         (&[("CONFIG_FILE", "/etc/x")], "inside the repository"),
+        (&[("CONFIG_FILE", "")], "inside the repository"),
         (&[("FORCE_VERSION", "1.2")], "version '1.2' is not X.Y.Z"),
         (&[("FORCE_VERSION", "v1.2.0")], "is not X.Y.Z"),
         (
@@ -507,7 +504,7 @@ fn a_binary_its_sums_do_not_vouch_for_never_runs() {
 fn product() -> (Repo, Scratch) {
     let (repo, origin) = Repo::with_origin();
     repo.write(
-        "spl-asdlc.toml",
+        ".spl-asdlc/config.toml",
         "schema = 1\n[product]\nname = \"acme\"\n\n[release]\nangles = []\n\n[[release.version_files]]\npath = \"VERSION\"\npattern = \"acme {version}\"\n",
     );
     repo.write("VERSION", "acme 0.0.0\n");
@@ -524,7 +521,7 @@ fn open_step(repo: &Repo, extra: &[(&'static str, &str)]) -> Ran {
         ("ACTION", "open"),
         ("BRANCH", BRANCH),
         ("BIN", env!("CARGO_BIN_EXE_spl-asdlc")),
-        ("CONFIG_FILE", "spl-asdlc.toml"),
+        ("CONFIG_FILE", ".spl-asdlc/config.toml"),
         ("APP_SLUG", "example-app"),
     ];
     for (k, v) in extra {
@@ -627,7 +624,10 @@ fn open_with_nothing_to_release_creates_nothing() {
 #[test]
 fn open_reads_the_configuration_of_the_default_branch() {
     let (repo, _origin) = cycle(false);
-    refused(&open_step(&repo, &[]), "main carries no spl-asdlc.toml");
+    refused(
+        &open_step(&repo, &[]),
+        "main carries no .spl-asdlc/config.toml",
+    );
 }
 
 #[test]
@@ -685,13 +685,33 @@ fn a_candidate_on_a_branch_with_no_first_candidate_is_refused() {
 
 // ------------------------------------------------------ class, round, delta
 
-const TABLE: &str = r#"{"paths": ["src/auth/**", ".github/workflows/**"], "exceptions": {"src/x.rs": "documented"}}"#;
+/// The configuration's path, as the cut's `config-file` input defaults it.
+const CONFIG: &str = ".spl-asdlc/config.toml";
+
+/// A configuration whose review angles carry the reviewed paths: one angle
+/// on every PR (no paths), two on paths, one glob shared by both.
+const TABLE: &str = r#"schema = 1
+
+[review]
+coordinators = ["coordinator-login"]
+
+[[review.angles]]
+key = "maintainability"
+
+[[review.angles]]
+key = "security"
+paths = ["src/auth/**", ".github/workflows/**"]
+
+[[review.angles]]
+key = "design"
+paths = ["src/auth/**"]
+"#;
 
 /// A release branch whose published base is `acme-v1.0.0`, carrying the
-/// review table, with one more commit touching `path`.
+/// configuration, with one more commit touching `path`.
 fn delta(path: &str) -> (Repo, Scratch) {
     let (repo, origin) = Repo::with_origin();
-    repo.write(".github/review-paths.json", TABLE);
+    repo.write(CONFIG, TABLE);
     repo.commit("table");
     repo.git(&["tag", "acme-v1.0.0"]);
     repo.git(&["push", "-q", "origin", "main", "--tags"]);
@@ -711,7 +731,7 @@ fn compute(repo: &Repo, extra: &[(&'static str, &str)]) -> Ran {
         ("CLASS", ""),
         ("ROUTINE_BECAUSE", ""),
         ("MAIN_MERGE_BECAUSE", ""),
-        ("CLASS_PATHS_FILE", ".github/review-paths.json"),
+        ("CONFIG_FILE", CONFIG),
     ];
     for (k, v) in extra {
         e.retain(|(key, _)| key != k);
@@ -756,6 +776,26 @@ fn the_class_is_computed_from_the_reviewed_paths_the_candidate_carries() {
 }
 
 #[test]
+fn review_angles_without_paths_review_no_path_apart_so_the_class_is_routine() {
+    let (repo, _o) = delta("src/auth/token.rs");
+    repo.write(
+        CONFIG,
+        "schema = 1\n[review]\nangles = []\n\n[release]\nangles = []\n",
+    );
+    repo.commit("no review angle");
+    let r = compute(&repo, &[]);
+    ok(&r);
+    assert!(
+        r.log
+            .contains("No review angle of .spl-asdlc/config.toml carries paths"),
+        "{}",
+        r.log
+    );
+    assert_eq!(r.output("class").as_deref(), Some("routine"), "{}", r.log);
+    assert!(trailers(&r).contains("Release-Class-Surfaces: none"));
+}
+
+#[test]
 fn every_way_of_not_knowing_the_class_is_sensible() {
     // A published release exists, but none the candidate's history reaches.
     let (repo, _o) = delta("docs/a.md");
@@ -780,19 +820,21 @@ fn every_way_of_not_knowing_the_class_is_sensible() {
     repo.git(&["tag", "acme-v0.9.0-rc.1", "HEAD~1"]);
     let r = compute(&repo, &[]);
     assert_eq!(r.output("class").as_deref(), Some("sensible"));
-    // The candidate carries no table, or an unusable one.
+    // The candidate carries no configuration, or one whose angles' paths
+    // cannot be read.
     for table in [
         None,
-        Some("{\"paths\": []}"),
-        Some("not json"),
-        Some("{\"paths\": [\"\"]}"),
+        Some("not toml ="),
+        Some("[[review.angles]]\nkey = \"security\"\npaths = [\"\"]\n"),
+        Some("[[review.angles]]\nkey = \"security\"\npaths = \"src/**\"\n"),
+        Some("[review]\nangles = \"security\"\n"),
     ] {
         let (repo, _o) = delta("docs/a.md");
         match table {
             None => {
-                repo.git(&["rm", "-q", ".github/review-paths.json"]);
+                repo.git(&["rm", "-q", CONFIG]);
             }
-            Some(t) => repo.write(".github/review-paths.json", t),
+            Some(t) => repo.write(CONFIG, t),
         }
         repo.commit("table");
         let r = compute(&repo, &[]);
@@ -849,7 +891,7 @@ fn a_first_release_is_classed_on_its_whole_history_with_no_tag_set_by_hand() {
     // A reviewed path anywhere in the history, here on `main` before the
     // cycle, makes the first release sensible.
     let (repo, _o) = Repo::with_origin();
-    repo.write(".github/review-paths.json", TABLE);
+    repo.write(CONFIG, TABLE);
     repo.write("src/auth/token.rs", "first\n");
     repo.commit("table and auth");
     repo.git(&["checkout", "-q", "-b", BRANCH]);
@@ -908,7 +950,7 @@ fn routine_on_a_reviewed_path_needs_a_reason_and_the_tag_records_it() {
     ok(&r);
     assert!(!trailers(&r).contains("Justification"), "{}", trailers(&r));
     // Unknown reviewed paths are treated like a hit.
-    repo.write(".github/review-paths.json", "garbage");
+    repo.write(CONFIG, "garbage");
     repo.commit("break the table");
     refused(
         &compute(&repo, &[("CLASS", "routine")]),

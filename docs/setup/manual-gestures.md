@@ -1,6 +1,6 @@
 # Manual gestures
 
-The bridge automates every step of the flow, and is never the only actor able to perform one (BR-ASDLC-021). This page gives, for each step, the exact command or GitHub click to do it by hand, and what the bridge does at its next tick. The normative list of gestures, and what a step done by hand implies, is spec 09's audit (`docs/spec/09-requalification-and-human-gestures.md`, "Every step can be done by a human in GitHub"); this page is its runbook: it adds the commands and clicks, and the gestures a step done by hand needs on the way (rerun the gate, publish when the publication's build failed, dismiss a review, hold a PR back).
+The bridge automates every step of the flow, and is never the only actor able to perform one (BR-ASDLC-021). This page gives, for each step, the exact command or GitHub click to do it by hand, and what the bridge does at its next tick. The normative list of gestures, and what a step done by hand implies, is spec 09's audit (`docs/reference/09-requalification-and-human-gestures.md`, "Every step can be done by a human in GitHub"); this page is its runbook: it adds the commands and clicks, and the gestures a step done by hand needs on the way (rerun the gate, publish when the publication's build failed, dismiss a review, hold a PR back).
 
 Conventions:
 
@@ -23,7 +23,7 @@ gh pr merge <n> --repo OWNER/REPO --squash --delete-branch --match-head-commit <
 
 Or in GitHub: the PR, **Squash and merge**. Use the merge method `[review]` configures (squash by default). An angle PR into the release branch is merged as a merge commit (`--merge`), as the bridge merges it.
 
-**The bridge, next tick**: the sweep sees the PR merged and gives the ticket the same transition the bridge's own merge would have (`docs/spec/04-pr-review.md` §7, §10), once, with a comment that names who merged; the PR's review round closes. The ticket goes To Deploy when every box is ticked and no other PR of it is open, or Done when it has nothing to deploy. For an angle PR, the release pass reads it from the PRs merged into the release branch: its sub-item Done, the findings of its report filed, once each.
+**The bridge, next tick**: the sweep sees the PR merged and gives the ticket the same transition the bridge's own merge would have (`docs/reference/04-pr-review.md` §7, §10), once, with a comment that names who merged; the PR's review round closes. The ticket goes To Deploy when every box is ticked and no other PR of it is open, or Done when it has nothing to deploy. For an angle PR, the release pass reads it from the PRs merged into the release branch: its sub-item Done, the findings of its report filed, once each.
 
 ## Open a release cycle
 
@@ -131,7 +131,7 @@ The closure is the bridge's, not a GitHub gesture: it writes the tracker. A pers
 
 ## Move a ticket by hand
 
-Move it in the tracker. A ticket starts in Backlog; refinement marks it refined and leaves it there, and a person moves it to Ready when agents may take it: implementing agents take work from Ready only. Whoever starts a ticket, agent or person, moves it to In Progress; the bridge does it at its next tick, as a backup, when a branch or a PR appears. The later moves (In Review, To Deploy, Done) follow GitHub facts: the usual gesture is the fact in GitHub (open or merge the PR, check a box), and the bridge moves the ticket at its next tick.
+Move it in the tracker. A ticket starts in Backlog; refinement marks it refined and leaves it there, and a person moves it to Ready when agents may take it: implementing agents take work from Ready only. Whoever starts a ticket, agent or person, moves it to In Progress; the bridge never does it for them, since a PR appearing means In Review. The later moves (In Review, To Deploy, Done) follow GitHub facts: the usual gesture is the fact in GitHub (open or merge the PR, check a box), and the bridge moves the ticket at its next tick.
 
 ## Hold a PR back
 
@@ -171,10 +171,10 @@ It keeps the tags, merges the release branch back into `main`, cancels the relea
 On the bridge's host:
 
 ```sh
-spl-asdlc release requalify <ticket> --severity <blocker|should-fix|nit> --reason "<text>"
+spl-asdlc release requalify <ticket> --blocking <true|false> --reason "<text>"
 ```
 
-It changes the finding ticket's severity, adds or removes its `blocks` relation to the release issue, and records who, when and why on the ticket and on the release issue. **The bridge, next tick**: the GO is recomputed.
+It makes the finding's ticket blocking (`true`: its `blocks` relation to the release issue, Ready for the release fixer `release.fix_assignee`) or not (`false`: no relation, logged for later in Triage, labelled `qa-finding`), and records who, when and why on the ticket and on the release issue. Its priority is left as it is: change it in the tracker if needed. **The bridge, next tick**: the GO is recomputed.
 
 ## Commands a session needs permission for
 

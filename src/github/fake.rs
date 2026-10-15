@@ -27,6 +27,9 @@ pub struct FakeState {
     pub histories: HashMap<(RepoSlug, String), Read<Comparison>>,
     /// `(repo, rev, path)`; a missing entry is `NotFound`.
     pub files: HashMap<(RepoSlug, String, String), Read<String>>,
+    /// `(repo, rev, path)`: a directory listing scripted as such (a failed
+    /// read); otherwise `dir` lists the `files` directly under `path`.
+    pub dirs: HashMap<(RepoSlug, String, String), Read<Vec<String>>>,
     pub open_pulls: BTreeMap<RepoSlug, Read<Vec<PullRequest>>>,
     pub merged_pulls: BTreeMap<RepoSlug, Read<Vec<PullRequest>>>,
     /// Closed without merge; none when not scripted.
@@ -204,6 +207,32 @@ impl GitHub for FakeGitHub {
                 what: format!("{path} at {rev}"),
             }),
         }
+    }
+
+    fn dir(&self, repo: &RepoSlug, path: &str, rev: &str) -> Read<Vec<String>> {
+        let s = self.state.borrow();
+        if let Some(d) = s
+            .dirs
+            .get(&(repo.clone(), rev.to_string(), path.to_string()))
+        {
+            return d.clone();
+        }
+        let prefix = format!("{}/", path.trim_end_matches('/'));
+        let mut names: Vec<String> = s
+            .files
+            .iter()
+            .filter(|((r, at, _), text)| r == repo && at == rev && text.is_ok())
+            .filter_map(|((_, _, p), _)| p.strip_prefix(&prefix))
+            .filter(|name| !name.contains('/'))
+            .map(str::to_string)
+            .collect();
+        if names.is_empty() {
+            return Err(ReadError::NotFound {
+                what: format!("{path} at {rev}"),
+            });
+        }
+        names.sort();
+        Ok(names)
     }
 
     fn open_pulls(&self, repo: &RepoSlug, base: Option<&str>) -> Read<Vec<PullRequest>> {

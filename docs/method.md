@@ -18,7 +18,7 @@ The rest of the repository is organised as the project likes.
 ```mermaid
 flowchart LR
   B["Backlog<br/>(refined or not)"] -->|a person releases it to agents| R(Ready)
-  R -->|"an agent or a person starts<br/>(the bridge, as a backup,<br/>when a branch or PR appears)"| P(In Progress)
+  R -->|"the implementer starts it<br/>(agent or person)"| P(In Progress)
   P -->|the PR is opened| V(In Review)
   V -->|"CI green, then the reviews<br/>if configured"| M{Merged by the bridge}
   M -->|something to deploy| TD(To Deploy)
@@ -37,7 +37,7 @@ flowchart LR
 
 **Ready.** A person moves a refined ticket to Ready when it may be taken. Implementing agents take work from Ready only, so Ready is how a person controls what agents work on, and when.
 
-**In Progress.** Whoever starts the ticket, agent or person, moves it to In Progress. With Livela, the agent's verb ("implement the next ticket") does it. If nobody did, the bridge does it when a branch or a PR appears.
+**In Progress.** Whoever starts the ticket, agent or person, moves it to In Progress. With Livela, the agent's verb ("implement the next ticket") does it.
 
 **In Review.** The ticket moves to In Review as soon as its PR is opened.
 - CI runs first: the project's own checks, plus the method's PR-title and guard checks, gathered in one `required-check`.

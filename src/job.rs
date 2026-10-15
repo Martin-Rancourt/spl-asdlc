@@ -1,4 +1,4 @@
-//! One pass of the bridge for a host (`docs/spec/07-the-bridge.md`
+//! One pass of the bridge for a host (`docs/reference/07-the-bridge.md`
 //! invariant 1): the Livela runner's daemon job, a timer, a shell. The host
 //! gives the configuration file, the tracker and a time budget; the pass
 //! reads its secrets from the environment, runs one tick, appends the action
@@ -123,7 +123,6 @@ pub fn pass_with(host: &Host, config: &Config, github: &dyn GitHub) -> PassOutco
         now: Timestamp::now(),
         deadline: host.budget.map(|b| started + b),
         dry_run: false,
-        hands_off: None,
     };
     let mut log = match path {
         Some(p) => ActionLog::at(p),
@@ -136,9 +135,6 @@ pub fn pass_with(host: &Host, config: &Config, github: &dyn GitHub) -> PassOutco
         message.push_str(&format!("; the action log could not be written: {e}"));
     }
     for line in report.waiting_lines() {
-        message.push_str(&format!("\n{repo}: {line}"));
-    }
-    for line in report.hands_off_lines() {
         message.push_str(&format!("\n{repo}: {line}"));
     }
     PassOutcome {
@@ -320,7 +316,7 @@ mod tests {
     fn an_invalid_configuration_fails_the_pass_with_its_reasons() {
         let dir = std::env::temp_dir().join(format!("spl-asdlc-job-bad-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("spl-asdlc.toml");
+        let path = dir.join(crate::config::FILE_NAME);
         std::fs::write(&path, "schema = 1\n").unwrap();
         let tracker = FakeTracker::default();
         let out = pass(&Host {

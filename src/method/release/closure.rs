@@ -1,4 +1,4 @@
-//! The closure of a cycle (`docs/spec/05-release-cycle.md` §11,
+//! The closure of a cycle (`docs/reference/05-release-cycle.md` §11,
 //! REQ-REL-084..091): what happens to each member of the release, judged by
 //! code, and the comment that says so.
 
@@ -141,16 +141,17 @@ pub fn judge(
 }
 
 /// The comment on a ticket reopened for rules the registry lacks.
-pub fn unknown_rules_comment(missing: &[String], registry_path: &str, product: &str) -> String {
+pub fn unknown_rules_comment(missing: &[String], product: &str) -> String {
     let ids = missing
         .iter()
         .map(|i| format!("`{i}`"))
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "Business rules: {ids} cited in `Business rules` (absent from `{registry_path}` of `{product}` at this release's tag; \
-         if the id is a typo, fix it in `Business rules`; if the rule is new, open a PR adding it to the registry — it ships \
+        "Business rules: {ids} cited in `Business rules` (no file in `{}/` of `{product}` at this release's tag; \
+         if the id is a typo, fix it in `Business rules`; if the rule is new, open a PR adding its file — it ships \
          with the next release). {}",
+        crate::method::business_rules::REGISTRY_DIR,
         crate::method::done_gate::RETURNED_UNASSIGNED
     )
 }
@@ -353,7 +354,7 @@ mod tests {
             ),
             Judgement::UnknownRules(vec!["BR-ACME-001".into()])
         );
-        let text = unknown_rules_comment(&["BR-ACME-001".into()], "docs/business-rules.md", "acme");
+        let text = unknown_rules_comment(&["BR-ACME-001".into()], "acme");
         assert!(text.contains("at this release's tag"));
         assert!(text.ends_with(crate::method::done_gate::RETURNED_UNASSIGNED));
     }
