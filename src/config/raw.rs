@@ -42,6 +42,7 @@ pub(super) struct RawTracker {
     pub service_identity: Option<String>,
     pub team_keys: Option<Vec<String>>,
     pub link_fallback: Option<String>,
+    pub no_deploy_label: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

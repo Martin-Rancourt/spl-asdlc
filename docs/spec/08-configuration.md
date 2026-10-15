@@ -15,6 +15,7 @@ name = "acme"                          # used in tags, labels and release issue 
 [tracker]
 kind = "linear"                        # "linear" | "livela"
 link_fallback = "none"                 # "none" | "body-url"
+no_deploy_label = "no-deploy"          # a ticket with nothing to deploy: Done at its merge
 
 [release]
 candidate_tag = "acme-v{version}-rc.{rc}"
@@ -185,6 +186,7 @@ Every other key is the method's shape and stays in the repository's file, where 
 | `tracker.service_identity` | required | Name of the service account the bridge writes as; printed by the binary. | A token for another identity: `doctor` reports the mismatch. |
 | `tracker.team_keys` | `[]` (ask the tracker) | Identifier prefixes (`ABC`; capital letters and digits, starting with a letter) of the team's items; only those count as embarked tickets of a release. | Empty and the tracker cannot say: the embarked list is unreadable, the brief is not posted. |
 | `tracker.link_fallback` | `"none"` | How a PR names its ticket when the tracker holds no link for the PR: `none` (only the tracker's own link), `body-url` (the tracker item URL in the PR body). Titles, branch names and bare identifiers are never read. | No link: the PR is not reviewed nor merged; a green PR raises one human notice. |
+| `tracker.no_deploy_label` | `"no-deploy"` | The tracker label of a ticket with nothing to deploy (documentation, say). Its merge delivers it: the ticket the state rules would put To Deploy goes Done instead (Post Deploy with its validation sub-task while its own `## Post deploy` boxes wait, In Progress while a box of a duplicate is open), and no release embarks it (`04-pr-review.md` §10). A person or refinement puts it on the ticket; the bridge only reads it and never creates it. `doctor` says whether the tracker has it. | Absent from a ticket: To Deploy at the merge, as any. Absent from the tracker: nothing changes until a ticket carries it. |
 
 The configuration maps no status: the tracker names each canonical status (`03-vocabulary.md`) exactly so, and the bridge reads and writes them by that name. A `[tracker.statuses]` table is an unknown key (rule 6). A canonical status the team lacks: the write fails and is retried; `doctor` names it. An adapter whose tracker keys statuses by its own ids maps them in its code.
 

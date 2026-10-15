@@ -772,6 +772,11 @@ pub fn embarked_items(t: &Tick, shape: &Shape, c: &Candidate) -> Result<Embarked
             }
         }
         for ticket in split.tickets {
+            // Nothing to deploy: its merge delivered it, no release embarks
+            // it (spec 04 §10).
+            if super::merge::nothing_to_deploy(t, &ticket) {
+                continue;
+            }
             match out.tickets.iter_mut().find(|(k, _)| *k == ticket.key) {
                 Some((_, prs)) => prs.push(pr.number),
                 None => out.tickets.push((ticket.key, vec![pr.number])),

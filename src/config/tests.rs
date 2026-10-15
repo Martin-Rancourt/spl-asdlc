@@ -102,6 +102,7 @@ fn a_minimal_file_gets_every_documented_default() {
     assert_eq!(c.bridge.sweep_hours, 24);
     assert_eq!(c.bridge.hands_off_label, "spl-asdlc:hands-off");
     assert_eq!(c.tracker.link_fallback, LinkFallback::None);
+    assert_eq!(c.tracker.no_deploy_label, "no-deploy");
     assert!(c.notify.is_empty());
 }
 
@@ -650,6 +651,23 @@ fn non_positive_counts_are_refused_never_defaulted_silently() {
     assert_refused_with(
         &format!("{MINIMAL}\n[bridge]\npoll_minutes = -5\n"),
         "bridge.poll_minutes: must be a positive integer",
+    );
+}
+
+#[test]
+fn the_no_deploy_label_is_configurable_and_never_empty() {
+    let text = MINIMAL.replace(
+        "service_identity = \"spl-asdlc\"\n",
+        "service_identity = \"spl-asdlc\"\nno_deploy_label = \"docs-only\"\n",
+    );
+    let c = Config::parse(&text).expect("a no-deploy label is valid");
+    assert_eq!(c.tracker.no_deploy_label, "docs-only");
+    assert_refused_with(
+        &MINIMAL.replace(
+            "service_identity = \"spl-asdlc\"\n",
+            "service_identity = \"spl-asdlc\"\nno_deploy_label = \"\"\n",
+        ),
+        "tracker.no_deploy_label: must not be empty when given",
     );
 }
 

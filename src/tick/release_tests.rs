@@ -1756,6 +1756,34 @@ fn a_merged_pr_ships_while_its_ticket_is_still_in_progress() {
 }
 
 #[test]
+fn a_ticket_with_nothing_to_deploy_is_never_embarked() {
+    // Its merge delivered it (Done): no release label, no judgement, no
+    // archive by the cycle.
+    let w = World::new();
+    w.tracker.seed(
+        "ABC-5",
+        "Documentation",
+        "## Goal\nDocument it.\n\n## Acceptance criteria\n- [x] documented\n\n## Business rules\nNo new rule.\n",
+        Status::Done,
+        &["no-deploy"],
+    );
+    w.tracker
+        .link("ABC-5", "https://github.com/example-org/acme/pull/5");
+    w.tick();
+    publish(&w);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let item = w.tracker.item("ABC-5");
+    assert!(!item.labels.contains(&LABEL.to_string()), "not embarked");
+    assert_eq!(item.state.status, Some(Status::Done));
+    assert!(
+        !w.tracker.writes().iter().any(|l| l.contains("ABC-5")),
+        "{:?}",
+        w.tracker.writes()
+    );
+}
+
+#[test]
 fn a_blocker_canceled_as_a_false_alarm_is_not_filed_again() {
     let w = World::new();
     w.tick();

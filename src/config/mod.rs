@@ -132,7 +132,14 @@ pub struct Tracker {
     /// Identifier prefixes of the team's items; empty means "ask the tracker".
     pub team_keys: Vec<String>,
     pub link_fallback: LinkFallback,
+    /// The label of a ticket with nothing to deploy (documentation, say):
+    /// it goes Done at the merge of its PR rather than To Deploy, and no
+    /// release embarks it (spec 04 §10). The bridge reads it, never writes it.
+    pub no_deploy_label: String,
 }
+
+/// The default of `tracker.no_deploy_label`.
+pub const DEFAULT_NO_DEPLOY_LABEL: &str = "no-deploy";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LaterPasses {
@@ -875,12 +882,16 @@ impl Validator {
                 ("body-url", LinkFallback::BodyUrl),
             ],
         );
+        let no_deploy_label = self
+            .optional("tracker.no_deploy_label", raw.no_deploy_label)
+            .unwrap_or_else(|| DEFAULT_NO_DEPLOY_LABEL.to_string());
         Some(Tracker {
             kind: kind?,
             team: team?,
             service_identity: service_identity?,
             team_keys,
             link_fallback: link_fallback?,
+            no_deploy_label,
         })
     }
 

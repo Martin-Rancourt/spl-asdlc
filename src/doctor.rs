@@ -666,6 +666,29 @@ fn tracker_checks(config: &Config, tracker: &dyn Tracker) -> Vec<Check> {
             format!("{label}: an item or PR carrying it is left to people; whether the tracker has it could not be read ({e}), and it is never required"),
         ),
     });
+    // The label of a ticket with nothing to deploy: informational, never
+    // required. A person (or refinement) puts it on a ticket; the bridge
+    // reads it at the merge and never creates it.
+    let name = "tracker.no_deploy_label";
+    let label = &config.tracker.no_deploy_label;
+    let does = "a ticket carrying it goes Done at its merge, never embarked by a release";
+    out.push(match tracker.label_exists(label) {
+        Ok(true) => check(
+            name,
+            Verdict::Ok,
+            format!("{label}: {does}; it exists in the tracker"),
+        ),
+        Ok(false) => check(
+            name,
+            Verdict::Ok,
+            format!("{label}: {does}; it does not exist in the tracker, which is fine until a ticket has nothing to deploy"),
+        ),
+        Err(e) => check(
+            name,
+            Verdict::Ok,
+            format!("{label}: {does}; whether the tracker has it could not be read ({e}), and it is never required"),
+        ),
+    });
     // The participants the bridge assigns items to: an unknown one leaves
     // its items unassigned, so it is reported here rather than at a tick.
     for (key, name) in participants(config) {
@@ -923,6 +946,32 @@ mod tests {
             "{absent}"
         );
         t.ensure_label("spl-asdlc:hands-off").unwrap();
+        let present = line(&t);
+        assert_eq!(present.verdict, Verdict::Ok, "{present}");
+        assert!(
+            present.detail.ends_with("it exists in the tracker"),
+            "{present}"
+        );
+    }
+
+    #[test]
+    fn the_no_deploy_label_is_reported_and_never_required() {
+        let c = config();
+        let t = FakeTracker::default();
+        let line = |t: &FakeTracker| {
+            tracker_checks(&c, t)
+                .into_iter()
+                .find(|c| c.name == "tracker.no_deploy_label")
+                .unwrap_or_else(|| panic!("no no-deploy line"))
+        };
+        let absent = line(&t);
+        assert_eq!(absent.verdict, Verdict::Ok, "{absent}");
+        assert!(
+            absent.detail.starts_with("no-deploy: ")
+                && absent.detail.contains("does not exist in the tracker"),
+            "{absent}"
+        );
+        t.ensure_label("no-deploy").unwrap();
         let present = line(&t);
         assert_eq!(present.verdict, Verdict::Ok, "{present}");
         assert!(
