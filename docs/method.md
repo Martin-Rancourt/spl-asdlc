@@ -83,7 +83,7 @@ flowchart TD
    - writes the version files and the CHANGELOG;
    - tags the first candidate, for example `v1.4.0-rc.1`.
 
-   At its next tick, the bridge opens the release issue, assigned to the owner, who decides the GO, so that no agent that takes unassigned items takes it.
+   At its next tick, the bridge opens the release issue, assigned to the owner, who follows the cycle and takes over any step by hand, so that no agent that takes unassigned items takes it.
 2. **Release CI.** The candidate's tag runs the project's release test suites. When it is red, the bridge opens an urgent fix ticket for whoever fixes release problems. Each fix merged to the release branch makes a new candidate.
 3. **QA** (optional). Once CI is green, QA starts: agents or people, several angles in parallel, each reviewing the candidate from its angle and classifying each finding as blocking or not. A blocking finding becomes an urgent fix ticket for whoever fixes release problems, as a red CI does; its fix merged to the release branch makes the next candidate. A non-blocking finding becomes a ticket logged for later. After a configured number of candidates, the release goes to the owner.
 4. **GO.** It is computed, never declared:
