@@ -1,5 +1,46 @@
 # Changelog
 
+## [1.0.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v0.3.0...v1.0.0) (2026-10-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* **tick:** a draft PR no longer moves its ticket (put back in draft before its round, on a ticket past the merge, or holding a complete ticket In Progress); `required-check` fails on every draft PR; the release note no longer reads the CHANGELOG for PRs without a ticket.
+* `release.registry_path` and `release.business_rule_paths` are removed; a configuration that writes them is refused as an unknown key. A project moves its `docs/business-rules.md` rows into `.spl-asdlc/business-rules/<ID>.md` files.
+* **release:** the cycle prepares its version and notes itself, without release-please (SID-1058) ([#64](https://github.com/Martin-Rancourt/spl-asdlc/issues/64))
+
+### Features
+
+* **release:** the cycle prepares its version and notes itself, without release-please (SID-1058) ([#64](https://github.com/Martin-Rancourt/spl-asdlc/issues/64)) ([f0155e1](https://github.com/Martin-Rancourt/spl-asdlc/commit/f0155e1b9b90a777b3a2084ceb43921e73fb6c3b))
+* the code and the reference follow the method page ([#69](https://github.com/Martin-Rancourt/spl-asdlc/issues/69)) ([9819488](https://github.com/Martin-Rancourt/spl-asdlc/commit/981948879c635c3fe16e54921edbb75b5f8d0d03))
+
+
+### Bug Fixes
+
+* **release:** a product's first release is measured from the repository's root ([#63](https://github.com/Martin-Rancourt/spl-asdlc/issues/63)) ([4342944](https://github.com/Martin-Rancourt/spl-asdlc/commit/434294464794fda4bd466bdf1fd3e7b19ae20b8d))
+* **release:** the cut reads the method's releases with a token scoped to its repository ([#65](https://github.com/Martin-Rancourt/spl-asdlc/issues/65)) ([f6ebbeb](https://github.com/Martin-Rancourt/spl-asdlc/commit/f6ebbebc12e70d4234c9ece700f3e21ed53b884e))
+* the light flow runs alone, and every step can be taken over by hand (SID-1052) ([#59](https://github.com/Martin-Rancourt/spl-asdlc/issues/59)) ([ddb527b](https://github.com/Martin-Rancourt/spl-asdlc/commit/ddb527b08116469fb5ec369ddb472ea8a8c8b4f7))
+* **tick:** draft PRs out of the flow, release notes from every PR, clearer texts ([#70](https://github.com/Martin-Rancourt/spl-asdlc/issues/70)) ([f2d9622](https://github.com/Martin-Rancourt/spl-asdlc/commit/f2d9622793054447cb2af65f39d9dc27a088115f))
+
+
+### Documentation
+
+* approval pass on the specification ([#66](https://github.com/Martin-Rancourt/spl-asdlc/issues/66)) ([441a4dd](https://github.com/Martin-Rancourt/spl-asdlc/commit/441a4ddc18b1a31aacb7be2ca3eab0406dd064e1))
+* the method in ten minutes ([#67](https://github.com/Martin-Rancourt/spl-asdlc/issues/67)) ([22ab0b0](https://github.com/Martin-Rancourt/spl-asdlc/commit/22ab0b09427bd0fa8f52d1289d960e53e6766360))
+* the method, the owner's second review ([#68](https://github.com/Martin-Rancourt/spl-asdlc/issues/68)) ([50c5ea9](https://github.com/Martin-Rancourt/spl-asdlc/commit/50c5ea97acf5e6b82135d1013ca55e6ac5ca4231))
+
+
+### Chores
+
+* **release:** merge release/2026-10-11-19-02-utc back into main ([52c0430](https://github.com/Martin-Rancourt/spl-asdlc/commit/52c04305c89e45a9df856fdf91e7812bcd90c57e))
+
+
+### Continuous Integration
+
+* a staging channel rebuilds the bridge from main for the sandbox (SID-1054) ([#62](https://github.com/Martin-Rancourt/spl-asdlc/issues/62)) ([273a2aa](https://github.com/Martin-Rancourt/spl-asdlc/commit/273a2aadd6d352638f7f904860d1b44a43a88b17))
+* develop spl-asdlc with GitHub Flow and release-please on main ([#60](https://github.com/Martin-Rancourt/spl-asdlc/issues/60)) ([82711a8](https://github.com/Martin-Rancourt/spl-asdlc/commit/82711a876443018135fbc030f1aa01e94f85592f))
+* **pr:** the latest published release must read this repository's spl-asdlc.toml ([#58](https://github.com/Martin-Rancourt/spl-asdlc/issues/58)) ([a7671ee](https://github.com/Martin-Rancourt/spl-asdlc/commit/a7671eebf05b7a061939a3493dc3c2eb2fc7e6ef))
+
 ## [0.3.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v0.2.0...v0.3.0) (2026-10-11)
 
 
