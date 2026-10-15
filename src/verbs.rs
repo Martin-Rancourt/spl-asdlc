@@ -13,7 +13,7 @@ use crate::method::release::go::{AngleState, GoDecision};
 use crate::method::release::prs;
 use crate::method::release::report;
 use crate::method::release::shape::Shape;
-use crate::method::vocabulary::{self, Severity, Status};
+use crate::method::vocabulary::{self, Status};
 use crate::tick::merge::for_tracker;
 use crate::tick::release::{self, Candidate};
 use crate::tick::{Report, Tick};
@@ -185,38 +185,32 @@ pub fn cut(t: &Tick, log: &mut ActionLog, open: bool) -> Result<String, String> 
     ))
 }
 
-/// The severity a finding ticket carries.
-fn severity_of(item: &Item) -> Option<Severity> {
+/// Whether a finding ticket blocks its release (its blocker marker), or
+/// `None` when the item is no finding ticket of a release.
+fn blocking_of(item: &Item) -> Option<bool> {
     findings::parse_finding_marker(&item.description)?;
-    if findings::parse_blocker_marker(&item.description).is_some() {
-        Some(Severity::Blocker)
-    } else if item
-        .labels
-        .iter()
-        .any(|l| l == vocabulary::QA_FINDING_LABEL)
-    {
-        Some(Severity::ShouldFix)
-    } else {
-        None
-    }
+    Some(findings::parse_blocker_marker(&item.description).is_some())
 }
 
-/// `release requalify <ticket> --severity <s> --reason <r>`.
+/// `release requalify <ticket> --blocking <true|false> --reason <r>`.
 pub fn requalify(
     t: &Tick,
     log: &mut ActionLog,
     key: &str,
-    to: Severity,
+    to: bool,
     reason: &str,
     who: &str,
 ) -> Result<String, String> {
     release_cycle(t)?;
     let item = t.tracker.get(key).map_err(|e| e.to_string())?;
     let from =
-        severity_of(&item).ok_or_else(|| format!("{key} is not a finding ticket of a release"))?;
+        blocking_of(&item).ok_or_else(|| format!("{key} is not a finding ticket of a release"))?;
     let comment = findings::requalify_comment(who, from, to, reason)?;
     if from == to {
-        return Ok(format!("{key} is already {}: nothing to do", to.name()));
+        return Ok(format!(
+            "{key} is already {}: nothing to do",
+            findings::grade(to)
+        ));
     }
     let (release_key, ..) =
         findings::parse_finding_marker(&item.description).ok_or("no finding marker")?;
@@ -259,18 +253,25 @@ pub fn requalify(
                     },
                 )
             }
-            RequalifyStep::LayBlocksRelation => t.act(
-                log,
-                &mut report,
-                key,
-                &format!("relate Blocks {release_key}"),
-                json!({}),
-                || {
-                    t.tracker
-                        .relate(key, &release_key, RelationKind::Blocks)
-                        .map_err(|e| e.to_string())
-                },
-            ),
+            RequalifyStep::LayBlocksRelation | RequalifyStep::LayRelatedRelation => {
+                let kind = if step == RequalifyStep::LayBlocksRelation {
+                    RelationKind::Blocks
+                } else {
+                    RelationKind::Related
+                };
+                t.act(
+                    log,
+                    &mut report,
+                    key,
+                    &format!("relate {kind:?} {release_key}"),
+                    json!({}),
+                    || {
+                        t.tracker
+                            .relate(key, &release_key, kind)
+                            .map_err(|e| e.to_string())
+                    },
+                )
+            }
             RequalifyStep::RemoveBlocksRelation => {
                 let arcs = t.tracker.relations(key).map_err(|e| e.to_string())?;
                 let mut all = Some(());
@@ -293,29 +294,60 @@ pub fn requalify(
                         .map_err(|e| e.to_string())
                 })
             }
-            RequalifyStep::SetTriage => {
-                t.act(log, &mut report, key, "status Triage", json!({}), || {
-                    t.tracker
-                        .set_status(key, Status::Triage, None)
-                        .map_err(|e| e.to_string())
-                })
+            RequalifyStep::RemoveFindingLabel => {
+                if item
+                    .labels
+                    .iter()
+                    .any(|l| l == vocabulary::QA_FINDING_LABEL)
+                {
+                    t.act(
+                        log,
+                        &mut report,
+                        key,
+                        "unlabel qa-finding",
+                        json!({}),
+                        || {
+                            t.tracker
+                                .remove_label(key, vocabulary::QA_FINDING_LABEL)
+                                .map_err(|e| e.to_string())
+                        },
+                    )
+                } else {
+                    Some(())
+                }
             }
-            RequalifyStep::MoveToNitsTicket | RequalifyStep::CancelTicket => {
-                // A nit is a line of the shared nits ticket: the ticket is
-                // canceled and its finding becomes that line.
+            RequalifyStep::ServeFixer => {
+                // Ready for the release fixer, in the status's own write;
+                // unassigned (taken by role) when it is unset or unknown.
+                let fixer = release::fixer(t);
+                let who = fixer.as_ref().map_or("unassigned".to_string(), |u| {
+                    format!("assigned to {}", u.name)
+                });
                 t.act(
                     log,
                     &mut report,
                     key,
-                    "status Canceled (now a nit)",
+                    &format!("status Ready, {who}"),
                     json!({}),
                     || {
                         t.tracker
-                            .set_status(key, Status::Canceled, None)
+                            .set_status(key, Status::Ready, Some(fixer.as_ref()))
                             .map_err(|e| e.to_string())
                     },
                 )
             }
+            RequalifyStep::LogForLater => t.act(
+                log,
+                &mut report,
+                key,
+                "status Triage, unassigned",
+                json!({}),
+                || {
+                    t.tracker
+                        .set_status(key, Status::Triage, Some(None))
+                        .map_err(|e| e.to_string())
+                },
+            ),
         };
         ok &= done.is_some();
     }
@@ -327,7 +359,7 @@ pub fn requalify(
                 &mut report,
                 target,
                 "comment requalification",
-                json!({"from": from.name(), "to": to.name()}),
+                json!({"from": findings::grade(from), "to": findings::grade(to)}),
                 || {
                     t.tracker
                         .comment(target, &body)
@@ -340,8 +372,8 @@ pub fn requalify(
     if ok {
         Ok(format!(
             "{key}: {} → {}; the GO is recomputed at the next tick",
-            from.name(),
-            to.name()
+            findings::grade(from),
+            findings::grade(to)
         ))
     } else {
         Err(report.failures.join("; "))

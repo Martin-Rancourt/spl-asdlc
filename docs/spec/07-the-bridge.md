@@ -71,7 +71,7 @@ The verbs below are a person's own gestures: the guard is the tick's.
 | `release cut --product <p> [--open]` | Dispatch the cut workflow (new cycle or next RC). Every `release` verb, `release prepare` included, refuses, writing nothing, when the configuration has no `[release]` section |
 | `release status --product <p>` | The GO decision and its inputs, as text and JSON |
 | `release prepare [--version <X.Y.Z>] [--notes <file>] [--dir <path>] [--repository <owner>/<repo>] [--date <YYYY-MM-DD>] [--dry-run]` | Run by the cut's `open` in a checkout of the new release branch: the next version from the commits since the last release, along the git graph, written into the version files and the CHANGELOG, and the release notes; prints `version=`, `tag=`, `previous-tag=`. Reads the repository's file only, never an instance overlay, and talks to no service (`05-release-cycle.md` §1) |
-| `release requalify <ticket> --severity <s> --reason <r>` | Human requalification of a finding |
+| `release requalify <ticket> --blocking <true\|false> --reason <r>` | Human requalification of a finding: blocking or not |
 | `release abandon --product <p>` | Abandon the cycle in flight (`05-release-cycle.md` §13) |
 | `ticket check <item>` | Contract judgement |
 | `config check` | Validate `spl-asdlc.toml`, merged with its instance overlay (spec 08) |

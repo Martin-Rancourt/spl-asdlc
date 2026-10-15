@@ -53,7 +53,6 @@ pub(super) struct RawRelease {
     pub max_rc_passes: Option<i64>,
     pub later_passes: Option<String>,
     pub go_policy: Option<String>,
-    pub nits: Option<String>,
     pub record: Option<String>,
     /// Read only to refuse them: a multi-component product is not
     /// supported by the release cycle yet (spec 08).
@@ -66,6 +65,7 @@ pub(super) struct RawRelease {
     pub stagnation_hours: Option<i64>,
     pub coordinators: Option<Vec<String>>,
     pub coordinator_assignee: Option<String>,
+    pub fix_assignee: Option<String>,
     pub escalation_label: Option<String>,
     pub auto_candidate: Option<bool>,
     pub cut_workflow: Option<String>,
@@ -195,6 +195,7 @@ pub(super) struct RawOverlayTracker {
 pub(super) struct RawOverlayRelease {
     pub coordinators: Option<Vec<String>>,
     pub coordinator_assignee: Option<String>,
+    pub fix_assignee: Option<String>,
     #[serde(default)]
     pub angles: Vec<RawOverlayAngle>,
 }

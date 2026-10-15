@@ -109,11 +109,12 @@ enum ReleaseCommand {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Change a finding's severity.
+    /// Change whether a finding blocks the release.
     Requalify {
         ticket: String,
-        #[arg(long)]
-        severity: String,
+        /// `true`: the finding blocks the release; `false`: it is logged for later.
+        #[arg(long, action = clap::ArgAction::Set)]
+        blocking: bool,
         #[arg(long)]
         reason: String,
     },
@@ -530,14 +531,9 @@ fn release(
         ReleaseCommand::Prepare { .. } => unreachable!("prepared above, with no connection"),
         ReleaseCommand::Requalify {
             ticket,
-            severity,
+            blocking,
             reason,
-        } => match crate::method::vocabulary::Severity::from_name(&severity) {
-            Some(s) => crate::verbs::requalify(&t, &mut log, &ticket, s, &reason, &who()),
-            None => Err(format!(
-                "--severity must be blocker, should-fix or nit, not {severity}"
-            )),
-        },
+        } => crate::verbs::requalify(&t, &mut log, &ticket, blocking, &reason, &who()),
         ReleaseCommand::Abandon => crate::verbs::abandon(&t, &mut log, &who()),
     };
     let _ = log.flush();
@@ -784,5 +780,51 @@ fn config_check(
             }
             ExitCode::from(1)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn requalify(args: &[&str]) -> Result<(String, bool, String), String> {
+        let mut argv = vec!["spl-asdlc", "release", "requalify"];
+        argv.extend_from_slice(args);
+        match Cli::try_parse_from(argv)
+            .map_err(|e| e.to_string())?
+            .command
+        {
+            Command::Release {
+                command:
+                    ReleaseCommand::Requalify {
+                        ticket,
+                        blocking,
+                        reason,
+                    },
+                ..
+            } => Ok((ticket, blocking, reason)),
+            other => Err(format!("{other:?}")),
+        }
+    }
+
+    #[test]
+    fn the_requalify_verb_says_whether_the_finding_blocks() {
+        assert_eq!(
+            requalify(&["ABC-7", "--blocking", "false", "--reason", "cosmetic"]),
+            Ok(("ABC-7".into(), false, "cosmetic".into()))
+        );
+        assert_eq!(
+            requalify(&["ABC-7", "--blocking", "true", "--reason", "data loss"]),
+            Ok(("ABC-7".into(), true, "data loss".into()))
+        );
+        assert!(
+            requalify(&["ABC-7", "--blocking", "--reason", "r"]).is_err(),
+            "a value is required"
+        );
+        assert!(requalify(&["ABC-7", "--blocking", "maybe", "--reason", "r"]).is_err());
+        assert!(
+            requalify(&["ABC-7", "--severity", "nit", "--reason", "r"]).is_err(),
+            "the severities are gone"
+        );
     }
 }

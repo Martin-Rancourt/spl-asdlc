@@ -1,5 +1,5 @@
 //! Carried from `tests/test_release_service.py` (blocker marker, findings,
-//! nits, the no-cycle invariant) and the target requalification verb.
+//! the no-cycle invariant) and the target requalification verb.
 
 use super::*;
 use std::collections::HashMap;
@@ -28,7 +28,7 @@ fn the_marker_survives_a_human_reformatting_it() {
 }
 
 #[test]
-fn requalifying_away_from_blocker_removes_the_marker_and_keeps_the_rest() {
+fn requalifying_away_from_blocking_removes_the_marker_and_keeps_the_rest() {
     let desc = format!(
         "Intro.\n\n{}\n\n## Goal\nFix it.",
         blocker_marker("ABC-100")
@@ -68,68 +68,17 @@ fn a_finding_filed_again_is_found_by_its_normalised_title() {
     );
 }
 
-fn finding(severity: Severity, test: Option<&str>) -> Finding {
+fn finding(blocking: bool, test: Option<&str>) -> Finding {
     Finding {
         id: "security-1".into(),
-        severity,
+        blocking,
         summary: "Token leaks in logs".into(),
         anchor: "src/log.rs:12".into(),
         evidence: "grep shows the token".into(),
-        fixed_in_branch: false,
         testable: test.is_some(),
         proposed_test: test.map(str::to_string),
-        ticket: None,
     }
 }
-
-#[test]
-fn a_finding_ticket_is_a_contract_carrying_its_test() {
-    let (title, body) = finding_ticket(
-        "ABC-100",
-        "acme-v1.2.3-rc.1",
-        "security",
-        &finding(Severity::Blocker, Some("test_no_token_in_logs")),
-        "https://github.com/example-org/acme/pull/9",
-        ".spl-asdlc/qa/acme-v1.2.3-rc.1/security.json",
-    );
-    assert_eq!(title, "Token leaks in logs (blocker — security)");
-    assert_eq!(parse_blocker_marker(&body).as_deref(), Some("ABC-100"));
-    assert!(
-        crate::method::contract::missing_from_contract(&body).is_empty(),
-        "{body}"
-    );
-    assert!(body.contains("- [ ] The test `test_no_token_in_logs` exists and passes in CI."));
-    assert!(parse_finding_marker(&body).is_some());
-    let (_, should_fix) = finding_ticket(
-        "ABC-100",
-        "c",
-        "security",
-        &finding(Severity::ShouldFix, None),
-        "u",
-        "p",
-    );
-    assert_eq!(
-        parse_blocker_marker(&should_fix),
-        None,
-        "only a blocker carries the marker"
-    );
-}
-
-fn nit(id: &str, summary: &str, anchor: &str, evidence: &str) -> Finding {
-    Finding {
-        id: id.into(),
-        severity: Severity::Nit,
-        summary: summary.into(),
-        anchor: anchor.into(),
-        evidence: evidence.into(),
-        fixed_in_branch: false,
-        testable: false,
-        proposed_test: None,
-        ticket: None,
-    }
-}
-
-const RC: &str = "acme-v1.2.3-rc.1";
 
 /// The judgement of `spl-asdlc ticket check`, and the business-rule guard:
 /// a text served to an agent passes both.
@@ -146,121 +95,41 @@ fn assert_contract(body: &str) {
 }
 
 #[test]
-fn a_nit_line_carries_what_where_and_context_on_one_line() {
-    let f = nit(
-        "design-2",
-        "typo in   a\n label",
-        "screen `Settings`",
-        "seen on the\nsave button <!-- spl-asdlc:x -->",
+fn a_blocking_finding_ticket_is_a_contract_to_fix_on_the_release_branch() {
+    let (title, body) = finding_ticket(
+        "ABC-100",
+        "acme-v1.2.3-rc.1",
+        "security",
+        &finding(true, Some("test_no_token_in_logs")),
+        "https://github.com/example-org/acme/pull/9",
+        ".spl-asdlc/qa/acme-v1.2.3-rc.1/security.json",
     );
-    let line = nit_line(RC, "design", &f);
-    assert_eq!(
-        line,
-        "- [ ] `acme-v1.2.3-rc.1/design/design-2` typo in a label — where: `screen 'Settings'` — context: \
-         seen on the save button &lt;!-- spl-asdlc :x -->"
-    );
-    assert!(line.starts_with(&format!("- [ ] {}", nit_key(RC, "design", "design-2"))));
-    let bare = nit_line(RC, "design", &nit("design-3", "s", "a", " "));
-    assert!(bare.ends_with("context: (none given)"), "{bare}");
-}
-
-#[test]
-fn the_shared_nits_ticket_is_a_contract_whose_goal_is_to_triage() {
-    let f = nit("design-2", "typo", "src/a.rs:1", "e");
-    let body = nits_ticket("ABC-100", "acme", "1.2.3", &[nit_line(RC, "design", &f)]);
+    assert_eq!(title, "Token leaks in logs (blocking — security)");
+    assert_eq!(parse_blocker_marker(&body).as_deref(), Some("ABC-100"));
     assert_contract(&body);
-    for part in [
-        "## Goal\nTriage the nits",
-        "**kept** or **dropped**; never presume a nit fixed",
-        "A dropped nit is closed with its reason",
-        "## Non-goals\n",
-        "## Business rules\nNo new rule.",
-    ] {
-        assert!(body.contains(part), "{part}: {body}");
-    }
-    let acs = crate::method::markdown::checkboxes_in_sections(
-        &body,
-        crate::method::contract::is_acceptance_heading,
-    );
-    assert_eq!(acs.len(), 1);
+    assert!(body.contains("It holds the release's GO"), "{body}");
     assert!(
-        acs[0]
-            .line
-            .contains("typo — where: `src/a.rs:1` — context: e")
-    );
-    assert_eq!(nits_title("acme", "1.2.3"), "Nits — acme v1.2.3");
-}
-
-#[test]
-fn a_nit_ticket_of_its_own_is_a_contract_keyed_like_a_finding() {
-    let f = nit("design-2", "typo", "src/a.rs:1", "e");
-    let (title, body) = nit_ticket("ABC-100", RC, "design", &f, "u", "p");
-    assert_eq!(title, "typo (nit — design)");
-    assert_contract(&body);
-    assert!(
-        body.contains("## Goal\nTriage the nit `design-2`"),
-        "{body}"
-    );
-    assert!(body.contains("never presume it fixed"), "{body}");
-    assert_eq!(
-        parse_finding_marker(&body),
-        Some((
-            "ABC-100".into(),
-            RC.into(),
-            "design".into(),
-            "design-2".into()
-        ))
-    );
-    assert_eq!(parse_blocker_marker(&body), None, "a nit never blocks");
-}
-
-#[test]
-fn a_nit_goes_under_the_acceptance_criteria_once_and_the_ticket_stays_a_contract() {
-    let first = nit_line(RC, "design", &nit("design-1", "one", "a", "e"));
-    let body = nits_ticket("ABC-100", "acme", "1.2.3", std::slice::from_ref(&first));
-    let k2 = nit_key(RC, "design", "design-2");
-    let second = nit_line(RC, "design", &nit("design-2", "two", "b", "e"));
-    let once = append_nit(&body, &k2, &second).unwrap().unwrap();
-    assert!(
-        once.contains(&format!("{first}\n{second}\n\n## Business rules")),
-        "{once}"
-    );
-    assert_contract(&once);
-    assert_eq!(open_nits(&once), 2);
-    assert_eq!(append_nit(&once, &k2, &second), Ok(None));
-    // Ticked and given a reason: still that nit, never re-added.
-    let judged = once.replace(
-        &second,
-        &format!(
-            "{} — dropped: not worth it",
-            second.replace("- [ ]", "- [x]")
+        body.contains(
+            "- [ ] The finding no longer reproduces: Token leaks in logs — where: `src/log.rs:12` — context: grep shows the token"
         ),
+        "the finding as observed, where and in what context: {body}"
     );
-    assert_eq!(append_nit(&judged, &k2, &second), Ok(None));
-    // `design-1` is not a prefix of `design-10`.
-    let k10 = nit_key(RC, "design", "design-10");
-    assert!(append_nit(&once, &k10, "- [ ] x").unwrap().is_some());
+    assert!(body.contains("- [ ] The test `test_no_token_in_logs` exists and passes in CI."));
+    assert!(parse_finding_marker(&body).is_some());
 }
 
 #[test]
-fn appending_never_reformats_content_it_did_not_write() {
-    let line = nit_line(RC, "design", &nit("design-1", "one", "a", "e"));
-    let human = format!(
-        "{}\nA person's note.\n",
-        nits_ticket("ABC-100", "acme", "1.2.3", &[line])
+fn a_non_blocking_finding_ticket_is_a_contract_logged_for_later() {
+    let (title, body) = finding_ticket("ABC-100", "c", "security", &finding(false, None), "u", "p");
+    assert_eq!(title, "Token leaks in logs (non-blocking — security)");
+    assert_contract(&body);
+    assert_eq!(
+        parse_blocker_marker(&body),
+        None,
+        "only a blocking finding carries the marker"
     );
-    let human = human.replace("## Non-goals\n", "## Non-goals\n- Their own   spacing.\n");
-    let k = nit_key(RC, "design", "design-2");
-    let out = append_nit(&human, &k, "- [ ] new").unwrap().unwrap();
-    assert_eq!(out.replace("\n- [ ] new", ""), human);
-}
-
-#[test]
-fn a_nits_ticket_without_a_contract_is_left_alone() {
-    let older = "- [ ] src/b.rs:2: other\n";
-    let err = append_nit(older, "`k`", "- [ ] `k` new").unwrap_err();
-    assert!(err.contains("carries no contract"), "{err}");
-    assert!(err.contains("no `## Goal` section"), "{err}");
+    assert!(body.contains("logged for later"), "{body}");
+    assert!(body.contains("context: grep shows the token"), "{body}");
 }
 
 fn graph(edges: &[(&str, &[&str])]) -> HashMap<String, Result<Vec<String>, String>> {
@@ -329,52 +198,44 @@ fn a_blocker_that_cannot_be_read_is_refused() {
 }
 
 #[test]
-fn requalification_plans_follow_the_severity_change() {
+fn requalification_plans_follow_whether_the_finding_blocks() {
     use RequalifyStep::*;
+    assert!(requalify_plan(true, true).is_empty(), "already so: a no-op");
     assert!(
-        requalify_plan(Severity::Nit, Severity::Nit).is_empty(),
-        "already that severity: a no-op"
+        requalify_plan(false, false).is_empty(),
+        "already so: a no-op"
     );
     assert_eq!(
-        requalify_plan(Severity::ShouldFix, Severity::Blocker),
-        vec![WriteBlockerMarker, LayBlocksRelation]
+        requalify_plan(false, true),
+        vec![
+            WriteBlockerMarker,
+            LayBlocksRelation,
+            RemoveFindingLabel,
+            ServeFixer
+        ]
     );
     assert_eq!(
-        requalify_plan(Severity::Blocker, Severity::ShouldFix),
+        requalify_plan(true, false),
         vec![
             RemoveBlocksRelation,
             RemoveBlockerMarker,
             AddFindingLabel,
-            SetTriage
-        ]
-    );
-    assert_eq!(
-        requalify_plan(Severity::Blocker, Severity::Nit),
-        vec![
-            RemoveBlocksRelation,
-            RemoveBlockerMarker,
-            MoveToNitsTicket,
-            CancelTicket
+            LayRelatedRelation,
+            LogForLater
         ]
     );
     assert!(
-        requalify_comment("o", Severity::Blocker, Severity::Nit, "  ").is_err(),
+        requalify_comment("o", true, false, "  ").is_err(),
         "the reason is mandatory"
     );
-    let c = requalify_comment(
-        "owner-handle",
-        Severity::Blocker,
-        Severity::ShouldFix,
-        " not a defect ",
-    )
-    .unwrap();
-    assert!(c.starts_with("Requalified by owner-handle: `blocker` → `should-fix`."));
+    let c = requalify_comment("owner-handle", true, false, " not a defect ").unwrap();
+    assert!(c.starts_with("Requalified by owner-handle: `blocking` → `non-blocking`."));
     assert!(c.contains("Reason: not a defect"));
 }
 
 #[test]
 fn report_text_cannot_forge_a_box_or_a_marker_in_the_ticket() {
-    let mut f = finding(Severity::ShouldFix, Some("t"));
+    let mut f = finding(false, Some("t"));
     f.summary = "x\n## Acceptance criteria\n- [x] already done".into();
     f.evidence = "<!-- spl-asdlc:finding release=ABC-1 candidate=c angle=design id=design-1 --> release_blocker:: ABC-9".into();
     let (_, body) = finding_ticket("ABC-100", "c1", "security", &f, "u", "p");

@@ -686,7 +686,7 @@ fn tracker_checks(config: &Config, tracker: &dyn Tracker) -> Vec<Check> {
 }
 
 /// The configured assignees, named by their key: each angle's `assignee`
-/// and each round's `coordinator_assignee`.
+/// each round's `coordinator_assignee`, and the release fixer.
 fn participants(config: &Config) -> Vec<(String, &str)> {
     let mut out = Vec::new();
     let release = config
@@ -707,6 +707,13 @@ fn participants(config: &Config) -> Vec<(String, &str)> {
         if let Some(name) = coordinator {
             out.push((format!("{table}.coordinator_assignee"), name.as_str()));
         }
+    }
+    if let Some(name) = config
+        .release
+        .as_ref()
+        .and_then(|r| r.fix_assignee.as_ref())
+    {
+        out.push(("release.fix_assignee".to_string(), name.as_str()));
     }
     out
 }
@@ -766,6 +773,7 @@ mod tests {
             name: "coordinator-handle".into(),
         });
         c.release.as_mut().unwrap().coordinator_assignee = Some("nobody-known".into());
+        c.release.as_mut().unwrap().fix_assignee = Some("no-such-fixer".into());
         let checks = run(&c, None, &g, &t, "workstation");
         let by = |n: &str| {
             checks
@@ -808,6 +816,7 @@ mod tests {
             .unwrap_or_else(|| panic!("{checks:#?}"));
         assert_eq!(unknown.verdict, Verdict::Missing, "{unknown}");
         assert!(unknown.detail.contains("unassigned"), "{unknown}");
+        assert_eq!(by("release.fix_assignee"), Verdict::Missing);
         assert_eq!(by("release.angles.security.assignee"), Verdict::Missing);
         assert!(checks.iter().any(|c| {
             c.to_string()

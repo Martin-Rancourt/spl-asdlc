@@ -57,7 +57,7 @@ fn a_minimal_file_gets_every_documented_default() {
     assert_eq!(c.release.as_ref().unwrap().max_rc_passes, 2);
     assert_eq!(c.release.as_ref().unwrap().later_passes, LaterPasses::Full);
     assert_eq!(c.release.as_ref().unwrap().go_policy, GoPolicy::Computed);
-    assert_eq!(c.release.as_ref().unwrap().nits, NitsGrouping::Shared);
+    assert_eq!(c.release.as_ref().unwrap().fix_assignee, None);
     assert_eq!(
         c.release.as_ref().unwrap().record,
         ".spl-asdlc/qa/{candidate}/"
@@ -733,22 +733,42 @@ fn a_bad_release_value_does_not_hide_the_owner_requirement() {
 }
 
 #[test]
-fn the_nits_grouping_is_shared_or_per_nit_and_nothing_else() {
-    let per_nit = MINIMAL.replace("[release]\n", "[release]\nnits = \"per-nit\"\n");
+fn the_nits_grouping_is_gone_and_refused_as_unknown() {
+    for value in ["shared", "per-nit"] {
+        let text = MINIMAL.replace("[release]\n", &format!("[release]\nnits = \"{value}\"\n"));
+        assert_refused_with(&text, "unknown field `nits`");
+    }
+}
+
+#[test]
+fn the_release_fixer_is_an_optional_instance_key_set_in_one_file_only() {
+    let single = MINIMAL.replace(
+        "[release]\n",
+        "[release]\nfix_assignee = \"fixer-handle\"\n",
+    );
     assert_eq!(
-        Config::parse(&per_nit).unwrap().release.unwrap().nits,
-        NitsGrouping::PerNit
+        Config::parse(&single)
+            .unwrap()
+            .release
+            .unwrap()
+            .fix_assignee
+            .as_deref(),
+        Some("fixer-handle")
     );
-    let shared = MINIMAL.replace("[release]\n", "[release]\nnits = \"shared\"\n");
+    let overlay = OVERLAY.replace(
+        "[release]\n",
+        "[release]\nfix_assignee = \"fixer-handle\"\n",
+    );
+    let c = merged(NEUTRAL, &overlay).unwrap();
     assert_eq!(
-        Config::parse(&shared).unwrap().release.unwrap().nits,
-        NitsGrouping::Shared
+        c.release.as_ref().unwrap().fix_assignee.as_deref(),
+        Some("fixer-handle")
     );
-    let other = MINIMAL.replace("[release]\n", "[release]\nnits = \"none\"\n");
-    assert_refused_with(
-        &other,
-        "release.nits: \"none\" is not one of \"shared\", \"per-nit\"",
+    let both = NEUTRAL.replace(
+        "[[release.angles]]\n",
+        "[release]\nfix_assignee = \"another-handle\"\n\n[[release.angles]]\n",
     );
+    assert_merge_refused_with(&both, &overlay, "release.fix_assignee: is set in both");
 }
 
 // ---- without a release cycle (spec 05, spec 08 `[release]`) ----
