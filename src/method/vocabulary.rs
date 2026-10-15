@@ -31,7 +31,7 @@ impl Status {
         Status::Canceled,
     ];
 
-    /// The canonical name, as `spl-asdlc.toml` writes it.
+    /// The canonical name, as the tracker and the bridge write it.
     pub fn name(self) -> &'static str {
         match self {
             Status::Triage => "Triage",

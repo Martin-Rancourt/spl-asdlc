@@ -64,10 +64,6 @@ impl World {
                     strict: false,
                 }),
             );
-            s.files.insert(
-                (repo(), "main".into(), ".github/review-paths.json".into()),
-                Ok(r#"{"paths": ["**/auth/**"]}"#.into()),
-            );
         }
         World {
             config: config(),
@@ -89,7 +85,6 @@ impl World {
             now: crate::github::Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
             deadline: None,
             dry_run,
-            hands_off: None,
         };
         // A dry run keeps its log in memory, as the command line does.
         let mut log = if dry_run {
@@ -294,21 +289,6 @@ fn a_new_angle_sub_item_embeds_the_pr_review_protocol_and_links_the_projects_not
         "{d}"
     );
     assert!(crate::method::contract::missing_from_contract(d).is_empty());
-}
-
-#[test]
-fn an_unreadable_sensitive_list_is_said_once_and_holds_the_merge() {
-    let w = World::new();
-    w.github.state.borrow_mut().files.clear();
-    let mut pr = in_review(&w, 7);
-    pr.reviews = vec![review("coordinator-login", "APPROVED", &pr.head_sha, "ok")];
-    w.open(pr);
-    w.tick(false);
-    w.tick(false);
-    assert!(!w.github_writes().iter().any(|l| l.starts_with("merge")));
-    let notices = w.signal.sent.borrow().clone();
-    assert_eq!(notices.len(), 1, "{notices:?}");
-    assert!(notices[0].starts_with("[stuck-pr]") && notices[0].contains("configuration invalid"));
 }
 
 #[test]
@@ -554,7 +534,6 @@ fn a_dry_run_reads_everything_and_writes_nothing() {
         now: crate::github::Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
         deadline: None,
         dry_run: true,
-        hands_off: None,
     };
     let mut log = ActionLog::in_memory();
     run(&t, &mut log);
@@ -1651,7 +1630,6 @@ fn a_dry_run_says_the_relations_it_would_write() {
         now: crate::github::Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
         deadline: None,
         dry_run: true,
-        hands_off: None,
     };
     let mut log = ActionLog::in_memory();
     run(&t, &mut log);
@@ -1731,13 +1709,11 @@ fn an_unknown_coordinator_leaves_the_item_unassigned_and_it_is_never_reassigned(
 
 // ---- spec 04 §11: a project with no PR review ----
 
-/// The project configures no PR review: no base angle, no path angle, no
-/// sensitive path, no size threshold, no coordinator.
+/// The project configures no PR review: no angle, no size threshold, no
+/// coordinator.
 fn no_review(w: &mut World) {
     let r = &mut w.config.review;
     r.angles.clear();
-    r.path_angles.clear();
-    r.sensitive_paths = None;
     r.diff_size_extra_angle = 0;
     r.coordinators.clear();
     assert!(!r.angle_possible());
@@ -1892,7 +1868,6 @@ fn a_dry_run_shows_a_merge_with_no_pr_review() {
         now: crate::github::Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
         deadline: None,
         dry_run: true,
-        hands_off: None,
     };
     let mut log = ActionLog::in_memory();
     run(&t, &mut log);
@@ -2056,18 +2031,26 @@ fn a_round_keeps_the_angles_still_asked_for_and_cancels_the_others() {
     );
 }
 
-/// No base angle, but sensitive paths can add one: a coordinator approves.
-fn sensitive_only(w: &mut World) {
+/// No angle on every PR, but one on its paths: a coordinator approves.
+fn paths_only(w: &mut World) {
+    let security = w
+        .config
+        .review
+        .angles
+        .iter()
+        .find(|a| a.key == "security")
+        .cloned()
+        .expect("the example's angle on paths");
     no_review(w);
-    w.config.review.sensitive_paths = Some(".github/review-paths.json".into());
+    w.config.review.angles = vec![security];
     w.config.review.coordinators = vec!["coordinator-login".into()];
     assert!(w.config.review.angle_possible());
 }
 
 #[test]
-fn a_sensitive_path_still_opens_a_round_that_needs_the_coordinator() {
+fn an_angles_path_still_opens_a_round_that_needs_the_coordinator() {
     let mut w = World::new();
-    sensitive_only(&mut w);
+    paths_only(&mut w);
     let pr = ready_pr(&w);
     w.github
         .state
@@ -2090,7 +2073,7 @@ fn a_sensitive_path_still_opens_a_round_that_needs_the_coordinator() {
     w.tick(false);
     assert!(!merged(&w));
     // Approved after its angle: merged as a reviewed PR. It still touches
-    // the sensitive path (opening it again reset its files).
+    // the angle's path (opening it again reset its files).
     w.open(approved(&w, pr));
     w.github
         .state
@@ -2108,7 +2091,7 @@ fn a_sensitive_path_still_opens_a_round_that_needs_the_coordinator() {
 #[test]
 fn a_pr_that_gets_no_angle_merges_with_no_round_where_others_may_get_one() {
     let mut w = World::new();
-    sensitive_only(&mut w);
+    paths_only(&mut w);
     ready_pr(&w);
     let (report, _) = w.tick(false);
     assert!(report.ok(), "{report:?}");
@@ -2130,162 +2113,6 @@ fn an_unread_diff_holds_a_pr_with_no_angle_and_opens_no_round() {
     assert!(!report.ok(), "the unread diff is reported");
     assert!(!merged(&w));
     assert!(children_of(&w, "ABC-7").is_empty());
-}
-
-// ---- without a release cycle (spec 05, "Without a release cycle") ----
-
-/// A project whose configuration has no `[release]` section.
-fn without_release() -> World {
-    let mut w = World::new();
-    w.config.release = None;
-    w
-}
-
-#[test]
-fn without_a_release_cycle_a_merge_with_every_box_checked_is_done_once() {
-    let w = without_release();
-    let pr = in_review(&w, 7);
-    check_every_box(&w, "ABC-7");
-    w.open(approved(&w, pr.clone()));
-    let (report, _) = w.tick(false);
-    assert!(report.ok(), "{report:?}");
-    assert!(w.github_writes().iter().any(|l| l.starts_with("merge")));
-    assert_eq!(
-        w.tracker.item("ABC-7").state.status,
-        Some(Status::Done),
-        "merging is delivering"
-    );
-    let comment = merge_comment(&w, "ABC-7", &pr);
-    assert!(comment.contains("state: Done"), "{comment}");
-    assert!(comment.contains("no release cycle"), "{comment}");
-    assert!(
-        children_of(&w, "ABC-7").iter().all(|c| texts::bridge_item(
-            &c.description,
-            c.parent.as_deref()
-        )
-        .is_some()),
-        "no validation sub-task: nothing waits in production"
-    );
-    quiet(&w);
-}
-
-#[test]
-fn without_a_release_cycle_a_merge_that_leaves_a_box_open_sends_the_ticket_back_to_work() {
-    let w = without_release();
-    let pr = in_review(&w, 7);
-    w.open(approved(&w, pr.clone()));
-    w.tick(false);
-    assert_eq!(
-        w.tracker.item("ABC-7").state.status,
-        Some(Status::InProgress)
-    );
-    quiet(&w);
-}
-
-#[test]
-fn without_a_release_cycle_post_deploy_boxes_wait_in_post_deploy_then_done() {
-    let w = without_release();
-    let pr = in_review(&w, 7);
-    let post = COMPLETE.replace("- [ ] it is fast", "- [x] it is fast")
-        + "\n## Post deploy\n- [ ] it runs in production\n";
-    crate::tracker::Tracker::update_description(&w.tracker, "ABC-7", &post).unwrap();
-    w.open(approved(&w, pr.clone()));
-    let (report, _) = w.tick(false);
-    assert!(report.ok(), "{report:?}");
-    // Fail closed: never Done before the production check.
-    let ticket = w.tracker.item("ABC-7");
-    assert_eq!(ticket.state.status, Some(Status::PostDeploy));
-    assert!(
-        ticket
-            .labels
-            .iter()
-            .any(|l| l == "post-deploy-validation/acme"),
-        "the post-deploy pass finds it: {:?}",
-        ticket.labels
-    );
-    let marker = texts::post_deploy_validation_marker("ABC-7");
-    let tasks: Vec<_> = children_of(&w, "ABC-7")
-        .into_iter()
-        .filter(|c| texts::has_marker(&c.description, &marker))
-        .collect();
-    assert_eq!(tasks.len(), 1, "one validation sub-task");
-    assert!(merge_comment(&w, "ABC-7", &pr).contains("state: Post Deploy"));
-    quiet(&w);
-
-    // The production check is ticked: the post-deploy pass closes it.
-    let checked = post.replace("- [ ] it runs", "- [x] it runs");
-    crate::tracker::Tracker::update_description(&w.tracker, "ABC-7", &checked).unwrap();
-    let (report, _) = w.tick(false);
-    assert!(report.ok(), "{report:?}");
-    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::Done));
-    quiet(&w);
-}
-
-#[test]
-fn without_a_release_cycle_a_pr_merged_outside_the_bridge_is_swept_to_done_once() {
-    let w = without_release();
-    let mut pr = pull_request(9);
-    pr.state = PrState::Merged;
-    pr.merged_at = crate::github::Timestamp::parse("2026-10-05T10:00:00Z");
-    w.ticket("ABC-9", Status::InReview, &pr);
-    check_every_box(&w, "ABC-9");
-    w.github
-        .state
-        .borrow_mut()
-        .merged_pulls
-        .insert(repo(), Ok(vec![pr]));
-    w.tick(false);
-    assert_eq!(w.tracker.item("ABC-9").state.status, Some(Status::Done));
-    quiet(&w);
-}
-
-#[test]
-fn without_a_release_cycle_a_complete_ticket_whose_last_pr_closes_unmerged_is_done() {
-    let w = without_release();
-    let pr = in_review(&w, 7);
-    check_every_box(&w, "ABC-7");
-    // An earlier PR of the ticket was merged.
-    crate::tracker::Tracker::comment(
-        &w.tracker,
-        "ABC-7",
-        &texts::merged_comment(
-            "https://github.com/example-org/acme/pull/6",
-            "main",
-            None,
-            "In Progress",
-            "a box remained",
-        ),
-    )
-    .unwrap();
-    close_unmerged(&w, &pr);
-    let (report, _) = w.tick(false);
-    assert!(report.ok(), "{report:?}");
-    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::Done));
-    quiet(&w);
-}
-
-#[test]
-fn adding_a_release_section_later_switches_to_the_full_flow_and_leaves_done_tickets_done() {
-    let mut w = without_release();
-    let first = in_review(&w, 7);
-    check_every_box(&w, "ABC-7");
-    w.open(approved(&w, first.clone()));
-    w.tick(false);
-    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::Done));
-
-    // `[release]` is added: no migration, the Done ticket stays Done.
-    w.config.release = config().release;
-    quiet(&w);
-    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::Done));
-
-    // The next merge waits for a release, as with a release cycle always.
-    let second = in_review(&w, 8);
-    check_every_box(&w, "ABC-8");
-    w.open(approved(&w, second.clone()));
-    w.tick(false);
-    assert_eq!(w.tracker.item("ABC-8").state.status, Some(Status::ToDeploy));
-    assert!(merge_comment(&w, "ABC-8", &second).contains("state: To Deploy"));
-    quiet(&w);
 }
 
 // ---- spec 04 §6: a request for changes the coordinator's approval supersedes ----
@@ -2443,7 +2270,6 @@ fn a_dry_run_prints_the_dismissals_before_the_merge() {
         now: crate::github::Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
         deadline: None,
         dry_run: true,
-        hands_off: None,
     };
     let mut log = ActionLog::in_memory();
     run(&t, &mut log);
@@ -2472,117 +2298,4 @@ fn a_dry_run_prints_the_dismissals_before_the_merge() {
         .position(|l| l == "github example-org/acme: merge #7 at head-7 (squash)")
         .expect("then the merge");
     assert!(dismissal < merge, "{intents:?}");
-}
-
-// ---- the hands-off label (spec 07, spec 09) ----
-
-const HANDS_OFF: &str = "spl-asdlc:hands-off";
-
-#[test]
-fn a_pr_under_the_hands_off_label_is_never_merged_until_the_label_is_removed() {
-    let mut w = World::new();
-    no_review(&mut w);
-    let mut pr = green(pull_request(7));
-    pr.labels = vec![HANDS_OFF.into()];
-    w.ticket("ABC-7", Status::InProgress, &pr);
-    check_every_box(&w, "ABC-7");
-    w.open(pr.clone());
-    let tracker_before = w.tracker.writes().len();
-    let (report, log) = w.tick(false);
-    assert!(report.ok(), "{report:?}");
-    assert_eq!(report.hands_off_lines(), vec!["hands-off: pr#7"]);
-    assert!(
-        report.waiting.is_empty(),
-        "hands-off is not waiting: {report:?}"
-    );
-    assert!(w.github_writes().is_empty(), "{:?}", w.github_writes());
-    assert_eq!(
-        w.tracker.writes().len(),
-        tracker_before,
-        "nothing moved because of it"
-    );
-    let notes: Vec<(&str, &str)> = log
-        .entries()
-        .iter()
-        .map(|e| (e.object.as_str(), e.action.as_str()))
-        .collect();
-    assert_eq!(notes, vec![("pr#7", crate::action_log::HANDS_OFF)]);
-    // The next tick says it again, and the log does not.
-    let (report, log) = w.tick(false);
-    assert_eq!(report.hands_off_lines(), vec!["hands-off: pr#7"]);
-    assert!(log.entries().is_empty(), "{:?}", log.entries());
-    assert!(!merged(&w));
-
-    // The label removed: handed back, the next tick merges it.
-    pr.labels.clear();
-    w.open(pr);
-    let (report, _) = w.tick(false);
-    assert!(report.ok(), "{report:?}");
-    assert!(report.hands_off.is_empty(), "{report:?}");
-    assert!(merged(&w), "{:?}", w.github_writes());
-    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::ToDeploy));
-}
-
-#[test]
-fn a_pr_under_the_hands_off_label_gets_no_review_round_and_no_comment() {
-    let w = World::new();
-    let mut pr = green(pull_request(7));
-    pr.labels = vec![HANDS_OFF.into()];
-    w.ticket("ABC-7", Status::InProgress, &pr);
-    w.open(pr);
-    let (report, _) = w.tick(false);
-    assert!(report.ok(), "{report:?}");
-    assert_eq!(report.hands_off_lines(), vec!["hands-off: pr#7"]);
-    assert!(children_of(&w, "ABC-7").is_empty(), "no round opened");
-    assert_eq!(
-        w.tracker.item("ABC-7").state.status,
-        Some(Status::InProgress)
-    );
-    assert!(w.github_writes().is_empty(), "{:?}", w.github_writes());
-}
-
-#[test]
-fn a_ticket_under_the_hands_off_label_is_never_written_and_is_handed_back_when_it_goes() {
-    let mut w = World::new();
-    no_review(&mut w);
-    let pr = green(pull_request(7));
-    w.tracker.seed(
-        "ABC-7",
-        "A ticket",
-        COMPLETE,
-        Status::InProgress,
-        &[HANDS_OFF],
-    );
-    w.tracker.link("ABC-7", &pr.url);
-    check_every_box(&w, "ABC-7");
-    w.open(pr.clone());
-    let tracker_before = w.tracker.writes().len();
-    // Its PR merges; the ticket stays as the person put it, tick after tick.
-    for _ in 0..2 {
-        let (report, _) = w.tick(false);
-        assert!(report.ok(), "{report:?}");
-        assert_eq!(report.hands_off_lines(), vec!["hands-off: ABC-7"]);
-        assert_eq!(
-            w.tracker.item("ABC-7").state.status,
-            Some(Status::InProgress)
-        );
-        assert_eq!(
-            w.tracker.writes().len(),
-            tracker_before,
-            "{:?}",
-            &w.tracker.writes()[tracker_before..]
-        );
-    }
-    assert!(
-        merged(&w),
-        "the PR is not under the label: {:?}",
-        w.github_writes()
-    );
-
-    // The label removed: the next tick gives the ticket the merge's transition.
-    crate::tracker::Tracker::remove_label(&w.tracker, "ABC-7", HANDS_OFF).unwrap();
-    let (report, _) = w.tick(false);
-    assert!(report.ok(), "{report:?}");
-    assert!(report.hands_off.is_empty(), "{report:?}");
-    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::ToDeploy));
 }

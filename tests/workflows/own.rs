@@ -266,7 +266,7 @@ fn no_file_a_test_reads_is_prose() {
     for read in [
         "docs/spec/08-configuration.md",
         "docs/business-rules.md",
-        "docs/setup/templates/spl-asdlc.toml",
+        "docs/setup/templates/config.toml",
         "docs/setup/examples/pr.yml",
         "README.md",
     ] {

@@ -75,7 +75,7 @@ fn a_valid_file_exits_zero_and_says_what_it_read() {
 }
 
 #[test]
-fn a_file_without_a_release_section_is_valid_and_says_there_is_no_release_cycle() {
+fn a_file_without_a_release_section_is_refused_every_project_has_the_cycle() {
     let text = spec_example();
     let start = text.find("[release]\n").unwrap();
     let end = text.find("[review]\n").unwrap();
@@ -84,9 +84,33 @@ fn a_file_without_a_release_section_is_valid_and_says_there_is_no_release_cycle(
         &format!("{}{}", &text[..start], &text[end..]),
     );
     let out = check(&path);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("release: the [release] section is required"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn the_default_file_is_the_one_in_the_methods_folder() {
+    let dir = std::env::temp_dir().join(format!("spl-asdlc-cli-default-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join(".spl-asdlc")).unwrap();
+    std::fs::write(dir.join(".spl-asdlc/config.toml"), spec_block(0)).unwrap();
+    std::fs::write(dir.join(".spl-asdlc/config.instance.toml"), spec_block(1)).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_spl-asdlc"))
+        .args(["config", "check"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains(", no release cycle, "), "{stdout}");
+    assert!(
+        stdout.starts_with(".spl-asdlc/config.toml with .spl-asdlc/config.instance.toml: valid"),
+        "{stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -108,7 +132,7 @@ fn an_invalid_file_exits_one_and_lists_every_problem() {
 
 #[test]
 fn a_missing_file_exits_two() {
-    let out = check(std::path::Path::new("does-not-exist/spl-asdlc.toml"));
+    let out = check(std::path::Path::new("does-not-exist/config.toml"));
     assert_eq!(out.status.code(), Some(2), "{out:?}");
 }
 
@@ -127,10 +151,10 @@ fn neutral_pair(dir: &str, with_overlay: bool) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("spl-asdlc-cli-{dir}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("spl-asdlc.toml");
+    let path = dir.join("config.toml");
     std::fs::write(&path, spec_block(0)).unwrap();
     if with_overlay {
-        std::fs::write(dir.join("spl-asdlc.instance.toml"), spec_block(1)).unwrap();
+        std::fs::write(dir.join("config.instance.toml"), spec_block(1)).unwrap();
     }
     path
 }
@@ -142,7 +166,7 @@ fn the_overlay_beside_the_file_is_merged_and_named() {
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("spl-asdlc.instance.toml: valid — product acme (example-org/acme)"),
+        stdout.contains("config.instance.toml: valid — product acme (example-org/acme)"),
         "{stdout}"
     );
 }

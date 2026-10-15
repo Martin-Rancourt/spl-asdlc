@@ -11,10 +11,7 @@
 //! found its effect already in place is not an entry, and the file is not
 //! even created until there is something to say. A PR the merge pass holds
 //! is noted ([`Outcome::Waiting`]) only when the reason it waits, or its
-//! head, changes: the tick's report says it every time, the log once. An
-//! item or PR under the hands-off label is noted the same way, once when the
-//! tick first leaves it alone; the next entry about it that is not that note
-//! (the bridge acting on it again) ends it.
+//! head, changes: the tick's report says it every time, the log once.
 
 use std::collections::BTreeMap;
 use std::fs::OpenOptions;
@@ -35,17 +32,12 @@ pub enum Outcome {
     Failed(String),
     /// A dry run: the action the tick would take.
     WouldDo,
-    /// Nothing was done: a PR the merge pass holds, and why (the inputs),
-    /// or an object under the hands-off label ([`HANDS_OFF`]).
+    /// Nothing was done: a PR the merge pass holds, and why (the inputs).
     Waiting,
 }
 
 /// The action of an [`Outcome::Waiting`] entry.
 pub const WAITING: &str = "waiting";
-
-/// The action of the [`Outcome::Waiting`] entry that notes an object under
-/// the hands-off label.
-pub const HANDS_OFF: &str = "hands-off";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
@@ -71,9 +63,6 @@ pub struct ActionLog {
     /// The last waiting note of each (repository, object), read back from
     /// the file the first time one is noted.
     waits: Option<BTreeMap<(String, String), Value>>,
-    /// The (repository, object) pairs whose last entry is a hands-off note,
-    /// read back from the file the first time one is noted.
-    held: Option<std::collections::BTreeSet<(String, String)>>,
 }
 
 impl ActionLog {
@@ -103,9 +92,6 @@ impl ActionLog {
         inputs: Value,
         outcome: Outcome,
     ) {
-        if let Some(held) = &mut self.held {
-            held.remove(&(repo.to_string(), object.to_string()));
-        }
         self.entries.push(Entry {
             at: at.to_string(),
             repo: repo.to_string(),
@@ -136,35 +122,6 @@ impl ActionLog {
         }
         waits.insert(key, inputs.clone());
         self.record(at, repo, object, WAITING, inputs, Outcome::Waiting);
-        true
-    }
-
-    /// Note that the tick left an object under the hands-off label alone,
-    /// unless its last entry already says so. Returns whether it was noted.
-    pub fn note_hands_off(
-        &mut self,
-        at: Timestamp,
-        repo: &RepoSlug,
-        object: &str,
-        label: &str,
-    ) -> bool {
-        let key = (repo.to_string(), object.to_string());
-        let path = self.path.as_deref();
-        let held = self.held.get_or_insert_with(|| last_held(path));
-        if held.contains(&key) {
-            return false;
-        }
-        self.record(
-            at,
-            repo,
-            object,
-            HANDS_OFF,
-            json!({"label": label}),
-            Outcome::Waiting,
-        );
-        if let Some(held) = &mut self.held {
-            held.insert(key);
-        }
         true
     }
 
@@ -294,25 +251,6 @@ fn last_waits(path: Option<&Path>) -> BTreeMap<(String, String), Value> {
         .collect()
 }
 
-/// The (repository, object) pairs whose last entry in a log file is a
-/// hands-off note.
-fn last_held(path: Option<&Path>) -> std::collections::BTreeSet<(String, String)> {
-    let entries = path
-        .and_then(|p| ActionLog::read(p).ok())
-        .map(|(entries, _)| entries)
-        .unwrap_or_default();
-    let mut held = std::collections::BTreeSet::new();
-    for e in entries {
-        let key = (e.repo, e.object);
-        if e.outcome == Outcome::Waiting && e.action == HANDS_OFF {
-            held.insert(key);
-        } else {
-            held.remove(&key);
-        }
-    }
-    held
-}
-
 /// One line of the human-readable account of a tick (`tick --dry-run`
 /// prints these).
 pub fn describe(e: &Entry) -> String {
@@ -320,10 +258,6 @@ pub fn describe(e: &Entry) -> String {
         Outcome::Done => "done".to_string(),
         Outcome::Failed(d) => format!("FAILED: {d}"),
         Outcome::WouldDo => "would do".to_string(),
-        Outcome::Waiting if e.action == HANDS_OFF => {
-            let label = e.inputs["label"].as_str().unwrap_or_default();
-            return format!("{} {} {}: hands-off — {label}", e.at, e.repo, e.object);
-        }
         Outcome::Waiting => {
             let reason = e.inputs["reason"].as_str().unwrap_or_default();
             return format!("{} {} {}: waiting — {reason}", e.at, e.repo, e.object);
@@ -458,42 +392,6 @@ mod tests {
             ActionLog::in_memory().note_waiting(at(), &repo(), "pr#7", "h2", "red"),
             "a log without a file remembers nothing"
         );
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn a_hands_off_object_is_noted_when_it_starts_not_at_every_tick() {
-        let dir = std::env::temp_dir().join(format!("spl-asdlc-log-h-{}", std::process::id()));
-        let path = dir.join("acme-widget.jsonl");
-        let _ = std::fs::remove_file(&path);
-        let label = "spl-asdlc:hands-off";
-        let tick = |f: &dyn Fn(&mut ActionLog) -> bool| {
-            let mut log = ActionLog::at(path.clone());
-            let noted = f(&mut log);
-            log.flush().unwrap();
-            noted
-        };
-        let note = |log: &mut ActionLog| log.note_hands_off(at(), &repo(), "ABC-3", label);
-        assert!(tick(&note), "the first tick that leaves it alone");
-        assert!(!tick(&note), "still hands off: not noted again");
-        // Handed back: the bridge acts on it again, then a person takes it
-        // over once more.
-        assert!(!tick(&|log| {
-            log.record(
-                at(),
-                &repo(),
-                "ABC-3",
-                "status To Deploy",
-                json!({}),
-                Outcome::Done,
-            );
-            false
-        }));
-        assert!(tick(&note), "taken over again after the bridge acted");
-        let (entries, _) = ActionLog::read(&path).unwrap();
-        let actions: Vec<&str> = entries.iter().map(|e| e.action.as_str()).collect();
-        assert_eq!(actions, vec![HANDS_OFF, "status To Deploy", HANDS_OFF]);
-        assert_eq!(entries[0].outcome, Outcome::Waiting);
         let _ = std::fs::remove_dir_all(dir);
     }
 

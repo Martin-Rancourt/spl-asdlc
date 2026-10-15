@@ -1,15 +1,15 @@
 //! The setup files a project copies (`docs/setup/templates/`) and this
-//! repository's own (`.github/review-paths.json`, the release-please
-//! configuration and manifest): each is read by the parser that reads it in
-//! production, never by a copy of its rules.
+//! repository's own (the release-please configuration and manifest): each is
+//! read by the parser that reads it in production, never by a copy of its
+//! rules.
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 use serde_json::Value;
 use spl_asdlc::config::Config;
-use spl_asdlc::method::{business_rules, contract, glob, review};
+use spl_asdlc::method::{business_rules, contract};
 use yaml_rust2::YamlLoader;
 
 #[path = "support/template.rs"]
@@ -44,14 +44,13 @@ fn fenced(text: &str, lang: &str) -> String {
 }
 
 const TOML: &str = template::PATH;
-const PATHS: &str = "docs/setup/templates/review-paths.json";
 const REGISTRY: &str = "docs/setup/templates/business-rules.md";
 const TICKET: &str = "docs/setup/templates/ticket.md";
 
 // ---- the templates ----
 
-/// The template as written is the light configuration: no PR review, no
-/// release cycle, no sensitive path, no channel.
+/// The template as written is the light configuration: no PR review, the
+/// release cycle with no QA angle, no channel.
 #[test]
 fn the_configuration_template_is_valid_as_written_and_light() {
     let c = Config::parse(&read(TOML)).unwrap_or_else(|e| panic!("{TOML}: {e}"));
@@ -59,14 +58,28 @@ fn the_configuration_template_is_valid_as_written_and_light() {
     assert_eq!(c.product.repository, "example-org/acme");
     assert!(!c.review.angle_possible(), "no PR review (spec 04 §11)");
     assert!(c.review.coordinators.is_empty());
-    assert!(c.review.sensitive_paths.is_none());
-    assert!(c.release.is_none(), "no release cycle (spec 05)");
+    assert!(
+        c.release.angles.is_empty(),
+        "the GO rests on the release CI"
+    );
+    assert!(c.release.coordinators.is_empty());
     assert!(c.notify.is_empty(), "no channel is configured by default");
     // No PR review is said, never assumed: without `angles = []` the file is
     // refused.
     let absent = read(TOML).replacen("\nangles = []", "\n# angles = []", 1);
     let errs = Config::parse(&absent).expect_err("absent angles are refused");
     assert!(errs.to_string().contains("review.angles"), "{errs}");
+    // Every project has the release cycle: without its section the file is
+    // refused.
+    let start = read(TOML).find("\n[release]").unwrap();
+    let end = start + read(TOML)[start..].find("\n# [bridge]").unwrap();
+    let without = format!("{}{}", &read(TOML)[..start], &read(TOML)[end..]);
+    let errs = Config::parse(&without).expect_err("no [release] is refused");
+    assert!(
+        errs.to_string()
+            .contains("the [release] section is required"),
+        "{errs}"
+    );
 }
 
 fn parse(text: &str) -> Config {
@@ -82,34 +95,30 @@ fn each_layer_of_the_configuration_template_is_valid() {
     let c = parse(&template::pr_review(&light));
     assert!(c.review.angle_possible());
     assert_eq!(c.review.coordinators, ["coordinator-login"]);
-    assert!(c.release.is_none());
-
-    let c = parse(&template::release_cycle(&light));
-    assert!(!c.review.angle_possible(), "the layers are independent");
-    let release = c.release.expect("a release cycle");
-    assert!(release.angles.is_empty(), "the GO rests on the gate");
-    assert!(release.coordinators.is_empty());
-
-    let c = parse(&template::release_angles(&template::release_cycle(&light)));
-    let release = c.release.unwrap();
-    let keys: Vec<&str> = release.angles.iter().map(|a| a.key.as_str()).collect();
-    assert_eq!(keys, ["security", "product"]);
-    assert_eq!(release.coordinators, ["coordinator-login"]);
-
-    // Declared, so the review-paths template is part of the layer, and an
-    // absent file holds every PR (spec 08 rule 5).
-    let c = parse(&template::sensitive_paths(&light));
+    let angles: Vec<(&str, usize)> = c
+        .review
+        .angles
+        .iter()
+        .map(|a| (a.key.as_str(), a.paths.len()))
+        .collect();
     assert_eq!(
-        c.review.sensitive_paths.as_deref(),
-        Some(".github/review-paths.json")
+        angles,
+        [("maintainability", 0), ("security", 2)],
+        "one angle on every PR, one on its paths"
     );
-    assert_eq!(c.review.coordinators, ["coordinator-login"]);
+    assert!(c.release.angles.is_empty(), "the layers are independent");
+
+    let c = parse(&template::release_angles(&light));
+    assert!(!c.review.angle_possible(), "the layers are independent");
+    let keys: Vec<&str> = c.release.angles.iter().map(|a| a.key.as_str()).collect();
+    assert_eq!(keys, ["security", "product"]);
+    assert_eq!(c.release.coordinators, ["coordinator-login"]);
 
     let c = parse(&template::full());
     assert!(c.review.angle_possible());
-    assert!(c.review.sensitive_paths.is_some());
     assert_eq!(c.review.coordinators, ["coordinator-login"]);
-    assert_eq!(c.release.unwrap().angles.len(), 2);
+    assert_eq!(c.release.angles.len(), 2);
+    assert_eq!(c.release.coordinators, ["coordinator-login"]);
 }
 
 #[test]
@@ -122,9 +131,9 @@ fn config_check_accepts_the_configuration_template() {
 fn the_configuration_template_names_the_example_callers() {
     let c = parse(&template::full());
     for wf in [
-        &c.release.as_ref().unwrap().cut_workflow,
-        &c.release.as_ref().unwrap().gate_workflow,
-        &c.release.as_ref().unwrap().gate_rerun_workflow,
+        &c.release.cut_workflow,
+        &c.release.gate_workflow,
+        &c.release.gate_rerun_workflow,
     ] {
         assert!(
             root().join("docs/setup/examples").join(wf).is_file(),
@@ -139,20 +148,6 @@ fn the_configuration_template_names_its_identities_by_placeholder() {
     for placeholder in ["owner-handle", "coordinator-login", "example-org/acme"] {
         assert!(text.contains(placeholder), "{placeholder}");
     }
-}
-
-#[test]
-fn the_sensitive_path_template_parses_and_lists_itself() {
-    let paths = review::parse_sensitive_paths(&read(PATHS)).unwrap();
-    assert!(
-        !glob::hits(&[".github/review-paths.json".to_string()], &paths).is_empty(),
-        "the list must name itself: {paths:?}"
-    );
-    let v = json(PATHS);
-    assert!(
-        v["exceptions"].is_array(),
-        "the exceptions list is documented"
-    );
 }
 
 #[test]
@@ -201,68 +196,6 @@ fn an_unedited_business_rules_placeholder_is_read_as_a_rule_never_as_none() {
 }
 
 // ---- this repository's own files ----
-
-const OWN_PATHS: &str = ".github/review-paths.json";
-
-#[test]
-fn this_repositorys_sensitive_paths_parse_and_cover_what_releases_and_authenticates() {
-    let paths = review::parse_sensitive_paths(&read(OWN_PATHS)).unwrap();
-    for sensitive in [
-        ".github/review-paths.json",
-        ".github/workflows/asdlc-release-cut.yml",
-        ".github/workflows/pr.yml",
-        ".github/workflows/binaries.yml",
-        "actions/required-check/action.yml",
-        "scripts/check-no-instance-names.sh",
-        "src/github/auth.rs",
-        "Cargo.toml",
-        "Cargo.lock",
-    ] {
-        assert!(
-            !glob::hits(&[sensitive.to_string()], &paths).is_empty(),
-            "{sensitive} is not covered by {paths:?}"
-        );
-    }
-    for ordinary in [
-        "src/tick/mod.rs",
-        "docs/spec/08-configuration.md",
-        "README.md",
-    ] {
-        assert!(
-            glob::hits(&[ordinary.to_string()], &paths).is_empty(),
-            "{ordinary} is not meant to be sensitive"
-        );
-    }
-    // Every glob names something that exists: a typo would protect nothing.
-    let tracked = tracked_files();
-    for p in &paths {
-        assert!(
-            !glob::hits(&tracked, std::slice::from_ref(p)).is_empty(),
-            "{p} matches no file of the repository"
-        );
-    }
-}
-
-fn tracked_files() -> Vec<String> {
-    let mut out = Vec::new();
-    collect(&root(), &root(), &mut out);
-    out
-}
-
-fn collect(base: &Path, dir: &Path, out: &mut Vec<String>) {
-    for e in std::fs::read_dir(dir).unwrap().flatten() {
-        let p = e.path();
-        let name = e.file_name().to_string_lossy().to_string();
-        if p.is_dir() {
-            if name == "target" || name == ".git" || name == ".claude" {
-                continue;
-            }
-            collect(base, &p, out);
-        } else {
-            out.push(glob::repo_path(p.strip_prefix(base).unwrap()));
-        }
-    }
-}
 
 #[test]
 fn this_repositorys_release_please_files_make_the_existing_tags() {

@@ -24,7 +24,7 @@ use crate::method::checks::{self, CheckState};
 use crate::method::contract;
 use crate::method::release::findings;
 use crate::method::release::prs::trusted_author;
-use crate::method::review::{self, Approval, BranchState, ReviewFacts, SensitivePaths};
+use crate::method::review::{self, Approval, BranchState, ReviewFacts};
 use crate::method::texts::{self, BridgeItem};
 use crate::method::ticket_state::{self, Facts, OpenPr};
 use crate::method::vocabulary::{Status, TICKETLESS_LABEL};
@@ -36,7 +36,6 @@ use super::{Report, Tick};
 /// What the base of a PR says, read once per base and tick.
 struct Base {
     required: Result<RequiredChecks, String>,
-    sensitive: SensitivePaths,
 }
 
 /// A PR the pass found ready to merge.
@@ -274,10 +273,6 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> Pass {
             report.out_of_time = true;
             break;
         }
-        // Taken over by hand: still live work on its ticket, never judged.
-        if t.by_hand(report, &pr) {
-            continue;
-        }
         let base = bases
             .entry(pr.base_ref.clone())
             .or_insert_with(|| read_base(t, &pr.base_ref));
@@ -293,21 +288,7 @@ fn read_base(t: &Tick, base: &str) -> Base {
         .github
         .required_checks(&t.repo, base)
         .map_err(|e| e.to_string());
-    let sensitive = match &t.config.review.sensitive_paths {
-        None => SensitivePaths::NotDeclared,
-        // Read at the base: a PR cannot weaken the list that judges it.
-        Some(path) => match t.github.file(&t.repo, path, base) {
-            Ok(text) => match review::parse_sensitive_paths(&text) {
-                Ok(paths) => SensitivePaths::Paths(paths),
-                Err(e) => SensitivePaths::Invalid(format!("{path} is invalid: {e}")),
-            },
-            Err(e) => SensitivePaths::Invalid(format!("{path} could not be read at {base}: {e}")),
-        },
-    };
-    Base {
-        required,
-        sensitive,
-    }
+    Base { required }
 }
 
 /// One PR, up to the point where something holds it. The exclusions were
@@ -626,25 +607,10 @@ fn one(
             changed_paths: files.as_deref(),
             additions: pr.additions,
             deletions: pr.deletions,
-            sensitive: &base.sensitive,
             skipped_required: skipped.as_deref(),
         },
         &t.config.review,
     );
-    if let SensitivePaths::Invalid(why) = &base.sensitive {
-        notify_once(
-            t,
-            log,
-            report,
-            &pr,
-            "stuck-pr",
-            "config-invalid",
-            &format!(
-                "{}: configuration invalid for this repository — {why}. The PR waits.",
-                pr.url
-            ),
-        );
-    }
     let head = texts::short(&pr.head_sha);
     let changes_at_head = review::changes_requested_at_head(&pr, &t.config.review.coordinators);
     let changes_wait =
@@ -803,7 +769,7 @@ fn one(
         t.wait(report, &pr, format!("it is behind {}", pr.base_ref));
         return None;
     }
-    if review::needs_human_approval(&t.config.review, &plan) {
+    if review::needs_human_approval(&t.config.review) {
         t.wait(
             report,
             &pr,
@@ -871,7 +837,7 @@ fn unreviewed(
     if branch != BranchState::Current {
         return None;
     }
-    if review::needs_human_approval(&t.config.review, plan) {
+    if review::needs_human_approval(&t.config.review) {
         ask_human(t, log, report, &pr, false);
         return None;
     }
@@ -1157,8 +1123,8 @@ fn reopen_for_open_pr(
 /// A merged PR's ticket goes where the state rules say (spec 04 §10,
 /// BR-ASDLC-008): In Review while another of its PRs is in review, In
 /// Progress while a box of its contract is open, otherwise To Deploy, or,
-/// without a release cycle, Done (Post Deploy while its own `## Post
-/// deploy` boxes wait); never backwards past the merge (REQ-MERGE-062 as the
+/// with nothing to deploy ([`nothing_to_deploy`]), Done (Post Deploy while
+/// its own `## Post deploy` boxes wait); never backwards past the merge (REQ-MERGE-062 as the
 /// spec corrects it). The merge comment records it, once.
 pub fn after_merge(
     t: &Tick,
@@ -1240,19 +1206,19 @@ pub fn after_merge(
     }
 }
 
-/// Without a release cycle (no `[release]`, `docs/spec/05-release-cycle.md`,
-/// "Without a release cycle") merging is delivering: a ticket the state
-/// rules put To Deploy goes where the Done gate says
-/// ([`ticket_state::delivered`]). With a release cycle, or for any other
-/// state, the rules' answer stands. `Err` when the contract could not be
-/// read in full: nothing is written, the next tick retries.
+/// For a ticket with nothing to deploy ([`nothing_to_deploy`]) merging is
+/// delivering: a ticket the state rules put To Deploy goes where the Done
+/// gate says ([`ticket_state::delivered`]). For any other ticket, or any
+/// other state, the rules' answer stands: To Deploy waits for the release.
+/// `Err` when the contract could not be read in full: nothing is written,
+/// the next tick retries.
 pub fn delivered(
     t: &Tick,
     ticket: &Item,
     to: Status,
     why: ticket_state::Why,
 ) -> Result<(Status, ticket_state::Why), String> {
-    if to != Status::ToDeploy || t.config.release.is_some() {
+    if to != Status::ToDeploy || !nothing_to_deploy(t, ticket) {
         return Ok((to, why));
     }
     let gate = super::closure::contract_gate(t, ticket)?;
@@ -1262,8 +1228,17 @@ pub fn delivered(
     })
 }
 
+/// Whether a merged ticket has nothing to deploy, such as documentation, and
+/// so goes straight to Done rather than To Deploy (`docs/method.md`,
+/// "Merge"). Every project has a release cycle: this is the one way past
+/// it. The explicit sign of it, the `no-deploy` label, is not read yet, so
+/// every merged ticket waits To Deploy for now.
+pub fn nothing_to_deploy(_t: &Tick, _ticket: &Item) -> bool {
+    false
+}
+
 /// Write the status the state rules gave a ticket whose PR resolved; whether
-/// it is in place. Post Deploy (only without a release cycle, at a merge)
+/// it is in place. Post Deploy (only with nothing to deploy, at a merge)
 /// gets its index label first and its validation sub-task after, as at the
 /// closure (BR-ASDLC-003): a replay writes none of them again.
 pub fn set_state(
@@ -1988,65 +1963,6 @@ pub fn say_once(
             t.unreadable(report, &object, format!("the PR's comments: {e}"));
             false
         }
-    }
-}
-
-/// Send a notice once per PR and cause; the marker is written on the PR
-/// after the notice went out (a failed send is retried).
-fn notify_once(
-    t: &Tick,
-    log: &mut ActionLog,
-    report: &mut Report,
-    pr: &PullRequest,
-    event: &str,
-    cause: &str,
-    text: &str,
-) {
-    let object = format!("pr#{}", pr.number);
-    let marker = texts::marker("notice", &[("event", event), ("cause", cause)]);
-    if !t.signal.takes(event) {
-        // No channel takes it: the PR comment is the notice.
-        say_once(
-            t,
-            log,
-            report,
-            pr,
-            "notice",
-            &[("event", event), ("cause", cause)],
-            text,
-        );
-        return;
-    }
-    match pr_said(t, pr.number, &marker) {
-        Ok(true) => {}
-        Ok(false) => {
-            if t.act(
-                log,
-                report,
-                &object,
-                &format!("notify {event}"),
-                json!({"cause": cause}),
-                || t.signal.signal(event, text).map(|_| ()),
-            )
-            .is_some()
-            {
-                let body = format!("{text}\n\n{marker}");
-                t.act(
-                    log,
-                    report,
-                    &object,
-                    &format!("comment {event}"),
-                    json!({}),
-                    || {
-                        t.github
-                            .comment(&t.repo, pr.number, &body)
-                            .map(|_| ())
-                            .map_err(|e| e.to_string())
-                    },
-                );
-            }
-        }
-        Err(e) => t.unreadable(report, &object, format!("the PR's comments: {e}")),
     }
 }
 

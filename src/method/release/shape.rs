@@ -1,5 +1,5 @@
 //! Versions, tags and release branches of a product (REQ-REL-004, 008, 018,
-//! 027, 028): the shape is data from `spl-asdlc.toml`, compiled once.
+//! 027, 028): the shape is data from `.spl-asdlc/config.toml`, compiled once.
 
 use std::fmt;
 use std::sync::LazyLock;
@@ -202,7 +202,7 @@ mod tests {
              [review]\ncoordinators = [\"c\"]\ndiff_size_extra_angle = 0\n[[review.angles]]\nkey = \"m\"\n"
         );
         let c = Config::parse(&text).unwrap();
-        Shape::of(&c.product.name, c.release.as_ref().unwrap())
+        Shape::of(&c.product.name, &c.release)
     }
 
     fn v(s: &str) -> Version {

@@ -2,7 +2,7 @@ name: release-cut
 
 # Example caller of asdlc-release-cut.yml: copy it to .github/workflows/ under
 # this name (`[release] cut_workflow`), replace <owner>, and set the tag
-# patterns to the values of spl-asdlc.toml. The bridge dispatches it with one
+# patterns to the values of .spl-asdlc/config.toml. The bridge dispatches it with one
 # input, `action`: `open` on the default branch, `candidate` on the release
 # branch in flight (by hand: `gh workflow run release-cut.yml --ref
 # release/<stamp>-utc -f action=candidate`, never `--ref main`). Every other
@@ -27,7 +27,7 @@ on:
         default: open
         required: true
       class:
-        description: '`routine` or `sensible`; empty computes it from .github/review-paths.json.'
+        description: '`routine` or `sensible`; empty computes it from the paths of the review angles.'
         type: choice
         options: ['', routine, sensible]
         default: ''
@@ -71,6 +71,7 @@ jobs:
       release-tag: acme-v{version}
       spl-asdlc-repository: <owner>/spl-asdlc
       spl-asdlc-version: latest
+      config-file: .spl-asdlc/config.toml
     secrets:
       SPL_ASDLC_APP_ID: ${{ secrets.SPL_ASDLC_APP_ID }}
       SPL_ASDLC_APP_PRIVATE_KEY: ${{ secrets.SPL_ASDLC_APP_PRIVATE_KEY }}

@@ -1,7 +1,7 @@
 //! The instance overlay (`docs/spec/08-configuration.md`, "The instance
 //! overlay"): the identities of one installation, kept on the host that runs
 //! the bridge, outside the repository, and merged at load time with the
-//! repository's `spl-asdlc.toml`, which then carries the method's shape only.
+//! repository's `.spl-asdlc/config.toml`, which then carries the method's shape only.
 //!
 //! A key set in both files is an error, never an override (BR-ASDLC-014): a
 //! silent override would let a file outside review hide a reviewed setting.
@@ -14,10 +14,10 @@ use toml::de::{DeTable, DeValue};
 use toml::{Table, Value};
 
 use super::raw::{RawNotify, RawOverlay, RawOverlayAngle};
-use super::{ConfigError, ConfigErrors, FILE_NAME, SCHEMA_VERSION, Source};
+use super::{ConfigError, ConfigErrors, SCHEMA_VERSION, Source};
 
 /// The overlay's file name, beside the configuration it completes.
-pub const INSTANCE_FILE_NAME: &str = "spl-asdlc.instance.toml";
+pub const INSTANCE_FILE_NAME: &str = "config.instance.toml";
 
 /// The instance keys, by table. Besides these, an overlay carries `schema`,
 /// the `assignee` of an angle the repository's file declares (an entry of
@@ -48,17 +48,14 @@ pub(super) fn is_instance_key(key: &str) -> bool {
         })
 }
 
-/// The sibling overlay of `file`: `spl-asdlc.instance.toml` beside a file
-/// named `spl-asdlc.toml`, `<stem>.instance.toml` beside any other, so that two
+/// The sibling overlay of `file`: `<stem>.instance.toml` beside it, so
+/// `config.instance.toml` beside the default `config.toml`, and two
 /// configurations kept in one directory never share an overlay.
 pub fn sibling_of(file: &Path) -> PathBuf {
     let dir = file.parent().unwrap_or_else(|| Path::new(""));
-    match file.file_name().and_then(|n| n.to_str()) {
-        Some(super::FILE_NAME) | None => dir.join(INSTANCE_FILE_NAME),
-        Some(_) => {
-            let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-            dir.join(format!("{stem}.instance.toml"))
-        }
+    match file.file_stem().and_then(|s| s.to_str()) {
+        Some(stem) if !stem.is_empty() => dir.join(format!("{stem}.instance.toml")),
+        _ => dir.join(INSTANCE_FILE_NAME),
     }
 }
 
@@ -157,18 +154,11 @@ pub(super) fn merge(
         );
         m.put("tracker", "team_keys", t.team_keys.map(Value::from));
     }
-    // No `[release]` in the repository's file is the choice of no release
-    // cycle: the overlay never creates the section, whose keys would then
-    // complete nothing (spec 08, `[release]`).
-    if raw.release.is_some() && !m.repository.contains_key("release") {
-        m.refuse(
-            "release",
-            format!(
-                "{} has no [release] section (the project has no release cycle): the overlay's release keys complete nothing; remove them, or add [release] to the repository's file",
-                m.repository_label
-            ),
-        );
-    } else if let Some(r) = raw.release {
+    // The overlay never creates the `[release]` section, which every
+    // repository's file carries: without it, the file is refused for it,
+    // and the overlay's release keys complete nothing (spec 08).
+    let has_release = m.repository.contains_key("release");
+    if let Some(r) = raw.release.filter(|_| has_release) {
         m.put("release", "coordinators", r.coordinators.map(Value::from));
         m.put(
             "release",
@@ -266,7 +256,7 @@ fn instance_keys_only(overlay: &Source) -> Result<BTreeMap<String, usize>, Confi
                 file: Some(overlay.label.clone()),
                 key,
                 message: format!(
-                    "line {at}: not an instance key; it belongs in the repository's {FILE_NAME}, where it is reviewed"
+                    "line {at}: not an instance key; it belongs in the repository's configuration, where it is reviewed"
                 ),
             })
             .collect(),

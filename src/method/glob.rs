@@ -194,15 +194,15 @@ mod tests {
     #[test]
     fn a_windows_path_is_matched_in_its_slash_form() {
         // Built as a string, so the test means the same on every platform.
-        let walked = std::path::Path::new(".github\\review-paths.json");
-        assert_eq!(repo_path(walked), ".github/review-paths.json");
+        let walked = std::path::Path::new(".github\\workflows\\ci.yml");
+        assert_eq!(repo_path(walked), ".github/workflows/ci.yml");
         assert_eq!(
             repo_path(std::path::Path::new("src/github/auth.rs")),
             "src/github/auth.rs",
             "a path already in `/` form is unchanged"
         );
         let paths = vec![repo_path(walked)];
-        assert_eq!(hits(&paths, &v(&[".github/review-paths.json"])), paths);
+        assert_eq!(hits(&paths, &v(&[".github/workflows/ci.yml"])), paths);
     }
 
     #[test]
