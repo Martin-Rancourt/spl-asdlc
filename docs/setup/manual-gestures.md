@@ -1,11 +1,11 @@
 # Manual gestures
 
-The bridge automates every step of the flow, and is never the only actor able to perform one (BR-ASDLC-021). This page gives, for each step, the exact command or GitHub click to do it by hand, and what the bridge does at its next tick. The normative list of gestures, and what a step done by hand implies, is spec 09's audit (`docs/spec/09-requalification-and-human-gestures.md`, "Every step can be done by a human in GitHub"); this page is its runbook: it adds the commands and clicks, and the gestures a step done by hand needs on the way (rerun the gate, publish when the publication's build failed, dismiss a review, create the hands-off label).
+The bridge automates every step of the flow, and is never the only actor able to perform one (BR-ASDLC-021). This page gives, for each step, the exact command or GitHub click to do it by hand, and what the bridge does at its next tick. The normative list of gestures, and what a step done by hand implies, is spec 09's audit (`docs/spec/09-requalification-and-human-gestures.md`, "Every step can be done by a human in GitHub"); this page is its runbook: it adds the commands and clicks, and the gestures a step done by hand needs on the way (rerun the gate, publish when the publication's build failed, dismiss a review, hold a PR back).
 
 Conventions:
 
 - `OWNER/REPO` is the repository; every `gh` command takes `--repo OWNER/REPO`, or runs from a checkout of it.
-- `<release branch>` is the cycle's release branch, `release/<stamp>-utc`; `<rc tag>` and `<release tag>` follow the patterns of `[release]` in `spl-asdlc.toml`.
+- `<release branch>` is the cycle's release branch, `release/<stamp>-utc`; `<rc tag>` and `<release tag>` follow the patterns of `[release]` in `.spl-asdlc/config.toml`.
 - The workflow file names are the defaults of `[release]` (`cut_workflow = "release-cut.yml"`, `gate_workflow = "release-gate.yml"`) and of the example callers (`docs/setup/examples/`): use the project's own names when they differ.
 - The bridge's verbs (`spl-asdlc release ...`, `spl-asdlc tick`) run where the bridge runs (`bridge.md`), with its configuration, its instance overlay and its credentials.
 - Who may merge or push where is the rulesets' decision (`repository.md`). A gesture the ruleset refuses is not worked around: the ruleset is changed, or the step is left to the bridge.
@@ -23,7 +23,7 @@ gh pr merge <n> --repo OWNER/REPO --squash --delete-branch --match-head-commit <
 
 Or in GitHub: the PR, **Squash and merge**. Use the merge method `[review]` configures (squash by default). An angle PR into the release branch is merged as a merge commit (`--merge`), as the bridge merges it.
 
-**The bridge, next tick**: the sweep sees the PR merged and gives the ticket the same transition the bridge's own merge would have (`docs/spec/04-pr-review.md` §7, §10), once, with a comment that names who merged; the PR's review round closes. The ticket goes To Deploy when every box is ticked and no other PR of it is open (Done, or Post Deploy, without a release cycle). For an angle PR, the release pass reads it from the PRs merged into the release branch: its sub-item Done, the findings of its report filed, once each.
+**The bridge, next tick**: the sweep sees the PR merged and gives the ticket the same transition the bridge's own merge would have (`docs/spec/04-pr-review.md` §7, §10), once, with a comment that names who merged; the PR's review round closes. The ticket goes To Deploy when every box is ticked and no other PR of it is open, or Done when it has nothing to deploy. For an angle PR, the release pass reads it from the PRs merged into the release branch: its sub-item Done, the findings of its report filed, once each.
 
 ## Open a release cycle
 
@@ -62,7 +62,7 @@ Or in GitHub: the run, **Re-run jobs**, **Re-run failed jobs**. Never dispatch t
 
 ## Tag and publish the release by hand
 
-A person the tag rulesets let tag may give the GO instead of the bridge, and takes it on themselves: the computed conditions (angles merged, no blocker, no resolved blocker's fix missing from the candidate, the candidate the branch's tip) are the bridge's, and only the publication's own checks still hold (the candidate's gate green, the release tag on the candidate's commit, or on a commit that adds nothing but its own QA reports). To keep the bridge from tagging first, add the hands-off label to the release issue, and remove it once the release is published: the bridge writes nothing to an issue under the label, so it closes the cycle only once the label is gone.
+A person the tag rulesets let tag may give the GO instead of the bridge, and takes it on themselves: the computed conditions (angles merged, no blocker, no resolved blocker's fix missing from the candidate, the candidate the branch's tip) are the bridge's, and only the publication's own checks still hold (the candidate's gate green, the release tag on the candidate's commit, or on a commit that adds nothing but its own QA reports).
 
 ```sh
 git fetch origin --tags
@@ -74,7 +74,7 @@ gh release create <release tag> --repo OWNER/REPO --title "<product> <X.Y.Z>" --
 
 The notes are the version's section of the CHANGELOG the cut committed: copy it whole, so that the release note of the closure finds each PR's line.
 
-**What follows**: the publication runs on the published release; it accepts a release published by the App or by a human account, refuses any other bot, and says which (`go-published-by-kind`, its summary). **The bridge, next tick**: a tag a person pushed on the candidate is taken as done, the bridge then only publishes the release; once the release is published it tags and publishes nothing more and posts no GO of its own; it closes the cycle from the published release, and its closure comment records who published it; with the hands-off label on the release issue, it does so at the tick after the label is removed.
+**What follows**: the publication runs on the published release; it accepts a release published by the App or by a human account, refuses any other bot, and says which (`go-published-by-kind`, its summary). **The bridge, next tick**: a tag a person pushed on the candidate is taken as done, the bridge then only publishes the release; once the release is published it tags and publishes nothing more and posts no GO of its own; it closes the cycle from the published release, and its closure comment records who published it.
 
 ## Publish by hand when the publication's build failed
 
@@ -125,18 +125,23 @@ Or in GitHub: the PR, **Create a merge commit**. Then let the close stage delete
 The closure is the bridge's, not a GitHub gesture: it writes the tracker. A person brings about the facts it waits for:
 
 - **the release published**;
-- **the merge back merged**: no release branch holds the candidate, and the default branch holds the release tag;
-- **the hands-off label removed** from the release issue, when a person added it to tag and publish by hand.
+- **the merge back merged**: no release branch holds the candidate, and the default branch holds the release tag.
 
 **The bridge, next tick** after both: the closure (the embarked tickets judged, the release note, the release issue closed), then the archiving of what the cycle resolved. A release issue closed by hand in the tracker skips the judging and the archiving.
 
-## Move a ticket by hand, and hold it
+## Move a ticket by hand
 
-A status is the bridge's write (BR-ASDLC-011), derived from GitHub facts at each tick. The usual gesture is the fact in GitHub (open, ready or merge the PR, check a box), and the bridge moves the ticket at its next tick.
+Move it in the tracker. A ticket starts in Backlog; refinement marks it refined and leaves it there, and a person moves it to Ready when agents may take it: implementing agents take work from Ready only. Whoever starts a ticket, agent or person, moves it to In Progress; the bridge does it at its next tick, as a backup, when a branch or a PR appears. The later moves (In Review, To Deploy, Done) follow GitHub facts: the usual gesture is the fact in GitHub (open or merge the PR, check a box), and the bridge moves the ticket at its next tick.
 
-The label exists once in each place before it is used: the bridge never creates it. On GitHub, `gh label create spl-asdlc:hands-off --repo OWNER/REPO`; on the tracker, create it as any label (`tracker-linear.md`).
+## Hold a PR back
 
-To move a ticket the bridge would move otherwise, hold it first: add the hands-off label (`spl-asdlc:hands-off` by default) to the tracker item, and to its PR when the PR must not be touched either (`gh pr edit <n> --repo OWNER/REPO --add-label spl-asdlc:hands-off`), then move the item in the tracker. **The bridge, next tick**: it leaves a labelled item or PR alone (no status, no assignment, no comment, no merge) and says so once in the tick's report. Removing the label hands it back: the next tick derives its status from the facts again.
+Put it in draft; the bridge never merges a PR in draft:
+
+```sh
+gh pr ready <n> --repo OWNER/REPO --undo
+```
+
+Or in GitHub: the PR, **Convert to draft**. `gh pr ready <n> --repo OWNER/REPO` (or **Ready for review**) hands it back: the bridge merges it once every condition holds again.
 
 ## Dismiss a review
 
@@ -156,7 +161,7 @@ Or in GitHub: the review, its menu, **Dismiss review**, with a message.
 On the bridge's host:
 
 ```sh
-spl-asdlc release abandon --file <spl-asdlc.toml> --product <p>
+spl-asdlc release abandon --file <checkout>/.spl-asdlc/config.toml --product <p>
 ```
 
 It keeps the tags, merges the release branch back into `main`, cancels the release issue and turns the remaining blockers into tickets. A new cycle starts with Open a release cycle.
@@ -178,7 +183,7 @@ An AI session (Claude Code, for instance) can take these gestures on the owner's
 | Rule | Gesture |
 |---|---|
 | `Bash(gh pr merge *)` | Merge a PR, the merge-back PR |
-| `Bash(gh pr edit *)` | Add or remove a label (the hands-off label) |
+| `Bash(gh pr ready *)` | Put a PR in draft, or mark it ready again |
 | `Bash(git push origin <release tag>)`, `Bash(gh release create *)` | Tag and publish the release by hand |
 | `Bash(gh workflow run *)` | Open a cycle, cut a candidate, replay the publication |
 | `Bash(gh run rerun *)` | Rerun the gate, rerun a failed publication job |
@@ -188,4 +193,4 @@ An AI session (Claude Code, for instance) can take these gestures on the owner's
 | `Bash(ssh <bridge host> spl-asdlc release status*)`, `Bash(ssh <bridge host> spl-asdlc tick --dry-run*)` | Read the GO and what the next tick would do |
 | `Bash(ssh <bridge host> spl-asdlc release *)` | Cut, requalify, abandon |
 
-The reads (`gh pr list`, `gh pr view`, `gh run list`, `gh run view`, `gh api` without `--method`) change nothing. Every rule of the table but the two dry reads is an **outward action**: it merges, labels, dispatches, publishes or writes the tracker, on the shared repository, and most cannot be undone (a merge, an uploaded asset that replaced another, an abandoned cycle). A rule only lets the session run the command; each gesture still waits for the owner's go.
+The reads (`gh pr list`, `gh pr view`, `gh run list`, `gh run view`, `gh api` without `--method`) change nothing. Every rule of the table but the two dry reads is an **outward action**: it merges, drafts, dispatches, publishes or writes the tracker, on the shared repository, and most cannot be undone (a merge, an uploaded asset that replaced another, an abandoned cycle). A rule only lets the session run the command; each gesture still waits for the owner's go.
