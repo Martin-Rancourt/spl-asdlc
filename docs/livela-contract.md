@@ -50,7 +50,7 @@ pub struct JobOutcome { pub ok: bool, pub message: String }  // JobOutcome::ok(.
 How the daemon runs the job:
 - `livela-runner daemon` passes every N seconds (300 by default) and calls each job after the code tasks.
 - The budget is `LIVELA_JOB_BUDGET_SECONDS` (60 s by default); exceeding it is a failure.
-- `LIVELA_SPL_ASDLC_CONFIG` holds the path of `spl-asdlc.toml`; the bridge merges the instance overlay beside it, `spl-asdlc.instance.toml`, when there is one (spec 08).
+- `LIVELA_SPL_ASDLC_CONFIG` holds the path of the configuration, `.spl-asdlc/config.toml` in the repository's checkout; the bridge merges the instance overlay beside it, `config.instance.toml`, when there is one (spec 08).
 - Secrets are read by the job itself, never stored in the facts.
 - `livela-runner jobs` runs one pass by hand.
 - The job may call `store.set_author(id_spl_asdlc)`; the previous author is restored afterwards.
@@ -90,7 +90,7 @@ How the daemon runs the job:
 - An MCP session is named after its client at connection, or with the `name_session` tool. A session releases its own locks; another client may release one with the token.
 - Locks are advisory: the core's writes do not check them.
 - **Decided by the owner (2026-10-07): the bridge writes its transitions whoever holds the lock** (BR-ASDLC-011).
-  - It is the only writer of state transitions, except on an item under the hands-off label (spec 07, "Hands off").
+  - It is the only automated writer of state transitions; a person may still move an item in the tracker (spec 09).
   - A lock protects an agent's work on the item's **content**, never its **status**.
   - The bridge neither waits for a lock to be released nor notifies its holder of a transition; the adapter does not read locks.
 

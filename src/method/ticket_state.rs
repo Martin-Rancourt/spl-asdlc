@@ -17,11 +17,9 @@
 //! Progress (REQ-MERGE-028 as the spec corrects it); and only a ticket with
 //! nothing open, every box checked and a PR merged goes To Deploy.
 //!
-//! A ticket with nothing to deploy (the `tracker.no_deploy_label`), or any
-//! ticket of a project without a release cycle (no `[release]` section,
-//! `docs/spec/05-release-cycle.md`, "Without a release cycle"), is delivered
-//! by its merge: [`delivered`] judges at once the ticket the rules put To
-//! Deploy, by the Done gate the closure would use.
+//! A ticket with nothing to deploy (the `tracker.no_deploy_label`,
+//! `docs/method.md`, "Merge") waits for no release: merging is delivering, so [`delivered`] judges at once the
+//! ticket the rules put To Deploy, by the Done gate the closure would use.
 
 use super::contract;
 use super::done_gate::{self, ClosureVerdict, DoneGate};
@@ -75,11 +73,11 @@ pub enum Why {
     NothingMerged,
     /// Every box checked, a PR merged, nothing open.
     Complete,
-    /// Nothing to deploy (or no release cycle): every box checked, a PR
-    /// merged, nothing open; the merge delivered it.
+    /// Nothing to deploy: every box checked, a PR merged, nothing open; the
+    /// merge delivered it.
     Delivered,
-    /// Nothing to deploy (or no release cycle): delivered, but its own
-    /// `## Post deploy` boxes wait to be verified in production.
+    /// Nothing to deploy: delivered, but its own `## Post deploy` boxes wait
+    /// to be verified in production.
     AwaitsPostDeploy,
 }
 
@@ -112,11 +110,11 @@ impl Why {
                     .to_string()
             }
             Why::Delivered => {
-                "nothing waits for a release, so the merge delivered it: every box of its contract is checked."
+                "it has nothing to deploy, so the merge delivered it: every box of its contract is checked."
                     .to_string()
             }
             Why::AwaitsPostDeploy => {
-                "nothing waits for a release, so the merge delivered it; its `## Post deploy` boxes are verified in production through its validation sub-task, and the bridge moves it to `Done` once they are all checked."
+                "it has nothing to deploy, so the merge delivered it; its `## Post deploy` boxes are verified in production through its validation sub-task, and the bridge moves it to `Done` once they are all checked."
                     .to_string()
             }
         }
@@ -151,9 +149,9 @@ pub fn decide(f: &Facts) -> Option<(Status, Why)> {
     Some((Status::ToDeploy, Why::Complete))
 }
 
-/// Where a ticket the rules put To Deploy goes when nothing waits for a
-/// release (a ticket with nothing to deploy, or a project without a release
-/// cycle): the merge delivered it, so it is judged at once by the Done gate (its boxes and its duplicates', REQ-MERGE-064), as the closure
+/// Where a ticket the rules put To Deploy goes when it has nothing to
+/// deploy: the merge delivered it, so it is judged at once by the
+/// Done gate (its boxes and its duplicates', REQ-MERGE-064), as the closure
 /// judges a shipped ticket (`05-release-cycle.md` §11): every box checked →
 /// Done; only its own `## Post deploy` boxes open → Post Deploy, verified in
 /// production through its validation sub-task (fail closed: never Done
@@ -295,7 +293,7 @@ mod tests {
         );
     }
 
-    // ---- without a release cycle ----
+    // ---- nothing to deploy ----
 
     fn gate(members: &[(&str, &str)]) -> DoneGate {
         let members: Vec<done_gate::ContractMember> = members
@@ -309,7 +307,7 @@ mod tests {
     }
 
     #[test]
-    fn without_a_release_cycle_a_complete_ticket_is_delivered_done() {
+    fn with_nothing_to_deploy_a_complete_ticket_is_delivered_done() {
         assert_eq!(
             delivered(
                 "ABC-1",
@@ -320,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn without_a_release_cycle_post_deploy_boxes_wait_in_post_deploy() {
+    fn with_nothing_to_deploy_post_deploy_boxes_wait_in_post_deploy() {
         assert_eq!(
             delivered("ABC-1", &gate(&[("ABC-1", ALL)])),
             Some((Status::PostDeploy, Why::AwaitsPostDeploy)),
@@ -329,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn without_a_release_cycle_a_duplicates_open_box_sends_the_ticket_back() {
+    fn with_nothing_to_deploy_a_duplicates_open_box_sends_the_ticket_back() {
         let g = gate(&[
             ("ABC-1", "## Acceptance criteria\n- [x] a\n"),
             ("ABC-2", "## Acceptance criteria\n- [ ] b\n"),

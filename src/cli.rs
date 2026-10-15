@@ -33,10 +33,10 @@ enum Command {
     },
     /// One pass of the bridge over the repository of each configuration.
     Tick {
-        /// A `spl-asdlc.toml`; repeat for several repositories.
-        #[arg(long = "file", default_value = config::FILE_NAME)]
+        /// A configuration (`.spl-asdlc/config.toml`); repeat for several repositories.
+        #[arg(long = "file", default_value = config::DEFAULT_PATH)]
         files: Vec<PathBuf>,
-        /// The instance overlay of a single `--file` (default: `spl-asdlc.instance.toml`
+        /// The instance overlay of a single `--file` (default: `config.instance.toml`
         /// beside each file, when present).
         #[arg(long)]
         instance: Option<PathBuf>,
@@ -52,9 +52,9 @@ enum Command {
         #[command(subcommand)]
         command: ReleaseCommand,
         /// The configuration of the product.
-        #[arg(long, global = true, default_value = config::FILE_NAME)]
+        #[arg(long, global = true, default_value = config::DEFAULT_PATH)]
         file: PathBuf,
-        /// The instance overlay (default: `spl-asdlc.instance.toml` beside the file, when present).
+        /// The instance overlay (default: `config.instance.toml` beside the file, when present).
         #[arg(long, global = true)]
         instance: Option<PathBuf>,
         /// The product, checked against the configuration.
@@ -63,9 +63,9 @@ enum Command {
     },
     /// Verify the setup of the repository a configuration names.
     Doctor {
-        #[arg(long, default_value = config::FILE_NAME)]
+        #[arg(long, default_value = config::DEFAULT_PATH)]
         file: PathBuf,
-        /// The instance overlay (default: `spl-asdlc.instance.toml` beside the file, when present).
+        /// The instance overlay (default: `config.instance.toml` beside the file, when present).
         #[arg(long)]
         instance: Option<PathBuf>,
     },
@@ -133,9 +133,9 @@ enum TicketCommand {
         #[arg(long, conflicts_with = "item")]
         description: Option<PathBuf>,
         /// The configuration naming the tracker.
-        #[arg(long, default_value = config::FILE_NAME)]
+        #[arg(long, default_value = config::DEFAULT_PATH)]
         file: PathBuf,
-        /// The instance overlay (default: `spl-asdlc.instance.toml` beside the file, when present).
+        /// The instance overlay (default: `config.instance.toml` beside the file, when present).
         #[arg(long)]
         instance: Option<PathBuf>,
     },
@@ -143,12 +143,12 @@ enum TicketCommand {
 
 #[derive(Debug, Subcommand)]
 enum ConfigCommand {
-    /// Validate a `spl-asdlc.toml`; exits 1 and lists every problem when it is invalid.
+    /// Validate a configuration; exits 1 and lists every problem when it is invalid.
     Check {
         /// The file to check.
-        #[arg(long, default_value = config::FILE_NAME)]
+        #[arg(long, default_value = config::DEFAULT_PATH)]
         file: PathBuf,
-        /// The instance overlay (default: `spl-asdlc.instance.toml` beside the file, when present).
+        /// The instance overlay (default: `config.instance.toml` beside the file, when present).
         #[arg(long)]
         instance: Option<PathBuf>,
     },
@@ -291,7 +291,7 @@ fn tick(
     if instance.is_some() && files.len() > 1 {
         let _ = writeln!(
             err,
-            "--instance names the overlay of one configuration: with several --file, each file's overlay is the one beside it ({} beside a {}, <stem>.instance.toml beside any other)",
+            "--instance names the overlay of one configuration: with several --file, each file's overlay is the one beside it (<stem>.instance.toml, {} beside a {})",
             config::INSTANCE_FILE_NAME,
             config::FILE_NAME
         );
@@ -393,7 +393,6 @@ fn tick(
             now: crate::github::Timestamp::now(),
             deadline: None,
             dry_run,
-            hands_off: None,
         };
         let mut log = match log_file {
             Some(p) => ActionLog::at(p),
@@ -421,9 +420,6 @@ fn tick(
             let _ = writeln!(err, "{}: {f}", c.repo);
         }
         for line in report.waiting_lines() {
-            let _ = writeln!(out, "{}: {line}", c.repo);
-        }
-        for line in report.hands_off_lines() {
             let _ = writeln!(out, "{}: {line}", c.repo);
         }
         let _ = writeln!(out, "{}: {}", c.repo, report.summary());
@@ -495,7 +491,6 @@ fn release(
         now: crate::github::Timestamp::now(),
         deadline: None,
         dry_run: false,
-        hands_off: None,
     };
     let mut log = match crate::action_log::ActionLog::default_path(&c.repo, &env) {
         Some(p) => crate::action_log::ActionLog::at(p),
@@ -753,15 +748,12 @@ fn config_check(
         Ok((c, _)) => {
             let _ = writeln!(
                 out,
-                "{name}: valid — product {} ({}), tracker {} team {}, {}, {}",
+                "{name}: valid — product {} ({}), tracker {} team {}, {} release angle(s), {}",
                 c.product.name,
                 c.product.repository,
                 c.tracker.kind,
                 c.tracker.team,
-                match &c.release {
-                    Some(r) => format!("{} release angle(s)", r.angles.len()),
-                    None => "no release cycle".to_string(),
-                },
+                c.release.angles.len(),
                 if c.review.angle_possible() {
                     format!("{} review angle(s)", c.review.angles.len())
                 } else {

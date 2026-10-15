@@ -203,10 +203,6 @@ impl World {
                     strict: false,
                 }),
             );
-            s.files.insert(
-                (repo(), "main".into(), ".github/review-paths.json".into()),
-                Ok(r#"{"paths": ["**/auth/**"]}"#.into()),
-            );
             for sha in ["c1", "c2"] {
                 s.files
                     .insert((repo(), sha.into(), "CHANGELOG.md".into()), Ok(changelog()));
@@ -240,7 +236,6 @@ impl World {
             now: Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
             deadline: None,
             dry_run: false,
-            hands_off: None,
         };
         let mut log = ActionLog::in_memory();
         run(&t, &mut log)
@@ -763,7 +758,7 @@ fn a_release_coordinator_app_approves_and_a_person_of_its_name_does_not() {
         ("coord-app".to_string(), bot("coord-app"), false),
     ] {
         let mut w = World::new();
-        w.config.release.as_mut().unwrap().coordinators = vec![configured.clone()];
+        w.config.release.coordinators = vec![configured.clone()];
         w.tick();
         let mut pr = w.angle_pr(30, "security", &report_json("security", ""));
         pr.reviews[0].author = Some(author.clone());
@@ -832,7 +827,7 @@ fn an_angle_pr_dismisses_an_apps_superseded_request_for_changes_and_a_person_hol
 #[test]
 fn an_approved_angle_pr_with_a_valid_report_is_merged_and_its_findings_filed_once() {
     let mut w = World::new();
-    w.config.release.as_mut().unwrap().fix_assignee = Some("fixer-handle".into());
+    w.config.release.fix_assignee = Some("fixer-handle".into());
     w.tracker
         .state
         .borrow_mut()
@@ -1021,36 +1016,6 @@ fn the_go_tags_the_candidate_and_publishes_its_prepared_notes_and_nothing_else()
     w.tick();
     assert_eq!(w.go_writes(), before);
     assert_eq!(w.go_comments(), 1);
-}
-
-#[test]
-fn a_release_item_under_the_hands_off_label_is_left_to_the_person_who_takes_the_go() {
-    let w = World::new();
-    w.tick();
-    all_angles_merged(&w);
-    let release = w.release_item();
-    w.tracker
-        .add_label(&release.key, "spl-asdlc:hands-off")
-        .unwrap();
-    for _ in 0..2 {
-        let r = w.tick();
-        assert!(r.ok(), "{r:?}");
-        assert_eq!(
-            r.hands_off_lines(),
-            vec![format!("hands-off: {}", release.key)],
-            "{r:?}"
-        );
-        assert!(w.go_writes().is_empty(), "{:?}", w.github.writes());
-        assert_eq!(w.go_comments(), 0, "no GO comment for a release not made");
-    }
-    // The label removed: the next tick takes the GO as usual.
-    w.tracker
-        .remove_label(&release.key, "spl-asdlc:hands-off")
-        .unwrap();
-    let r = w.tick();
-    assert!(r.hands_off.is_empty(), "{r:?}");
-    assert_eq!(w.go_writes(), go_lines("c1"), "{r:?}");
-    assert_eq!(w.go_comments(), 1, "the GO comment, once published");
 }
 
 /// Spec 09 (BR-ASDLC-021): the release tag a person pushed on the
@@ -1378,7 +1343,6 @@ impl World {
             now: Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
             deadline: None,
             dry_run: false,
-            hands_off: None,
         }
     }
 }
@@ -1414,7 +1378,7 @@ fn release_status_says_why_there_is_no_go() {
 #[test]
 fn a_blocking_finding_requalified_as_non_blocking_stops_blocking_and_back() {
     let mut w = World::new();
-    w.config.release.as_mut().unwrap().fix_assignee = Some("fixer-handle".into());
+    w.config.release.fix_assignee = Some("fixer-handle".into());
     w.tracker
         .state
         .borrow_mut()
@@ -1507,7 +1471,7 @@ fn a_blocking_finding_requalified_as_non_blocking_stops_blocking_and_back() {
 /// label is not in the tracker yet.
 fn escalating() -> World {
     let mut w = World::new();
-    w.config.release.as_mut().unwrap().max_rc_passes = 1;
+    w.config.release.max_rc_passes = 1;
     w.tracker
         .state
         .borrow_mut()
@@ -2006,7 +1970,6 @@ fn a_dry_run_of_the_release_pass_writes_nothing() {
         now: Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
         deadline: None,
         dry_run: true,
-        hands_off: None,
     };
     let mut log = ActionLog::in_memory();
     let r = run(&t, &mut log);
@@ -2308,7 +2271,6 @@ fn a_dry_run_of_the_post_deploy_pass_writes_nothing() {
     let t = Tick {
         tracker: &tr,
         dry_run: true,
-        hands_off: None,
         ..w.tick_ctx()
     };
     let mut log = ActionLog::in_memory();
@@ -2465,7 +2427,6 @@ fn a_dry_run_of_the_closure_prints_the_unassign() {
         tracker: &tr,
         signal: &sig,
         dry_run: true,
-        hands_off: None,
         ..w.tick_ctx()
     };
     let mut log = ActionLog::in_memory();
@@ -2550,7 +2511,7 @@ fn a_red_gate_opens_one_urgent_gate_fix_ticket_once_its_rerun_settled() {
 #[test]
 fn a_gate_fix_ticket_is_assigned_to_the_release_fixer_when_one_is_known() {
     let mut w = World::new();
-    w.config.release.as_mut().unwrap().fix_assignee = Some("fixer-handle".into());
+    w.config.release.fix_assignee = Some("fixer-handle".into());
     w.tracker
         .state
         .borrow_mut()
@@ -2570,7 +2531,7 @@ fn a_gate_fix_ticket_is_assigned_to_the_release_fixer_when_one_is_known() {
     );
     // A fixer the tracker does not know: unassigned, taken by role.
     let mut w = World::new();
-    w.config.release.as_mut().unwrap().fix_assignee = Some("no-such-fixer".into());
+    w.config.release.fix_assignee = Some("no-such-fixer".into());
     w.red_settled(1, CAND, "c1", r#""tests""#);
     let r = w.tick();
     assert!(r.ok(), "{r:?}");
@@ -2962,7 +2923,6 @@ fn a_dry_run_prints_the_urgent_gate_fix_ticket_it_would_open() {
         tracker: &tr,
         signal: &sig,
         dry_run: true,
-        hands_off: None,
         ..w.tick_ctx()
     };
     let mut log = ActionLog::in_memory();
@@ -3012,7 +2972,6 @@ fn the_validation_sub_task_is_created_urgent_and_a_dry_run_says_so() {
     let t = Tick {
         tracker: &tr,
         dry_run: true,
-        hands_off: None,
         ..w.tick_ctx()
     };
     let mut log = ActionLog::in_memory();
@@ -3286,7 +3245,6 @@ fn a_dry_run_of_the_closure_prints_the_archives() {
         tracker: &tr,
         signal: &sig,
         dry_run: true,
-        hands_off: None,
         ..w.tick_ctx()
     };
     let mut log = ActionLog::in_memory();
@@ -3764,7 +3722,6 @@ fn a_dry_run_prints_the_angle_items_flow_and_the_relations() {
         tracker: &tr,
         signal: &sig,
         dry_run: true,
-        hands_off: None,
         ..w.tick_ctx()
     };
     let mut log = ActionLog::in_memory();
@@ -3798,12 +3755,7 @@ fn release_coordinator() -> crate::tracker::User {
 fn a_candidates_consolidation_item_goes_to_its_coordinator_once() {
     let w = World::new();
     assert_eq!(
-        w.config
-            .release
-            .as_ref()
-            .unwrap()
-            .coordinator_assignee
-            .as_deref(),
+        w.config.release.coordinator_assignee.as_deref(),
         Some("coordinator-handle")
     );
     w.tracker
@@ -3822,7 +3774,7 @@ fn a_candidates_consolidation_item_goes_to_its_coordinator_once() {
 #[test]
 fn without_a_release_coordinator_assignee_the_consolidation_item_is_unassigned() {
     let mut w = World::new();
-    w.config.release.as_mut().unwrap().coordinator_assignee = None;
+    w.config.release.coordinator_assignee = None;
     w.tracker
         .state
         .borrow_mut()
@@ -3884,8 +3836,6 @@ fn in_review_serves_the_coordinator_and_changes_requested_serve_the_angle_again(
     assert_eq!(
         w.config
             .release
-            .as_ref()
-            .unwrap()
             .angles
             .iter()
             .find(|a| a.key == "security")
@@ -3950,7 +3900,7 @@ fn in_review_serves_the_coordinator_and_changes_requested_serve_the_angle_again(
 #[test]
 fn sent_back_with_no_angle_assignee_the_item_is_unassigned() {
     let mut w = World::new();
-    for a in &mut w.config.release.as_mut().unwrap().angles {
+    for a in &mut w.config.release.angles {
         a.assignee = None;
     }
     w.knows(&[release_coordinator(), angle_reviewer()]);
@@ -3976,7 +3926,7 @@ fn an_unset_or_unknown_coordinator_leaves_the_angle_items_assignee() {
     for unset in [true, false] {
         let mut w = World::new();
         if unset {
-            w.config.release.as_mut().unwrap().coordinator_assignee = None;
+            w.config.release.coordinator_assignee = None;
         }
         // Unknown: the tracker knows the angle's reviewer, not the coordinator.
         w.knows(&[angle_reviewer()]);
@@ -4009,7 +3959,6 @@ fn a_dry_run_prints_the_coordinator_served_in_review() {
         tracker: &tr,
         signal: &sig,
         dry_run: true,
-        hands_off: None,
         ..w.tick_ctx()
     };
     let mut log = ActionLog::in_memory();
@@ -4024,95 +3973,6 @@ fn a_dry_run_prints_the_coordinator_served_in_review() {
     );
 }
 
-// ---- without a release cycle (spec 05, "Without a release cycle") ----
-
-#[test]
-fn without_a_release_section_the_tick_skips_the_release_and_closure_passes() {
-    let mut w = World::new();
-    w.config.release = None;
-    // The cut and a green gate: a cycle would open at the first tick.
-    for _ in 0..2 {
-        let r = w.tick();
-        assert!(r.ok(), "{r:?}");
-    }
-    assert!(w.tracker.writes().is_empty(), "{:?}", w.tracker.writes());
-    assert!(w.github.writes().is_empty(), "{:?}", w.github.writes());
-    assert!(
-        w.tracker.list_by_label(LABEL).unwrap().is_empty(),
-        "no release item"
-    );
-
-    // A cycle opened while the section was there, then published and
-    // merged back: the closure would judge ABC-5 at the next tick.
-    w.config.release = config().release;
-    assert!(w.tick().ok());
-    w.release_item();
-    publish(&w);
-    w.config.release = None;
-    let before = (w.tracker.writes().len(), w.github.writes().len());
-    let r = w.tick();
-    assert!(r.ok(), "{r:?}");
-    assert_eq!(
-        (w.tracker.writes().len(), w.github.writes().len()),
-        before,
-        "{:?}",
-        w.tracker.writes()
-    );
-    assert_eq!(
-        w.tracker.item("ABC-5").state.status,
-        Some(Status::ToDeploy),
-        "no closure judges it"
-    );
-    assert!(w.signal.sent.borrow().is_empty(), "no release note");
-}
-
-/// A host's daemon runs the bridge: nothing panics on a configuration
-/// without `[release]`, even a step the pass never reaches without it.
-#[test]
-fn without_a_release_section_the_release_pass_and_its_readers_return_cleanly() {
-    let mut w = World::new();
-    w.config.release = None;
-    let t = w.tick_ctx();
-    let mut log = ActionLog::in_memory();
-    let mut report = Report::default();
-    assert!(!release::pass(&t, &mut log, &mut report), "no merge");
-    assert!(report.ok(), "nothing to report: {report:?}");
-    assert!(log.entries().is_empty(), "{:?}", log.entries());
-    assert_eq!(release::section(&t).unwrap_err(), release::NO_RELEASE_CYCLE);
-    let candidate = release::Candidate {
-        tag: CAND.into(),
-        version: crate::method::release::shape::Version::parse("1.2.0").unwrap(),
-        rc: 1,
-        sha: "c1".into(),
-        class: "minor".into(),
-        tagged_at: None,
-    };
-    assert!(release::offered(&t, &candidate).is_empty());
-    assert!(w.github.writes().is_empty());
-    assert!(w.tracker.writes().is_empty());
-}
-
-#[test]
-fn without_a_release_section_the_release_verbs_say_there_is_no_cycle() {
-    let mut w = World::new();
-    w.config.release = None;
-    let t = w.tick_ctx();
-    let mut log = ActionLog::in_memory();
-    for refused in [
-        crate::verbs::cut(&t, &mut log, true).unwrap_err(),
-        crate::verbs::status(&t).err().unwrap(),
-        crate::verbs::abandon(&t, &mut log, "someone").unwrap_err(),
-        crate::verbs::requalify(&t, &mut log, "ABC-5", false, "a reason", "someone").unwrap_err(),
-    ] {
-        assert_eq!(
-            refused,
-            "acme has no release cycle: its configuration has no [release] section"
-        );
-    }
-    assert!(w.github.writes().is_empty());
-    assert!(w.tracker.writes().is_empty());
-}
-
 // ---- SID-1016: a release with no QA angle; its GO is the gate ----
 
 impl World {
@@ -4120,8 +3980,8 @@ impl World {
     /// and no release coordinator.
     fn without_angles() -> World {
         let mut w = World::new();
-        w.config.release.as_mut().unwrap().angles.clear();
-        w.config.release.as_mut().unwrap().coordinators.clear();
+        w.config.release.angles.clear();
+        w.config.release.coordinators.clear();
         w
     }
 }
@@ -4232,7 +4092,7 @@ fn angles_configured_later_apply_from_the_next_candidate() {
     // Under the human policy the GO waits for the owner: rc.1, whose gate
     // is green and which owes no angle, stays in flight.
     let human = |mut c: Config| {
-        c.release.as_mut().unwrap().go_policy = crate::config::GoPolicy::Human;
+        c.release.go_policy = crate::config::GoPolicy::Human;
         c
     };
     let mut w = World::without_angles();

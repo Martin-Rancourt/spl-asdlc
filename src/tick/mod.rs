@@ -9,14 +9,8 @@
 //! already in place calls no write and leaves no entry: a tick with nothing
 //! to do writes nothing, anywhere (invariant 7), but the action log's note
 //! of why a PR waits when that reason changes ([`Report::waiting`]).
-//!
-//! An item or PR under the hands-off label is written to by no pass
-//! ([`hands_off`]): [`run`] wraps the tracker and GitHub in its guard, and
-//! [`Tick::act`] reports a write the guard refused as hands-off
-//! ([`Report::hands_off`]), neither done nor failed.
 
 pub mod closure;
-pub mod hands_off;
 pub mod link;
 pub mod merge;
 pub mod post_deploy;
@@ -53,9 +47,6 @@ pub struct Tick<'a> {
     /// budget); what it skipped is taken at the next tick.
     pub deadline: Option<Instant>,
     pub dry_run: bool,
-    /// The hands-off guard [`run`] puts in front of `tracker` and `github`;
-    /// `None` outside a tick (a verb is a person's own gesture).
-    pub hands_off: Option<&'a hands_off::HandsOff<'a>>,
 }
 
 /// What a tick did, for its host.
@@ -72,10 +63,6 @@ pub struct Report {
     /// tick, written nowhere but the action log, and there only when the
     /// reason changes.
     pub waiting: Vec<Waiting>,
-    /// The items and PRs under the hands-off label the tick met and wrote
-    /// nothing to (`ABC-12`, `pr#7`), each once: said at every tick, noted
-    /// in the action log only when it starts.
-    pub hands_off: Vec<String>,
 }
 
 /// What became of a notice ([`Tick::notify`]).
@@ -118,14 +105,6 @@ impl Report {
         self.waiting.iter().map(Waiting::to_string).collect()
     }
 
-    /// One line per object under the hands-off label: `hands-off: <object>`.
-    pub fn hands_off_lines(&self) -> Vec<String> {
-        self.hands_off
-            .iter()
-            .map(|o| format!("hands-off: {o}"))
-            .collect()
-    }
-
     /// One line for a host's job log.
     pub fn summary(&self) -> String {
         let mut s = format!("{} action(s)", self.actions);
@@ -150,9 +129,7 @@ impl Tick<'_> {
     }
 
     /// Perform one write and log it. `None` when it failed (logged, and
-    /// reported as a failure), or when the hands-off guard refused it: then
-    /// nothing is logged, the object is reported once as hands-off, and the
-    /// decision stops there as after a failure, without being one.
+    /// reported as a failure).
     pub fn act<T>(
         &self,
         log: &mut ActionLog,
@@ -163,15 +140,6 @@ impl Tick<'_> {
         write: impl FnOnce() -> Result<T, String>,
     ) -> Option<T> {
         let result = write();
-        if let Some(guard) = self.hands_off {
-            let refused = guard.take_refused();
-            if result.is_err() && !refused.is_empty() {
-                for object in refused {
-                    self.hold_by_hand(report, &object);
-                }
-                return None;
-            }
-        }
         let outcome = match &result {
             Ok(_) if self.dry_run => Outcome::WouldDo,
             Ok(_) => Outcome::Done,
@@ -219,25 +187,6 @@ impl Tick<'_> {
         .map(|()| Notice::Sent)
     }
 
-    /// An object under the hands-off label: in the report once per tick,
-    /// nothing written.
-    pub fn hold_by_hand(&self, report: &mut Report, object: &str) {
-        if !report.hands_off.iter().any(|o| o == object) {
-            report.hands_off.push(object.to_string());
-        }
-    }
-
-    /// Whether the PR carries the hands-off label; when it does, it is
-    /// reported as hands-off and the caller leaves it alone: no merge, no
-    /// comment, no review round, nothing moved because of it.
-    pub fn by_hand(&self, report: &mut Report, pr: &PullRequest) -> bool {
-        if !hands_off::carries(&pr.labels, &self.config.bridge.hands_off_label) {
-            return false;
-        }
-        self.hold_by_hand(report, &hands_off::pr_object(pr.number));
-        true
-    }
-
     /// A decision that could not be taken because a read failed: nothing is
     /// written, the failure is reported, the next tick retries (fail closed).
     pub fn unreadable(&self, report: &mut Report, object: &str, detail: impl std::fmt::Display) {
@@ -260,26 +209,10 @@ impl Tick<'_> {
 }
 
 /// One tick over the repository of `t.config`: the release pass (with its
-/// closure; nothing without a `[release]` section, spec 05 "Without a
-/// release cycle"), the PR pass, the sweep, the post-deploy validation
-/// (spec 07, "What a tick does"). At most one merge per
-/// repository per tick (invariant 6). The caller flushes the action log.
+/// closure), the PR pass, the sweep, the post-deploy validation (spec 07,
+/// "What a tick does"). At most one merge per repository per tick
+/// (invariant 6). The caller flushes the action log.
 pub fn run(t: &Tick, log: &mut ActionLog) -> Report {
-    // Every read and write of the passes goes through the hands-off guard.
-    let guard = hands_off::HandsOff::new(&t.config.bridge.hands_off_label, t.tracker, t.github);
-    let guarded = Tick {
-        config: t.config,
-        repo: t.repo.clone(),
-        github: &guard,
-        tracker: &guard,
-        signal: t.signal,
-        github_login: t.github_login.clone(),
-        now: t.now,
-        deadline: t.deadline,
-        dry_run: t.dry_run,
-        hands_off: Some(&guard),
-    };
-    let t = &guarded;
     let mut report = Report::default();
     passes(t, log, &mut report);
     // Why each held PR waits is in the report at every tick; the log keeps
@@ -287,9 +220,6 @@ pub fn run(t: &Tick, log: &mut ActionLog) -> Report {
     if !t.dry_run {
         for w in &report.waiting {
             log.note_waiting(t.now, &t.repo, &w.object(), &w.head, &w.reason);
-        }
-        for object in &report.hands_off {
-            log.note_hands_off(t.now, &t.repo, object, guard.label());
         }
     }
     report

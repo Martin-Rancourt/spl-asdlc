@@ -27,21 +27,14 @@ pub struct Cycle {
     pub branch: Option<String>,
 }
 
-/// The `[release]` section, or why a release verb has nothing to act on: a
-/// project without one has no release cycle (spec 05, "Without a release
-/// cycle").
-pub fn release_cycle<'a>(t: &Tick<'a>) -> Result<&'a Release, String> {
-    t.config.release.as_ref().ok_or_else(|| {
-        format!(
-            "{} has no release cycle: its configuration has no [release] section",
-            t.config.product.name
-        )
-    })
+/// The `[release]` section: every configuration has one.
+pub fn release_cycle<'a>(t: &Tick<'a>) -> &'a Release {
+    &t.config.release
 }
 
 /// Read the cycle in flight; nothing is created.
 pub fn cycle(t: &Tick) -> Result<Cycle, String> {
-    let shape = Shape::of(&t.config.product.name, release_cycle(t)?);
+    let shape = Shape::of(&t.config.product.name, release_cycle(t));
     let (candidate, _) = release::newest(t, &shape)?.ok_or("no release candidate tag")?;
     let item = release::find_release_item(t, &shape, candidate.version)?
         .ok_or("no release item yet: the next tick creates it")?;
@@ -56,7 +49,7 @@ pub fn cycle(t: &Tick) -> Result<Cycle, String> {
 
 /// `release status`: the GO and its inputs, read-only.
 pub fn status(t: &Tick) -> Result<(Cycle, GoDecision), String> {
-    let release_cfg = release_cycle(t)?;
+    let release_cfg = release_cycle(t);
     let record = &release_cfg.record;
     let cy = cycle(t)?;
     let branch = cy
@@ -131,7 +124,7 @@ pub fn status(t: &Tick) -> Result<(Cycle, GoDecision), String> {
 /// `release cut [--open]`: dispatch the cut workflow, for a new cycle from
 /// the default branch or for the next candidate on the release branch.
 pub fn cut(t: &Tick, log: &mut ActionLog, open: bool) -> Result<String, String> {
-    let cfg = release_cycle(t)?;
+    let cfg = release_cycle(t);
     let shape = Shape::of(&t.config.product.name, cfg);
     let branches: Vec<String> = t
         .github
@@ -201,7 +194,6 @@ pub fn requalify(
     reason: &str,
     who: &str,
 ) -> Result<String, String> {
-    release_cycle(t)?;
     let item = t.tracker.get(key).map_err(|e| e.to_string())?;
     let from =
         blocking_of(&item).ok_or_else(|| format!("{key} is not a finding ticket of a release"))?;

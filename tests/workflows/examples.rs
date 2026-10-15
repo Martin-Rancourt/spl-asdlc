@@ -469,11 +469,8 @@ fn the_callers_pass_the_tag_patterns_of_the_configuration_template() {
         for (id, job) in jobs(&load(&f)) {
             let with = &job["with"];
             for (input, want) in [
-                ("candidate-tag", &c.release.as_ref().unwrap().candidate_tag),
-                (
-                    "release-tag-pattern",
-                    &c.release.as_ref().unwrap().release_tag,
-                ),
+                ("candidate-tag", &c.release.candidate_tag),
+                ("release-tag-pattern", &c.release.release_tag),
             ] {
                 if let Some(v) = with[input].as_str() {
                     assert_eq!(v, want, "{} job {id}: {input}", relative(&f));
@@ -488,12 +485,7 @@ fn the_callers_pass_the_tag_patterns_of_the_configuration_template() {
                 .contains("release-publish")
             {
                 if let Some(v) = with["release-tag"].as_str() {
-                    assert_eq!(
-                        v,
-                        c.release.as_ref().unwrap().release_tag,
-                        "{} job {id}",
-                        relative(&f)
-                    );
+                    assert_eq!(v, c.release.release_tag, "{} job {id}", relative(&f));
                 }
             }
         }
@@ -504,8 +496,6 @@ fn the_callers_pass_the_tag_patterns_of_the_configuration_template() {
     let filter = gate["on"]["push"]["tags"][0].as_str().unwrap();
     let glob = c
         .release
-        .as_ref()
-        .unwrap()
         .candidate_tag
         .replace("{version}", "*")
         .replace("{rc}", "*");
@@ -613,7 +603,7 @@ fn the_publication_calls_the_two_stages_and_always_closes() {
         ["verify", "publish"]
     );
     // The latest candidate's own QA reports, as the configuration renders them.
-    let release = template().release.unwrap();
+    let release = template().release;
     let verify = &publish["jobs"]["verify"]["with"];
     assert_eq!(verify["qa-record"].as_str(), Some(release.record.as_str()));
     let angles: Vec<String> =

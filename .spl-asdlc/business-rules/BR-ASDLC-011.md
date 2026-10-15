@@ -1,4 +1,4 @@
-# BR-ASDLC-011 — The bridge is the sole writer of item transitions (except on an item under the hands-off label, `docs/spec/07-the-bridge.md`) and writes them regardless of any agent lock; an advisory lock protects an agent's work on the item's content, never its status.
+# BR-ASDLC-011 — The bridge is the sole automated writer of item transitions and writes them regardless of any agent lock; an advisory lock protects an agent's work on the item's content, never its status.
 
 Status: Proposed
 

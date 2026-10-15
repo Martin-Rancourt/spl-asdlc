@@ -20,9 +20,9 @@ fn spec_block(n: usize) -> &'static str {
 fn spec_config(dir: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("spl-asdlc-cli-{dir}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("spl-asdlc.toml");
+    let path = dir.join("config.toml");
     std::fs::write(&path, spec_block(0)).unwrap();
-    std::fs::write(dir.join("spl-asdlc.instance.toml"), spec_block(1)).unwrap();
+    std::fs::write(dir.join("config.instance.toml"), spec_block(1)).unwrap();
     path
 }
 
@@ -43,7 +43,7 @@ fn run(args: &[&str]) -> std::process::Output {
 #[test]
 fn without_credentials_the_bridge_refuses_to_start_and_names_them() {
     let file = spec_config("tick");
-    let overlay = file.with_file_name("spl-asdlc.instance.toml");
+    let overlay = file.with_file_name("config.instance.toml");
     let file = file.to_str().unwrap();
     let overlay = overlay.to_str().unwrap();
     for args in [
@@ -66,7 +66,7 @@ fn without_credentials_the_bridge_refuses_to_start_and_names_them() {
 fn an_invalid_configuration_stops_the_tick() {
     let dir = std::env::temp_dir().join(format!("spl-asdlc-cli-bad-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("spl-asdlc.toml");
+    let path = dir.join("config.toml");
     std::fs::write(&path, "schema = 1\n").unwrap();
     let out = run(&["tick", "--file", path.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(2));
@@ -77,7 +77,7 @@ fn an_invalid_configuration_stops_the_tick() {
 fn a_neutral_file_without_its_overlay_stops_the_dry_run_and_names_the_instance_keys() {
     let dir = std::env::temp_dir().join(format!("spl-asdlc-cli-neutral-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("spl-asdlc.toml");
+    let path = dir.join("config.toml");
     std::fs::write(&path, spec_block(0)).unwrap();
     let out = run(&["tick", "--dry-run", "--file", path.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(2));
@@ -90,7 +90,7 @@ fn a_neutral_file_without_its_overlay_stops_the_dry_run_and_names_the_instance_k
 fn an_instance_overlay_is_named_for_a_single_file_only() {
     let one = spec_config("tick-one");
     let two = spec_config("tick-two");
-    let overlay = one.with_file_name("spl-asdlc.instance.toml");
+    let overlay = one.with_file_name("config.instance.toml");
     let out = run(&[
         "tick",
         "--file",

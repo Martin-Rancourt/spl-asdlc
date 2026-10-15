@@ -203,8 +203,10 @@ pub fn class_of_annotation(message: Option<&str>) -> Class {
 }
 
 /// The class a cut computes (REQ-REL-011): `sensible` whenever the diff or
-/// the sensitive-path list could not be read, or a sensitive path is touched.
-pub fn classify(changed: Option<&[String]>, sensitive: Result<&[String], &str>) -> (Class, String) {
+/// the reviewed paths (the union of the review angles' `paths`) could not
+/// be read, or a reviewed path is touched; `routine` otherwise, and when no
+/// review angle carries paths.
+pub fn classify(changed: Option<&[String]>, reviewed: Result<&[String], &str>) -> (Class, String) {
     let changed = match changed {
         Some(c) if !c.is_empty() => c,
         _ => {
@@ -214,18 +216,12 @@ pub fn classify(changed: Option<&[String]>, sensitive: Result<&[String], &str>) 
             );
         }
     };
-    let patterns = match sensitive {
-        Ok(p) if !p.is_empty() => p,
-        Ok(_) => {
-            return (
-                Class::Sensible,
-                "the review table could not be read: it names no path".into(),
-            );
-        }
+    let patterns = match reviewed {
+        Ok(p) => p,
         Err(why) => {
             return (
                 Class::Sensible,
-                format!("the review table could not be read: {why}"),
+                format!("the review angles' paths could not be read: {why}"),
             );
         }
     };
@@ -469,20 +465,24 @@ mod tests {
 
     #[test]
     fn classification_fails_towards_sensible() {
-        let sensitive = vec!["src/auth/**".to_string()];
+        let reviewed = vec!["src/auth/**".to_string()];
         let docs = vec!["docs/a.md".to_string()];
-        assert_eq!(classify(Some(&docs), Ok(&sensitive)).0, Class::Routine);
+        assert_eq!(classify(Some(&docs), Ok(&reviewed)).0, Class::Routine);
         let auth = vec!["src/auth/x.rs".to_string()];
-        let (class, reason) = classify(Some(&auth), Ok(&sensitive));
+        let (class, reason) = classify(Some(&auth), Ok(&reviewed));
         assert_eq!(class, Class::Sensible);
         assert_eq!(reason, "touches the reviewed path src/auth/x.rs");
-        assert_eq!(classify(None, Ok(&sensitive)).0, Class::Sensible);
+        assert_eq!(classify(None, Ok(&reviewed)).0, Class::Sensible);
         assert_eq!(
-            classify(Some(&[]), Ok(&sensitive)).0,
+            classify(Some(&[]), Ok(&reviewed)).0,
             Class::Sensible,
             "an empty diff is nobody telling"
         );
         assert_eq!(classify(Some(&docs), Err("absent")).0, Class::Sensible);
-        assert_eq!(classify(Some(&docs), Ok(&[])).0, Class::Sensible);
+        assert_eq!(
+            classify(Some(&auth), Ok(&[])).0,
+            Class::Routine,
+            "no review angle carries paths: no path is reviewed apart"
+        );
     }
 }

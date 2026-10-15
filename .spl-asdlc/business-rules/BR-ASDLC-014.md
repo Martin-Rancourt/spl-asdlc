@@ -1,14 +1,14 @@
-# BR-ASDLC-014 — A setting is defined in exactly one place: a key present in both the repository's `spl-asdlc.toml` and the instance overlay is an error, never an override; the overlay carries instance identities only.
+# BR-ASDLC-014 — A setting is defined in exactly one place: a key present in both the repository's `.spl-asdlc/config.toml` and the instance overlay is an error, never an override; the overlay carries instance identities only.
 
 Status: Enforced
 
 ## Rule
 
-The overlay (`spl-asdlc.instance.toml` on the host that runs the bridge, outside the repository) may carry only the instance keys spec 08 lists (the repository, the owner, the tracker's team and service identity, coordinators and other logins, an angle's assignee, the channels); any other key in it is refused with its line, and an assignee for an angle the repository's file does not declare is refused too. Every rule is checked on the merged result, and each error names the file its value comes from (`docs/spec/08-configuration.md`, "The instance overlay").
+The overlay (`.spl-asdlc/config.instance.toml` on the host that runs the bridge, outside the repository) may carry only the instance keys spec 08 lists (the repository, the owner, the tracker's team and service identity, coordinators and other logins, an angle's assignee, the channels); any other key in it is refused with its line, and an assignee for an angle the repository's file does not declare is refused too. Every rule is checked on the merged result, and each error names the file its value comes from (`docs/spec/08-configuration.md`, "The instance overlay").
 
 ## Evidence
 
-The owner's decision of 2026-10-07: this repository then ran its own method and was to be public, so its `spl-asdlc.toml` must carry no instance data (BR-ASDLC-001); a silent override would let a file outside review hide a reviewed setting.
+The owner's decision of 2026-10-07: this repository then ran its own method and was to be public, so its configuration must carry no instance data (BR-ASDLC-001); a silent override would let a file outside review hide a reviewed setting.
 
 ## Test
 

@@ -1,4 +1,5 @@
-//! `spl-asdlc.toml`: the per-repository configuration (`docs/spec/08-configuration.md`).
+//! `.spl-asdlc/config.toml`: the per-repository configuration
+//! (`docs/spec/08-configuration.md`).
 //!
 //! The file is parsed into [`Config`] with every default applied, or refused
 //! with the full list of what is wrong. Nothing falls back to a default shape
@@ -23,11 +24,19 @@ pub use overlay::{INSTANCE_FILE_NAME, instance_path, sibling_of};
 /// The only schema version this build reads.
 pub const SCHEMA_VERSION: i64 = 1;
 
-/// Default file name, at the root of the repository.
-pub const FILE_NAME: &str = "spl-asdlc.toml";
+/// The method's folder, at the root of the repository.
+pub const DIR: &str = ".spl-asdlc";
 
-/// The default of the `[release]` key the PR pass reads too, with or
-/// without a release cycle (spec 08, `[release]`).
+/// The configuration's file name, in [`DIR`].
+pub const FILE_NAME: &str = "config.toml";
+
+/// The configuration's default path, from the root of the repository: the
+/// default of every `--file`, and where `doctor` reads it at the default
+/// branch.
+pub const DEFAULT_PATH: &str = ".spl-asdlc/config.toml";
+
+/// The default of the `[release]` key the PR pass reads too (spec 08,
+/// `[release]`).
 pub const DEFAULT_BRANCH_PREFIX: &str = "release/";
 
 /// The CHANGELOG sections `release prepare` writes when the file names none
@@ -75,11 +84,9 @@ pub struct Config {
     pub product: Product,
     pub owner: Owner,
     pub tracker: Tracker,
-    /// The release cycle (`docs/spec/05-release-cycle.md`); `None` when the
-    /// file has no `[release]` section: the project has no release cycle, the
-    /// bridge does nothing release-related, and a merged ticket whose every
-    /// box is ticked is Done (spec 05, "Without a release cycle").
-    pub release: Option<Release>,
+    /// The release cycle (`docs/spec/05-release-cycle.md`): every project
+    /// has one, so a file without a `[release]` section is refused.
+    pub release: Release,
     pub review: Review,
     pub bridge: Bridge,
     pub notify: Vec<Notify>,
@@ -158,6 +165,10 @@ pub struct Angle {
     pub title: String,
     pub assignee: Option<String>,
     pub notes: Option<String>,
+    /// A review angle's paths (globs, `*` crossing `/`): it applies only to a
+    /// PR that touches one. Empty for an angle on every PR, and always for a
+    /// release angle, which reviews the whole candidate.
+    pub paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -256,14 +267,7 @@ impl From<MergeMethod> for crate::github::MergeMethod {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HumanApproval {
     Never,
-    SensitivePaths,
     Always,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PathAngle {
-    pub paths: Vec<String>,
-    pub angle: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -275,10 +279,6 @@ pub struct Review {
     pub diff_size_extra_angle: u32,
     pub diff_size_angle: Option<String>,
     pub human_approval: HumanApproval,
-    /// Path of the sensitive-path list, read at the PR's base; `None` means
-    /// the project declares no sensitive paths.
-    pub sensitive_paths: Option<String>,
-    pub sensitive_angle: String,
     pub coordinators: Vec<String>,
     /// The tracker participant who receives the consolidation item of a PR
     /// round; `None` leaves it unassigned.
@@ -286,22 +286,18 @@ pub struct Review {
     pub human_reviewer: Option<String>,
     /// Apps whose PRs need no ticket: the bridge opens one for each.
     pub ticketless_authors: Vec<String>,
+    /// The review angles, each on every PR or on the PRs that touch its
+    /// paths ([`Angle::paths`]).
     pub angles: Vec<Angle>,
-    pub path_angles: Vec<PathAngle>,
 }
 
 impl Review {
-    /// Whether some PR can get an angle (spec 04 §11): a base angle, a path
-    /// angle, a sensitive-path list or a size threshold. When none can, the
-    /// project has no PR review: a PR merges on its CI and the other merge
-    /// conditions, with no round and no approval.
+    /// Whether some PR can get an angle (spec 04 §11): an angle, on every PR
+    /// or on its paths, or a size threshold. When none can, the project has
+    /// no PR review: a PR merges on its CI and the other merge conditions,
+    /// with no round and no approval.
     pub fn angle_possible(&self) -> bool {
-        angle_possible(
-            !self.angles.is_empty(),
-            !self.path_angles.is_empty(),
-            self.sensitive_paths.is_some(),
-            self.diff_size_extra_angle,
-        )
+        angle_possible(!self.angles.is_empty(), self.diff_size_extra_angle)
     }
 }
 
@@ -313,16 +309,12 @@ pub enum GithubIdentity {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bridge {
+    /// A hint for the host that runs the bridge: the interval is the host's
+    /// choice (Livela's runner, a timer), and the bridge never reads it.
     pub poll_minutes: u32,
     pub github_identity: GithubIdentity,
     pub sweep_hours: u32,
-    /// The label, on a tracker item or a GitHub PR, under which the tick
-    /// writes nothing to it: a person took it over by hand (spec 09).
-    pub hands_off_label: String,
 }
-
-/// The default of `bridge.hands_off_label`.
-pub const DEFAULT_HANDS_OFF_LABEL: &str = "spl-asdlc:hands-off";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotifyKind {
@@ -419,13 +411,10 @@ impl Source {
 
 impl Config {
     /// The release branch prefix by which the PR pass leaves the release
-    /// machinery's PRs alone (spec 04 §8): the configured one, or its
-    /// default when the project has no release cycle, so that a merge back
-    /// is never squashed.
+    /// machinery's PRs alone (spec 04 §8), so that a merge back is never
+    /// squashed: `release.branch_prefix`.
     pub fn release_machinery(&self) -> &str {
-        self.release
-            .as_ref()
-            .map_or(DEFAULT_BRANCH_PREFIX, |r| r.branch_prefix.as_str())
+        &self.release.branch_prefix
     }
 
     /// Read and validate a file on disk, merged with its instance overlay
@@ -450,13 +439,13 @@ impl Config {
         Ok((config, overlay))
     }
 
-    /// Validate the text of a `spl-asdlc.toml` that stands alone.
+    /// Validate the text of a configuration that stands alone.
     pub fn parse(text: &str) -> Result<Config, ConfigErrors> {
         let raw: RawConfig = toml::from_str(text).map_err(|e| {
             ConfigErrors(vec![ConfigError {
                 file: None,
                 key: String::new(),
-                message: format!("not a valid {FILE_NAME}: {}", e.to_string().trim_end()),
+                message: format!("not a valid configuration: {}", e.to_string().trim_end()),
             }])
         })?;
         let mut v = Validator::default();
@@ -478,7 +467,7 @@ impl Config {
             ConfigErrors(vec![ConfigError {
                 file: None,
                 key: String::new(),
-                message: format!("not a valid {FILE_NAME}: {}", e.to_string().trim_end()),
+                message: format!("not a valid configuration: {}", e.to_string().trim_end()),
             }])
         })?;
         let mut v = Validator::default();
@@ -501,10 +490,7 @@ impl Config {
             }
         }
         let Some(release) = raw.release else {
-            v.err(
-                "release",
-                "the file has no [release] section: the project has no release cycle, nothing to prepare",
-            );
+            v.err("release", NO_RELEASE);
             return Err(ConfigErrors(v.errors));
         };
         let name = product.as_ref().map_or("product", |(n, _)| n.as_str());
@@ -550,7 +536,7 @@ impl Config {
         };
         let not_valid = |e: toml::de::Error| {
             in_repository(format!(
-                "not a valid {FILE_NAME}: {}",
+                "not a valid configuration: {}",
                 e.to_string().trim_end()
             ))
         };
@@ -559,7 +545,7 @@ impl Config {
         let mut merged = overlay::merge(&mut table, &repository.label, instance)?;
         let raw: RawConfig = toml::Value::Table(table).try_into().map_err(|e| {
             in_repository(format!(
-                "the merge with {} is not a valid {FILE_NAME}: {e}",
+                "the merge with {} is not a valid configuration: {e}",
                 instance.label
             ))
         })?;
@@ -581,12 +567,17 @@ impl Config {
     }
 }
 
-/// `key`, `title`, `assignee`, `notes` of an angle entry, as written.
+/// Why a file without `[release]` is refused: every project has the cycle.
+const NO_RELEASE: &str = "the [release] section is required: every project has a release cycle (write `angles = []` under it for a release with no QA angle)";
+
+/// `key`, `title`, `assignee`, `notes`, `paths` of an angle entry, as
+/// written.
 type AngleFields = (
     Option<String>,
     Option<String>,
     Option<String>,
     Option<String>,
+    Option<Vec<String>>,
 );
 
 #[derive(Default)]
@@ -750,9 +741,13 @@ impl Validator {
         let human_go = raw.release.as_ref().and_then(|r| r.go_policy.as_deref()) == Some("human");
         let product = self.product(raw.product);
         let tracker = self.tracker(raw.tracker);
-        // No `[release]` section: no release cycle, and none of its keys
-        // is required (spec 08).
-        let release = raw.release.map(|r| self.release(r, product.as_ref()));
+        let release = match raw.release {
+            Some(r) => self.release(r, product.as_ref()),
+            None => {
+                self.err("release", NO_RELEASE);
+                None
+            }
+        };
         let review = self.review(raw.review);
         let owner = self.owner(raw.owner, human_go);
         let bridge = self.bridge(raw.bridge);
@@ -761,10 +756,7 @@ impl Validator {
             product: product?,
             owner: owner?,
             tracker: tracker?,
-            release: match release {
-                None => None,
-                Some(r) => Some(r?),
-            },
+            release: release?,
             review: review?,
             bridge,
             notify,
@@ -888,7 +880,7 @@ impl Validator {
         }
         let mut out = Vec::new();
         let mut seen = BTreeSet::new();
-        for (i, (k, title, assignee, notes)) in raw.into_iter().enumerate() {
+        for (i, (k, title, assignee, notes, paths)) in raw.into_iter().enumerate() {
             let at = format!("{key}[{i}]");
             let Some(k) = self.required(&format!("{at}.key"), k) else {
                 continue;
@@ -911,11 +903,25 @@ impl Validator {
                 .unwrap_or_else(|| default_title(&k));
             let assignee = self.optional(&format!("{at}.assignee"), assignee);
             let notes = self.optional(&format!("{at}.notes"), notes);
+            // Given, `paths` names at least one glob: an angle on every PR
+            // leaves the key out.
+            let paths = match paths {
+                Some(p) if p.is_empty() => {
+                    self.err(
+                        &format!("{at}.paths"),
+                        "must name at least one glob (leave the key out for an angle on every PR)",
+                    );
+                    Vec::new()
+                }
+                Some(p) => self.list(&format!("{at}.paths"), Some(p), Vec::new(), false),
+                None => Vec::new(),
+            };
             out.push(Angle {
                 key: k,
                 title,
                 assignee,
                 notes,
+                paths,
             });
         }
         out
@@ -1010,7 +1016,7 @@ impl Validator {
             Some(list) => self.angles(
                 "release.angles",
                 list.into_iter()
-                    .map(|a| (a.key, a.title, a.assignee, a.notes))
+                    .map(|a| (a.key, a.title, a.assignee, a.notes, None))
                     .collect(),
                 true,
             ),
@@ -1108,31 +1114,15 @@ impl Validator {
             Some(HumanApproval::Never),
             &[
                 ("never", HumanApproval::Never),
-                ("sensitive-paths", HumanApproval::SensitivePaths),
                 ("always", HumanApproval::Always),
             ],
         );
-        let sensitive_paths = self.optional("review.sensitive_paths", raw.sensitive_paths);
-        if human_approval == Some(HumanApproval::SensitivePaths) && sensitive_paths.is_none() {
-            self.err(
-                "review.sensitive_paths",
-                "is required when review.human_approval = \"sensitive-paths\"",
-            );
-        }
-        let sensitive_angle = self
-            .optional("review.sensitive_angle", raw.sensitive_angle)
-            .unwrap_or_else(|| "security".to_string());
-        for (key, angle) in [
-            ("review.sensitive_angle", Some(&sensitive_angle)),
-            ("review.diff_size_angle", diff_size_angle.as_ref()),
-        ] {
-            if let Some(a) = angle {
-                if !is_angle_key(a) {
-                    self.err(
-                        key,
-                        format!("\"{a}\" must be lower-case letters, digits and hyphens"),
-                    );
-                }
+        if let Some(a) = &diff_size_angle {
+            if !is_angle_key(a) {
+                self.err(
+                    "review.diff_size_angle",
+                    format!("\"{a}\" must be lower-case letters, digits and hyphens"),
+                );
             }
         }
         let coordinator_assignee =
@@ -1145,53 +1135,31 @@ impl Validator {
             false,
         );
         // No PR review is an explicit choice (`angles = []`): a file that
-        // says nothing about its base angles is refused, never read as none.
+        // says nothing about its angles is refused, never read as none.
         let angles = match raw.angles {
             None => {
                 self.err(
                     "review.angles",
-                    "is required: one `[[review.angles]]` table per base angle, or `angles = []` under [review] for no base angle",
+                    "is required: one `[[review.angles]]` table per angle, or `angles = []` under [review] for no PR review",
                 );
                 Vec::new()
             }
             Some(list) => self.angles(
                 "review.angles",
                 list.into_iter()
-                    .map(|a| (a.key, None, a.assignee, a.notes))
+                    .map(|a| (a.key, None, a.assignee, a.notes, a.paths))
                     .collect(),
                 false,
             ),
         };
-        let mut path_angles = Vec::new();
-        for (i, pa) in raw.path_angles.into_iter().enumerate() {
-            let at = format!("review.path_angles[{i}]");
-            let paths = self.list(&format!("{at}.paths"), pa.paths, Vec::new(), true);
-            let angle = self.required(&format!("{at}.angle"), pa.angle);
-            if let Some(a) = &angle {
-                if !is_angle_key(a) {
-                    self.err(
-                        &format!("{at}.angle"),
-                        format!("\"{a}\" must be lower-case letters, digits and hyphens"),
-                    );
-                }
-            }
-            if let Some(angle) = angle {
-                path_angles.push(PathAngle { paths, angle });
-            }
-        }
         // The coordinator approves a round; a project where no PR can get an
         // angle has no round, so no coordinator to name.
         let coordinators = self.list("review.coordinators", raw.coordinators, Vec::new(), false);
-        let angle_possible = angle_possible(
-            !angles.is_empty(),
-            !path_angles.is_empty(),
-            sensitive_paths.is_some(),
-            diff_size_extra_angle,
-        );
+        let angle_possible = angle_possible(!angles.is_empty(), diff_size_extra_angle);
         if angle_possible && coordinators.is_empty() {
             self.err(
                 "review.coordinators",
-                "is required and must name at least one entry while a PR can get an angle (a base angle, a path angle, sensitive paths or a size threshold): the coordinator approves its round",
+                "is required and must name at least one entry while a PR can get an angle (a review angle or a size threshold): the coordinator approves its round",
             );
         }
         Some(Review {
@@ -1200,14 +1168,11 @@ impl Validator {
             diff_size_extra_angle,
             diff_size_angle,
             human_approval: human_approval?,
-            sensitive_paths,
-            sensitive_angle,
             coordinators,
             coordinator_assignee,
             human_reviewer,
             ticketless_authors,
             angles,
-            path_angles,
         })
     }
 
@@ -1216,7 +1181,6 @@ impl Validator {
             poll_minutes: None,
             github_identity: None,
             sweep_hours: None,
-            hands_off_label: None,
         });
         let poll_minutes = self.positive("bridge.poll_minutes", raw.poll_minutes, 5);
         let github_identity = self
@@ -1231,14 +1195,10 @@ impl Validator {
             )
             .unwrap_or(GithubIdentity::App);
         let sweep_hours = self.positive("bridge.sweep_hours", raw.sweep_hours, 24);
-        let hands_off_label = self
-            .optional("bridge.hands_off_label", raw.hands_off_label)
-            .unwrap_or_else(|| DEFAULT_HANDS_OFF_LABEL.to_string());
         Bridge {
             poll_minutes,
             github_identity,
             sweep_hours,
-            hands_off_label,
         }
     }
 
@@ -1427,10 +1387,10 @@ fn is_product_name(s: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
-/// Whether some PR can get an angle: a base angle, a path angle, a
-/// sensitive-path list or a size threshold. Without one, no PR is reviewed.
-fn angle_possible(base: bool, path: bool, sensitive: bool, diff_size_extra_angle: u32) -> bool {
-    base || path || sensitive || diff_size_extra_angle > 0
+/// Whether some PR can get an angle: a review angle (on every PR or on its
+/// paths) or a size threshold. Without one, no PR is reviewed.
+fn angle_possible(angles: bool, diff_size_extra_angle: u32) -> bool {
+    angles || diff_size_extra_angle > 0
 }
 
 fn is_angle_key(s: &str) -> bool {
