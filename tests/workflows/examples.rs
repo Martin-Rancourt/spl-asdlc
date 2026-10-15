@@ -409,6 +409,16 @@ fn the_pr_workflow_is_unfiltered_and_aggregates_every_job() {
         .filter_map(Yaml::as_str)
         .collect();
     assert_eq!(bases, ["main", "release/**"], "REQ-CI-022, REQ-CI-034");
+    let types: Vec<&str> = trigger["types"]
+        .as_vec()
+        .unwrap()
+        .iter()
+        .filter_map(Yaml::as_str)
+        .collect();
+    assert!(
+        types.contains(&"ready_for_review"),
+        "a PR marked ready runs required-check again, which never passes on a draft: {types:?}"
+    );
     assert!(
         pr["concurrency"]["group"]
             .as_str()

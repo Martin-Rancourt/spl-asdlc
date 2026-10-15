@@ -2,9 +2,12 @@ name: required-check
 description: >-
   The one required status check of a PR workflow: fails unless every gated job
   succeeded, or was skipped while the caller declared it may be
-  (.spl-asdlc/requirements/ci.md, REQ-CI-024). Run it as the only step of a job named
-  `required-check`, with `if: always()`, `needs:` every other job of the
-  workflow, on a hosted runner.
+  (.spl-asdlc/requirements/ci.md, REQ-CI-024), and always fails on a draft PR,
+  which is out of the flow: a green check left by a draft run would satisfy
+  the ruleset on the same head once the PR is marked ready, so the caller's
+  `ready_for_review` run is the one that reports success. Run it as the only
+  step of a job named `required-check`, with `if: always()`, `needs:` every
+  other job of the workflow, on a hosted runner.
 
 inputs:
   needs:
@@ -25,8 +28,13 @@ runs:
       env:
         NEEDS: ${{ inputs.needs }}
         MAY_SKIP: ${{ inputs.may-skip }}
+        DRAFT: ${{ github.event.pull_request.draft }}
       run: |
         set -euo pipefail
+        if [ "${DRAFT:-}" = "true" ]; then
+          echo "::error title=required-check::A draft PR is out of the flow: required-check never passes on a draft. Mark the PR ready for review; its ready_for_review run reports the check."
+          exit 1
+        fi
         if ! command -v jq > /dev/null; then
           echo "::error title=required-check::jq is not installed on this runner."
           exit 1

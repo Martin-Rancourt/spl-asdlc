@@ -384,38 +384,112 @@ fn a_ready_or_backlog_ticket_whose_pr_is_opened_goes_straight_to_in_review() {
 }
 
 #[test]
-fn a_pr_put_back_in_draft_before_its_round_sends_the_ticket_back_to_work() {
+fn a_pr_put_back_in_draft_is_out_of_the_flow_and_writes_nothing() {
     let w = World::new();
     let mut pr = pull_request(7);
     w.ticket("ABC-1", Status::InProgress, &pr);
     w.open(pr.clone());
     w.tick(false);
     assert_eq!(w.tracker.item("ABC-1").state.status, Some(Status::InReview));
+    let before = (w.tracker.writes().len(), w.github_writes().len());
     pr.draft = true;
     w.open(pr.clone());
-    w.tick(false);
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(
+        report.waiting_lines(),
+        vec!["waiting: pr#7 it is a draft, out of the flow until it is marked ready"]
+    );
     assert_eq!(
         w.tracker.item("ABC-1").state.status,
-        Some(Status::InProgress)
+        Some(Status::InReview),
+        "nothing written from a draft"
+    );
+    assert_eq!(
+        (w.tracker.writes().len(), w.github_writes().len()),
+        before,
+        "{:?}",
+        &w.tracker.writes()[before.0..]
     );
     quiet(&w);
-    // Ready again: In Review again.
+    // Ready again: back in the flow, where it left it.
     pr.draft = false;
-    w.open(pr);
-    w.tick(false);
+    w.open(green(pr.clone()));
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert!(!round(&w, "ABC-1", &pr).is_empty(), "its round opens");
     assert_eq!(w.tracker.item("ABC-1").state.status, Some(Status::InReview));
 }
 
 #[test]
-fn a_pr_put_in_draft_during_its_round_leaves_the_ticket_in_review_and_is_not_merged() {
+fn a_pr_put_in_draft_during_its_round_writes_nothing_and_its_round_goes_on_once_ready() {
     let w = World::new();
     let mut pr = in_review(&w, 7);
+    check_every_box(&w, "ABC-7");
+    let items = round(&w, "ABC-7", &pr);
+    let before = (w.tracker.writes().len(), w.github_writes().len());
     pr.draft = true;
-    w.open(approved(&w, pr));
+    // A draft's checks are not read: red, conflicting and approved, it is
+    // neither told of its conflict nor merged.
+    let mut draft = approved(&w, pr.clone());
+    draft.checks.clear();
+    draft.mergeable = crate::github::Mergeable::Conflicting;
+    w.open(draft);
     let (report, _) = w.tick(false);
     assert!(report.ok(), "{report:?}");
+    assert_eq!(
+        (w.tracker.writes().len(), w.github_writes().len()),
+        before,
+        "{:?} {:?}",
+        &w.tracker.writes()[before.0..],
+        &w.github_writes()[before.1..]
+    );
     assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::InReview));
-    assert!(!w.github_writes().iter().any(|l| l.starts_with("merge")));
+    assert_eq!(round(&w, "ABC-7", &pr), items, "its round stays as it is");
+    // Marked ready: the round goes on and the PR merges.
+    pr.draft = false;
+    w.open(approved(&w, pr.clone()));
+    w.tick(false);
+    assert!(
+        w.github_writes()
+            .contains(&"merge example-org/acme#7 at head-7 squash".to_string())
+    );
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::ToDeploy));
+}
+
+#[test]
+fn a_draft_pr_on_a_ticket_past_the_merge_leaves_it_where_it_is() {
+    for status in [Status::ToDeploy, Status::Done] {
+        let w = World::new();
+        let all = COMPLETE.replace("- [ ] it is fast", "- [x] it is fast");
+        w.tracker.seed("ABC-7", "A ticket", &all, status, &[]);
+        let mut pr = green(pull_request(8));
+        pr.draft = true;
+        w.tracker.link("ABC-7", &pr.url);
+        w.open(pr);
+        let (report, _) = w.tick(false);
+        assert!(report.ok(), "{report:?}");
+        assert_eq!(w.tracker.item("ABC-7").state.status, Some(status));
+        assert!(w.tracker.writes().is_empty(), "{:?}", w.tracker.writes());
+        assert!(w.github_writes().is_empty(), "{:?}", w.github_writes());
+    }
+}
+
+#[test]
+fn a_draft_pr_counts_for_nothing_among_its_tickets_prs() {
+    // BR-ASDLC-008: the merge of the ticket's other PR, every box ticked,
+    // puts it To Deploy; a draft PR of the ticket does not hold it.
+    let w = World::new();
+    let pr = in_review(&w, 7);
+    check_every_box(&w, "ABC-7");
+    let mut draft = green(pull_request(8));
+    draft.draft = true;
+    w.tracker.link("ABC-7", &draft.url);
+    w.open(draft);
+    w.open(approved(&w, pr.clone()));
+    w.tick(false);
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::ToDeploy));
+    assert!(merge_comment(&w, "ABC-7", &pr).contains("state: To Deploy"));
 }
 
 #[test]
@@ -729,7 +803,16 @@ fn a_ticket_the_closure_sent_back_is_not_swept_forward_again() {
     crate::tracker::Tracker::comment(
         &w.tracker,
         "ABC-9",
-        &texts::merged_comment(&pr.url, "main", None, "To Deploy", "the closure"),
+        &texts::merged_comment(
+            &pr.url,
+            "main",
+            &texts::MergedBy::Bridge {
+                approved_by: None,
+                up_to_date: false,
+            },
+            "To Deploy",
+            "the closure",
+        ),
     )
     .unwrap();
     w.github
@@ -1121,8 +1204,35 @@ fn a_merge_with_every_box_checked_goes_to_deploy_once() {
     w.open(approved(&w, pr.clone()));
     w.tick(false);
     assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::ToDeploy));
-    assert!(merge_comment(&w, "ABC-7", &pr).contains("state: To Deploy"));
+    let comment = merge_comment(&w, "ABC-7", &pr);
+    assert!(comment.contains("state: To Deploy"));
+    assert!(
+        comment.starts_with(&format!(
+            "{} was green, approved by `coordinator-login` and up to date with `main`, so the bridge merged it.",
+            pr.url
+        )),
+        "{comment}"
+    );
     quiet(&w);
+}
+
+#[test]
+fn the_merge_comment_says_up_to_date_only_when_the_project_requires_it() {
+    let mut w = World::new();
+    w.config.review.require_up_to_date = false;
+    let pr = in_review(&w, 7);
+    check_every_box(&w, "ABC-7");
+    w.open(approved(&w, pr.clone()));
+    w.tick(false);
+    let comment = merge_comment(&w, "ABC-7", &pr);
+    assert!(
+        comment.starts_with(&format!(
+            "{} was green and approved by `coordinator-login`, so the bridge merged it.",
+            pr.url
+        )),
+        "{comment}"
+    );
+    assert!(!comment.contains("up to date"), "{comment}");
 }
 
 // ---- nothing to deploy (`tracker.no_deploy_label`) ----
@@ -1575,7 +1685,7 @@ fn a_held_pr_says_what_holds_it() {
     assert_eq!(
         report.waiting_lines(),
         vec![
-            "waiting: pr#7 it is a draft",
+            "waiting: pr#7 it is a draft, out of the flow until it is marked ready",
             "waiting: pr#8 checks are red at head-8 (`required-check`)",
             "waiting: pr#9 its ticket ABC-9 is Triage, not Backlog, Ready, In Progress or In Review",
         ]
@@ -1926,7 +2036,16 @@ fn a_pr_with_no_angle_merges_on_green_ci_with_no_round_nor_approval() {
         "In Review when opened, as any PR: {writes:?}"
     );
     assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::ToDeploy));
-    assert!(merge_comment(&w, "ABC-7", &pr).contains("state: To Deploy"));
+    let comment = merge_comment(&w, "ABC-7", &pr);
+    assert!(comment.contains("state: To Deploy"));
+    assert!(
+        comment.contains("was green and up to date with `main`; no review angle applies to it"),
+        "{comment}"
+    );
+    assert!(
+        !comment.contains("approved"),
+        "no review, no approval: {comment}"
+    );
     // The tick reports a merge with no review.
     let merge = log
         .entries()

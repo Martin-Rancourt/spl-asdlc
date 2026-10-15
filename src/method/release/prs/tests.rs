@@ -70,24 +70,19 @@ fn an_angle_pr_names_its_sub_item_by_identifier() {
 
 // ---- BR-ASDLC-020 ----
 
-fn facts(draft: bool, green: bool, sent_back: bool) -> AnglePrFacts {
-    AnglePrFacts {
-        draft,
-        green,
-        sent_back,
-    }
+fn facts(green: bool, sent_back: bool) -> AnglePrFacts {
+    AnglePrFacts { green, sent_back }
 }
 
 #[test]
 fn an_angle_item_follows_its_pr_through_the_normal_flow() {
-    let draft = facts(true, false, false);
-    let ready = facts(false, true, false);
-    let red = facts(false, false, false);
-    let sent_back = facts(false, true, true);
+    let ready = facts(true, false);
+    let red = facts(false, false);
+    let sent_back = facts(true, true);
     assert_eq!(
-        angle_item_status(Some(Status::Ready), draft),
+        angle_item_status(Some(Status::Ready), red),
         Some(Status::InProgress),
-        "the PR appearing starts the work"
+        "the PR opened starts the work"
     );
     assert_eq!(
         angle_item_status(Some(Status::Ready), ready),
@@ -97,7 +92,6 @@ fn an_angle_item_follows_its_pr_through_the_normal_flow() {
         angle_item_status(Some(Status::InProgress), ready),
         Some(Status::InReview)
     );
-    assert_eq!(angle_item_status(Some(Status::InProgress), draft), None);
     assert_eq!(angle_item_status(Some(Status::InProgress), red), None);
     assert_eq!(
         angle_item_status(Some(Status::InReview), sent_back),

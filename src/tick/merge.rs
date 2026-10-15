@@ -1,7 +1,8 @@
 //! The PR-review pass (`docs/reference/04-pr-review.md`, spec 07 step 3): per
-//! open PR, in order, stopping at the first thing that holds it: exclusions,
-//! the linked ticket, the review reconciliation, the PR opened (its ticket In
-//! Review, a draft keeping it In Progress), CI, the ticket's contract, the
+//! open PR, in order, stopping at the first thing that holds it: exclusions
+//! (a draft PR is out of the flow), the linked ticket, the review
+//! reconciliation, the PR opened (its ticket In Review), CI, the ticket's
+//! contract, the
 //! business-rule guard, the branch, then the review round, changes
 //! requested, and the merge, at most one per repository per tick.
 //!
@@ -162,7 +163,6 @@ pub struct OpenPrs {
 #[derive(Debug, Clone)]
 struct Open {
     number: u64,
-    draft: bool,
     sent_back: bool,
 }
 
@@ -173,7 +173,6 @@ impl OpenPrs {
             .or_default()
             .push(Open {
                 number: pr.number,
-                draft: pr.draft,
                 sent_back: review::changes_requested_at_head(pr, coordinators).is_some(),
             });
     }
@@ -187,14 +186,13 @@ impl OpenPrs {
 }
 
 /// The open PRs of a ticket but `except`, as the state rules read them: a
-/// PR opened (not a draft) and not sent back is in review, round or not
-/// (spec 03).
+/// PR not sent back is in review, round or not (spec 03). A draft PR is not
+/// among them: it is out of the flow and counts for nothing.
 pub fn open_prs_of(open: &OpenPrs, ticket: &str, except: Option<u64>) -> Vec<OpenPr> {
     open.of(ticket, except)
         .into_iter()
         .map(|o| OpenPr {
             number: o.number,
-            draft: o.draft,
             sent_back: o.sent_back,
         })
         .collect()
@@ -255,6 +253,18 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> Pass {
             return Pass::default();
         }
         if review::excluded_from_merge_pass(&pr, branch_prefix).is_some() {
+            continue;
+        }
+        // A draft PR is out of the flow (`docs/method.md`): nothing is read
+        // of it nor written for it, and it counts for nothing among its
+        // ticket's PRs; a round it had stays as it is and goes on once the PR
+        // is marked ready.
+        if pr.draft {
+            t.wait(
+                report,
+                &pr,
+                "it is a draft, out of the flow until it is marked ready",
+            );
             continue;
         }
         let link = link::ticket_item(&pr, t.tracker, t.config.tracker.link_fallback);
@@ -405,9 +415,9 @@ fn one(
 
     // ---- a PR appears (spec 03) ----
     // In Progress is the implementer's, agent or person, who starts the
-    // ticket: the bridge never writes it as a backup. A PR opened (not a
-    // draft) on a ticket not marked started (Backlog, Ready) goes straight
-    // to In Review below; a draft one leaves the ticket as it is.
+    // ticket: the bridge never writes it as a backup. A PR opened on a
+    // ticket not marked started (Backlog, Ready) goes straight to In Review
+    // below.
     let mut status = ticket.state.status;
     if !matches!(
         status,
@@ -432,10 +442,9 @@ fn one(
     let changes_at_head = review::changes_requested_at_head(&pr, &t.config.review.coordinators);
 
     // ---- the PR is opened: In Review at once, before CI (spec 03) ----
-    // A draft is work in progress and leaves the ticket where it is. A PR
-    // with a round of its own that is In Progress was sent back (spec 04
-    // §5): its next round, on a new head, brings the ticket back.
-    if status != Some(Status::InReview) && !pr.draft && changes_at_head.is_none() {
+    // A PR with a round of its own that is In Progress was sent back (spec
+    // 04 §5): its next round, on a new head, brings the ticket back.
+    if status != Some(Status::InReview) && changes_at_head.is_none() {
         let children = match read_children.take() {
             Some(c) => c,
             None => match t.tracker.children(&ticket.key) {
@@ -468,33 +477,6 @@ fn one(
         }
         read_children = Some(children);
     }
-    if pr.draft {
-        // Put back in draft before its round opened: the ticket is work in
-        // progress again, unless another of its PRs is in review.
-        let alone = !open_prs_of(open, &ticket.key, Some(pr.number))
-            .iter()
-            .any(OpenPr::in_review);
-        let round = read_children
-            .as_deref()
-            .is_some_and(|c| live_round(c, &pr.url));
-        if status == Some(Status::InReview) && !round && alone && open.known {
-            t.act(
-                log,
-                report,
-                &object,
-                "status In Progress",
-                json!({"pr": pr.url, "draft": true}),
-                || {
-                    t.tracker
-                        .set_status(&ticket.key, Status::InProgress, None)
-                        .map_err(|e| e.to_string())
-                },
-            );
-        }
-        t.wait(report, &pr, "it is a draft");
-        return None;
-    }
-
     // ---- CI ----
     let required = match &base.required {
         Ok(r) => r,
@@ -1080,7 +1062,13 @@ pub fn merge(
     close_round(t, log, report, &c.ticket.key, &pr.url, true);
     // Read again: the pass may have moved the ticket for another of its PRs.
     match t.tracker.get(&c.ticket.key) {
-        Ok(ticket) => after_merge(t, log, report, pr, &ticket, None, open),
+        Ok(ticket) => {
+            let by = texts::MergedBy::Bridge {
+                approved_by: c.approved_by.as_deref(),
+                up_to_date: t.config.review.require_up_to_date,
+            };
+            after_merge(t, log, report, pr, &ticket, &by, open)
+        }
         // The sweep catches the ticket up: its merge is not recorded yet.
         Err(e) => t.unreadable(report, &object, format!("the ticket: {e}")),
     }
@@ -1136,7 +1124,7 @@ pub fn close_round(
 
 /// An open PR on a ticket past the merge (To Deploy, Done) puts the ticket
 /// back where the state rules say (REQ-MERGE-028 under BR-ASDLC-008): In
-/// Review, unless a request for changes, an open box or a draft sends it In
+/// Review, unless a request for changes or an open box sends it In
 /// Progress. The PR is not operated on this tick. Post Deploy is not
 /// reopened; the bridge's own items are not tickets.
 fn reopen_for_open_pr(
@@ -1181,8 +1169,7 @@ fn reopen_for_open_pr(
 
 /// A merged PR's ticket goes where the state rules say (spec 04 §10,
 /// BR-ASDLC-008): In Review while another of its PRs is in review, In
-/// Progress while a box of its contract is open or another PR of it is a
-/// draft, otherwise To Deploy, or, with nothing to deploy
+/// Progress while a box of its contract is open, otherwise To Deploy, or, with nothing to deploy
 /// ([`nothing_to_deploy`]), Done (Post Deploy while its own `## Post deploy`
 /// boxes wait); never backwards past the merge (REQ-MERGE-062 as the spec
 /// corrects it). The merge comment records it, once.
@@ -1192,7 +1179,7 @@ pub fn after_merge(
     report: &mut Report,
     pr: &PullRequest,
     ticket: &Item,
-    merged_by: Option<&str>,
+    merged_by: &texts::MergedBy,
     open: &OpenPrs,
 ) {
     let object = format!("pr#{} {}", pr.number, ticket.key);

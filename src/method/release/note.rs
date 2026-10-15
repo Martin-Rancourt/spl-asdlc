@@ -1,11 +1,11 @@
 //! The release note (`docs/reference/05-release-cycle.md` §12, spec 01 §6,
-//! REQ-REL-093/094): built from what the candidate actually embarks — each
-//! shipped ticket's `## Release note` snippet, the changelog line for a change
-//! no ticket describes — written into the release item at every candidate,
-//! and sent through the notifier when the release is published.
+//! REQ-REL-093/094): built from every PR of the release's range — each
+//! shipped ticket's `## Release note` snippet, and for a PR no ticket
+//! describes its own `## Release note` section or its title — written into
+//! the release item before the GO publishes the release, and sent through
+//! the notifier when the release is published.
 
-use crate::github::CommitSummary;
-use crate::method::markdown::{clip_words, first_paragraph};
+use crate::method::markdown::clip_words;
 
 pub const START: &str = "<!-- spl-asdlc:release-note:start -->";
 pub const END: &str = "<!-- spl-asdlc:release-note:end -->";
@@ -26,15 +26,13 @@ pub struct TicketEntry {
     pub prs: Vec<u64>,
 }
 
-/// A change no ticket describes: a PR, or a commit no PR merged.
+/// A PR of the range that no ticket describes: the note announces it by its
+/// own `## Release note` section, or its title when it has none.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Untracked {
-    Pr {
-        number: u64,
-        title: String,
-        body: String,
-    },
-    Commit(CommitSummary),
+pub struct Untracked {
+    pub number: u64,
+    pub title: String,
+    pub body: String,
 }
 
 /// One line, and nothing in it can forge the block's markers.
@@ -42,41 +40,8 @@ fn one_line(s: &str) -> String {
     crate::method::texts::inert(s)
 }
 
-/// The changelog line that names PR `#n`, without its bullet and link.
-fn changelog_line(changelog: Option<&str>, n: u64) -> Option<String> {
-    let needle = format!("#{n}");
-    changelog?.lines().find_map(|l| {
-        let pos = l.find(&needle)?;
-        let after = l.as_bytes().get(pos + needle.len());
-        if after.is_some_and(|b| b.is_ascii_digit()) {
-            return None;
-        }
-        let text = l.trim().trim_start_matches(['*', '-']).trim();
-        let text = text.split(" ([#").next().unwrap_or(text);
-        let text = text.split(" (#").next().unwrap_or(text);
-        Some(one_line(text))
-    })
-}
-
-/// A PR's own summary: its `Summary`/`Why` section, else its description.
-fn pr_summary(body: &str) -> String {
-    let sections = crate::method::markdown::sections(body, |t| {
-        let t = t.trim().to_lowercase();
-        t == "summary" || t == "why" || t == "résumé" || t == "pourquoi"
-    });
-    match sections.first() {
-        Some(s) => first_paragraph(&s.body(), SUMMARY_MAX),
-        None => first_paragraph(body, SUMMARY_MAX),
-    }
-}
-
 /// The generated block of the release item's `## Release note` section.
-pub fn block(
-    candidate: &str,
-    tickets: &[TicketEntry],
-    untracked: &[Untracked],
-    changelog: Option<&str>,
-) -> String {
+pub fn block(candidate: &str, tickets: &[TicketEntry], untracked: &[Untracked]) -> String {
     let mut out = vec![
         START.to_string(),
         format!(
@@ -131,28 +96,16 @@ pub fn block(
         out.push("### No linked ticket".to_string());
         out.push(String::new());
         for u in untracked {
-            match u {
-                Untracked::Pr {
-                    number,
-                    title,
-                    body,
-                } => {
-                    let summary =
-                        changelog_line(changelog, *number).unwrap_or_else(|| pr_summary(body));
-                    if summary.is_empty() {
-                        out.push(format!("- **PR #{number}** — {}", one_line(title)));
-                    } else {
-                        out.push(format!(
-                            "- **PR #{number}** — {}: {summary}",
-                            one_line(title)
-                        ));
-                    }
-                }
-                Untracked::Commit(c) => out.push(format!(
-                    "- **commit {}** — {}",
-                    &c.sha[..c.sha.len().min(12)],
-                    one_line(&c.subject)
-                )),
+            let title = one_line(&u.title);
+            let snippet = crate::method::contract::release_note_snippet(&u.body);
+            if snippet.is_empty() {
+                out.push(format!("- **PR #{}** — {title}", u.number));
+            } else {
+                out.push(format!(
+                    "- **PR #{}** — {title}: {}",
+                    u.number,
+                    clip_words(&one_line(&snippet), SUMMARY_MAX)
+                ));
             }
         }
     }

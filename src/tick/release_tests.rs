@@ -180,10 +180,11 @@ impl World {
                 Ok(vec![CommitPull {
                     number: 5,
                     url: "https://github.com/example-org/acme/pull/5".into(),
-                    merged_at: None,
+                    title: "feat: five".into(),
                     merge_commit_sha: Some("m1".into()),
                     base_ref: "main".into(),
                     head_ref: "feat/five".into(),
+                    ..CommitPull::default()
                 }]),
             );
             s.runs.insert(
@@ -1815,8 +1816,9 @@ fn a_merged_pr_ships_while_its_ticket_is_still_in_progress() {
 
 #[test]
 fn a_ticket_with_nothing_to_deploy_is_never_embarked() {
-    // Its merge delivered it (Done): no release label, no judgement, no
-    // archive by the cycle.
+    // Its merge delivered it (Done): no release label, no judgement; the
+    // closure of the release whose range holds its merge archives it
+    // (BR-ASDLC-019), once, and the note announces it.
     let w = World::new();
     w.tracker.seed(
         "ABC-5",
@@ -1834,10 +1836,57 @@ fn a_ticket_with_nothing_to_deploy_is_never_embarked() {
     let item = w.tracker.item("ABC-5");
     assert!(!item.labels.contains(&LABEL.to_string()), "not embarked");
     assert_eq!(item.state.status, Some(Status::Done));
+    let touching: Vec<String> = w
+        .tracker
+        .writes()
+        .into_iter()
+        .filter(|l| l.ends_with("ABC-5") || l.contains(" ABC-5 "))
+        .collect();
+    assert_eq!(touching, vec!["archive ABC-5"], "{:?}", w.tracker.writes());
+    assert!(item.archived);
+    let release = w.release_item();
     assert!(
-        !w.tracker.writes().iter().any(|l| l.contains("ABC-5")),
-        "{:?}",
-        w.tracker.writes()
+        release
+            .description
+            .contains("- **ABC-5** — Documentation: Document it. (#5)"),
+        "{}",
+        release.description
+    );
+    assert!(release.archived, "the release item last");
+    let before = w.tracker.writes().len();
+    w.tick();
+    assert_eq!(w.tracker.writes().len(), before, "archived once");
+}
+
+#[test]
+fn a_ticket_with_nothing_to_deploy_whose_latest_pr_is_after_the_range_is_not_archived() {
+    let w = World::new();
+    w.tracker.seed(
+        "ABC-5",
+        "Documentation",
+        "## Goal\nDocument it.\n\n## Acceptance criteria\n- [x] documented\n\n## Business rules\nNo new rule.\n",
+        Status::Done,
+        &["no-deploy"],
+    );
+    w.tracker
+        .link("ABC-5", "https://github.com/example-org/acme/pull/5");
+    w.tracker
+        .comment(
+            "ABC-5",
+            "merged\n\nmerged_by: bridge\nmerged_pr: https://github.com/example-org/acme/pull/9\n",
+        )
+        .unwrap();
+    w.tick();
+    publish(&w);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(
+        !w.tracker.item("ABC-5").archived,
+        "its later release archives it"
+    );
+    assert_eq!(
+        w.tracker.item(&w.release_item().key).state.status,
+        Some(Status::Done)
     );
 }
 
@@ -3465,16 +3514,25 @@ fn a_release_angle_item_follows_its_pr_to_review_back_to_work_and_done_at_the_me
     let mut pr = w.angle_pr(30, "security", &report_json("security", ""));
     pr.reviews.clear();
 
-    // The PR appears as a draft: the angle's work started.
+    // The PR appears as a draft: out of the flow, nothing written.
     pr.draft = true;
+    w.open_on_branch(vec![pr.clone()]);
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(writes.is_empty(), "{writes:?}");
+    assert_eq!(w.sub_item("security").state.status, Some(Status::Ready));
+
+    // Marked ready, its checks not reported yet: the angle's work started.
+    pr.draft = false;
+    let checks = std::mem::take(&mut pr.checks);
     w.open_on_branch(vec![pr.clone()]);
     let (r, writes) = w.writes_of_a_tick();
     assert!(r.ok(), "{r:?}");
     assert_eq!(writes, vec![format!("status {sub} In Progress")]);
     w.quiet();
 
-    // Ready, its required checks green: In Review, for the coordinator.
-    pr.draft = false;
+    // Its required checks green: In Review, for the coordinator.
+    pr.checks = checks;
     w.open_on_branch(vec![pr.clone()]);
     let (r, writes) = w.writes_of_a_tick();
     assert!(r.ok(), "{r:?}");
@@ -3709,7 +3767,8 @@ fn a_dry_run_prints_the_angle_items_flow_and_the_relations() {
     }
     let mut pr = w.angle_pr(30, "security", &report_json("security", ""));
     pr.reviews.clear();
-    pr.draft = true;
+    // Ready, its checks not reported yet: its sub-item would start.
+    pr.checks.clear();
     w.open_on_branch(vec![pr]);
     let before = w.tracker.writes().len();
     let intents = crate::dry::Intents::default();
@@ -4278,4 +4337,192 @@ fn a_lighter_later_pass_waits_for_an_angle_the_first_pass_did_not_merge() {
     assert_eq!(d.reasons, vec!["angles missing: product"]);
     let r = w.tick();
     assert!(w.go_writes().is_empty(), "{r:?}");
+}
+
+// ---- the sandbox run of 2026-10-15 ----
+
+#[test]
+fn release_status_after_the_cycle_closed_says_no_cycle_is_in_flight() {
+    let w = World::new();
+    w.tick();
+    assert!(matches!(
+        crate::verbs::release_status(&w.tick_ctx()).unwrap(),
+        crate::verbs::CycleStatus::InFlight(..)
+    ));
+    publish(&w);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let release = w.tracker.item(&w.release_item().key);
+    assert_eq!(release.state.status, Some(Status::Done), "the cycle closed");
+    match crate::verbs::release_status(&w.tick_ctx()).unwrap() {
+        crate::verbs::CycleStatus::Over { release_tag, item } => {
+            assert_eq!(release_tag, "acme-v1.2.0");
+            assert_eq!(item, release.key);
+        }
+        crate::verbs::CycleStatus::InFlight(..) => panic!("the cycle is over"),
+    }
+}
+
+/// PRs of the range besides the ticket's: one with no ticket and its own
+/// `## Release note`, one with no ticket and none, and the release's own
+/// bookkeeping (a merge back, an angle report PR, a `chore(release)` PR).
+fn more_prs_in_the_range(w: &World) {
+    let mut s = w.github.state.borrow_mut();
+    s.compares.insert(
+        (repo(), "acme-v1.1.0".into(), "c1".into()),
+        cmp(
+            CompareStatus::Ahead,
+            &["m1", "m6", "m7", "m8", "m9", "m10"],
+            &["src/a.rs"],
+        ),
+    );
+    for (n, head, title, body) in [
+        (
+            6,
+            "fix/six",
+            "fix: six",
+            "## Summary\nNot this.\n\n## Release note\nSix is fixed.\n",
+        ),
+        (7, "docs/seven", "docs: seven", "## Summary\nA doc.\n"),
+        (8, "release/2026-09-01-10-00-utc", "chore: merge back", ""),
+        (9, "qa/acme-v1.1.0-rc.1/security", "qa: security report", ""),
+        (10, "chore/prepare", "chore(release): 1.2.0", ""),
+    ] {
+        s.commit_pulls.insert(
+            (repo(), format!("m{n}")),
+            Ok(vec![CommitPull {
+                number: n,
+                url: format!("https://github.com/example-org/acme/pull/{n}"),
+                title: title.into(),
+                body: body.into(),
+                merge_commit_sha: Some(format!("m{n}")),
+                base_ref: "main".into(),
+                head_ref: head.into(),
+                ..CommitPull::default()
+            }]),
+        );
+    }
+}
+
+#[test]
+fn the_note_and_the_brief_announce_every_pr_of_the_range_but_the_bookkeeping() {
+    let w = World::new();
+    more_prs_in_the_range(&w);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let release = w.release_item();
+    let brief = w
+        .tracker
+        .comments(&release.key)
+        .unwrap()
+        .into_iter()
+        .find(|c| c.body.contains("### Release brief"))
+        .expect("the brief")
+        .body;
+    assert!(brief.contains("#### No linked ticket"), "{brief}");
+    assert!(brief.contains("- **PR #6** — fix: six\n"), "{brief}");
+    assert!(brief.contains("- **PR #7** — docs: seven\n"), "{brief}");
+    let d = &release.description;
+    assert!(
+        d.contains("- **ABC-5** — Shipped: You can now ship. (#5)"),
+        "{d}"
+    );
+    assert!(d.contains("### No linked ticket"), "{d}");
+    assert!(d.contains("- **PR #6** — fix: six: Six is fixed."), "{d}");
+    assert!(d.contains("- **PR #7** — docs: seven\n"), "{d}");
+    for (text, n) in [
+        (&brief, 8),
+        (&brief, 9),
+        (&brief, 10),
+        (d, 8),
+        (d, 9),
+        (d, 10),
+    ] {
+        assert!(
+            !text.contains(&format!("PR #{n}")),
+            "bookkeeping #{n}: {text}"
+        );
+    }
+    // The note sent at the closure announces them too.
+    publish(&w);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let sent = w.signal.sent.borrow().join("\n");
+    assert!(
+        sent.contains("- **PR #6** — fix: six: Six is fixed."),
+        "{sent}"
+    );
+    assert!(sent.contains("- **PR #7** — docs: seven"), "{sent}");
+}
+
+/// The release item's description with its note taken out again, the
+/// fresh item's placeholder in its place.
+fn placeholder_back(w: &World, key: &str) {
+    use crate::method::release::note::{END, PLACEHOLDER, START};
+    // The markers as this tracker stores them (made visible when it drops
+    // HTML comments).
+    let (start, end) = if w.tracker.keeps_html_comments() {
+        (START.to_string(), END.to_string())
+    } else {
+        (texts::visible_markers(START), texts::visible_markers(END))
+    };
+    w.tracker.restyle(key, |d| {
+        let (s, e) = (d.find(&start).unwrap(), d.find(&end).unwrap() + end.len());
+        format!("{}_{PLACEHOLDER}_{}", &d[..s], &d[e..])
+    });
+}
+
+#[test]
+fn the_release_item_carries_its_note_before_the_go_publishes_the_release() {
+    use crate::method::release::note::PLACEHOLDER;
+    // The brief writes it: a GO a person makes in GitHub finds it there.
+    let w = World::new();
+    w.tick();
+    let release = w.release_item();
+    assert!(
+        release
+            .description
+            .contains("- **ABC-5** — Shipped: You can now ship. (#5)"),
+        "{}",
+        release.description
+    );
+    assert!(!release.description.contains(PLACEHOLDER));
+    // Taken out again, the GO writes it back before it tags and publishes.
+    placeholder_back(&w, &release.key);
+    all_angles_merged(&w);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(w.go_writes(), go_lines("c1"), "{r:?}");
+    let d = w.tracker.item(&release.key).description;
+    assert!(!d.contains(PLACEHOLDER), "{d}");
+    assert!(
+        d.contains("- **ABC-5** — Shipped: You can now ship. (#5)"),
+        "{d}"
+    );
+    assert!(
+        d.contains(&format!("`{CAND}`")),
+        "the candidate line stays: {d}"
+    );
+}
+
+#[test]
+fn a_release_note_that_cannot_be_written_holds_the_go() {
+    let w = World::new();
+    w.tick();
+    let release = w.release_item();
+    placeholder_back(&w, &release.key);
+    w.tracker
+        .fail_writes_starting_with(&format!("describe {}", release.key));
+    all_angles_merged(&w);
+    let r = w.tick();
+    assert!(
+        r.failures
+            .iter()
+            .any(|f| f.contains("describe release note")),
+        "{r:?}"
+    );
+    assert!(
+        w.go_writes().is_empty(),
+        "never published with the placeholder"
+    );
 }

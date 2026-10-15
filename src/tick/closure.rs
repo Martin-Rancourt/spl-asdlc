@@ -26,7 +26,7 @@ use crate::tracker::{Item, TResult};
 
 use super::merge::{for_tracker, tracker_said};
 use super::post_deploy;
-use super::release::{Candidate, embarked, embarked_items};
+use super::release::{Candidate, embarked_items};
 use super::{Notice, Report, Tick};
 
 pub fn close(
@@ -64,14 +64,16 @@ pub fn close(
     // What this release shipped, ticket by ticket (its PRs in the range): a
     // ticket whose latest merged PR is not among them waits for the release
     // that ships it (several PRs per ticket, spec 04 §10).
-    let (shipped, sub_items): (std::collections::BTreeMap<String, Vec<u64>>, Vec<String>) =
-        match embarked_items(t, shape, c) {
-            Ok(e) => (e.tickets.into_iter().collect(), e.sub_items),
-            Err(e) => {
-                t.unreadable(report, &object, format!("the shipped tickets: {e}"));
-                return;
-            }
-        };
+    let range = match embarked_items(t, shape, c) {
+        Ok(e) => e,
+        Err(e) => {
+            t.unreadable(report, &object, format!("the shipped tickets: {e}"));
+            return;
+        }
+    };
+    let delivered = range.delivered;
+    let sub_items = range.sub_items;
+    let shipped: std::collections::BTreeMap<String, Vec<u64>> = range.tickets.into_iter().collect();
     let registry = read_registry(t, &published.tag);
     let mut result = CloseResult::default();
     for m in &members {
@@ -147,9 +149,46 @@ pub fn close(
                     m
                 })
                 .collect();
-            archive_resolved(t, log, report, c, item, &members);
+            if let Some(members) = with_delivered(t, report, members, &delivered) {
+                archive_resolved(t, log, report, c, item, &members);
+            }
         }
     }
+}
+
+/// The members of a closed cycle with, added, the tickets with nothing to
+/// deploy whose merge the release's range holds (BR-ASDLC-019): delivered at
+/// their merge, never embarked nor labelled, they are archived with the
+/// cycle that ships their PRs. A ticket whose latest merged PR is not in the
+/// range is left to the release that ships it. `None` when one could not be
+/// read: nothing is archived this tick, the next one retries.
+fn with_delivered(
+    t: &Tick,
+    report: &mut Report,
+    mut members: Vec<Item>,
+    delivered: &[(String, Vec<u64>)],
+) -> Option<Vec<Item>> {
+    for (key, prs) in delivered {
+        if members.iter().any(|m| &m.key == key) {
+            continue;
+        }
+        match latest_merged_pr(t, key) {
+            Ok(Some(n)) if !prs.contains(&n) => continue,
+            Ok(_) => {}
+            Err(e) => {
+                t.unreadable(report, key, format!("its merged PRs: {e}"));
+                return None;
+            }
+        }
+        match t.tracker.get(key) {
+            Ok(i) => members.push(i),
+            Err(e) => {
+                t.unreadable(report, key, e);
+                return None;
+            }
+        }
+    }
+    Some(members)
 }
 
 /// The archiving of a cycle already closed, at a later tick: what a failed
@@ -178,9 +217,22 @@ pub fn archive_closed(
         }
     }
     let label = vocabulary::release_label(&shape.product, &c.version.to_string());
-    match members(t, item, &label) {
-        Ok(m) => archive_resolved(t, log, report, c, item, &m),
-        Err(e) => t.unreadable(report, &item.key, format!("the release's members: {e}")),
+    let members = match members(t, item, &label) {
+        Ok(m) => m,
+        Err(e) => {
+            t.unreadable(report, &item.key, format!("the release's members: {e}"));
+            return;
+        }
+    };
+    let delivered = match embarked_items(t, shape, c) {
+        Ok(e) => e.delivered,
+        Err(e) => {
+            t.unreadable(report, &item.key, format!("the shipped tickets: {e}"));
+            return;
+        }
+    };
+    if let Some(members) = with_delivered(t, report, members, &delivered) {
+        archive_resolved(t, log, report, c, item, &members);
     }
 }
 
@@ -542,49 +594,14 @@ fn release_note(
             return false;
         }
     }
-    let shipped = match embarked(t, shape, c) {
-        Ok(k) => k,
+    let block = match note_block(t, shape, c) {
+        Ok(b) => b,
         Err(e) => {
-            t.unreadable(report, &item.key, format!("the shipped tickets: {e}"));
+            t.unreadable(report, &item.key, format!("the release note: {e}"));
             return false;
         }
     };
-    let mut tickets = Vec::new();
-    for (key, prs) in shipped {
-        let ticket = match t.tracker.get(&key) {
-            Ok(i) => i,
-            Err(e) => {
-                t.unreadable(report, &key, e);
-                return false;
-            }
-        };
-        let snippet = crate::method::contract::release_note_snippet(&ticket.description);
-        tickets.push(TicketEntry {
-            id: key,
-            title: ticket.title,
-            snippet: (!snippet.is_empty()).then_some(snippet),
-            goal: crate::method::contract::goal_summary(&ticket.description, 280),
-            prs,
-        });
-    }
-    let block = note::block(&c.tag, &tickets, &[], Some(&published.body));
-    let description = for_tracker(t, &note::splice(&item.description, &block));
-    // Compared as the tracker stores it: a description it restyled (its
-    // own bullets, blank lines) is not rewritten at every tick.
-    if !markdown::same_stored(&description, &item.description) {
-        t.act(
-            log,
-            report,
-            &item.key,
-            "describe release note",
-            json!({}),
-            || {
-                t.tracker
-                    .update_description(&item.key, &description)
-                    .map_err(|e| e.to_string())
-            },
-        );
-    }
+    describe_note(t, log, report, item, &block);
     let head = note::published_head(
         &shape.product,
         &c.version.to_string(),
@@ -622,6 +639,59 @@ fn release_note(
             .map(|_| ())
             .map_err(|e| e.to_string())
     })
+    .is_some()
+}
+
+/// The release note of a candidate (spec 05 §12): every PR of its range, the
+/// release's own bookkeeping apart. A ticket is named once with its PRs, by
+/// its `## Release note` snippet (its Goal when it has none), a ticket with
+/// nothing to deploy included; a PR no ticket describes is announced by its
+/// own `## Release note` section, or its title. `Err` when the range or a
+/// ticket could not be read: the note is never guessed.
+pub(super) fn note_block(t: &Tick, shape: &Shape, c: &Candidate) -> Result<String, String> {
+    let range = embarked_items(t, shape, c)?;
+    let mut tickets = Vec::new();
+    for (key, prs) in range.tickets.into_iter().chain(range.delivered) {
+        let ticket = t.tracker.get(&key).map_err(|e| format!("{key}: {e}"))?;
+        let snippet = crate::method::contract::release_note_snippet(&ticket.description);
+        tickets.push(TicketEntry {
+            id: key,
+            title: ticket.title,
+            snippet: Some(snippet),
+            goal: crate::method::contract::goal_summary(&ticket.description, 280),
+            prs,
+        });
+    }
+    Ok(note::block(&c.tag, &tickets, &range.untracked))
+}
+
+/// Splice the note's block into the release item's `## Release note`
+/// section, in place of the placeholder or an earlier block; whether the
+/// item now carries it. Compared as the tracker stores it: a description it
+/// restyled (its own bullets, blank lines) is not rewritten at every tick.
+pub(super) fn describe_note(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    item: &Item,
+    block: &str,
+) -> bool {
+    let description = for_tracker(t, &note::splice(&item.description, block));
+    if markdown::same_stored(&description, &item.description) {
+        return true;
+    }
+    t.act(
+        log,
+        report,
+        &item.key,
+        "describe release note",
+        json!({}),
+        || {
+            t.tracker
+                .update_description(&item.key, &description)
+                .map_err(|e| e.to_string())
+        },
+    )
     .is_some()
 }
 

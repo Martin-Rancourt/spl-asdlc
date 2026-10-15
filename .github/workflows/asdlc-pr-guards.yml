@@ -8,7 +8,8 @@ name: asdlc-pr-guards
 # The caller owns the trigger (pull_request on main and release/**, no path
 # filter), the concurrency group keyed on the ref and the draft state, its test
 # jobs gated on this job's `code` output, and the `required-check` aggregator
-# (actions/required-check). The job this workflow guarantees is `guards`.
+# (actions/required-check), which never passes on a draft PR. The job this
+# workflow guarantees is `guards`.
 
 on:
   workflow_call:

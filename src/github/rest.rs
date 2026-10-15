@@ -1192,6 +1192,8 @@ impl GitHub for RestGitHub {
             Some(CommitPull {
                 number: p["number"].as_u64()?,
                 url: str_of(p, "html_url"),
+                title: str_of(p, "title"),
+                body: str_of(p, "body"),
                 merged_at: time_of(p, "merged_at"),
                 merge_commit_sha: opt_str(p, "merge_commit_sha"),
                 base_ref: str_of(&p["base"], "ref"),

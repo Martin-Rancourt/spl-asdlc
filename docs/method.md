@@ -44,9 +44,11 @@ flowchart LR
 - Once CI is green, the configured reviews start, if any (below).
 - The author ticks the boxes the PR delivers.
 
-**One PR per ticket, by default.** A ticket gets a second PR only for a real reason, typically a deployment that must happen before the rest can go on; the implementer records the reason on the ticket. Every PR stands alone: once merged, it can be deployed at any time. Its branch starts from `main` and is never stacked on another PR. A PR in draft is never merged: a person holds a PR back by putting it in draft.
+**One PR per ticket, by default.** A ticket gets a second PR only for a real reason, typically a deployment that must happen before the rest can go on; the implementer records the reason on the ticket. Every PR stands alone: once merged, it can be deployed at any time. Its branch starts from `main` and is never stacked on another PR.
 
-**Merge.** When CI is green, the reviews are done and their fixes are in, the bridge merges the PR (squash, as the GitHub App). The ticket moves to **To Deploy**: it is on `main`, waiting for the next release. A ticket with nothing to deploy, such as documentation, goes straight to **Done**.
+**A draft PR is out of the flow.** The bridge ignores it entirely: it moves no ticket for it, opens no review for it, never merges it, does not read its CI, and counts it for nothing among the ticket's PRs. `required-check` never passes on a draft. A person takes a PR out of the flow by putting it in draft, and back in by marking it ready; a review already open stays as it is and goes on once the PR is ready again.
+
+**Merge.** When CI is green, the reviews are done and their fixes are in, the bridge merges the PR (squash, as the GitHub App) and says on the ticket which conditions held: green, approved when the PR had a review, up to date with `main` when the project requires it. The ticket moves to **To Deploy**: it is on `main`, waiting for the next release. A ticket with nothing to deploy, such as documentation, goes straight to **Done**; the closure of the release that ships its PR archives it with the release's tickets.
 
 **Business rules.** A rule that holds for the whole product is one file in `.spl-asdlc/business-rules/`, with the name of the test that proves it. One file per rule means two PRs that touch different rules never conflict. A ticket that introduces a rule says so in its contract.
 
@@ -88,14 +90,14 @@ flowchart TD
    - no blocking finding is open;
    - nothing but the candidate's own QA reports landed after it.
 
-   On GO, the bridge tags the release (`v1.4.0` in this example) on the candidate and publishes the GitHub release with its CHANGELOG section.
+   On GO, the bridge writes the release note into the release issue, then tags the release (`v1.4.0` in this example) on the candidate and publishes the GitHub release with its CHANGELOG section. The release note announces every PR of the release: a ticket by its `## Release note` paragraph, a PR with no ticket by its own `## Release note` section, or its title; the release's own bookkeeping (merge backs, QA reports, `chore(release)`) is left out. The bridge first writes it when the candidate's QA starts, so a GO given by hand finds it there too.
 5. **Publication.** The release starts the project's publish workflow. It checks that the release is the candidate, builds and deploys every target the product has (desktop, mobile, web…), then merges the release branch back into `main`.
 6. **Closure.** The bridge judges each ticket of the release:
    - every box ticked: **Done**;
    - only boxes under `## Post deploy` left, which can only be verified in production: **Post Deploy**, with an urgent validation sub-task;
    - anything else open: back to **In Progress**.
 
-   It closes the release issue and sends the release note.
+   It closes the release issue, sends the release note and archives what the cycle resolved. From then on, `spl-asdlc release status` says that no cycle is in flight and which release closed the last one.
 
 One product has one version: one tag and one CHANGELOG section per release, whatever the number of platforms. Work merged to `main` during a cycle goes into the next release.
 
@@ -106,7 +108,7 @@ The bridge automates; it never owns a step.
 | Step | By hand |
 |---|---|
 | Move a ticket | Move it in the tracker. |
-| Hold a PR back | Put it in draft. |
+| Take a PR out of the flow | Put it in draft; mark it ready to bring it back. |
 | Merge a PR | Merge it in GitHub. The bridge moves the ticket at its next pass. |
 | Cut a release, cut the next candidate | Dispatch the cut workflow (`open` on `main`, `candidate` on the release branch). |
 | Give the GO | Tag the candidate `vX.Y.Z` and publish the release with `gh release create`. The publication accepts it. |

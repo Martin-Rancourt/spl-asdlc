@@ -480,19 +480,49 @@ fn a_red_gate_is_named_before_the_qa_and_not_repeated() {
 
 #[test]
 fn a_merge_is_said_once_with_its_machine_fields() {
+    let bridge = MergedBy::Bridge {
+        approved_by: Some("coordinator"),
+        up_to_date: true,
+    };
     let c = merged_comment(
         "https://github.com/example-org/acme/pull/9",
         "main",
-        None,
+        &bridge,
         "In Progress",
         "its implementer resumes.",
     );
     assert!(c.contains("merged_pr: https://github.com/example-org/acme/pull/9"));
+    assert!(c.contains("merged_by: bridge\n"));
     assert!(c.contains("state: In Progress\nnext: its implementer resumes."));
-    assert!(
-        merged_comment("u", "main", Some("someone"), "To Deploy", "x")
-            .contains("outside the bridge")
-    );
+    let outside = merged_comment("u", "main", &MergedBy::Outside("someone"), "To Deploy", "x");
+    assert!(outside.contains("outside the bridge"));
+    assert!(outside.contains("merged_by: someone\n"));
+}
+
+#[test]
+fn the_merge_comment_states_only_the_conditions_that_applied() {
+    let say = |approved_by, up_to_date| {
+        merged_comment(
+            "u",
+            "main",
+            &MergedBy::Bridge {
+                approved_by,
+                up_to_date,
+            },
+            "To Deploy",
+            "x",
+        )
+    };
+    assert!(say(Some("coordinator"), true)
+        .starts_with("u was green, approved by `coordinator` and up to date with `main`, so the bridge merged it."));
+    let not_current = say(Some("coordinator"), false);
+    assert!(not_current.starts_with("u was green and approved by `coordinator`, so"));
+    assert!(!not_current.contains("up to date"));
+    let unreviewed = say(None, false);
+    assert!(unreviewed.starts_with("u was green; no review angle applies to it"));
+    assert!(!unreviewed.contains("approved"), "{unreviewed}");
+    assert!(!unreviewed.contains("up to date"), "{unreviewed}");
+    assert!(say(None, true).starts_with("u was green and up to date with `main`; no review angle"));
 }
 
 #[test]

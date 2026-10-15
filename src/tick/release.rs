@@ -34,6 +34,7 @@ use crate::method::checks::{self, CheckState};
 use crate::method::release::findings;
 use crate::method::release::gate;
 use crate::method::release::go::{self, AngleState, GoFacts, Policy};
+use crate::method::release::note;
 use crate::method::release::prepare;
 use crate::method::release::prs;
 use crate::method::release::report::{self, Report as AngleReport};
@@ -216,6 +217,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
             match open_round(t, log, report, &item, &candidate, &branch, &label, &offered) {
                 Some((children, true)) => {
                     post_brief(t, log, report, &item, &candidate, &b);
+                    note_into_item(t, log, report, &shape, &item, &candidate);
                     children
                 }
                 Some((children, false)) => children,
@@ -227,8 +229,10 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
     end_consolidations(t, log, report, &children, Some(&candidate.tag));
 
     let mut merged = false;
-    let angle_prs = match t.github.open_pulls(&t.repo, Some(&branch)) {
-        Ok(p) => p,
+    // A draft angle PR is out of the flow, as any draft (`docs/method.md`):
+    // it drives nothing, is never merged, and counts for nothing in the GO.
+    let angle_prs: Vec<PullRequest> = match t.github.open_pulls(&t.repo, Some(&branch)) {
+        Ok(p) => p.into_iter().filter(|p| !p.draft).collect(),
         Err(e) => {
             t.unreadable(report, &object, format!("the PRs of {branch}: {e}"));
             return false;
@@ -685,6 +689,35 @@ pub fn embarked(t: &Tick, shape: &Shape, c: &Candidate) -> Result<Vec<(String, V
 pub struct Embarked {
     pub tickets: Vec<(String, Vec<u64>)>,
     pub sub_items: Vec<String>,
+    /// The tickets with nothing to deploy whose PRs are in the range, with
+    /// those PRs: their merge delivered them, so no release embarks them,
+    /// but the note announces them and the closure archives them
+    /// (BR-ASDLC-019).
+    pub delivered: Vec<(String, Vec<u64>)>,
+    /// The PRs of the range that no ticket of the team describes, the
+    /// release's own bookkeeping set apart: the note and the brief announce
+    /// them under "No linked ticket".
+    pub untracked: Vec<note::Untracked>,
+}
+
+/// Whether a merged PR is the release's own bookkeeping, never announced: a
+/// merge back of a release branch or the resolution of its conflict, an
+/// angle report PR of a release QA, a `chore(release)` commit.
+fn release_bookkeeping(pr: &crate::github::CommitPull, shape: &Shape) -> bool {
+    let head = pr.head_ref.as_str();
+    head.starts_with(&shape.branch_prefix)
+        || head.starts_with(review::MERGE_BACK_RESOLUTION_PREFIX)
+        || head.starts_with(review::ANGLE_BRANCH_PREFIX)
+        || pr.title.trim_start().starts_with("chore(release)")
+}
+
+/// Add a PR to an entry of `(key, PRs)`, once.
+fn add_pr(to: &mut Vec<(String, Vec<u64>)>, key: &str, pr: u64) {
+    match to.iter_mut().find(|(k, _)| k == key) {
+        Some((_, prs)) if prs.contains(&pr) => {}
+        Some((_, prs)) => prs.push(pr),
+        None => to.push((key.to_string(), vec![pr])),
+    }
 }
 
 /// The candidate's range (REQ-REL-018), with the release it starts from:
@@ -735,7 +768,7 @@ pub fn embarked_items(t: &Tick, shape: &Shape, c: &Candidate) -> Result<Embarked
         else {
             continue;
         };
-        if pr.head_ref.starts_with(&shape.branch_prefix) {
+        if release_bookkeeping(pr, shape) {
             continue;
         }
         let linked: Vec<String> = t
@@ -754,15 +787,23 @@ pub fn embarked_items(t: &Tick, shape: &Shape, c: &Candidate) -> Result<Embarked
                 out.sub_items.push(sub.key);
             }
         }
+        if split.tickets.is_empty() {
+            if !out.untracked.iter().any(|u| u.number == pr.number) {
+                out.untracked.push(note::Untracked {
+                    number: pr.number,
+                    title: pr.title.clone(),
+                    body: pr.body.clone(),
+                });
+            }
+            continue;
+        }
         for ticket in split.tickets {
             // Nothing to deploy: its merge delivered it, no release embarks
             // it (spec 04 §10).
             if super::merge::nothing_to_deploy(t, &ticket) {
-                continue;
-            }
-            match out.tickets.iter_mut().find(|(k, _)| *k == ticket.key) {
-                Some((_, prs)) => prs.push(pr.number),
-                None => out.tickets.push((ticket.key, vec![pr.number])),
+                add_pr(&mut out.delivered, &ticket.key, pr.number);
+            } else {
+                add_pr(&mut out.tickets, &ticket.key, pr.number);
             }
         }
     }
@@ -1093,8 +1134,14 @@ fn brief_facts(
         ),
         None => None,
     };
+    let embarked = embarked_items(t, shape, c)?;
+    let untracked = embarked
+        .untracked
+        .iter()
+        .map(|u| format!("**PR #{}** — {}", u.number, texts::inert(&u.title)))
+        .collect();
     let mut tickets = Vec::new();
-    for (key, prs) in embarked(t, shape, c)? {
+    for (key, prs) in embarked.tickets {
         let item = t.tracker.get(&key).map_err(|e| e.to_string())?;
         tickets.push(texts::BriefTicket {
             id: key,
@@ -1121,7 +1168,7 @@ fn brief_facts(
         gate_url: Some(run.url.clone()),
         evidence_url: Some(evidence_url),
         tickets,
-        untracked: Vec::new(),
+        untracked,
         rule_files_touched,
         no_qa_angle: false,
     })
@@ -1519,7 +1566,7 @@ fn angle_pr(
         }
         return AngleState::FailedReview;
     }
-    if *merged || pr.draft || !prs::names_sub_item(pr, &sub.key) {
+    if *merged || !prs::names_sub_item(pr, &sub.key) {
         return AngleState::InReview;
     }
     // An angle PR carries its report and nothing else (BR-ASDLC-022): an
@@ -1644,8 +1691,9 @@ fn angle_pr(
 }
 
 /// A release angle sub-item follows its open angle PR as a ticket follows
-/// its PR (BR-ASDLC-020): In Progress when the PR appears, In Review once it
-/// is ready with its required checks green, back In Progress when a
+/// its PR (BR-ASDLC-020): In Progress when the PR is opened, In Review once
+/// its required checks are green (a draft is out of the flow and never gets
+/// here), back In Progress when a
 /// configured coordinator requests changes at its head; Done comes from the
 /// merge. In Review assigns `release.coordinator_assignee`, who is then
 /// served the PR's review; sent back, the item goes to its angle's
@@ -1681,7 +1729,6 @@ fn follow_angle_pr(
         return;
     }
     let facts = prs::AnglePrFacts {
-        draft: pr.draft,
         green,
         sent_back: review::changes_requested_at_head(pr, &section(t).coordinators).is_some(),
     };
@@ -2063,6 +2110,37 @@ fn bookkeeping(release: &Release, candidate: &str, path: &str) -> bool {
 /// publication workflow. Each step is read before it is written, so a tag
 /// or a release a person made by hand (spec 09) is taken as done, never
 /// made again; a tag on another commit stops the GO, fail-closed.
+/// Write the candidate's release note into the release item (spec 05 §12):
+/// at its brief, and again at the GO before the release is published, so a
+/// GO a person makes in GitHub finds it there too. The item is read again,
+/// since this tick may have written its candidate line (a dry run, which
+/// wrote nothing and may only have pictured the item, uses it as read).
+/// Whether the item carries the note now.
+fn note_into_item(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    shape: &Shape,
+    item: &Item,
+    c: &Candidate,
+) -> bool {
+    let fresh = match t.tracker.get(&item.key) {
+        Ok(i) => i,
+        Err(_) if t.dry_run => item.clone(),
+        Err(e) => {
+            t.unreadable(report, &item.key, e);
+            return false;
+        }
+    };
+    match closure::note_block(t, shape, c) {
+        Ok(block) => closure::describe_note(t, log, report, &fresh, &block),
+        Err(e) => {
+            t.unreadable(report, &item.key, format!("the release note: {e}"));
+            false
+        }
+    }
+}
+
 fn on_go(
     t: &Tick,
     log: &mut ActionLog,
@@ -2098,6 +2176,12 @@ fn on_go(
             return;
         }
     };
+    // The release item carries its release note before the release is
+    // published (spec 05 §12): no placeholder is left at publication. A note
+    // that cannot be built or written holds the GO; the next tick retries.
+    if !note_into_item(t, log, report, shape, item, c) {
+        return;
+    }
     let existing = match release_tag_commit(t, &tag) {
         Ok(e) => e,
         Err(e) => {

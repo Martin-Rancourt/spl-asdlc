@@ -10,7 +10,9 @@ name: pr
 # (REQ-CI-022). The concurrency key holds the draft state, so the ready run
 # never cancels itself against the draft one (REQ-CI-023). Every job of this
 # file is a need of `required-check`, and only the jobs listed in `may-skip`
-# may be skipped (REQ-CI-024, REQ-CI-025).
+# may be skipped (REQ-CI-024, REQ-CI-025). A draft PR is out of the flow:
+# `required-check` always fails on a draft, and marking the PR ready fires
+# `ready_for_review`, whose run reports the check on the same head.
 #
 # GitHub Flow: every change reaches main through a PR to main, so the PR is
 # the only trigger. No run on a push to main: the PR already ran on its merge

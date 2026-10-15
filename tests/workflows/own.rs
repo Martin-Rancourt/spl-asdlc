@@ -172,6 +172,10 @@ fn the_pr_workflow_is_unfiltered_runs_on_prs_only_and_aggregates_every_job() {
         "GitHub Flow: every PR targets main (REQ-CI-022)"
     );
     assert!(
+        strings(&trigger["types"]).contains(&"ready_for_review"),
+        "a PR marked ready runs required-check again, which never passes on a draft"
+    );
+    assert!(
         pr["concurrency"]["group"]
             .as_str()
             .unwrap()

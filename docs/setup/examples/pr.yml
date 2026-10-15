@@ -9,7 +9,10 @@ name: pr
 # (REQ-CI-022). The concurrency key holds the draft state, so the ready run
 # never cancels itself against the draft one (REQ-CI-023). Every job of this
 # file is a need of `required-check`, and only the jobs listed in `may-skip`
-# may be skipped (REQ-CI-024, REQ-CI-025).
+# may be skipped (REQ-CI-024, REQ-CI-025). A draft PR is out of the flow:
+# `required-check` always fails on a draft, so a green check left by a draft
+# run never satisfies the ruleset; marking the PR ready fires
+# `ready_for_review`, whose run reports the check on the same head.
 
 on:
   pull_request:
@@ -39,7 +42,7 @@ jobs:
       guard-commands: '[{"name": "lint", "run": "make lint"}]'
 
   # The project's own suite: skipped on a prose-only PR (guards reports no
-  # code) and on drafts.
+  # code) and on drafts, whose required-check fails anyway.
   test:
     needs: guards
     if: needs.guards.outputs.code == 'true' && github.event.pull_request.draft == false
