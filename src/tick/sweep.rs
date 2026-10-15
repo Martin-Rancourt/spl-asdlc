@@ -86,8 +86,8 @@ fn closed(t: &Tick, log: &mut ActionLog, report: &mut Report, open: &OpenPrs) {
 /// A ticket In Review whose PR closed without merge: In Review stays only
 /// while another of its PRs is (or waits to be) reviewed; otherwise the
 /// completeness rule says In Progress, and To Deploy only when every box is
-/// checked and an earlier PR of it was merged (BR-ASDLC-008), or, without a
-/// release cycle, Done (Post Deploy while its own `## Post deploy` boxes
+/// checked and an earlier PR of it was merged (BR-ASDLC-008), or, with
+/// nothing to deploy, Done (Post Deploy while its own `## Post deploy` boxes
 /// wait). The comment
 /// goes first and the status last, so a cut tick retries the status without
 /// repeating the comment.

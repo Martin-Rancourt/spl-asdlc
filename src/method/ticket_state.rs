@@ -152,8 +152,8 @@ pub fn decide(f: &Facts) -> Option<(Status, Why)> {
     Some((Status::ToDeploy, Why::Complete))
 }
 
-/// Where a ticket the rules put To Deploy goes when the project has no
-/// release cycle: the merge delivered it, so it is judged at once by the
+/// Where a ticket the rules put To Deploy goes when it has nothing to
+/// deploy: the merge delivered it, so it is judged at once by the
 /// Done gate (its boxes and its duplicates', REQ-MERGE-064), as the closure
 /// judges a shipped ticket (`05-release-cycle.md` §11): every box checked →
 /// Done; only its own `## Post deploy` boxes open → Post Deploy, verified in

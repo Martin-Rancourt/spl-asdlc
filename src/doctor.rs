@@ -186,8 +186,7 @@ struct Required {
 }
 
 /// One line per ruleset the procedure asks for: the default branch, the
-/// release branches and the release and candidate tags (these two only with
-/// a release cycle). Rulesets are read by
+/// release branches and the release and candidate tags. Rulesets are read by
 /// id, so that a release branch or a tag that does not exist yet is judged
 /// against the configured shape. Only an
 /// `active` ruleset counts; one that covers a ref but is `evaluate` or
