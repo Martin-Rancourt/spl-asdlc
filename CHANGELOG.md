@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.1.0...v1.1.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **release:** one note write, In Progress during its cycle, doctor's owner line, end marker ([#74](https://github.com/Martin-Rancourt/spl-asdlc/issues/74)) ([ec6c8ce](https://github.com/Martin-Rancourt/spl-asdlc/commit/ec6c8cedbb1c534e53df0af6811f4894d768265c))
+
 ## [1.1.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.0.0...v1.1.0) (2026-10-15)
 
 
