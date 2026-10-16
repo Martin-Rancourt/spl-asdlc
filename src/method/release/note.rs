@@ -113,6 +113,10 @@ pub fn block(candidate: &str, tickets: &[TicketEntry], untracked: &[Untracked]) 
         out.push(String::new());
         out.push("No change since the last published release.".to_string());
     }
+    // The end marker a paragraph of its own, after a blank line: right
+    // under the last bullet, a tracker that reformats the markdown (Linear)
+    // would take it into that bullet and indent it.
+    out.push(String::new());
     out.push(END.to_string());
     out.join("\n")
 }
@@ -140,6 +144,9 @@ fn is_placeholder(line: &str) -> bool {
 /// Put `block` into a description (REQ-REL-093): replace a previous block;
 /// else place it first in the `## Release note` section, above any human
 /// text and without the fresh-issue placeholder; else append the section.
+/// A marker is found wherever it sits on its line: an older issue's end
+/// marker, which the tracker indented into the last bullet, is replaced
+/// with the rest, its indentation included.
 pub fn splice(description: &str, block: &str) -> String {
     // The delimiters as written, or made visible by a tracker that drops HTML
     // comments.
