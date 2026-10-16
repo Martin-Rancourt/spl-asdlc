@@ -237,21 +237,20 @@ pub fn clip_words(text: &str, max: usize) -> String {
 
 /// Whether two texts are the same markdown once a tracker stored one of
 /// them. A tracker rewrites what it keeps (Linear turns `- ` and `+ ` list
-/// bullets into `* `, adds or drops blank lines, trims trailing spaces), so
-/// a description differing only in that is not written again: the write
+/// bullets into `* `, changes the spacing after a bullet, indents the lines
+/// it nests, adds or drops blank lines, trims trailing spaces), so a
+/// description differing only in that is not written again: the write
 /// would change nothing the tracker keeps and come back restyled.
 pub fn same_stored(a: &str, b: &str) -> bool {
     fn lines(text: &str) -> impl Iterator<Item = String> + '_ {
         text.lines()
-            .map(str::trim_end)
+            .map(str::trim)
             .filter(|l| !l.is_empty())
-            .map(|l| {
-                let rest = l.trim_start();
-                let indent = &l[..l.len() - rest.len()];
-                match rest.strip_prefix(['-', '+']) {
-                    Some(item) if item.starts_with(' ') => format!("{indent}*{item}"),
-                    _ => l.to_string(),
+            .map(|l| match l.strip_prefix(['-', '+', '*']) {
+                Some(item) if item.starts_with([' ', '\t']) => {
+                    format!("* {}", item.trim_start())
                 }
+                _ => l.to_string(),
             })
     }
     lines(a).eq(lines(b))
@@ -272,6 +271,18 @@ mod tests {
         ));
         assert!(!same_stored("-not a bullet", "*not a bullet"));
         assert!(!same_stored("- one", "* two"));
+        assert!(!same_stored("**bold**", "* *bold**"));
+    }
+
+    #[test]
+    fn a_text_whose_lines_the_tracker_indented_or_respaced_is_the_same_text() {
+        let written = "- **ABC-1** — one\n- **ABC-2** — two\n`spl-asdlc:release-note:end`\n";
+        let stored = "*   **ABC-1** — one\n\n* **ABC-2** — two\n  `spl-asdlc:release-note:end`";
+        assert!(same_stored(written, stored));
+        assert!(!same_stored(
+            written,
+            "* **ABC-1** — one\n* **ABC-2** — two\n"
+        ));
     }
 
     #[test]

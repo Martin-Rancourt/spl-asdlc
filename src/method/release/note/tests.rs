@@ -195,3 +195,50 @@ fn a_block_whose_delimiters_a_tracker_made_visible_is_replaced_not_doubled() {
     assert!(again.contains("new") && !again.contains("old"), "{again}");
     assert_eq!(again.matches("release-note:start").count(), 1);
 }
+
+#[test]
+fn the_end_marker_is_a_paragraph_of_its_own_never_under_a_bullet() {
+    for b in [
+        block("rc", &[ticket("ABC-1", Some("One."), "", &[1])], &[]),
+        block(
+            "rc",
+            &[],
+            &[Untracked {
+                number: 2,
+                title: "fix: two".into(),
+                body: String::new(),
+            }],
+        ),
+        block("rc", &[], &[]),
+    ] {
+        let lines: Vec<&str> = b.lines().collect();
+        let end = lines
+            .iter()
+            .position(|l| *l == END)
+            .expect("the end marker");
+        assert_eq!(end, lines.len() - 1, "{b}");
+        assert_eq!(lines[end - 1], "", "a blank line before it: {b}");
+        assert!(!lines[end - 2].is_empty(), "{b}");
+    }
+}
+
+#[test]
+fn an_end_marker_the_tracker_indented_into_the_last_bullet_is_found_and_rewritten() {
+    let old = format!(
+        "## Release note\n\n{START}\n_old_\n\n* **ABC-1** — one (#1)\n  {END}\n\nHuman text.\n"
+    );
+    let new = block("rc.2", &[ticket("ABC-2", Some("Two."), "", &[2])], &[]);
+    let visible = crate::method::texts::visible_markers;
+    for (stored, new) in [(old.clone(), new.clone()), (visible(&old), visible(&new))] {
+        let out = splice(&stored, &new);
+        assert!(out.contains("ABC-2") && !out.contains("ABC-1"), "{out}");
+        assert_eq!(out.matches("release-note:start").count(), 1, "{out}");
+        assert_eq!(out.matches("release-note:end").count(), 1, "{out}");
+        assert!(
+            out.lines()
+                .any(|l| l.contains("release-note:end") && !l.starts_with(' ')),
+            "the marker is no longer indented: {out}"
+        );
+        assert!(out.contains("Human text."), "{out}");
+    }
+}

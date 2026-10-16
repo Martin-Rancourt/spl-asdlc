@@ -611,11 +611,16 @@ fn tracker_checks(config: &Config, tracker: &dyn Tracker) -> Vec<Check> {
         }
         Err(e) => check("statuses", Verdict::Missing, e.to_string()),
     });
+    // The configured value and whom it resolves to: an owner configured by
+    // full name reads as the same person as the tracker's handle.
     out.push(match tracker.user(&config.owner.tracker_user) {
         Ok(u) => check(
             "owner",
             Verdict::Ok,
-            format!("{} is known to the tracker", u.name),
+            format!(
+                "\"{}\" is {} in the tracker",
+                config.owner.tracker_user, u.name
+            ),
         ),
         Err(e) => check("owner", Verdict::Missing, e.to_string()),
     });
@@ -762,6 +767,8 @@ mod tests {
         });
         c.release.coordinator_assignee = Some("nobody-known".into());
         c.release.fix_assignee = Some("no-such-fixer".into());
+        // The owner configured otherwise than by the tracker's handle.
+        c.owner.tracker_user = "u-owner".into();
         let checks = run(&c, None, &g, &t, "workstation");
         let by = |n: &str| {
             checks
@@ -790,7 +797,12 @@ mod tests {
         assert_eq!(by("ruleset tags"), Verdict::Ok);
         assert_eq!(by("tracker"), Verdict::Ok);
         assert_eq!(by("statuses"), Verdict::Ok);
-        assert_eq!(by("owner"), Verdict::Ok);
+        assert!(
+            checks
+                .iter()
+                .any(|c| c.to_string() == "owner: ok — \"u-owner\" is owner-handle in the tracker"),
+            "the configured value and the identity it resolves to: {checks:#?}"
+        );
         assert!(
             checks.iter().any(|c| c.to_string()
                 == "release.escalation_label: ok — blocked-by-human does not exist yet: it will be created at the first escalation"),

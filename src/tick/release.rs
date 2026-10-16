@@ -438,7 +438,7 @@ fn release_item(
         .filter(|i| texts::bridge_item(&i.description, i.parent.as_deref()).as_ref() == Some(&want))
         .collect();
     match mine.len() {
-        1 => return Some(mine.remove(0)),
+        1 => return Some(in_progress(t, log, report, mine.remove(0))),
         0 => {}
         _ => {
             t.unreadable(
@@ -490,7 +490,9 @@ fn release_item(
                     title: texts::release_title(product, &v),
                     description: description.clone(),
                     labels: vec![label.clone()],
-                    status: Status::Ready,
+                    // Its cycle runs from its creation to its closure, which
+                    // moves it to Done.
+                    status: Status::InProgress,
                     priority: Some(Priority::Urgent),
                     assignee: assignee.clone(),
                     parent: None,
@@ -498,6 +500,31 @@ fn release_item(
                 .map_err(|e| e.to_string())
         },
     )
+}
+
+/// The release item In Progress while its cycle runs: one an earlier bridge
+/// created in Ready (or a person put back in Backlog) is moved, once, with
+/// its assignee kept.
+fn in_progress(t: &Tick, log: &mut ActionLog, report: &mut Report, mut item: Item) -> Item {
+    if !matches!(item.state.status, Some(Status::Ready | Status::Backlog)) {
+        return item;
+    }
+    let moved = t.act(
+        log,
+        report,
+        &item.key,
+        "status In Progress (release cycle)",
+        json!({}),
+        || {
+            t.tracker
+                .set_status(&item.key, Status::InProgress, None)
+                .map_err(|e| e.to_string())
+        },
+    );
+    if moved.is_some() {
+        item.state = vocabulary::ItemState::of(Status::InProgress);
+    }
+    item
 }
 
 /// The release item of a version: an item with the release label whose

@@ -4577,3 +4577,107 @@ fn a_release_note_that_cannot_be_written_holds_the_go() {
         "never published with the placeholder"
     );
 }
+
+#[test]
+fn a_go_tick_and_a_closure_that_find_the_same_note_write_nothing() {
+    use crate::method::release::note::END;
+    let w = World::new();
+    w.tick();
+    let release = w.release_item();
+    let describe = format!("describe {}", release.key);
+    assert!(
+        w.tracker.writes().contains(&describe),
+        "the brief writes it"
+    );
+    // Linear's normalised form: `*` bullets with its own spacing, blank
+    // lines, and the end marker indented as an older issue has it.
+    let end = if w.tracker.keeps_html_comments() {
+        END.to_string()
+    } else {
+        texts::visible_markers(END)
+    };
+    w.tracker.restyle(&release.key, |d| {
+        d.replace("\n- **", "\n\n*   **")
+            .replace(&format!("\n\n{end}"), &format!("\n  {end}"))
+    });
+    let restyled = w.tracker.item(&release.key).description;
+    assert!(restyled.contains(&format!("\n  {end}")), "{restyled}");
+    assert!(restyled.contains("*   **ABC-5**"), "{restyled}");
+    let note_writes = |w: &World, from: usize| -> Vec<String> {
+        w.tracker.writes()[from..]
+            .iter()
+            .filter(|l| **l == describe)
+            .cloned()
+            .collect()
+    };
+    all_angles_merged(&w);
+    let before = w.tracker.writes().len();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(w.go_writes(), go_lines("c1"), "{r:?}");
+    assert!(note_writes(&w, before).is_empty(), "the GO tick");
+    publish(&w);
+    let before = w.tracker.writes().len();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.tracker.item(&release.key).state.status,
+        Some(Status::Done),
+        "the cycle closes"
+    );
+    assert!(note_writes(&w, before).is_empty(), "the closure");
+    assert_eq!(w.tracker.item(&release.key).description, restyled);
+}
+
+#[test]
+fn the_release_item_is_in_progress_from_its_creation_to_its_closure() {
+    let w = World::new();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let release = w.release_item();
+    assert_eq!(release.state.status, Some(Status::InProgress));
+    assert!(
+        w.tracker
+            .writes()
+            .iter()
+            .any(|l| l.starts_with("create Release acme v1.2.0 [In Progress]")),
+        "{:?}",
+        w.tracker.writes()
+    );
+    publish(&w);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.tracker.item(&release.key).state.status,
+        Some(Status::Done)
+    );
+}
+
+#[test]
+fn a_release_item_found_ready_or_in_backlog_is_moved_in_progress_once() {
+    for from in [Status::Ready, Status::Backlog] {
+        let w = World::new();
+        w.tick();
+        let release = w.release_item();
+        // As an earlier bridge created it, or a person put it back.
+        w.tracker.set_status(&release.key, from, None).unwrap();
+        let before = w.tracker.writes().len();
+        let r = w.tick();
+        assert!(r.ok(), "{r:?}");
+        let writes = w.tracker.writes()[before..].to_vec();
+        assert_eq!(writes.len(), 1, "{from:?}: {writes:?}");
+        assert!(writes[0].contains(&release.key), "{writes:?}");
+        let moved = w.tracker.item(&release.key);
+        assert_eq!(moved.state.status, Some(Status::InProgress), "{from:?}");
+        assert_eq!(moved.assignee, release.assignee, "its assignee kept");
+        let before = w.tracker.writes().len();
+        let r = w.tick();
+        assert!(r.ok(), "{r:?}");
+        assert_eq!(
+            w.tracker.writes().len(),
+            before,
+            "once: {:?}",
+            &w.tracker.writes()[before..]
+        );
+    }
+}
