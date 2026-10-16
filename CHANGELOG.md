@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.0.0...v1.1.0) (2026-10-15)
+
+
+### Features
+
+* **release:** the release issue is assigned to the project's owner ([#72](https://github.com/Martin-Rancourt/spl-asdlc/issues/72)) ([bca824b](https://github.com/Martin-Rancourt/spl-asdlc/commit/bca824b6060761bed97b260354e5a3120fda7b26))
+
+
+### Bug Fixes
+
+* **test:** the default-file check passes on Windows ([#71](https://github.com/Martin-Rancourt/spl-asdlc/issues/71)) ([c7a5230](https://github.com/Martin-Rancourt/spl-asdlc/commit/c7a5230518dc13e6bf7fec3cdfb6be009818225a))
+
 ## [1.0.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v0.3.0...v1.0.0) (2026-10-15)
 
 
