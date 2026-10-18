@@ -98,10 +98,20 @@ on:
           its tag, is an allowed delta, as the GO allows it; `[]` allows none.
         type: string
         default: '[]'
-      gate-workflow:
-        description: The file name of the gate workflow (spec 08 `release.gate_workflow`).
+      config-file:
+        description: >-
+          The repository's configuration (spec 08), read at the release's commit for
+          `release.gate_workflow` when `gate-workflow` is empty.
         type: string
-        default: release-gate.yml
+        default: .spl-asdlc/config.toml
+      gate-workflow:
+        description: >-
+          The file name of the gate workflow. Empty (the default) reads spec 08
+          `release.gate_workflow` from `config-file` at the release's commit, and
+          `release-gate.yml`, its default, when the file does not set it or cannot be
+          read. A value given wins; `doctor` reports one that differs from the configuration.
+        type: string
+        default: ''
       go-publisher-login:
         description: >-
           The slug of the bridge's App. The release must have been published by this App
@@ -417,16 +427,67 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           GATE_WORKFLOW: ${{ inputs.gate-workflow }}
+          CONFIG_FILE: ${{ inputs.config-file }}
+          RELEASE_TAG: ${{ inputs.release-tag }}
+          RELEASE_SHA: ${{ steps.candidate.outputs.release-sha }}
           RC_TAG: ${{ steps.candidate.outputs.rc-tag }}
           RC_SHA: ${{ steps.candidate.outputs.rc-sha }}
         shell: bash
         run: |
           set -euo pipefail
           summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
-          runs="$(mktemp)"
-          trap 'rm -f "$runs"' EXIT
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          runs="$work/runs"
+          one_line() {
+            printf '%s' "$1" | tr '\r\n\t' '   ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//'
+          }
+          # The gate workflow: the caller's input when given; otherwise
+          # `release.gate_workflow` of the configuration at the release's
+          # commit, as the bridge reads it; otherwise its default.
+          if [ -n "$GATE_WORKFLOW" ]; then
+            from="the gate-workflow input"
+          else
+            GATE_WORKFLOW=release-gate.yml
+            from="the default of release.gate_workflow"
+            if [ -z "$CONFIG_FILE" ] || [[ "$CONFIG_FILE" == /* ]] || [[ "/$CONFIG_FILE/" == */../* ]]; then
+              echo "::error title=Invalid config-file::'$CONFIG_FILE' must be a path inside the repository."
+              exit 1
+            fi
+            if ! git cat-file -e "$RELEASE_SHA:$CONFIG_FILE" 2> /dev/null; then
+              from="the default of release.gate_workflow: $RELEASE_TAG carries no $CONFIG_FILE"
+            elif ! git show "$RELEASE_SHA:$CONFIG_FILE" > "$work/config" ||
+              ! python3 - "$work/config" > "$work/gate" 2> "$work/gate.err" << 'PY'
+          # `release.gate_workflow`, or nothing when the file does not set it.
+          import sys
+          import tomllib
+
+          try:
+              with open(sys.argv[1], "rb") as f:
+                  config = tomllib.load(f)
+          except (OSError, tomllib.TOMLDecodeError) as e:
+              sys.exit(f"not valid TOML: {e}")
+          release = config.get("release", {})
+          if not isinstance(release, dict):
+              sys.exit("release is not a table")
+          gate = release.get("gate_workflow")
+          if gate is None:
+              sys.exit(0)
+          if not isinstance(gate, str) or not gate.strip() or "\n" in gate:
+              sys.exit("release.gate_workflow is not a workflow file name")
+          print(gate.strip())
+          PY
+            then
+              from="the default of release.gate_workflow: $CONFIG_FILE could not be read at $RELEASE_TAG"
+              echo "::warning title=Configuration unreadable::release.gate_workflow could not be read from $CONFIG_FILE at $RELEASE_TAG ($(one_line "$(cat "$work/gate.err" 2> /dev/null)")); checking $GATE_WORKFLOW, its default."
+            elif [ -s "$work/gate" ]; then
+              GATE_WORKFLOW="$(cat "$work/gate")"
+              from="release.gate_workflow of $CONFIG_FILE at $RELEASE_TAG"
+            fi
+          fi
+          echo "Gate workflow: $GATE_WORKFLOW ($from)."
           if ! [[ "$GATE_WORKFLOW" =~ ^[A-Za-z0-9._-]+\.ya?ml$ ]]; then
-            echo "::error title=Invalid gate-workflow::'$GATE_WORKFLOW' is not a workflow file name."
+            echo "::error title=Invalid gate-workflow::'$GATE_WORKFLOW' ($from) is not a workflow file name."
             exit 1
           fi
           # REQ-CI-077, as the bridge reads it: the newest push run of the gate
@@ -444,12 +505,12 @@ jobs:
             exit 1
           fi
           if [ "$conclusion" != "success" ]; then
-            echo "::error title=Gate not green::$GATE_WORKFLOW on $RC_TAG is '$conclusion', not success."
-            printf -- '- Refused: `%s` on `%s` is `%s`.\n' "$GATE_WORKFLOW" "$RC_TAG" "$conclusion" >> "$summary"
+            echo "::error title=Gate not green::$GATE_WORKFLOW ($from) on $RC_TAG is '$conclusion', not success."
+            printf -- '- Refused: `%s` (%s) on `%s` is `%s`.\n' "$GATE_WORKFLOW" "$from" "$RC_TAG" "$conclusion" >> "$summary"
             exit 1
           fi
           echo "$GATE_WORKFLOW on $RC_TAG: success."
-          printf -- '- Gate `%s` on `%s`: success.\n' "$GATE_WORKFLOW" "$RC_TAG" >> "$summary"
+          printf -- '- Gate `%s` (%s) on `%s`: success.\n' "$GATE_WORKFLOW" "$from" "$RC_TAG" >> "$summary"
 
       - name: The release was published by the bridge's App or by a human
         id: go

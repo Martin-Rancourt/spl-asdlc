@@ -117,9 +117,12 @@ on:
         type: string
         default: main
       gate-workflow:
-        description: The gate caller the tag starts, for the summary.
+        description: >-
+          The gate caller the tag starts, for the summary. Empty (the default) reads
+          spec 08 `release.gate_workflow` from `config-file` at the cut's commit, and
+          `release-gate.yml`, its default, when the file does not set it or cannot be read.
         type: string
-        default: release-gate.yml
+        default: ''
       runs-on:
         description: A runner label, or a JSON array of labels.
         type: string
@@ -971,10 +974,24 @@ jobs:
           BASE: ${{ steps.candidate.outputs.base }}
           PREVIOUS: ${{ steps.candidate.outputs.previous-tag }}
           GATE_WORKFLOW: ${{ inputs.gate-workflow }}
+          CONFIG_FILE: ${{ inputs.config-file }}
         shell: bash
         run: |
           set -euo pipefail
           summary="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+          # The gate the tag starts: the input when given, else
+          # `release.gate_workflow` at the cut's commit, else its default.
+          if [ -z "$GATE_WORKFLOW" ]; then
+            GATE_WORKFLOW="$(git show "HEAD:$CONFIG_FILE" 2> /dev/null | python3 -c '
+          import sys, tomllib
+          try:
+              gate = tomllib.loads(sys.stdin.read()).get("release", {}).get("gate_workflow")
+          except Exception:
+              gate = None
+          print(gate.strip() if isinstance(gate, str) else "")
+          ' 2> /dev/null || true)"
+            GATE_WORKFLOW="${GATE_WORKFLOW:-release-gate.yml}"
+          fi
           {
             echo "## Release cut ($ACTION)"
             echo

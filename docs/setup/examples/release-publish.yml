@@ -64,6 +64,9 @@ jobs:
       # The slug of the bridge's App. The release must have been published by
       # this App or by a person (spec 09); any other bot is no GO.
       go-publisher-login: example-app
+      # The gate is `[release] gate_workflow`, read from `config-file`
+      # (default `.spl-asdlc/config.toml`) at the release's commit: no
+      # `gate-workflow` to repeat (`doctor` flags one that differs).
 
   # The project's own job: publish and deploy the verified commit.
   publish:
