@@ -45,7 +45,7 @@ use crate::method::vocabulary::{self, Status};
 use crate::tracker::{Item, NewItem, Priority, RelationKind};
 
 use super::merge::{for_tracker, tracker_said};
-use super::{Report, Tick, closure};
+use super::{Report, Tick, closure, identity};
 
 /// The candidate in flight, as the tags say.
 pub struct Candidate {
@@ -433,10 +433,22 @@ fn release_item(
             return None;
         }
     };
-    let mut mine: Vec<Item> = found
-        .into_iter()
-        .filter(|i| texts::bridge_item(&i.description, i.parent.as_deref()).as_ref() == Some(&want))
-        .collect();
+    let marker = texts::marker(
+        "release",
+        &[
+            ("product", product),
+            ("version", &vocabulary::normalise_version(&v)),
+        ],
+    );
+    let mut mine = match identity::find(t, log, report, &found, &marker, |i| {
+        texts::bridge_item(&i.description, i.parent.as_deref()).as_ref() == Some(&want)
+    }) {
+        Ok(m) => m,
+        Err(e) => {
+            t.unreadable(report, &object, e);
+            return None;
+        }
+    };
     match mine.len() {
         1 => return Some(in_progress(t, log, report, mine.remove(0))),
         0 => {}
@@ -478,26 +490,23 @@ fn release_item(
     // takes unassigned items takes it; unassigned when the tracker does not
     // know them (`doctor` reports it).
     let assignee = t.tracker.user(&t.config.owner.tracker_user).ok();
-    t.act(
+    identity::create(
+        t,
         log,
         report,
         &object,
         "create release item",
         json!({"label": label, "assignee": assignee.as_ref().map(|u| u.name.as_str())}),
-        || {
-            t.tracker
-                .create_item(&NewItem {
-                    title: texts::release_title(product, &v),
-                    description: description.clone(),
-                    labels: vec![label.clone()],
-                    // Its cycle runs from its creation to its closure, which
-                    // moves it to Done.
-                    status: Status::InProgress,
-                    priority: Some(Priority::Urgent),
-                    assignee: assignee.clone(),
-                    parent: None,
-                })
-                .map_err(|e| e.to_string())
+        &NewItem {
+            title: texts::release_title(product, &v),
+            description,
+            labels: vec![label.clone()],
+            // Its cycle runs from its creation to its closure, which moves
+            // it to Done.
+            status: Status::InProgress,
+            priority: Some(Priority::Urgent),
+            assignee,
+            parent: None,
         },
     )
 }
@@ -993,12 +1002,22 @@ fn open_round(
             label,
             angle.notes.as_deref(),
         );
-        // Found by its marker or by its exact title (REQ-REL-048): a marker
-        // an agent edited does not make the item invisible.
-        if children.iter().any(|ch| {
+        // Found by its marker or by its exact title (REQ-REL-048), or by its
+        // identity comment: a marker an agent edited does not make the item
+        // invisible.
+        let marker = texts::marker("angle", &[("scope", &c.tag), ("angle", &angle.key)]);
+        match identity::find(t, log, report, &children, &marker, |ch| {
             angle_of(ch, &c.tag).as_deref() == Some(angle.key.as_str()) || ch.title == title
         }) {
-            continue;
+            Ok(found) if !found.is_empty() => {
+                renew(&mut children, found);
+                continue;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                t.unreadable(report, &item.key, e);
+                return None;
+            }
         }
         let assignee = angle.assignee.as_ref().and_then(|a| t.tracker.user(a).ok());
         if let Some(created) =
@@ -1012,13 +1031,24 @@ fn open_round(
         &format!("{product} {v} (rc.{})", c.rc),
         texts::Consolidating::Candidate,
     );
-    let consolidated = children.iter().any(|ch| {
+    let marker = texts::marker("consolidation", &[("scope", &c.tag)]);
+    let consolidated = match identity::find(t, log, report, &children, &marker, |ch| {
         texts::bridge_item(&ch.description, ch.parent.as_deref())
             == Some(BridgeItem::Consolidation {
                 scope: c.tag.clone(),
             })
             || ch.title == title
-    });
+    }) {
+        Ok(found) => {
+            let any = !found.is_empty();
+            renew(&mut children, found);
+            any
+        }
+        Err(e) => {
+            t.unreadable(report, &item.key, e);
+            return None;
+        }
+    };
     if !offered.is_empty() && !consolidated {
         let assignee = coordinator(t);
         if let Some(created) =
@@ -1029,6 +1059,15 @@ fn open_round(
     }
     let blocked = block_consolidation(t, log, report, &children, &c.tag);
     Some((children, blocked))
+}
+
+/// The children as `found` reads them (a marker written back).
+fn renew(children: &mut [Item], found: Vec<Item>) {
+    for f in found {
+        if let Some(ch) = children.iter_mut().find(|ch| ch.key == f.key) {
+            *ch = f;
+        }
+    }
 }
 
 /// The candidate's consolidation item, while open, is blocked by every
@@ -1111,25 +1150,21 @@ fn create_child(
     label: &str,
     assignee: Option<crate::tracker::User>,
 ) -> Option<Item> {
-    let body = for_tracker(t, body);
-    t.act(
+    identity::create(
+        t,
         log,
         report,
         parent,
         &format!("create \"{title}\""),
         json!({}),
-        || {
-            t.tracker
-                .create_item(&NewItem {
-                    title: title.to_string(),
-                    description: body.clone(),
-                    labels: vec![label.to_string()],
-                    status: Status::Ready,
-                    priority: Some(Priority::Urgent),
-                    assignee: assignee.clone(),
-                    parent: Some(parent.to_string()),
-                })
-                .map_err(|e| e.to_string())
+        &NewItem {
+            title: title.to_string(),
+            description: for_tracker(t, body),
+            labels: vec![label.to_string()],
+            status: Status::Ready,
+            priority: Some(Priority::Urgent),
+            assignee,
+            parent: Some(parent.to_string()),
         },
     )
 }
@@ -1300,10 +1335,15 @@ fn gate_fix(
         }
     };
     let marker = texts::gate_fix_marker(&c.tag);
-    let opened: Vec<&Item> = children
-        .iter()
-        .filter(|ch| texts::has_marker(&ch.description, &marker))
-        .collect();
+    let opened = match identity::find(t, log, report, &children, &marker, |ch| {
+        texts::has_marker(&ch.description, &marker)
+    }) {
+        Ok(o) => o,
+        Err(e) => {
+            t.unreadable(report, &item.key, e);
+            return;
+        }
+    };
     match opened.len() {
         0 => {}
         1 => return,
@@ -1386,24 +1426,21 @@ fn gate_fix(
     let (title, body) = texts::gate_fix_ticket(&facts);
     let body = for_tracker(t, &body);
     let assignee = fixer(t);
-    t.act(
+    identity::create(
+        t,
         log,
         report,
         &item.key,
         "create gate-fix ticket",
         json!({"candidate": c.tag, "run": run.url, "attempt": run.attempt, "priority": "urgent", "rerun_seen": unseen.is_none(), "assignee": assignee.as_ref().map(|u| u.name.as_str())}),
-        || {
-            t.tracker
-                .create_item(&NewItem {
-                    title: title.clone(),
-                    description: body.clone(),
-                    labels: vec![label.to_string()],
-                    status: Status::Ready,
-                    priority: Some(Priority::Urgent),
-                    assignee: assignee.clone(),
-                    parent: Some(item.key.clone()),
-                })
-                .map_err(|e| e.to_string())
+        &NewItem {
+            title,
+            description: body,
+            labels: vec![label.to_string()],
+            status: Status::Ready,
+            priority: Some(Priority::Urgent),
+            assignee,
+            parent: Some(item.key.clone()),
         },
     );
 }
@@ -1914,13 +1951,30 @@ fn file_findings(
             return;
         }
     };
-    let blocked_by: Vec<String> = match t.tracker.relations(&item.key) {
-        Ok(r) => r.blocked_by.into_iter().map(|b| b.other).collect(),
+    let relations = match t.tracker.relations(&item.key) {
+        Ok(r) => r,
         Err(e) => {
             t.unreadable(report, &item.key, e);
             return;
         }
     };
+    let blocked_by: Vec<String> = relations
+        .blocked_by
+        .iter()
+        .map(|b| b.other.clone())
+        .collect();
+    // A finding ticket whose description lost its marker is looked for by
+    // its identity comment among the items related to the release item
+    // only, never among every ticket the release embarks.
+    let pool: Vec<Item> = labelled
+        .iter()
+        .filter(|i| {
+            findings::parse_finding_marker(&i.description).is_some()
+                || blocked_by.contains(&i.key)
+                || relations.related.iter().any(|r| r.other == i.key)
+        })
+        .cloned()
+        .collect();
     let release_id = item.key.as_str();
     // Read once, and only when a blocking finding is filed.
     let mut fixer_of: Option<Option<crate::tracker::User>> = None;
@@ -1928,11 +1982,18 @@ fn file_findings(
         // Filed once, whatever became of it: a finding canceled as a false
         // alarm or requalified stays so (the merged report does not
         // change). A new candidate's report is another key.
-        let filed = labelled.iter().find(|i| {
+        let marker = findings::finding_marker(release_id, &c.tag, angle, &f.id);
+        let filed = match identity::find(t, log, report, &pool, &marker, |i| {
             findings::parse_finding_marker(&i.description).is_some_and(|(rel, cand, a, id)| {
                 rel == release_id && cand == c.tag && a == angle && id == f.id
             })
-        });
+        }) {
+            Ok(found) => found.into_iter().next(),
+            Err(e) => {
+                t.unreadable(report, &item.key, e);
+                continue;
+            }
+        };
         if let Some(ticket) = filed {
             // A blocking finding whose relation failed after its creation:
             // the relation is laid again (REQ-REL-058).
@@ -1972,7 +2033,8 @@ fn file_findings(
             },
             parent: None,
         };
-        let created = t.act(
+        let created = identity::create(
+            t,
             log,
             report,
             &item.key,
@@ -1983,7 +2045,7 @@ fn file_findings(
                 "priority": new.priority.map(Priority::name),
                 "assignee": new.assignee.as_ref().map(|u| u.name.as_str()),
             }),
-            || t.tracker.create_item(&new).map_err(|e| e.to_string()),
+            &new,
         );
         if let Some(ticket) = created {
             let kind = if f.blocking {

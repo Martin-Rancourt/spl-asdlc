@@ -2980,7 +2980,11 @@ fn a_gate_fix_ticket_resolved_in_review_or_to_deploy_is_left_alone_on_a_green_ga
         // Past the merge it follows the flow of any ticket: To Deploy at
         // its fix's merge, Done at the closure, never closed by the bridge.
         assert_eq!(w.tracker.item(&fix.key).state.status, Some(status));
-        assert!(w.tracker.comments(&fix.key).unwrap().is_empty(), "{status}");
+        assert_eq!(
+            w.tracker.comments(&fix.key).unwrap().len(),
+            1,
+            "{status}: its identity comment only"
+        );
         assert_eq!(
             w.tracker.item(&fix.key).description,
             fix.description,
@@ -3026,11 +3030,136 @@ fn a_still_red_next_gate_opens_a_new_gate_fix_ticket_for_its_candidate() {
     let old = w.tracker.item(&first.key);
     assert_eq!(old.state.status, Some(Status::ToDeploy), "left to its flow");
     assert_eq!(old.description, first.description);
-    assert!(w.tracker.comments(&first.key).unwrap().is_empty());
+    assert_eq!(
+        w.tracker.comments(&first.key).unwrap().len(),
+        1,
+        "its identity comment only"
+    );
 
     let (r, writes) = w.writes_of_a_tick();
     assert!(r.ok(), "{r:?}");
     assert!(writes.is_empty(), "never opened twice: {writes:?}");
+}
+
+/// The description an agent leaves when it ticks every box by rewriting it
+/// without its first line, the marker (seen on 2026-10-18).
+fn ticked_without_marker(description: &str) -> String {
+    description
+        .lines()
+        .skip(1)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .replace("- [ ]", "- [x]")
+}
+
+#[test]
+fn a_gate_fix_ticket_whose_description_lost_its_marker_is_found_by_its_comment_and_never_opened_twice()
+ {
+    let w = World::new();
+    w.red_settled(1, CAND, "c1", r#""tests""#);
+    w.tick();
+    let fix = w.gate_fixes().remove(0);
+    let marker = texts::gate_fix_marker(CAND);
+    // Its identity comment, posted with it, where agents do not edit.
+    let comments = w.tracker.comments(&fix.key).unwrap();
+    assert_eq!(comments.len(), 1, "{comments:?}");
+    assert!(comments[0].by_bridge && texts::has_marker(&comments[0].body, &marker));
+
+    let ticked = ticked_without_marker(&fix.description);
+    assert!(!texts::has_marker(&ticked, &marker));
+    w.tracker.restyle(&fix.key, |_| ticked.clone());
+    assert!(w.gate_fixes().is_empty(), "invisible by its description");
+
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        writes,
+        vec![
+            format!("describe {}", fix.key),
+            format!(
+                "comment {} {}",
+                fix.key,
+                texts::marker_restored_comment().lines().next().unwrap()
+            ),
+        ],
+        "found by its comment, its marker written back, nothing created"
+    );
+    let restored = w.tracker.item(&fix.key);
+    assert!(texts::has_marker(&restored.description, &marker));
+    assert!(
+        restored.description.contains("- [x]"),
+        "the agent's tick kept"
+    );
+    assert_eq!(w.gate_fixes().len(), 1);
+
+    // Written back once: the next tick finds it by its description.
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(writes.is_empty(), "{writes:?}");
+}
+
+#[test]
+fn several_gate_fix_tickets_found_by_their_comments_open_none_and_are_named() {
+    let w = World::new();
+    w.red_settled(1, CAND, "c1", r#""tests""#);
+    w.tick();
+    let fix = w.gate_fixes().remove(0);
+    let release = w.release_item();
+    let marker = texts::gate_fix_marker(CAND);
+    w.tracker
+        .seed("ABC-77", &fix.title, &fix.description, Status::Ready, &[]);
+    w.tracker
+        .state
+        .borrow_mut()
+        .set_parent("ABC-77", &release.key);
+    w.tracker
+        .comment("ABC-77", &texts::identity_comment(&marker))
+        .unwrap();
+    for key in [fix.key.as_str(), "ABC-77"] {
+        w.tracker.restyle(key, ticked_without_marker);
+    }
+
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(
+        !writes.iter().any(|w| w.starts_with("create ")),
+        "{writes:?}"
+    );
+    assert!(
+        r.failures
+            .iter()
+            .any(|f| f.contains("several gate-fix tickets")
+                && f.contains(&fix.key)
+                && f.contains("ABC-77")),
+        "{r:?}"
+    );
+    // And so at every tick while both are there.
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(
+        !writes.iter().any(|w| w.starts_with("create ")),
+        "{writes:?}"
+    );
+    assert!(
+        r.failures
+            .iter()
+            .any(|f| f.contains("several gate-fix tickets")),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn a_gate_fix_ticket_whose_comments_cannot_be_read_opens_none() {
+    let w = World::new();
+    w.red_settled(1, CAND, "c1", r#""tests""#);
+    w.tick();
+    let fix = w.gate_fixes().remove(0);
+    w.tracker.restyle(&fix.key, ticked_without_marker);
+    w.tracker.make_unreadable(&fix.key);
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(
+        !writes.iter().any(|w| w.starts_with("create ")),
+        "fail-closed: {writes:?}"
+    );
+    assert!(!r.ok(), "{r:?}");
 }
 
 #[test]
@@ -3132,7 +3261,11 @@ fn the_validation_sub_task_is_created_urgent_and_a_dry_run_says_so() {
         intents.lines(),
         vec![
             "tracker: create \"Post-deploy validation — ABC-9: Waiting\" [Ready] priority urgent under ABC-9"
-                .to_string()
+                .to_string(),
+            format!(
+                "tracker: comment on (new: Post-deploy validation — ABC-9: Waiting): {}",
+                texts::identity_comment("").lines().next().unwrap()
+            ),
         ]
     );
 }

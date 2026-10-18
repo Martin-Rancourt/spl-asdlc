@@ -19,6 +19,7 @@ use crate::method::ticket_state::{self, Facts, OpenPr};
 use crate::method::vocabulary::Status;
 use crate::tracker::Item;
 
+use super::identity;
 use super::link::{self, Linked};
 use super::merge::{self, OpenPrs};
 use super::{Report, Tick};
@@ -198,12 +199,19 @@ fn closed_ticketless(
                 continue;
             }
         };
-        // Only the ticket the bridge opened for this PR, still open.
-        if item.archived
-            || item.state.is_resolved()
-            || !texts::has_marker(&item.description, &marker)
-        {
+        // Only the ticket the bridge opened for this PR, still open: by its
+        // marker, or by its identity comment when its description lost it.
+        if item.archived || item.state.is_resolved() {
             continue;
+        }
+        let described = texts::has_marker(&item.description, &marker);
+        match identity::is(t, log, report, &item, &marker, described) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(e) => {
+                t.unreadable(report, &key, e);
+                continue;
+            }
         }
         let children = match t.tracker.children(&item.key) {
             Ok(c) => c,
