@@ -134,6 +134,7 @@ fn the_configuration_template_names_the_example_callers() {
         &c.release.cut_workflow,
         &c.release.gate_workflow,
         &c.release.gate_rerun_workflow,
+        &c.release.publish_workflow,
     ] {
         assert!(
             root().join("docs/setup/examples").join(wf).is_file(),

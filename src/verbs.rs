@@ -559,3 +559,82 @@ pub fn abandon(t: &Tick, log: &mut ActionLog, who: &str) -> Result<String, Strin
         Err(report.failures.join("; "))
     }
 }
+
+/// `release retract <tag>` (`05-release-cycle.md` §9): by hand, what the
+/// tick does for a release whose publication failed before anything was
+/// deployed: the comment on the release issue, the GitHub release and the
+/// tag deleted, so that the next candidate takes the version. Refused when
+/// the publication run cannot be read or found, is still running, or ran
+/// past its verification (a deploy, a merge back): nothing tells then that
+/// nothing was deployed, and no flag overrides it (a person who knows
+/// better deletes the release and the tag in GitHub).
+pub fn retract(t: &Tick, log: &mut ActionLog, tag: &str, who: &str) -> Result<String, String> {
+    use crate::method::release::publication::Publication;
+    use crate::tick::retract;
+    let shape = Shape::of(&t.config.product.name, release_cycle(t));
+    let version = shape.parse_release(tag).ok_or_else(|| {
+        format!(
+            "{tag} is not a release tag of {} (`release.release_tag`)",
+            t.config.product.name
+        )
+    })?;
+    let item = release::find_release_item(t, &shape, version)?
+        .ok_or_else(|| format!("no release item of {version}: not a cycle of the bridge's"))?;
+    let published = match t.github.release(&t.repo, tag) {
+        Ok(r) => Some(r),
+        Err(e) if e.is_not_found() => None,
+        Err(e) => return Err(format!("the release {tag}: {e}")),
+    };
+    let sha = match (release::release_tag_commit(t, tag)?, &published) {
+        (Some(sha), _) => sha,
+        (None, None) => return Ok(format!("{tag}: no release and no tag, nothing to retract")),
+        (None, Some(_)) => {
+            return Err(format!(
+                "{tag} has a release but no tag: no publication run to read; delete the release in GitHub"
+            ));
+        }
+    };
+    let workflow = &release_cycle(t).publish_workflow;
+    let assessed = retract::assess(t, &sha)?.ok_or_else(|| {
+        format!(
+            "no run of {workflow} on the release {tag} (at {}): nothing tells that nothing was deployed, so nothing is retracted",
+            crate::method::texts::short(&sha)
+        )
+    })?;
+    let why = match assessed.publication {
+        Publication::Undeployed { why } => why,
+        Publication::Running => {
+            return Err(format!(
+                "the publication of {tag} is still running ({}): nothing is retracted",
+                assessed.run.url
+            ));
+        }
+        Publication::Kept { why } => {
+            return Err(format!(
+                "{tag} is not retracted: {why} ({}); a release whose publication ran past its verification is never retracted",
+                assessed.run.url
+            ));
+        }
+    };
+    let mut report = Report::default();
+    let by = format!("{who}, with `spl-asdlc release retract`,");
+    if retract::retract(
+        t,
+        log,
+        &mut report,
+        &item,
+        tag,
+        &sha,
+        published.as_ref(),
+        &assessed.run.url,
+        &why,
+        &by,
+    ) {
+        Ok(format!(
+            "{}: {tag} retracted; the next candidate takes it at its GO",
+            item.key
+        ))
+    } else {
+        Err(report.failures.join("; "))
+    }
+}

@@ -2107,6 +2107,17 @@ pub fn decide(
             c.tag
         )],
     };
+    // A candidate whose release was retracted (its publication failed before
+    // deploying) gets no second GO: the next candidate takes the version.
+    let release_tag = Shape::of(&cfg.product.name, release).release_tag(c.version);
+    let retracted = match super::retract::retracted(t, &item.key, &release_tag, &c.sha) {
+        Ok(true) => Some(release_tag),
+        Ok(false) => None,
+        Err(e) => {
+            t.unreadable(report, &item.key, e);
+            return None;
+        }
+    };
     let policy = match release.go_policy {
         crate::config::GoPolicy::Computed => Policy::Computed,
         // Whose approval counts is the owner's to settle (`.spl-asdlc/open-points.md` #3): never given.
@@ -2121,6 +2132,7 @@ pub fn decide(
         unlinked_blockers,
         fix_gaps: Vec::new(),
         tip_gaps,
+        retracted,
         policy,
     };
     Some(go::evaluate(&facts))
@@ -2223,6 +2235,24 @@ fn on_go(
             return;
         }
     };
+    // A tag a retraction left on the retracted candidate (its deletion
+    // failed after the release's): the retraction is finished first.
+    let existing = match existing {
+        Some(sha) if sha != c.sha => match super::retract::retracted(t, &item.key, &tag, &sha) {
+            Ok(true) => {
+                if !super::retract::delete_tag(t, log, report, item, &tag, &sha) {
+                    return;
+                }
+                None
+            }
+            Ok(false) => Some(sha),
+            Err(e) => {
+                t.unreadable(report, &item.key, e);
+                return;
+            }
+        },
+        other => other,
+    };
     match existing {
         Some(sha) if sha == c.sha => {}
         Some(sha) => {
@@ -2305,7 +2335,7 @@ fn on_go(
 }
 
 /// The commit the release tag names, or `None` when it does not exist.
-fn release_tag_commit(t: &Tick, tag: &str) -> Result<Option<String>, String> {
+pub(crate) fn release_tag_commit(t: &Tick, tag: &str) -> Result<Option<String>, String> {
     let refs = t.github.tags(&t.repo, tag).map_err(|e| e.to_string())?;
     let Some(r) = refs.iter().find(|r| r.name == tag) else {
         return Ok(None);

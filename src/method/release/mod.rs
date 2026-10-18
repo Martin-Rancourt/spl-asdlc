@@ -7,5 +7,6 @@ pub mod go;
 pub mod note;
 pub mod prepare;
 pub mod prs;
+pub mod publication;
 pub mod report;
 pub mod shape;

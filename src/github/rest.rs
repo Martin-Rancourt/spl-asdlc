@@ -1336,6 +1336,7 @@ impl GitHub for RestGitHub {
             &format!("/repos/{repo}/releases/tags/{}", encode(tag, false)),
         )?;
         Ok(Release {
+            id: v["id"].as_u64().unwrap_or_default(),
             tag: str_of(&v, "tag_name"),
             url: str_of(&v, "html_url"),
             body: str_of(&v, "body"),
@@ -1578,6 +1579,7 @@ impl GitHub for RestGitHub {
             &[201],
         )?;
         Ok(Release {
+            id: v["id"].as_u64().unwrap_or_default(),
             tag: str_of(&v, "tag_name"),
             url: str_of(&v, "html_url"),
             body: str_of(&v, "body"),
@@ -1586,6 +1588,30 @@ impl GitHub for RestGitHub {
             published_at: time_of(&v, "published_at"),
             author: actor_rest(&v["author"]),
         })
+    }
+
+    fn delete_release(&self, repo: &RepoSlug, release_id: u64) -> Write<()> {
+        self.write(
+            repo,
+            &format!("deletion of release {release_id}"),
+            "DELETE",
+            &format!("/repos/{repo}/releases/{release_id}"),
+            None,
+            &[204],
+        )
+        .map(|_| ())
+    }
+
+    fn delete_tag(&self, repo: &RepoSlug, tag: &str) -> Write<()> {
+        self.write(
+            repo,
+            &format!("deletion of tag {tag}"),
+            "DELETE",
+            &format!("/repos/{repo}/git/refs/tags/{}", encode(tag, true)),
+            None,
+            &[204],
+        )
+        .map(|_| ())
     }
 
     fn add_labels(&self, repo: &RepoSlug, number: u64, labels: &[String]) -> Write<()> {

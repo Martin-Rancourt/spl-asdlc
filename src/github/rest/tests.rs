@@ -812,6 +812,45 @@ fn an_update_branch_is_accepted_only_on_202() {
 }
 
 #[test]
+fn a_retraction_deletes_the_release_by_its_id_then_the_tag_ref() {
+    let (gh, t) = client();
+    t.on(
+        "GET",
+        &url("/repos/example-org/acme/releases/tags/acme-v1.2.0"),
+        200,
+        r#"{"id":77,"tag_name":"acme-v1.2.0","html_url":"u","body":"","draft":false,"prerelease":false}"#,
+    );
+    t.on(
+        "DELETE",
+        &url("/repos/example-org/acme/releases/77"),
+        204,
+        "",
+    );
+    t.on(
+        "DELETE",
+        &url("/repos/example-org/acme/git/refs/tags/acme-v1.2.0"),
+        204,
+        "",
+    );
+    let release = gh.release(&repo(), "acme-v1.2.0").unwrap();
+    assert_eq!(release.id, 77);
+    assert!(gh.delete_release(&repo(), release.id).is_ok());
+    assert!(gh.delete_tag(&repo(), "acme-v1.2.0").is_ok());
+    let (gh, t) = client();
+    t.on(
+        "DELETE",
+        &url("/repos/example-org/acme/git/refs/tags/acme-v1.2.0"),
+        422,
+        r#"{"message":"Reference does not exist"}"#,
+    );
+    assert_eq!(
+        gh.delete_tag(&repo(), "acme-v1.2.0").unwrap_err().status,
+        Some(422),
+        "a tag that is not there is a refusal: the caller reads it first"
+    );
+}
+
+#[test]
 fn removing_a_label_on_a_404_is_a_refusal_not_a_success() {
     // A 404 is also an unknown PR or a repository out of reach: callers
     // remove only a label the PR is read to carry.

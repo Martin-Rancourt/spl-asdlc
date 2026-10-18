@@ -107,6 +107,20 @@ When the build jobs of the publication run produced their artifacts and only the
 
 **The bridge, next tick**: the release is published; once the replay merged the branch back, the closure runs (see Close).
 
+## Retract a release whose publication deployed nothing
+
+When the publication's verification refused the release (a wiring error, a release published on the wrong commit, by the wrong bot), nothing was deployed: the project's publication job needs the verification and was skipped. The release is not delivered, and its tag must not keep the version from the next candidate. The bridge retracts it by itself at its next tick; to do it at once, on the bridge's host:
+
+```sh
+spl-asdlc release retract <release tag> --file <checkout>/.spl-asdlc/config.toml --product <p>
+```
+
+It reads the release's publication run (`[release] publish_workflow`, `release-publish.yml` by default, its newest run on the `release` event at the tag's commit) and refuses when the run is still running, succeeded, ran a job past the verification (the project's publication or deployment, the merge back), was followed by a dispatch (a resume or a replay), or cannot be read or found: nothing then tells that nothing was deployed, and no flag overrides it. Otherwise it comments on the release issue (why, the run's link, that the next candidate takes the version), then deletes the GitHub release and the tag, as the App, which the tag rulesets let bypass them. Run again, it finds nothing to retract.
+
+A person the tag rulesets let delete tags may do it in GitHub instead (`gh release delete <release tag> --repo OWNER/REPO --cleanup-tag`), but leaves no comment on the release issue: cut the next candidate before the bridge's next tick, or it gives the GO again to the same candidate.
+
+**What follows**: fix the cause with a PR to the release branch, then cut the next candidate (Cut a candidate). **The bridge, next tick**: the retracted candidate gets no second GO (`release status` says why); the next candidate's green gate gives the GO again, on the same version.
+
 ## Merge back by hand
 
 The close stage opens a merge-back PR from the release branch into the default branch. A person may merge it instead, as a merge commit only, never a squash or a rebase: the release tag's commit must become an ancestor of the default branch.
@@ -193,6 +207,6 @@ An AI session (Claude Code, for instance) can take these gestures on the owner's
 | `Bash(gh release upload *)` | Attach files to a release |
 | `Bash(gh api --method PUT repos/OWNER/REPO/pulls/*/reviews/*/dismissals *)` | Dismiss a review |
 | `Bash(ssh <bridge host> spl-asdlc release status*)`, `Bash(ssh <bridge host> spl-asdlc tick --dry-run*)` | Read the GO and what the next tick would do |
-| `Bash(ssh <bridge host> spl-asdlc release *)` | Cut, requalify, abandon |
+| `Bash(ssh <bridge host> spl-asdlc release *)` | Cut, requalify, abandon, retract |
 
 The reads (`gh pr list`, `gh pr view`, `gh run list`, `gh run view`, `gh api` without `--method`) change nothing. Every rule of the table but the two dry reads is an **outward action**: it merges, drafts, dispatches, publishes or writes the tracker, on the shared repository, and most cannot be undone (a merge, an uploaded asset that replaced another, an abandoned cycle). A rule only lets the session run the command; each gesture still waits for the owner's go.

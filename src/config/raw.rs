@@ -71,6 +71,7 @@ pub(super) struct RawRelease {
     pub cut_workflow: Option<String>,
     pub gate_workflow: Option<String>,
     pub gate_rerun_workflow: Option<String>,
+    pub publish_workflow: Option<String>,
     pub gate_rerun_wait_minutes: Option<i64>,
     pub version_files: Option<Vec<RawVersionFile>>,
     pub changelog_sections: Option<Vec<RawChangelogSection>>,

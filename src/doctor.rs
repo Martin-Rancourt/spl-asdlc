@@ -550,6 +550,7 @@ fn files(
         &release.cut_workflow,
         &release.gate_workflow,
         &release.gate_rerun_workflow,
+        &release.publish_workflow,
     ] {
         let path = format!(".github/workflows/{wf}");
         out.push(match read(&path) {

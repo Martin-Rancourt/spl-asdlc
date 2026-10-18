@@ -155,6 +155,7 @@ impl GitHub for DryGitHub<'_> {
         self.intents
             .push(format!("github {repo}: publish release {tag} ({name})"));
         Ok(Release {
+            id: 0,
             tag: tag.to_string(),
             url: format!("(dry run) release {tag}"),
             body: body.to_string(),
@@ -163,6 +164,17 @@ impl GitHub for DryGitHub<'_> {
             published_at: None,
             author: None,
         })
+    }
+    fn delete_release(&self, repo: &RepoSlug, release_id: u64) -> Write<()> {
+        self.intents.push(format!(
+            "github {repo}: delete release {release_id} (would retract)"
+        ));
+        Ok(())
+    }
+    fn delete_tag(&self, repo: &RepoSlug, tag: &str) -> Write<()> {
+        self.intents
+            .push(format!("github {repo}: delete tag {tag} (would retract)"));
+        Ok(())
     }
     fn create_branch(&self, repo: &RepoSlug, branch: &str, sha: &str) -> Write<()> {
         self.intents
