@@ -5355,3 +5355,203 @@ fn a_held_go_tags_nothing_until_the_label_goes_and_release_status_says_so() {
     assert!(r.ok(), "{r:?}");
     assert_eq!(w.go_writes(), go_lines("c1"), "{r:?}");
 }
+
+// ---- a published and closed release item is left alone ----
+
+/// The release item as Linear stores it: `*` bullets spaced by blank lines.
+fn linear_restyle(w: &World, key: &str) {
+    w.tracker.restyle(key, |d| d.replace("\n- ", "\n\n* "));
+}
+
+#[test]
+fn several_ticks_after_the_closure_write_nothing_to_the_release_item() {
+    let w = World::new();
+    w.tick();
+    let release = w.release_item();
+    publish(&w);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.tracker.item(&release.key).state.status,
+        Some(Status::Done)
+    );
+    linear_restyle(&w, &release.key);
+    let stored = w.tracker.item(&release.key).description;
+    let before = (w.tracker.writes().len(), w.github.writes().len());
+    for _ in 0..5 {
+        let r = w.tick();
+        assert!(r.ok(), "{r:?}");
+    }
+    assert_eq!(
+        (w.tracker.writes().len(), w.github.writes().len()),
+        before,
+        "{:?}",
+        &w.tracker.writes()[before.0..]
+    );
+    let item = w.tracker.item(&release.key);
+    assert_eq!(item.state.status, Some(Status::Done));
+    assert_eq!(item.description, stored);
+    assert_eq!(w.signal.sent.borrow().len(), 1, "the note is sent once");
+}
+
+/// How many lines of the `## Candidates` section name `candidate`.
+fn candidate_lines(description: &str, candidate: &str) -> usize {
+    description
+        .split("## Candidates")
+        .nth(1)
+        .unwrap_or_default()
+        .split("\n## ")
+        .next()
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.contains(&format!("`{candidate}` —")))
+        .count()
+}
+
+#[test]
+fn repeated_ticks_over_two_candidates_list_each_candidate_once() {
+    let w = World::new();
+    w.tick();
+    let key = w.release_item().key;
+    for _ in 0..3 {
+        linear_restyle(&w, &key);
+        let r = w.tick();
+        assert!(r.ok(), "{r:?}");
+    }
+    w.cut_rc2();
+    for _ in 0..3 {
+        let r = w.tick();
+        assert!(r.ok(), "{r:?}");
+        linear_restyle(&w, &key);
+    }
+    let d = w.tracker.item(&key).description;
+    assert_eq!(candidate_lines(&d, CAND), 1, "{d}");
+    assert_eq!(candidate_lines(&d, CAND2), 1, "{d}");
+}
+
+#[test]
+fn the_note_names_a_readable_ticket_with_no_release_note_section_by_its_goal() {
+    let w = World::new();
+    w.tracker.seed(
+        "ABC-5",
+        "Shipped",
+        "## Goal\nShip it.\n\n## Acceptance criteria\n- [x] shipped\n\n## Business rules\nNo new rule.\n",
+        Status::ToDeploy,
+        &[],
+    );
+    w.tracker.link("ABC-5", PR5);
+    // The PR's review round, labelled with the release by an older bridge.
+    linked_round(&w, Status::Done, true);
+    w.tick();
+    let release = w.release_item();
+    publish(&w);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let d = w.tracker.item(&release.key).description;
+    assert!(d.contains("- **ABC-5** — Shipped: Ship it. (#5)"), "{d}");
+    assert!(!d.contains("ticket unreadable"), "{d}");
+    assert!(!d.contains("ABC-21") && !d.contains("ABC-22"), "{d}");
+    let sent = w.signal.sent.borrow().join("\n");
+    assert!(!sent.contains("ticket unreadable"), "{sent}");
+}
+
+const NEXT: &str = "acme-v1.3.0-rc.1";
+const NEXT_BRANCH: &str = "release/2026-10-06-09-00-utc";
+const NEXT_LABEL: &str = "release/acme-v1.3.0";
+
+impl World {
+    /// The next cycle, cut from `main` once `acme-v1.2.0` was merged back:
+    /// its branch, which holds the older candidate too, and its first
+    /// candidate.
+    fn cut_next_cycle(&self) {
+        let mut s = self.github.state.borrow_mut();
+        s.tags.insert(
+            repo(),
+            vec![
+                tag("acme-v1.1.0", "r0"),
+                tag(CAND, "c1"),
+                tag("acme-v1.2.0", "c1"),
+                tag(NEXT, "d1"),
+            ],
+        );
+        s.branches.insert(repo(), vec![tag(NEXT_BRANCH, "d1")]);
+        s.commits.insert(
+            (repo(), "d1".into()),
+            Ok(Commit {
+                sha: "d1".into(),
+                message: "chore: candidate".into(),
+                committer_date: Timestamp::parse("2026-10-06T09:30:00Z"),
+                parents: vec![],
+            }),
+        );
+        for (base, status) in [
+            ("c1", CompareStatus::Ahead),
+            ("d1", CompareStatus::Identical),
+        ] {
+            s.compares.insert(
+                (repo(), base.into(), NEXT_BRANCH.into()),
+                cmp(status, &[], &[]),
+            );
+        }
+        s.compares.insert(
+            (repo(), "acme-v1.2.0".into(), "d1".into()),
+            cmp(CompareStatus::Ahead, &[], &["src/c.rs"]),
+        );
+    }
+}
+
+#[test]
+fn a_closure_the_next_cycle_overtook_is_finished_and_then_left_alone() {
+    let w = World::new();
+    w.tick();
+    let release = w.release_item();
+    publish(&w);
+    // The note's channel fails: the closure is left open.
+    let failing = World {
+        signal: Recorder {
+            fail: true,
+            ..Recorder::default()
+        },
+        ..w
+    };
+    failing.tick();
+    assert_ne!(
+        failing.tracker.item(&release.key).state.status,
+        Some(Status::Done)
+    );
+    // The next cycle is cut before the channel is repaired.
+    failing.cut_next_cycle();
+    let w = World {
+        signal: Recorder::default(),
+        ..failing
+    };
+    let r = w.tick();
+    assert!(
+        !r.failures.iter().any(|f| f.contains(&release.key)),
+        "{r:?}"
+    );
+    assert_eq!(
+        w.tracker.item(&release.key).state.status,
+        Some(Status::Done),
+        "{r:?}"
+    );
+    let sent = w.signal.sent.borrow().clone();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].starts_with("[release-note] acme 1.2.0 is published."));
+    assert!(
+        !w.tracker.list_by_label(NEXT_LABEL).unwrap().is_empty(),
+        "the next cycle runs beside it"
+    );
+    // Later ticks write nothing more to the closed release item.
+    let before = w.tracker.writes().len();
+    for _ in 0..3 {
+        w.tick();
+    }
+    let touched: Vec<String> = w.tracker.writes()[before..]
+        .iter()
+        .filter(|l| l.contains(&release.key))
+        .cloned()
+        .collect();
+    assert!(touched.is_empty(), "{touched:?}");
+    assert_eq!(w.signal.sent.borrow().len(), 1);
+}

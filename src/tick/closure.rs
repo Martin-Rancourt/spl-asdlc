@@ -29,6 +29,11 @@ use super::post_deploy;
 use super::release::{Candidate, embarked_items};
 use super::{Notice, Report, Tick};
 
+/// Close the cycle of `c`. `newer` is the newest candidate when it belongs
+/// to the next cycle, which overtook this one before its closure ended:
+/// that cycle's release branch, cut after this one merged back, is not a
+/// branch this closure waits for.
+#[allow(clippy::too_many_arguments)]
 pub fn close(
     t: &Tick,
     log: &mut ActionLog,
@@ -37,9 +42,10 @@ pub fn close(
     c: &Candidate,
     item: &Item,
     published: &Release,
+    newer: Option<&Candidate>,
 ) {
     let object = item.key.clone();
-    match ready_to_close(t, shape, c, published) {
+    match ready_to_close(t, shape, c, published, newer) {
         Ok(None) => {}
         Ok(Some(waiting)) => {
             // A fact the closure waits for: nothing written, nothing to say
@@ -348,20 +354,32 @@ fn ready_to_close(
     shape: &Shape,
     c: &Candidate,
     published: &Release,
+    newer: Option<&Candidate>,
 ) -> Result<Option<String>, String> {
     // No release branch still holds the candidate: the branch was merged back
-    // and deleted.
+    // and deleted. The next cycle's branch holds it too, and is not this
+    // cycle's.
     let branches = t
         .github
         .branches(&t.repo, &shape.branch_prefix)
         .map_err(|e| e.to_string())?;
-    for b in branches.iter().filter(|b| shape.is_release_branch(&b.name)) {
+    let holds = |sha: &str, branch: &str| -> Result<bool, String> {
         let cmp = t
             .github
-            .compare(&t.repo, &c.sha, &b.name)
+            .compare(&t.repo, sha, branch)
             .map_err(|e| e.to_string())?;
-        if matches!(cmp.status, CompareStatus::Ahead | CompareStatus::Identical) {
-            return Ok(Some(format!("{} still holds the candidate", b.name)));
+        Ok(matches!(
+            cmp.status,
+            CompareStatus::Ahead | CompareStatus::Identical
+        ))
+    };
+    for b in branches.iter().filter(|b| shape.is_release_branch(&b.name)) {
+        if !holds(&c.sha, &b.name)? {
+            continue;
+        }
+        match newer {
+            Some(n) if holds(&n.sha, &b.name)? => continue,
+            _ => return Ok(Some(format!("{} still holds the candidate", b.name))),
         }
     }
     let default = t
