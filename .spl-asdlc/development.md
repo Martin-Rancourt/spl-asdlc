@@ -10,6 +10,16 @@ GitHub Flow: every change is a pull request to `main`, checked by `pr.yml` (form
 
 release-please's normal mode on `main` (`release-please.yml`): it keeps a release PR open, and merging it tags `v<X.Y.Z>` and publishes the GitHub release. `publish.yml` then builds the binaries (`binaries.yml`) and attaches them with their `SHA256SUMS`. The reusable `asdlc-*` workflows are released with the bridge under the same version; callers pin a major tag (`@v1`).
 
+## Tickets
+
+The tickets of this repository live in the tracker's ASDLC project and keep the method's statuses, but no bridge moves them here: the session that does a step moves the ticket.
+- **In Progress** when the work starts, **In Review** when its PR is opened.
+- **To Deploy** when its PR is merged into `main`: every box the PR delivers is ticked in the ticket itself (not only in the PR's body).
+- **Done** when the release that carries it is published. Publishing a release is a gesture of the owner's (a session merges the release-please PR only on the owner's explicit go for that release); right after, the same session moves to Done every ticket of that release, found by the `SID-…` in the titles of the PRs listed in the release's CHANGELOG section, with a comment naming the release tag. A ticket whose work landed through another ticket's PR is closed with it, the PR linked.
+- A ticket left in To Deploy after its code shipped is found by checking its PR's merge commit against the published tags (`git tag --contains <commit>`, `vX.Y.Z` only).
+
+This repository may go back to running the method on itself once the bridge is stable enough; the release closure would then do the last step.
+
 ## Testing the method
 
 The method (the bridge, the `asdlc-*` workflows, the release cycle) is exercised on a separate sandbox repository before each release, against the **staging channel** of the bridge:
