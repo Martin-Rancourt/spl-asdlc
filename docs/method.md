@@ -64,6 +64,8 @@ Review is configured by angle: security, maintainability, design, or any angle t
 
 With no angle configured, a PR merges on green CI.
 
+The method's angles are a library: a project activates the ones it wants, may add its own notes to them, and declares an angle of its own under another key. An angle's texts follow the version of spl-asdlc the project's workflows pin: one update of that version brings the new workflows and the new review texts together, and the project sees both in the same PR (`docs/reference/08-configuration.md`, "Angles").
+
 ## The release cycle
 
 Every project has one. It takes the tickets in To Deploy, which are already on `main`, to production.
