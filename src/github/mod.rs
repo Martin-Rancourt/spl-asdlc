@@ -49,6 +49,12 @@ pub trait GitHub {
     /// The text of `path` at `rev`; `NotFound` when GitHub says 404 (the
     /// caller decides whether the revision itself exists).
     fn file(&self, repo: &RepoSlug, path: &str, rev: &str) -> Read<String>;
+    /// The text of `path` at `rev` in another repository, `source`, read with
+    /// the token the bridge holds for `repo` (with an App, its installation on
+    /// `repo`): the method's texts a project is pinned on
+    /// (`crate::method::pin`). `NotFound` when GitHub says 404, which it also
+    /// says of a private `source` that token cannot see.
+    fn file_from(&self, repo: &RepoSlug, source: &RepoSlug, path: &str, rev: &str) -> Read<String>;
     /// The names of the files directly in the directory `path` at `rev`
     /// (no sub-directory), sorted; `NotFound` when GitHub says 404 (the
     /// caller decides whether the revision itself exists).

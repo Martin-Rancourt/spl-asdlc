@@ -6,14 +6,14 @@
 
 use super::*;
 use crate::config::Config;
-use crate::github::fake::{FakeGitHub, pull_request};
+use crate::github::fake::{FakeGitHub, METHOD_AT as AT, METHOD_REF, pull_request};
 use crate::github::{
     Actor, Artifact, CheckEntry, CheckKind, Commit, CommitPull, CommitSummary, CompareStatus,
     Comparison, GitRef, Identity, ObjectType, PrState, PullRequest, Release, RepoSlug,
     RequiredChecks, Review, Timestamp, WorkflowRun,
 };
 use crate::method::release::gate;
-use crate::method::texts::{self, BridgeItem};
+use crate::method::texts::{self, BridgeItem, protocol};
 use crate::method::vocabulary::Status;
 
 const POST_DEPLOY_LABEL: &str = "post-deploy-validation/acme";
@@ -148,6 +148,7 @@ impl World {
     /// one shipped ticket in the range, the gate green.
     fn new() -> World {
         let github = FakeGitHub::new();
+        github.pin_method(&repo(), METHOD_REF);
         {
             let mut s = github.state.borrow_mut();
             s.identity = Some(Identity::App {
@@ -240,6 +241,7 @@ impl World {
             now: Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
             deadline: None,
             dry_run: false,
+            method_texts: Default::default(),
         };
         let mut log = ActionLog::in_memory();
         run(&t, &mut log)
@@ -680,6 +682,106 @@ fn a_later_candidate_with_a_red_gate_waits_again() {
     );
 }
 
+// ---- BR-ASDLC-032: the texts of the version the candidate pins ----
+
+#[test]
+fn a_candidates_items_carry_the_texts_of_the_version_its_callers_pin_at_its_tag() {
+    use crate::method::texts::protocol::{Job, angle_path};
+    let w = World::new();
+    let method = RepoSlug::parse(crate::github::fake::METHOD_REPO).unwrap();
+    {
+        let mut s = w.github.state.borrow_mut();
+        // The candidate's own callers pin v1.3.0; elsewhere the project is
+        // on the fixtures' v1.
+        s.files.insert(
+            (repo(), CAND.into(), ".github/workflows/pr-title.yml".into()),
+            Ok("jobs:\n  title:\n    uses: example-org/spl-asdlc/.github/workflows/asdlc-pr-title.yml@v1.3.0\n".into()),
+        );
+        let mut put = |path: String, text: &str| {
+            s.files
+                .insert((method.clone(), "v1.3.0".into(), path), Ok(text.into()));
+        };
+        put(
+            Job::ReleaseAngle.path().into(),
+            "# Review a release candidate from one angle\n\nThe pinned release protocol.",
+        );
+        put(
+            Job::ReleaseConsolidation.path().into(),
+            "# Consolidate\n\nThe pinned consolidation protocol.",
+        );
+        put(
+            angle_path("security"),
+            "# Angle: security\n\nThe pinned security text.",
+        );
+    }
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let round = w.round(CAND);
+    assert_eq!(round.len(), 3);
+    for i in &round {
+        let d = &i.description;
+        assert!(
+            d.contains("The method's texts at `example-org/spl-asdlc@v1.3.0`"),
+            "{d}"
+        );
+        assert!(
+            d.contains("\"schema\": \"spl-asdlc/qa-report/2\""),
+            "the bridge's own schema: {d}"
+        );
+    }
+    let security = round
+        .iter()
+        .find(|i| i.title.starts_with("Security"))
+        .unwrap();
+    assert!(
+        security
+            .description
+            .contains("The pinned release protocol.")
+    );
+    assert!(security.description.contains("The pinned security text."));
+    // `product` has no text at v1.3.0: a line says so, never this build's.
+    let product = round
+        .iter()
+        .find(|i| i.title.starts_with("Product"))
+        .unwrap();
+    assert!(
+        product.description.contains(
+            "The method has no notes for the `product` angle at `example-org/spl-asdlc@v1.3.0`"
+        ),
+        "{}",
+        product.description
+    );
+}
+
+#[test]
+fn a_candidates_texts_that_cannot_be_read_open_no_item_and_are_said_once_on_the_release_item() {
+    let w = World::new();
+    w.github.state.borrow_mut().files.insert(
+        (repo(), CAND.into(), ".github/workflows/pr-title.yml".into()),
+        Ok("jobs:\n  title:\n    uses: example-org/spl-asdlc/.github/workflows/asdlc-pr-title.yml@v9.9.9\n".into()),
+    );
+    for _ in 0..2 {
+        let r = w.tick();
+        assert!(!r.ok(), "{r:?}");
+        let said = r.failures.join("; ");
+        assert!(
+            said.contains(&format!("the method's texts for the QA items of {CAND}"))
+                && said.contains("is not at example-org/spl-asdlc@v9.9.9"),
+            "{said}"
+        );
+    }
+    assert!(w.round(CAND).is_empty(), "no item, so no fallback");
+    let release = w.release_item();
+    let notices: Vec<_> = w
+        .tracker
+        .comments(&release.key)
+        .unwrap()
+        .into_iter()
+        .filter(|c| c.body.contains("spl-asdlc:method-texts"))
+        .collect();
+    assert_eq!(notices.len(), 1, "{notices:?}");
+}
+
 // ---- BR-ASDLC-015: an item carries its protocol, frozen at creation ----
 
 #[test]
@@ -692,7 +794,7 @@ fn a_release_rounds_items_carry_their_protocol_and_keep_it_while_open() {
         assert!(
             i.description.contains("\n## Protocol\n")
                 && i.description.contains(&format!(
-                    "Embedded by spl-asdlc {}",
+                    "The method's texts at `{AT}`, the version of spl-asdlc this project's workflows are pinned on, copied by the bridge (spl-asdlc {})",
                     texts::protocol::VERSION
                 ))
                 && i.description
@@ -729,7 +831,7 @@ fn a_release_rounds_items_carry_their_protocol_and_keep_it_while_open() {
     assert_eq!(round2.len(), 3);
     assert!(round2.iter().all(|i| {
         i.description
-            .contains("\n## Protocol\n\nEmbedded by spl-asdlc")
+            .contains(&format!("\n## Protocol\n\nThe method's texts at `{AT}`"))
     }));
     for (key, text) in &older {
         assert_eq!(&w.tracker.item(key).description, text);
@@ -1403,6 +1505,7 @@ impl World {
             now: Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
             deadline: None,
             dry_run: false,
+            method_texts: Default::default(),
         }
     }
 }
@@ -2080,6 +2183,7 @@ fn a_dry_run_of_the_release_pass_writes_nothing() {
         now: Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
         deadline: None,
         dry_run: true,
+        method_texts: Default::default(),
     };
     let mut log = ActionLog::in_memory();
     let r = run(&t, &mut log);
@@ -2382,6 +2486,7 @@ fn a_dry_run_of_the_post_deploy_pass_writes_nothing() {
     let t = Tick {
         tracker: &tr,
         dry_run: true,
+        method_texts: Default::default(),
         ..w.tick_ctx()
     };
     let mut log = ActionLog::in_memory();
@@ -2538,6 +2643,7 @@ fn a_dry_run_of_the_closure_prints_the_unassign() {
         tracker: &tr,
         signal: &sig,
         dry_run: true,
+        method_texts: Default::default(),
         ..w.tick_ctx()
     };
     let mut log = ActionLog::in_memory();
@@ -3202,6 +3308,7 @@ fn a_dry_run_prints_the_urgent_gate_fix_ticket_it_would_open() {
         tracker: &tr,
         signal: &sig,
         dry_run: true,
+        method_texts: Default::default(),
         ..w.tick_ctx()
     };
     let mut log = ActionLog::in_memory();
@@ -3251,6 +3358,7 @@ fn the_validation_sub_task_is_created_urgent_and_a_dry_run_says_so() {
     let t = Tick {
         tracker: &tr,
         dry_run: true,
+        method_texts: Default::default(),
         ..w.tick_ctx()
     };
     let mut log = ActionLog::in_memory();
@@ -3275,11 +3383,23 @@ fn the_validation_sub_task_is_created_urgent_and_a_dry_run_says_so() {
 /// A PR review round of `ticket` (an angle sub-item and its consolidation
 /// item), seeded under it in `status`.
 fn review_round(w: &World, ticket: &str, keys: [&str; 2], status: Status) {
-    let (title, body) = texts::review_angle_item(ticket, PR5, "aaaaaaa1", "security", None, &[]);
+    let (title, body) = texts::review_angle_item(
+        ticket,
+        PR5,
+        "aaaaaaa1",
+        "security",
+        None,
+        &[],
+        &protocol::Texts::of_this_build(AT, protocol::Job::PrAngle, Some("security")),
+    );
     w.tracker.seed(keys[0], &title, &body, status, &[]);
     let scope = texts::round_scope(PR5, "aaaaaaa1");
-    let (title, body) =
-        texts::consolidation_item(&scope, ticket, texts::Consolidating::PullRequest);
+    let (title, body) = texts::consolidation_item(
+        &scope,
+        ticket,
+        texts::Consolidating::PullRequest,
+        &protocol::Texts::of_this_build(AT, texts::Consolidating::PullRequest.job(), None),
+    );
     w.tracker.seed(keys[1], &title, &body, status, &[]);
     let mut s = w.tracker.state.borrow_mut();
     s.set_parent(keys[0], ticket);
@@ -3528,6 +3648,7 @@ fn a_dry_run_of_the_closure_prints_the_archives() {
         tracker: &tr,
         signal: &sig,
         dry_run: true,
+        method_texts: Default::default(),
         ..w.tick_ctx()
     };
     let mut log = ActionLog::in_memory();
@@ -4015,6 +4136,7 @@ fn a_dry_run_prints_the_angle_items_flow_and_the_relations() {
         tracker: &tr,
         signal: &sig,
         dry_run: true,
+        method_texts: Default::default(),
         ..w.tick_ctx()
     };
     let mut log = ActionLog::in_memory();
@@ -4252,6 +4374,7 @@ fn a_dry_run_prints_the_coordinator_served_in_review() {
         tracker: &tr,
         signal: &sig,
         dry_run: true,
+        method_texts: Default::default(),
         ..w.tick_ctx()
     };
     let mut log = ActionLog::in_memory();
@@ -5202,6 +5325,7 @@ fn a_dry_run_says_it_would_retract_and_writes_nothing() {
         tracker: &tracker,
         signal: &signal,
         dry_run: true,
+        method_texts: Default::default(),
         ..w.tick_ctx()
     };
     let r = run(&t, &mut ActionLog::in_memory());

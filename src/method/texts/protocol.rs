@@ -1,9 +1,12 @@
-//! The method's protocols, compiled into the binary, that the bridge embeds
-//! in every item it serves to an agent (BR-ASDLC-015): an agent never
-//! depends on reading the method's repository to know what to do. An item
-//! carries the protocol of the bridge version that created it, and keeps it:
-//! an item found again by its marker is never rewritten (but for its marker
-//! written back, `crate::tick::identity`).
+//! The method's protocols and angle texts that the bridge copies into every
+//! item it serves to an agent (BR-ASDLC-015): an agent never depends on
+//! reading the method's repository to know what to do. The texts an item
+//! carries are those of the version of spl-asdlc its project is pinned on,
+//! the ref of its workflow callers (BR-ASDLC-032, `crate::method::pin`), read
+//! by the tick ([`Texts`]); an item keeps them: an item found again by its
+//! marker is never rewritten (but for its marker written back,
+//! `crate::tick::identity`). The copies compiled in here are this build's own:
+//! the tests' reference, and the library's list of retired angles.
 //!
 //! A protocol is Markdown with its own headings. It is embedded under the
 //! item's `## Protocol` section with every heading demoted below it, so the
@@ -18,10 +21,15 @@ pub const REVIEW_PR: &str = include_str!("../../../docs/agents/review-pr.md");
 pub const REVIEW_RELEASE: &str = include_str!("../../../docs/agents/review-release.md");
 /// `docs/agents/consolidate.md`: consolidate a PR review or a release QA.
 pub const CONSOLIDATE: &str = include_str!("../../../docs/agents/consolidate.md");
-/// `docs/reference/06-qa-report.md`: the report every release angle ends with.
+/// `docs/reference/06-qa-report.md`: the report every release angle ends
+/// with. Its schema is the bridge's own, the one it checks a report against,
+/// so it is always this build's, never the pinned version's.
 const QA_REPORT: &str = include_str!("../../../docs/reference/06-qa-report.md");
+/// `docs/agents/angles/README.md`: the method's angle library, and the
+/// angles it retired.
+pub const LIBRARY: &str = include_str!("../../../docs/agents/angles/README.md");
 
-/// The method's notes of each angle, `docs/agents/angles/<key>.md`, by key.
+/// This build's notes of each angle, `docs/agents/angles/<key>.md`, by key.
 pub const ANGLES: &[(&str, &str)] = &[
     (
         "design",
@@ -47,13 +55,61 @@ pub const ANGLES: &[(&str, &str)] = &[
 /// protocol that outgrows it is trimmed in its file, never cut here.
 pub const ITEM_LIMIT: usize = 60_000;
 
-/// The version of the bridge whose protocols an item carries.
+/// The version of the bridge that copies the texts into an item.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// The method's notes of an angle, `None` for an angle the method does not
-/// know (a project's own).
+/// This build's notes of an angle, `None` for an angle it does not know (a
+/// project's own, or one the method retired).
 pub fn angle_notes(key: &str) -> Option<&'static str> {
     ANGLES.iter().find(|(k, _)| *k == key).map(|(_, t)| *t)
+}
+
+/// The angles the method retired, `(key, version)`: the rows of the
+/// `## Retired angles` table of the library (`docs/agents/angles/README.md`),
+/// as this build knows them.
+pub fn retired() -> Vec<(String, String)> {
+    retired_of(LIBRARY)
+}
+
+/// The rows of the `## Retired angles` table of a library's text.
+fn retired_of(library: &str) -> Vec<(String, String)> {
+    let lines: Vec<&str> = library.lines().collect();
+    let Some(s) = markdown::sections(library, |h| h.eq_ignore_ascii_case("Retired angles"))
+        .into_iter()
+        .next()
+    else {
+        return Vec::new();
+    };
+    lines[s.start..s.end]
+        .iter()
+        .filter_map(|l| {
+            let cells: Vec<&str> = l
+                .trim()
+                .strip_prefix('|')?
+                .strip_suffix('|')?
+                .split('|')
+                .collect();
+            let key = cells.first()?.trim().trim_matches('`');
+            let version = cells.get(1)?.trim();
+            // An angle key's shape (spec 08 rule 3): the header and the
+            // separator rows are not one.
+            let is_key = !key.is_empty()
+                && !key.starts_with('-')
+                && key
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+            is_key.then(|| (key.to_string(), version.to_string()))
+        })
+        .collect()
+}
+
+/// The version of spl-asdlc that retired the angle `key`, if the method
+/// retired it.
+pub fn retired_in(key: &str) -> Option<String> {
+    retired()
+        .into_iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v)
 }
 
 /// The kind of job a protocol section is for.
@@ -69,38 +125,96 @@ pub enum Job {
     ReleaseConsolidation,
 }
 
-/// The `## Protocol` section of an item: the protocol of its job, the
-/// method's notes of its angle (or a line saying there are none), and the
-/// report's schema for a release job.
-pub fn section(job: Job, angle: Option<&str>) -> String {
-    let (base, path) = match job {
-        Job::PrAngle => (REVIEW_PR, "docs/agents/review-pr.md"),
-        Job::ReleaseAngle => (REVIEW_RELEASE, "docs/agents/review-release.md"),
-        Job::PrConsolidation | Job::ReleaseConsolidation => {
-            (CONSOLIDATE, "docs/agents/consolidate.md")
+impl Job {
+    /// The method's file of this job's protocol.
+    pub fn path(self) -> &'static str {
+        match self {
+            Job::PrAngle => "docs/agents/review-pr.md",
+            Job::ReleaseAngle => "docs/agents/review-release.md",
+            Job::PrConsolidation | Job::ReleaseConsolidation => "docs/agents/consolidate.md",
         }
-    };
-    let mut sources = vec![format!("`{path}`")];
-    let mut parts = vec![demote(base, 2)];
+    }
+
+    /// This build's own copy of the protocol.
+    pub fn compiled(self) -> &'static str {
+        match self {
+            Job::PrAngle => REVIEW_PR,
+            Job::ReleaseAngle => REVIEW_RELEASE,
+            Job::PrConsolidation | Job::ReleaseConsolidation => CONSOLIDATE,
+        }
+    }
+}
+
+/// The method's file of an angle's LLM instructions.
+pub fn angle_path(key: &str) -> String {
+    format!("docs/agents/angles/{key}.md")
+}
+
+/// The method's texts an item carries, read at the version its project is
+/// pinned on (BR-ASDLC-032).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Texts {
+    /// Where they were read: `<owner>/<repo>@<ref>`.
+    pub at: String,
+    /// The protocol of the item's job.
+    pub protocol: String,
+    /// The method's text of the item's angle; `None` when that version has
+    /// none (an angle of the project's own, or one the method retired).
+    pub angle: Option<String>,
+    /// When that version has no text for the angle and the method retired
+    /// it: the version of spl-asdlc that retired it.
+    pub retired: Option<String>,
+}
+
+impl Texts {
+    /// This build's own texts, as a pin on `at` would read them where the
+    /// method's repository holds this build's files.
+    pub fn of_this_build(at: &str, job: Job, angle: Option<&str>) -> Texts {
+        let notes = angle.and_then(angle_notes).map(str::to_string);
+        Texts {
+            at: at.to_string(),
+            protocol: job.compiled().to_string(),
+            retired: angle.filter(|_| notes.is_none()).and_then(retired_in),
+            angle: notes,
+        }
+    }
+}
+
+/// The `## Protocol` section of an item: the protocol of its job, the
+/// method's text of its angle (or a line saying there is none), both as
+/// `texts` read them, and the report's schema for a release job.
+pub fn section(job: Job, angle: Option<&str>, texts: &Texts) -> String {
+    let at = &texts.at;
+    let mut sources = vec![format!("`{}`", job.path())];
+    let mut parts = vec![demote(&texts.protocol, 2)];
     if let Some(key) = angle {
-        match angle_notes(key) {
-            Some(notes) => {
-                sources.push(format!("`docs/agents/angles/{key}.md`"));
+        match (&texts.angle, &texts.retired) {
+            (Some(notes), _) => {
+                sources.push(format!("`{}`", angle_path(key)));
                 parts.push(demote(notes, 2));
             }
-            None => parts.push(format!(
-                "### Angle: {key}\n\nThe method has no notes for the `{key}` angle (an angle of the \
-                 project's own): review under the protocol above, from what the angle's name says, \
-                 with the project's notes when the context of this item links them."
+            (None, Some(version)) => parts.push(format!(
+                "### Angle: {key}\n\nThe method retired the `{key}` angle in spl-asdlc {version} and has no text \
+                 for it at `{at}`, yet the project's configuration still names it (`spl-asdlc doctor` reports it): \
+                 review under the protocol above, from what the angle's name says, with the project's notes when \
+                 the context of this item links them."
+            )),
+            (None, None) => parts.push(format!(
+                "### Angle: {key}\n\nThe method has no notes for the `{key}` angle at `{at}` (an angle of the \
+                 project's own): review under the protocol above, from what the angle's name says, with the \
+                 project's notes when the context of this item links them."
             )),
         }
     }
+    let mut schema = "";
     if matches!(job, Job::ReleaseAngle | Job::ReleaseConsolidation) {
         sources.push("the schema and rules of `docs/reference/06-qa-report.md`".to_string());
         parts.push(format!("### The angle report\n\n{}", report_schema()));
+        schema = " The report's schema is the bridge's own, the one it checks the report against.";
     }
     format!(
-        "## Protocol\n\nEmbedded by spl-asdlc {VERSION} when it created this item, and frozen with it: {}. \
+        "## Protocol\n\nThe method's texts at `{at}`, the version of spl-asdlc this project's workflows are pinned on, \
+         copied by the bridge (spl-asdlc {VERSION}) when it created this item, and frozen with it: {}.{schema} \
          It is the whole protocol of this job: no file of the method's repository is needed. {}\n\n{}\n",
         sources.join(", "),
         super::KEEP_MARKER,
@@ -148,6 +262,7 @@ pub fn demote(text: &str, by: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::github::fake::METHOD_AT as AT;
     use crate::method::contract;
 
     #[test]
@@ -157,7 +272,9 @@ mod tests {
             .unwrap()
             .filter_map(|e| {
                 let name = e.unwrap().file_name().into_string().unwrap();
-                name.strip_suffix(".md").map(str::to_string)
+                name.strip_suffix(".md")
+                    .filter(|n| *n != "README")
+                    .map(str::to_string)
             })
             .collect();
         on_disk.sort();
@@ -212,7 +329,11 @@ mod tests {
 
     #[test]
     fn a_release_angle_names_its_sub_item_in_the_report_never_a_person() {
-        let s = section(Job::ReleaseAngle, Some("security"));
+        let s = section(
+            Job::ReleaseAngle,
+            Some("security"),
+            &Texts::of_this_build(AT, Job::ReleaseAngle, Some("security")),
+        );
         assert!(
             s.contains("\"item\": \"<the key of the angle sub-item"),
             "{s}"
@@ -227,12 +348,138 @@ mod tests {
 
     #[test]
     fn a_project_angle_gets_the_generic_protocol_and_says_the_method_has_no_notes() {
-        let s = section(Job::PrAngle, Some("accessibility"));
+        let s = section(
+            Job::PrAngle,
+            Some("accessibility"),
+            &Texts::of_this_build(AT, Job::PrAngle, Some("accessibility")),
+        );
         assert!(s.contains("### Review a PR from one angle"), "{s}");
         assert!(
-            s.contains("The method has no notes for the `accessibility` angle"),
+            s.contains(
+                "The method has no notes for the `accessibility` angle at `example-org/spl-asdlc@v1`"
+            ),
             "{s}"
         );
         assert!(!s.contains("docs/agents/angles/accessibility.md"), "{s}");
+    }
+
+    #[test]
+    fn an_item_carries_the_texts_of_the_pinned_version_and_says_where_they_come_from() {
+        let texts = Texts {
+            at: "example-org/spl-asdlc@v1.3.0".into(),
+            protocol: "# Review a PR from one angle\n\nThe v1.3.0 protocol.".into(),
+            angle: Some("# Angle: security\n\nThe v1.3.0 security text.".into()),
+            retired: None,
+        };
+        let s = section(Job::PrAngle, Some("security"), &texts);
+        assert!(s.contains("The v1.3.0 protocol."), "{s}");
+        assert!(s.contains("The v1.3.0 security text."), "{s}");
+        assert!(!s.contains(&demote(REVIEW_PR, 2)), "not this build's: {s}");
+        assert!(
+            s.contains("The method's texts at `example-org/spl-asdlc@v1.3.0`, the version of spl-asdlc this project's workflows are pinned on"),
+            "{s}"
+        );
+        assert!(
+            s.contains(&format!("copied by the bridge (spl-asdlc {VERSION})")),
+            "{s}"
+        );
+        assert!(s.contains("`docs/agents/angles/security.md`"), "{s}");
+    }
+
+    #[test]
+    fn a_release_item_keeps_the_bridges_own_report_schema_whatever_the_pin() {
+        let texts = Texts {
+            at: "example-org/spl-asdlc@v1.0.0".into(),
+            protocol: "# Consolidate\n\nOlder.".into(),
+            angle: None,
+            retired: None,
+        };
+        let s = section(Job::ReleaseConsolidation, None, &texts);
+        assert!(s.contains(&report_schema()), "{s}");
+        assert!(s.contains("The report's schema is the bridge's own"), "{s}");
+    }
+
+    #[test]
+    fn a_retired_angle_still_configured_is_said_in_its_item() {
+        let texts = Texts {
+            at: "example-org/spl-asdlc@v1.5.0".into(),
+            protocol: REVIEW_PR.into(),
+            angle: None,
+            retired: Some("1.4.0".into()),
+        };
+        let s = section(Job::PrAngle, Some("legacy"), &texts);
+        assert!(
+            s.contains("The method retired the `legacy` angle in spl-asdlc 1.4.0"),
+            "{s}"
+        );
+        assert!(s.contains("`spl-asdlc doctor` reports it"), "{s}");
+    }
+
+    #[test]
+    fn the_library_lists_every_angle_and_its_retired_table_reads_as_rows() {
+        for (key, _) in ANGLES {
+            assert!(
+                LIBRARY.contains(&format!("| `{key}` |")),
+                "{key} missing from the library"
+            );
+        }
+        assert!(retired().is_empty(), "{:?}", retired());
+        let library = "# Angles\n\n## Retired angles\n\nText.\n\n| Key | Retired in |\n|---|---|\n| `legacy` | 1.4.0 |\n| old-one | 1.6.0 |\n\n## Other\n\n| `not-this` | 9.9.9 |\n";
+        assert_eq!(
+            retired_of(library),
+            [
+                ("legacy".to_string(), "1.4.0".to_string()),
+                ("old-one".to_string(), "1.6.0".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn every_angle_says_its_parts_and_a_workflow_angle_says_where_its_results_are() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let workflows: Vec<String> = std::fs::read_dir(root.join(".github/workflows"))
+            .unwrap()
+            .filter_map(|e| {
+                let name = e.unwrap().file_name().into_string().unwrap();
+                name.strip_prefix("asdlc-angle-")?
+                    .strip_suffix(".yml")
+                    .map(str::to_string)
+            })
+            .collect();
+        for key in &workflows {
+            assert!(
+                angle_notes(key).is_some(),
+                "the workflow of angle {key} has no instructions under docs/agents/angles/"
+            );
+        }
+        for (key, text) in ANGLES {
+            let heading = |h: &str| {
+                markdown::headings(&markdown::without_fences(text))
+                    .iter()
+                    .any(|x| x.level == 2 && x.text == h)
+            };
+            assert!(
+                text.starts_with(&format!("# Angle: {key}\n\nParts: ")),
+                "{key}"
+            );
+            for h in ["Looks for", "Grading", "Evidence"] {
+                assert!(heading(h), "{key} lacks ## {h}");
+            }
+            let has_workflow = workflows.contains(&key.to_string());
+            assert_eq!(
+                heading("Workflow results"),
+                has_workflow,
+                "{key}: a `## Workflow results` section goes with a workflow, and only with one"
+            );
+            let row = LIBRARY
+                .lines()
+                .find(|l| l.starts_with(&format!("| `{key}` |")))
+                .unwrap();
+            assert_eq!(
+                row.contains("workflow"),
+                has_workflow,
+                "{key}: the library's row names its parts"
+            );
+        }
     }
 }

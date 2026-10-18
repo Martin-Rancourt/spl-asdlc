@@ -7,7 +7,10 @@ use std::fmt;
 use crate::config::{Config, Source};
 use crate::github::{GitHub, Read, RepoSlug, Ruleset};
 use crate::method::business_rules;
+use crate::method::pin::{self, Pin, PinError, WORKFLOWS};
 use crate::method::release::shape::Shape;
+use crate::method::texts::protocol::{Job, angle_path, retired_in};
+use crate::method::workflow_callers::reusable_callers;
 use crate::tracker::{StatusTable, Tracker};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +103,7 @@ pub fn run(
     out.push(pause_check(github, &repo));
     out.extend(files(config, instance, github, &repo, &default));
     out.push(method_checks(github, &repo, &default));
+    out.extend(method_version(config, github, &repo, &default));
     out.extend(ruleset_checks(config, &default, &github.rulesets(&repo)));
     out.extend(tracker_checks(config, tracker));
     out
@@ -643,6 +647,123 @@ fn method_checks(github: &dyn GitHub, repo: &RepoSlug, rev: &str) -> Check {
     }
 }
 
+/// The version of the method the project is pinned on (BR-ASDLC-032),
+/// whether its texts can be read with the project's token, and each angle
+/// the configuration names against that version (BR-ASDLC-034): the
+/// method's, the project's own, or one the method retired.
+fn method_version(config: &Config, github: &dyn GitHub, repo: &RepoSlug, rev: &str) -> Vec<Check> {
+    const NAME: &str = "method version";
+    let mut files = Vec::new();
+    match github.dir(repo, WORKFLOWS, rev) {
+        Ok(names) => {
+            for name in names
+                .iter()
+                .filter(|n| n.ends_with(".yml") || n.ends_with(".yaml"))
+            {
+                match github.file(repo, &format!("{WORKFLOWS}/{name}"), rev) {
+                    Ok(text) => files.push((name.clone(), text)),
+                    Err(e) => return vec![check(NAME, Verdict::Missing, e.to_string())],
+                }
+            }
+        }
+        Err(e) if e.is_not_found() => {}
+        Err(e) => return vec![check(NAME, Verdict::Missing, e.to_string())],
+    }
+    let pin = match pin::resolve(&files) {
+        Ok(p) => p,
+        Err(e @ PinError::NoCaller) => return vec![check(NAME, Verdict::Missing, e.to_string())],
+        Err(e) => return vec![check(NAME, Verdict::Invalid, e.to_string())],
+    };
+    let mut out = vec![check(
+        NAME,
+        Verdict::Ok,
+        format!(
+            "{pin}, from the workflow callers at {rev}: the agents' review texts are read there"
+        ),
+    )];
+    let texts = "method texts";
+    match github.file_from(repo, &pin.repo, Job::PrAngle.path(), &pin.rev) {
+        Ok(_) => out.push(check(
+            texts,
+            Verdict::Ok,
+            format!("read at {pin} with the token of {repo}"),
+        )),
+        Err(e) if e.is_not_found() => {
+            out.push(check(
+                texts,
+                Verdict::Missing,
+                format!(
+                    "{} is not at {pin}: {} has no such ref, or the GitHub App's installation does not include that repository while it is private (docs/setup/github-app.md)",
+                    Job::PrAngle.path(),
+                    pin.repo
+                ),
+            ));
+            return out;
+        }
+        Err(e) => {
+            out.push(check(texts, Verdict::Missing, e.to_string()));
+            return out;
+        }
+    }
+    let mut keys: Vec<(&str, Option<&str>)> = Vec::new();
+    let named = config
+        .review
+        .angles
+        .iter()
+        .chain(&config.release.angles)
+        .map(|a| (a.key.as_str(), a.notes.as_deref()))
+        .chain(config.review.diff_size_angle.as_deref().map(|k| (k, None)));
+    for (key, notes) in named {
+        match keys.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, n)) => *n = n.or(notes),
+            None => keys.push((key, notes)),
+        }
+    }
+    for (key, notes) in keys {
+        let text = github.file_from(repo, &pin.repo, &angle_path(key), &pin.rev);
+        out.push(angle_check(key, notes, &pin, text, retired_in(key)));
+    }
+    out
+}
+
+/// A configured angle against the pinned version: its text there (`text`),
+/// and the version that retired it, if the method did.
+fn angle_check(
+    key: &str,
+    notes: Option<&str>,
+    pin: &Pin,
+    text: Read<String>,
+    retired: Option<String>,
+) -> Check {
+    let name = format!("angle {key}");
+    match (text, retired) {
+        (Ok(_), None) => check(&name, Verdict::Ok, format!("the method's angle at {pin}")),
+        (Ok(_), Some(v)) => check(
+            &name,
+            Verdict::Ok,
+            format!(
+                "the method's angle at {pin}; the method retired it in spl-asdlc {v}, so an update of the pin to that version reports it"
+            ),
+        ),
+        (Err(e), Some(v)) if e.is_not_found() => check(
+            &name,
+            Verdict::Invalid,
+            format!(
+                "the method retired it in spl-asdlc {v} and has no text for it at {pin}: remove it from the configuration, or keep reviewing from that angle as the project's own, under another key with its notes"
+            ),
+        ),
+        (Err(e), None) if e.is_not_found() => check(
+            &name,
+            Verdict::Ok,
+            format!(
+                "the project's own angle: the method has no text for it at {pin}; project notes: {}",
+                notes.unwrap_or("none")
+            ),
+        ),
+        (Err(e), _) => check(&name, Verdict::Missing, e.to_string()),
+    }
+}
+
 /// The reusable workflows that take a `gate-workflow` input and, without
 /// it, read `release.gate_workflow` from the configuration.
 const GATE_READERS: [&str; 2] = ["asdlc-release-publish.yml", "asdlc-release-cut.yml"];
@@ -714,162 +835,6 @@ fn gate_callers(config: &Config, github: &dyn GitHub, repo: &RepoSlug, rev: &str
         }
     }
     out
-}
-
-/// A job that calls a reusable workflow: its id, the called file's name and
-/// the inputs it passes on one line each (`with:`).
-#[derive(Debug, PartialEq, Eq)]
-struct Caller {
-    job: String,
-    called: String,
-    inputs: std::collections::BTreeMap<String, String>,
-}
-
-/// The jobs of a workflow that call a reusable workflow (`jobs.<id>.uses`),
-/// read line by line: the shape GitHub's own syntax gives a caller (block
-/// mappings indented with spaces, `with:` as a block or a flow mapping of
-/// plain scalars). An input whose value spans lines is read as empty.
-fn reusable_callers(text: &str) -> Vec<Caller> {
-    // (indent, content) of each line that holds something, comments cut.
-    let lines: Vec<(usize, &str)> = text
-        .lines()
-        .filter_map(|l| {
-            let content = strip_comment(l.trim_start_matches(' ')).trim_end();
-            (!content.is_empty()).then(|| (l.len() - l.trim_start_matches(' ').len(), content))
-        })
-        .collect();
-    let mut out = Vec::new();
-    let Some(start) = lines.iter().position(|(i, c)| *i == 0 && *c == "jobs:") else {
-        return out;
-    };
-    let jobs: Vec<(usize, &str)> = lines[start + 1..]
-        .iter()
-        .take_while(|(i, _)| *i > 0)
-        .copied()
-        .collect();
-    let Some(job_indent) = jobs.first().map(|(i, _)| *i) else {
-        return out;
-    };
-    let mut at = 0;
-    while at < jobs.len() {
-        let (indent, content) = jobs[at];
-        at += 1;
-        if indent != job_indent {
-            continue;
-        }
-        let Some((id, _)) = key_value(content) else {
-            continue;
-        };
-        let body: Vec<(usize, &str)> = jobs[at..]
-            .iter()
-            .take_while(|(i, _)| *i > job_indent)
-            .copied()
-            .collect();
-        let Some(key_indent) = body.first().map(|(i, _)| *i) else {
-            continue;
-        };
-        let mut uses = None;
-        let mut inputs = std::collections::BTreeMap::new();
-        let mut k = 0;
-        while k < body.len() {
-            let (i, c) = body[k];
-            k += 1;
-            if i != key_indent {
-                continue;
-            }
-            match key_value(c) {
-                Some(("uses", v)) => uses = Some(unquote(v).to_string()),
-                Some(("with", v)) if v.starts_with('{') => {
-                    let flow = v.trim_start_matches('{').trim_end_matches('}');
-                    for pair in flow.split(',') {
-                        if let Some((key, value)) = key_value(pair.trim()) {
-                            inputs.insert(key.to_string(), unquote(value).to_string());
-                        }
-                    }
-                }
-                Some(("with", "")) => {
-                    let children: Vec<(usize, &str)> = body[k..]
-                        .iter()
-                        .take_while(|(ci, _)| *ci > key_indent)
-                        .copied()
-                        .collect();
-                    let input_indent = children.first().map_or(0, |(ci, _)| *ci);
-                    for (ci, cc) in children {
-                        if ci == input_indent {
-                            if let Some((key, value)) = key_value(cc) {
-                                inputs.insert(key.to_string(), scalar(value));
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        if let Some(uses) = uses {
-            let path = uses.split('@').next().unwrap_or_default();
-            let called = path.rsplit('/').next().unwrap_or_default().to_string();
-            out.push(Caller {
-                job: id.to_string(),
-                called,
-                inputs,
-            });
-        }
-        at += body.len();
-    }
-    out
-}
-
-/// `key: value` (a value possibly empty), the key unquoted; `None` for a
-/// line that is not a mapping entry (a list item, a scalar's text).
-fn key_value(content: &str) -> Option<(&str, &str)> {
-    if content.starts_with('-') {
-        return None;
-    }
-    let (key, value) = match content.split_once(": ") {
-        Some((k, v)) => (k, v.trim()),
-        None => (content.strip_suffix(':')?, ""),
-    };
-    let key = unquote(key.trim());
-    (!key.is_empty() && !key.contains(' ')).then_some((key, value))
-}
-
-/// A one-line scalar: a block scalar (`|`, `>`) spans lines and reads empty.
-fn scalar(value: &str) -> String {
-    if value.starts_with('|') || value.starts_with('>') {
-        String::new()
-    } else {
-        unquote(value).to_string()
-    }
-}
-
-fn unquote(value: &str) -> &str {
-    let v = value.trim();
-    for q in ['\'', '"'] {
-        if let Some(inner) = v.strip_prefix(q).and_then(|s| s.strip_suffix(q)) {
-            return inner;
-        }
-    }
-    v
-}
-
-/// The line without its comment: a `#` that starts it or follows a space,
-/// outside a quoted scalar (one whose quote opens it, so that an apostrophe
-/// in plain text opens nothing).
-fn strip_comment(line: &str) -> &str {
-    let mut quote = None;
-    let mut previous = ' ';
-    for (i, c) in line.char_indices() {
-        let opens = previous.is_whitespace() || matches!(previous, ':' | '{' | ',' | '[');
-        match quote {
-            Some(q) if c == q => quote = None,
-            Some(_) => {}
-            None if (c == '\'' || c == '"') && opens => quote = Some(c),
-            None if c == '#' && previous.is_whitespace() => return &line[..i],
-            None => {}
-        }
-        previous = c;
-    }
-    line
 }
 
 fn tracker_checks(config: &Config, tracker: &dyn Tracker) -> Vec<Check> {
@@ -1254,60 +1219,112 @@ mod tests {
     }
 
     #[test]
-    fn the_callers_of_a_reusable_workflow_are_read_with_the_inputs_they_pass() {
-        let example = include_str!("../docs/setup/examples/release-publish.yml");
-        let callers = reusable_callers(example);
-        let jobs: Vec<(&str, &str)> = callers
-            .iter()
-            .map(|c| (c.job.as_str(), c.called.as_str()))
-            .collect();
-        // `publish` runs steps: its `- uses:` are actions, not a call.
+    fn the_method_version_its_texts_and_each_angle_are_judged_against_the_pin() {
+        let c = config();
+        let g = FakeGitHub::new();
+        let repo = RepoSlug::parse("example-org/acme").unwrap();
+        let lines = |g: &FakeGitHub| -> Vec<String> {
+            method_version(&c, g, &repo, "main")
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        };
+        let none = lines(&g);
+        assert_eq!(none.len(), 1, "{none:?}");
+        assert!(
+            none[0].starts_with("method version: missing — no workflow under .github/workflows calls a reusable workflow of the method"),
+            "{none:?}"
+        );
+        g.pin_method(&repo, "v1");
+        // `product` has no text at that version: the project's own angle.
+        g.state.borrow_mut().files.remove(&(
+            RepoSlug::parse("example-org/spl-asdlc").unwrap(),
+            "v1".into(),
+            "docs/agents/angles/product.md".into(),
+        ));
         assert_eq!(
-            jobs,
+            lines(&g),
             [
-                ("verify", "asdlc-release-publish.yml"),
-                ("close", "asdlc-release-publish.yml")
+                "method version: ok — example-org/spl-asdlc@v1, from the workflow callers at main: the agents' review texts are read there",
+                "method texts: ok — read at example-org/spl-asdlc@v1 with the token of example-org/acme",
+                "angle maintainability: ok — the method's angle at example-org/spl-asdlc@v1",
+                "angle security: ok — the method's angle at example-org/spl-asdlc@v1",
+                "angle product: ok — the project's own angle: the method has no text for it at example-org/spl-asdlc@v1; project notes: none",
             ]
         );
-        assert_eq!(callers[0].inputs["stage"], "verify");
-        assert_eq!(callers[0].inputs["qa-angles"], r#"["security", "product"]"#);
-        assert!(!callers[0].inputs.contains_key("gate-workflow"));
+        // A ref the method's repository lacks, or a private repository the
+        // App's installation does not include: GitHub says 404 for both.
+        g.pin_caller(&repo, "example-org/spl-asdlc", "v9.9.9");
+        let unread = lines(&g);
+        assert_eq!(unread.len(), 2, "{unread:?}");
+        assert!(
+            unread[1].starts_with("method texts: missing — docs/agents/review-pr.md is not at example-org/spl-asdlc@v9.9.9")
+                && unread[1].contains("docs/setup/github-app.md"),
+            "{unread:?}"
+        );
+        // Callers on two versions tell none.
+        g.state.borrow_mut().files.insert(
+            (repo.clone(), "main".into(), ".github/workflows/cut.yml".into()),
+            Ok("jobs:\n  cut:\n    uses: example-org/spl-asdlc/.github/workflows/asdlc-release-cut.yml@v1.2.0\n".into()),
+        );
+        let several = lines(&g);
+        assert!(
+            several[0].starts_with("method version: invalid — the workflow callers pin the method on more than one version"),
+            "{several:?}"
+        );
+    }
 
-        let text = "\
-name: x # a comment
-on:
-  push:
-jobs:
-  # a comment
-  'verify':
-    uses: acme/spl-asdlc/.github/workflows/asdlc-release-publish.yml@v1 # pinned
-    with:
-      gate-workflow: \"pre-release-qa.yml\"   # the gate
-      note: it's # a comment after an apostrophe
-      long: >-
-        gate-workflow: not-an-input.yml
-  cut:
-    uses: \"./.github/workflows/asdlc-release-cut.yml\"
-    with: {action: open, gate-workflow: 'gate.yml'}
-  build:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v7
-      with:
-        gate-workflow: a-step.yml
-";
-        let callers = reusable_callers(text);
-        assert_eq!(callers.len(), 2, "{callers:#?}");
-        assert_eq!(callers[0].job, "verify");
-        assert_eq!(callers[0].called, "asdlc-release-publish.yml");
-        assert_eq!(callers[0].inputs["gate-workflow"], "pre-release-qa.yml");
-        assert_eq!(callers[0].inputs["note"], "it's");
-        assert_eq!(callers[0].inputs["long"], "");
-        assert_eq!(callers[1].job, "cut");
-        assert_eq!(callers[1].called, "asdlc-release-cut.yml");
-        assert_eq!(callers[1].inputs["gate-workflow"], "gate.yml");
-        assert_eq!(callers[1].inputs["action"], "open");
-        assert!(reusable_callers("on: push\n").is_empty());
+    #[test]
+    fn a_retired_angle_is_reported_once_the_pin_reaches_its_retirement() {
+        let pin = Pin {
+            repo: RepoSlug::parse("example-org/spl-asdlc").unwrap(),
+            rev: "v1.5.0".into(),
+        };
+        let absent = || {
+            Err(crate::github::ReadError::NotFound {
+                what: "docs/agents/angles/legacy.md".into(),
+            })
+        };
+        let retired = angle_check("legacy", None, &pin, absent(), Some("1.4.0".into()));
+        assert_eq!(retired.verdict, Verdict::Invalid, "{retired}");
+        assert!(
+            retired
+                .detail
+                .starts_with("the method retired it in spl-asdlc 1.4.0 and has no text for it at example-org/spl-asdlc@v1.5.0"),
+            "{retired}"
+        );
+        // Pinned before the retirement: still the method's, and said.
+        let older = Pin {
+            rev: "v1.3.0".into(),
+            ..pin.clone()
+        };
+        let kept = angle_check(
+            "legacy",
+            None,
+            &older,
+            Ok("# Angle: legacy".into()),
+            Some("1.4.0".into()),
+        );
+        assert_eq!(kept.verdict, Verdict::Ok, "{kept}");
+        assert!(
+            kept.detail
+                .contains("an update of the pin to that version reports it"),
+            "{kept}"
+        );
+        // Never retired: the project's own.
+        let own = angle_check(
+            "accessibility",
+            Some(".spl-asdlc/angles/a11y.md"),
+            &pin,
+            absent(),
+            None,
+        );
+        assert_eq!(own.verdict, Verdict::Ok, "{own}");
+        assert!(
+            own.detail
+                .ends_with("project notes: .spl-asdlc/angles/a11y.md"),
+            "{own}"
+        );
     }
 
     #[test]

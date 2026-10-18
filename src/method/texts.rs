@@ -304,9 +304,9 @@ pub fn release_angle_item(
     report_path: &str,
     label: &str,
     notes: Option<&str>,
+    texts: &protocol::Texts,
 ) -> (String, String) {
-    let v = crate::method::vocabulary::normalise_version(version);
-    let title = format!("{} — {product} {v} (rc.{rc})", angle.title);
+    let title = release_angle_title(product, version, rc, angle);
     let body = format!(
         "{marker}\n\n## Goal\nRender the {key} review of the whole project at candidate `{candidate}`, as the \
          protocol below describes it (`## Protocol`: the release angle's protocol and the angle's notes).\n\n\
@@ -332,9 +332,16 @@ pub fn release_angle_item(
         key = angle.key,
         absence = crate::method::business_rules::ABSENCE_DECLARATION,
         notes = project_notes(notes),
-        protocol = protocol::section(protocol::Job::ReleaseAngle, Some(&angle.key)),
+        protocol = protocol::section(protocol::Job::ReleaseAngle, Some(&angle.key), texts),
     );
     (title, body)
+}
+
+/// The title of a release angle sub-item, by which it is found again
+/// (REQ-REL-048).
+pub fn release_angle_title(product: &str, version: &str, rc: u64, angle: &AngleLine) -> String {
+    let v = crate::method::vocabulary::normalise_version(version);
+    format!("{} — {product} {v} (rc.{rc})", angle.title)
 }
 
 /// The project's notes of an angle, linked (never embedded): they live in
@@ -362,8 +369,9 @@ pub fn review_angle_item(
     angle: &str,
     notes: Option<&str>,
     reasons: &[String],
+    texts: &protocol::Texts,
 ) -> (String, String) {
-    let title = format!("{} review — {ticket} ({})", capitalised(angle), short(head));
+    let title = review_angle_title(ticket, head, angle);
     let why = if reasons.is_empty() {
         String::new()
     } else {
@@ -392,9 +400,14 @@ pub fn review_angle_item(
         head12 = short(head),
         absence = crate::method::business_rules::ABSENCE_DECLARATION,
         notes = project_notes(notes),
-        protocol = protocol::section(protocol::Job::PrAngle, Some(angle)),
+        protocol = protocol::section(protocol::Job::PrAngle, Some(angle), texts),
     );
     (title, body)
+}
+
+/// The title of a PR-review angle sub-item, by which it is found again.
+pub fn review_angle_title(ticket: &str, head: &str, angle: &str) -> String {
+    format!("{} review — {ticket} ({})", capitalised(angle), short(head))
 }
 
 /// The marker of the ticket the bridge opened for the PR at `pr_url`.
@@ -610,8 +623,13 @@ pub enum Consolidating {
 /// candidate is merged, its item blocked by every angle sub-item; the
 /// coordinator reviewed each angle PR as it came, this item reads them
 /// together.
-pub fn consolidation_item(scope: &str, title_of: &str, of: Consolidating) -> (String, String) {
-    let title = format!("Consolidation — {title_of}");
+pub fn consolidation_item(
+    scope: &str,
+    title_of: &str,
+    of: Consolidating,
+    texts: &protocol::Texts,
+) -> (String, String) {
+    let title = consolidation_title(title_of);
     let (goal, non_goals, criteria, closes, job) = match of {
         Consolidating::PullRequest => (
             format!(
@@ -660,9 +678,24 @@ pub fn consolidation_item(scope: &str, title_of: &str, of: Consolidating) -> (St
          {protocol}",
         marker = marker("consolidation", &[("scope", scope)]),
         absence = crate::method::business_rules::ABSENCE_DECLARATION,
-        protocol = protocol::section(job, None),
+        protocol = protocol::section(job, None, texts),
     );
     (title, body)
+}
+
+/// The title of a consolidation item, by which it is found again.
+pub fn consolidation_title(title_of: &str) -> String {
+    format!("Consolidation — {title_of}")
+}
+
+impl Consolidating {
+    /// The job of this consolidation's protocol.
+    pub fn job(self) -> protocol::Job {
+        match self {
+            Consolidating::PullRequest => protocol::Job::PrConsolidation,
+            Consolidating::Candidate => protocol::Job::ReleaseConsolidation,
+        }
+    }
 }
 
 fn capitalised(s: &str) -> String {

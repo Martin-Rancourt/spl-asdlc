@@ -27,13 +27,14 @@ use crate::method::contract;
 use crate::method::release::findings;
 use crate::method::release::prs::trusted_author;
 use crate::method::review::{self, Approval, BranchState, ReviewFacts};
-use crate::method::texts::{self, BridgeItem};
+use crate::method::texts::{self, BridgeItem, protocol};
 use crate::method::ticket_state::{self, Facts, OpenPr};
 use crate::method::vocabulary::{Status, TICKETLESS_LABEL};
 use crate::tracker::{Item, NewItem, RelationKind};
 
 use super::identity;
 use super::link::{self, Linked};
+use super::method_texts;
 use super::{Report, Tick};
 
 /// What the base of a PR says, read once per base and tick.
@@ -1423,14 +1424,7 @@ fn enter_review(
             .iter()
             .find(|a| a.key == *angle)
             .and_then(|a| a.notes.as_deref());
-        let (title, body) = texts::review_angle_item(
-            &ticket.key,
-            &pr.url,
-            &pr.head_sha,
-            angle,
-            notes,
-            &plan.reasons,
-        );
+        let title = texts::review_angle_title(&ticket.key, &pr.head_sha, angle);
         let marker = texts::marker("angle", &[("scope", &scope), ("angle", angle)]);
         let found = match existing(&want, &marker, &title, log, report) {
             Ok(f) => f,
@@ -1445,6 +1439,35 @@ fn enter_review(
                 k
             }
             None => {
+                // The texts of the version the project is pinned on, read
+                // only for an item to create (BR-ASDLC-032).
+                let pinned =
+                    match method_texts::texts(t, &pr.base_ref, protocol::Job::PrAngle, Some(angle))
+                    {
+                        Ok(p) => p,
+                        Err(e) => {
+                            let what = format!("the review round of {}", pr.url);
+                            method_texts::unreadable(
+                                t,
+                                log,
+                                report,
+                                &ticket.key,
+                                &scope,
+                                &what,
+                                &e,
+                            );
+                            return;
+                        }
+                    };
+                let (_, body) = texts::review_angle_item(
+                    &ticket.key,
+                    &pr.url,
+                    &pr.head_sha,
+                    angle,
+                    notes,
+                    &plan.reasons,
+                    &pinned,
+                );
                 let assignee = hint(t, &t.config.review.angles, angle);
                 match create(
                     t,
@@ -1467,11 +1490,8 @@ fn enter_review(
     let want = BridgeItem::Consolidation {
         scope: scope.clone(),
     };
-    let (title, body) = texts::consolidation_item(
-        &scope,
-        &format!("{} ({})", ticket.key, texts::short(&pr.head_sha)),
-        texts::Consolidating::PullRequest,
-    );
+    let title_of = format!("{} ({})", ticket.key, texts::short(&pr.head_sha));
+    let title = texts::consolidation_title(&title_of);
     let marker = texts::marker("consolidation", &[("scope", &scope)]);
     let found = match existing(&want, &marker, &title, log, report) {
         Ok(f) => f,
@@ -1486,6 +1506,16 @@ fn enter_review(
             k
         }
         None => {
+            let of = texts::Consolidating::PullRequest;
+            let pinned = match method_texts::texts(t, &pr.base_ref, of.job(), None) {
+                Ok(p) => p,
+                Err(e) => {
+                    let what = format!("the review round of {}", pr.url);
+                    method_texts::unreadable(t, log, report, &ticket.key, &scope, &what, &e);
+                    return;
+                }
+            };
+            let (_, body) = texts::consolidation_item(&scope, &title_of, of, &pinned);
             // Its coordinator, at creation only: an existing consolidation
             // item is never reassigned (someone may have taken it).
             let assignee = t

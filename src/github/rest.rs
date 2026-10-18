@@ -981,13 +981,18 @@ impl GitHub for RestGitHub {
     }
 
     fn file(&self, repo: &RepoSlug, path: &str, rev: &str) -> Read<String> {
-        let what = format!("{path} at {rev} in {repo}");
+        self.file_from(repo, repo, path, rev)
+    }
+
+    fn file_from(&self, repo: &RepoSlug, source: &RepoSlug, path: &str, rev: &str) -> Read<String> {
+        let what = format!("{path} at {rev} in {source}");
+        // The token is `repo`'s; the file is `source`'s.
         let response = self
             .call(
                 repo,
                 "GET",
                 &format!(
-                    "/repos/{repo}/contents/{}?ref={}",
+                    "/repos/{source}/contents/{}?ref={}",
                     encode(path, true),
                     encode(rev, false)
                 ),

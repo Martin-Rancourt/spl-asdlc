@@ -2,6 +2,7 @@
 //! carried text tests (release.md, merge.md).
 
 use super::*;
+use crate::github::fake::METHOD_AT as AT;
 use crate::method::texts::protocol;
 
 fn angle(key: &str) -> AngleLine {
@@ -44,6 +45,11 @@ fn a_qa_sub_issue_carries_acceptance_criteria() {
         ".spl-asdlc/qa/acme-v1.2.3-rc.2/security.json",
         "release/acme-v1.2.3",
         None,
+        &protocol::Texts::of_this_build(
+            AT,
+            protocol::Job::ReleaseAngle,
+            Some(&angle("security").key),
+        ),
     );
     assert_eq!(title, "Security review — acme v1.2.3 (rc.2)");
     assert!(
@@ -73,6 +79,7 @@ fn review_items_are_contracts_marked_as_the_bridges() {
         "security",
         None,
         &["it touches reviewed paths: `a`".into()],
+        &protocol::Texts::of_this_build(AT, protocol::Job::PrAngle, Some("security")),
     );
     assert!(crate::method::contract::missing_from_contract(&angle_body).is_empty());
     assert!(matches!(
@@ -83,6 +90,7 @@ fn review_items_are_contracts_marked_as_the_bridges() {
         "https://github.com/example-org/acme/pull/9",
         "ABC-1 (#9)",
         Consolidating::PullRequest,
+        &protocol::Texts::of_this_build(AT, Consolidating::PullRequest.job(), None),
     );
     assert_eq!(title, "Consolidation — ABC-1 (#9)");
     assert!(crate::method::contract::missing_from_contract(&cons).is_empty());
@@ -220,6 +228,7 @@ fn the_release_consolidation_item_is_the_overall_review_after_every_angle() {
         "acme-v1.2.0-rc.1",
         "acme v1.2.0 (rc.1)",
         Consolidating::Candidate,
+        &protocol::Texts::of_this_build(AT, Consolidating::Candidate.job(), None),
     );
     assert_eq!(title, "Consolidation — acme v1.2.0 (rc.1)");
     assert!(crate::method::contract::missing_from_contract(&body).is_empty());
@@ -564,6 +573,11 @@ fn markers_read_the_same_hidden_or_visible_and_whole() {
         "p",
         "l",
         None,
+        &protocol::Texts::of_this_build(
+            AT,
+            protocol::Job::ReleaseAngle,
+            Some(&angle("security").key),
+        ),
     );
     assert!(bridge_item(&visible_markers(&body), Some("ABC-100")).is_some());
 }
@@ -587,6 +601,7 @@ fn review_rounds_are_scoped_by_the_head_they_opened_at() {
         "security",
         None,
         &[],
+        &protocol::Texts::of_this_build(AT, protocol::Job::PrAngle, Some("security")),
     );
     let (_, b) = review_angle_item(
         "ABC-1",
@@ -595,6 +610,7 @@ fn review_rounds_are_scoped_by_the_head_they_opened_at() {
         "security",
         None,
         &[],
+        &protocol::Texts::of_this_build(AT, protocol::Job::PrAngle, Some("security")),
     );
     assert_ne!(
         bridge_item(&a, Some("ABC-1")),
@@ -652,6 +668,7 @@ fn a_pr_review_angle_sub_item_embeds_the_pr_review_protocol_and_its_angles_notes
         "security",
         Some(".spl-asdlc/angles/security.md"),
         &[],
+        &protocol::Texts::of_this_build(AT, protocol::Job::PrAngle, Some("security")),
     );
     assert_one_contract(&body);
     assert!(body.contains(&embedded(protocol::REVIEW_PR)), "{body}");
@@ -694,6 +711,11 @@ fn a_release_angle_sub_item_embeds_the_release_protocol_its_angles_notes_and_the
         ".spl-asdlc/qa/acme-v1.2.3-rc.2/product.json",
         "release/acme-v1.2.3",
         None,
+        &protocol::Texts::of_this_build(
+            AT,
+            protocol::Job::ReleaseAngle,
+            Some(&angle("product").key),
+        ),
     );
     assert_one_contract(&body);
     assert!(body.contains(&embedded(protocol::REVIEW_RELEASE)), "{body}");
@@ -722,6 +744,7 @@ fn a_consolidation_item_embeds_the_consolidation_protocol_and_says_what_closes_i
         &round_scope(PR, "abcdef01abcdef01"),
         "ABC-1 (abcdef01abcd)",
         Consolidating::PullRequest,
+        &protocol::Texts::of_this_build(AT, Consolidating::PullRequest.job(), None),
     );
     assert_one_contract(&pr);
     assert!(pr.contains(&embedded(protocol::CONSOLIDATE)), "{pr}");
@@ -739,6 +762,7 @@ fn a_consolidation_item_embeds_the_consolidation_protocol_and_says_what_closes_i
         "acme-v1.2.3-rc.1",
         "acme v1.2.3 (rc.1)",
         Consolidating::Candidate,
+        &protocol::Texts::of_this_build(AT, Consolidating::Candidate.job(), None),
     );
     assert_one_contract(&rc);
     assert!(rc.contains(&embedded(protocol::CONSOLIDATE)), "{rc}");
@@ -759,6 +783,7 @@ fn a_project_only_angle_gets_the_generic_protocol_a_line_and_its_linked_notes() 
         "accessibility",
         Some(".spl-asdlc/angles/accessibility.md"),
         &[],
+        &protocol::Texts::of_this_build(AT, protocol::Job::PrAngle, Some("accessibility")),
     );
     assert_one_contract(&body);
     assert!(body.contains(&embedded(protocol::REVIEW_PR)), "{body}");
@@ -777,6 +802,11 @@ fn a_project_only_angle_gets_the_generic_protocol_a_line_and_its_linked_notes() 
         "p",
         "l",
         None,
+        &protocol::Texts::of_this_build(
+            AT,
+            protocol::Job::ReleaseAngle,
+            Some(&angle("accessibility").key),
+        ),
     );
     assert_one_contract(&release);
     assert!(release.contains("The method has no notes for the `accessibility` angle"));
@@ -801,6 +831,7 @@ fn the_longest_item_stays_within_the_trackers_size() {
             key,
             Some(&"n/".repeat(100)),
             &reasons,
+            &protocol::Texts::of_this_build(AT, protocol::Job::PrAngle, Some(key)),
         );
         let (_, rc) = release_angle_item(
             "acme",
@@ -812,11 +843,17 @@ fn the_longest_item_stays_within_the_trackers_size() {
             ".spl-asdlc/qa/acme-v1.2.3-rc.12/security.json",
             "release/acme-v1.2.3",
             Some(&"n/".repeat(100)),
+            &protocol::Texts::of_this_build(AT, protocol::Job::ReleaseAngle, Some(&angle(key).key)),
         );
         longest = longest.max(pr.len()).max(rc.len());
     }
     for of in [Consolidating::PullRequest, Consolidating::Candidate] {
-        let (_, c) = consolidation_item(&round_scope(PR, "abcdef01abcdef01"), "ABC-1", of);
+        let (_, c) = consolidation_item(
+            &round_scope(PR, "abcdef01abcdef01"),
+            "ABC-1",
+            of,
+            &protocol::Texts::of_this_build(AT, of.job(), None),
+        );
         longest = longest.max(c.len());
     }
     assert!(
@@ -827,7 +864,15 @@ fn the_longest_item_stays_within_the_trackers_size() {
 
 #[test]
 fn the_markers_carry_no_protocol_text() {
-    let (_, body) = review_angle_item("ABC-1", PR, "abcdef01abcdef01", "security", None, &[]);
+    let (_, body) = review_angle_item(
+        "ABC-1",
+        PR,
+        "abcdef01abcdef01",
+        "security",
+        None,
+        &[],
+        &protocol::Texts::of_this_build(AT, protocol::Job::PrAngle, Some("security")),
+    );
     let m = marker(
         "angle",
         &[

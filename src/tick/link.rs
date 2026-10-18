@@ -87,7 +87,8 @@ pub fn split_linked(tracker: &dyn Tracker, mut keys: Vec<String>) -> TResult<Lin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::github::fake::pull_request;
+    use crate::github::fake::{METHOD_AT as AT, pull_request};
+    use crate::method::texts::protocol;
     use crate::method::vocabulary::Status;
     use crate::tracker::fake::FakeTracker;
 
@@ -147,14 +148,27 @@ mod tests {
     fn consolidation_body() -> String {
         let pr = pull_request(7);
         let scope = texts::round_scope(&pr.url, &pr.head_sha);
-        texts::consolidation_item(&scope, "ABC-1", texts::Consolidating::PullRequest).1
+        texts::consolidation_item(
+            &scope,
+            "ABC-1",
+            texts::Consolidating::PullRequest,
+            &protocol::Texts::of_this_build(AT, texts::Consolidating::PullRequest.job(), None),
+        )
+        .1
     }
 
     #[test]
     fn the_bridges_own_items_linked_to_the_pr_are_not_tickets() {
         let pr = pull_request(7);
-        let (_, angle) =
-            texts::review_angle_item("ABC-1", &pr.url, &pr.head_sha, "security", None, &[]);
+        let (_, angle) = texts::review_angle_item(
+            "ABC-1",
+            &pr.url,
+            &pr.head_sha,
+            "security",
+            None,
+            &[],
+            &protocol::Texts::of_this_build(AT, protocol::Job::PrAngle, Some("security")),
+        );
         ticket_beside("Security review", &angle);
         ticket_beside("Consolidation", &consolidation_body());
     }

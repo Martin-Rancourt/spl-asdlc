@@ -41,12 +41,12 @@ use crate::method::release::prs;
 use crate::method::release::report::{self, Report as AngleReport};
 use crate::method::release::shape::{Shape, Version};
 use crate::method::review::{self, Approval, BranchState};
-use crate::method::texts::{self, AngleLine, AngleScope, BridgeItem};
+use crate::method::texts::{self, AngleLine, AngleScope, BridgeItem, protocol};
 use crate::method::vocabulary::{self, Status};
 use crate::tracker::{Item, NewItem, Priority, RelationKind};
 
 use super::merge::{for_tracker, tracker_said};
-use super::{Report, Tick, closure, identity};
+use super::{Report, Tick, closure, identity, method_texts};
 
 /// The candidate in flight, as the tags say.
 pub struct Candidate {
@@ -1064,18 +1064,7 @@ fn open_round(
             title: angle.title.clone(),
             assignee: angle.assignee.clone(),
         };
-        let path = report::report_path(&release.record, &c.tag, &angle.key);
-        let (title, body) = texts::release_angle_item(
-            product,
-            &v,
-            &c.tag,
-            c.rc,
-            &line,
-            branch,
-            &path,
-            label,
-            angle.notes.as_deref(),
-        );
+        let title = texts::release_angle_title(product, &v, c.rc, &line);
         // Found by its marker or by its exact title (REQ-REL-048), or by its
         // identity comment: a marker an agent edited does not make the item
         // invisible.
@@ -1093,6 +1082,30 @@ fn open_round(
                 return None;
             }
         }
+        // The texts of the version the project is pinned on at the
+        // candidate, read only for an item to create (BR-ASDLC-032).
+        let pinned =
+            match method_texts::texts(t, &c.tag, protocol::Job::ReleaseAngle, Some(&angle.key)) {
+                Ok(p) => p,
+                Err(e) => {
+                    let what = format!("the QA items of {}", c.tag);
+                    method_texts::unreadable(t, log, report, &item.key, &c.tag, &what, &e);
+                    return None;
+                }
+            };
+        let path = report::report_path(&release.record, &c.tag, &angle.key);
+        let (_, body) = texts::release_angle_item(
+            product,
+            &v,
+            &c.tag,
+            c.rc,
+            &line,
+            branch,
+            &path,
+            label,
+            angle.notes.as_deref(),
+            &pinned,
+        );
         let assignee = angle.assignee.as_ref().and_then(|a| t.tracker.user(a).ok());
         if let Some(created) =
             create_child(t, log, report, &item.key, &title, &body, label, assignee)
@@ -1100,11 +1113,8 @@ fn open_round(
             children.push(created);
         }
     }
-    let (title, body) = texts::consolidation_item(
-        &c.tag,
-        &format!("{product} {v} (rc.{})", c.rc),
-        texts::Consolidating::Candidate,
-    );
+    let title_of = format!("{product} {v} (rc.{})", c.rc);
+    let title = texts::consolidation_title(&title_of);
     let marker = texts::marker("consolidation", &[("scope", &c.tag)]);
     let consolidated = match identity::find(t, log, report, &children, &marker, |ch| {
         texts::bridge_item(&ch.description, ch.parent.as_deref())
@@ -1124,6 +1134,16 @@ fn open_round(
         }
     };
     if !offered.is_empty() && !consolidated {
+        let of = texts::Consolidating::Candidate;
+        let pinned = match method_texts::texts(t, &c.tag, of.job(), None) {
+            Ok(p) => p,
+            Err(e) => {
+                let what = format!("the QA items of {}", c.tag);
+                method_texts::unreadable(t, log, report, &item.key, &c.tag, &what, &e);
+                return None;
+            }
+        };
+        let (_, body) = texts::consolidation_item(&c.tag, &title_of, of, &pinned);
         let assignee = coordinator(t);
         if let Some(created) =
             create_child(t, log, report, &item.key, &title, &body, label, assignee)

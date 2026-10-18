@@ -11,6 +11,8 @@ One App per organisation or account, named after the product's service identity 
 
 **Install** on each repository that adopts the method (Install App → select repositories). A repository that is not in the installation is invisible to the bridge and the workflows fail at token minting.
 
+While the method's repository (`<owner>/spl-asdlc`, the one the workflow callers name) is private, add it to the same installation. The bridge reads the agents' review texts there, at the version the callers pin, with the token of the project's installation (`docs/reference/08-configuration.md`, "Angles"); it only reads that repository, but the App's permissions are the same on every repository of its installation, so keep the App off the method repository's bypass lists. Without it, no review item is created: the bridge says so on the ticket or the release item, and `doctor` reports `method texts: missing`. A public method repository needs nothing: any token reads it.
+
 **Verify**: `spl-asdlc doctor --file .spl-asdlc/config.toml` reports `github-app: ok` with the App's slug and id; a missing permission shows as the check it breaks (`ruleset` without Administration read, the workflow files without Contents read, `pause` without Variables read). An App created before the pause switch lacks Variables read: add it to the App, then accept the new permission on each installation (GitHub asks the account that installed it).
 
 **Fallback**: where an App cannot be created (a workplace policy), the bridge accepts a fine-grained personal token with the same repository permissions. The binary prints under which login it writes; the rulesets must then list that user.

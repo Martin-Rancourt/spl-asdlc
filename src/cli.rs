@@ -402,6 +402,7 @@ fn tick(
             now: crate::github::Timestamp::now(),
             deadline: None,
             dry_run,
+            method_texts: Default::default(),
         };
         let mut log = match log_file {
             Some(p) => ActionLog::at(p),
@@ -500,6 +501,7 @@ fn release(
         now: crate::github::Timestamp::now(),
         deadline: None,
         dry_run: false,
+        method_texts: Default::default(),
     };
     let mut log = match crate::action_log::ActionLog::default_path(&c.repo, &env) {
         Some(p) => crate::action_log::ActionLog::at(p),
