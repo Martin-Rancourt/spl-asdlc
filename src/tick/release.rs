@@ -20,7 +20,8 @@
 //! 5. otherwise the HOLD said once, the escalation when the passes are
 //!    spent, the stagnation notice;
 //! 6. once the release is published: the consolidation items Done, then the
-//!    closure (`closure.rs`).
+//!    closure (`closure.rs`); the closure of the cycle before, when the next
+//!    cycle was cut before it ended, goes on beside it.
 //!
 //! Points the specification leaves open are not settled here; each waits,
 //! as `.spl-asdlc/open-points.md` lists them (the human GO, a raised `max_rc_passes`).
@@ -75,6 +76,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
             return false;
         }
     };
+    overtaken(t, log, report, &shape, &tags, &candidate);
     let version = candidate.version;
     let object = format!("release {} {version}", cfg.product.name);
     let release_tag = shape.release_tag(version);
@@ -116,7 +118,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
             Ok(children) => end_consolidations(t, log, report, &children, None),
             Err(e) => t.unreadable(report, &item.key, format!("children: {e}")),
         }
-        closure::close(t, log, report, &shape, &candidate, &item, &published);
+        closure::close(t, log, report, &shape, &candidate, &item, &published, None);
         return false;
     }
     let branch = match release_branch(t, &shape, &candidate) {
@@ -321,6 +323,78 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
     escalate(t, log, report, &item, &candidate, &decision, &branch);
     stagnation(t, log, report, &item, &candidate, &decision);
     false
+}
+
+/// The cycle just below the newest candidate's version, when the next cycle
+/// was cut before its closure ended (its note's channel failing, say): its
+/// closure goes on beside the next cycle until its release item is Done,
+/// then only what its archiving left is retried, as for the newest cycle.
+/// One cycle back is enough: a cycle is cut after the one before it was
+/// published and merged back.
+fn overtaken(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    shape: &Shape,
+    tags: &[GitRef],
+    newest: &Candidate,
+) {
+    let Some((tag, version, rc)) = tags
+        .iter()
+        .filter_map(|r| shape.parse_candidate(&r.name).map(|(v, rc)| (r, v, rc)))
+        .filter(|(_, v, _)| *v < newest.version)
+        .max_by_key(|(_, v, rc)| (*v, *rc))
+    else {
+        return;
+    };
+    let object = format!("release {} {version}", shape.product);
+    let release_tag = shape.release_tag(version);
+    let published = match t.github.release(&t.repo, &release_tag) {
+        Ok(r) if !r.draft => r,
+        Ok(_) => return,
+        Err(e) if e.is_not_found() => return,
+        Err(e) => {
+            t.unreadable(report, &object, format!("the release {release_tag}: {e}"));
+            return;
+        }
+    };
+    // Only a cycle of the bridge's, never one it did not open (§14).
+    let item = match find_release_item(t, shape, version) {
+        Ok(Some(i)) => i,
+        Ok(None) => return,
+        Err(e) => {
+            t.unreadable(report, &object, e);
+            return;
+        }
+    };
+    if item.state.is_resolved() && (item.archived || !t.tracker.archives()) {
+        return;
+    }
+    let candidate = match read_candidate(t, tag, version, rc) {
+        Ok(c) => c,
+        Err(e) => {
+            t.unreadable(report, &object, e);
+            return;
+        }
+    };
+    if item.state.is_resolved() {
+        closure::archive_closed(t, log, report, shape, &candidate, &item, &published);
+        return;
+    }
+    match t.tracker.children(&item.key) {
+        Ok(children) => end_consolidations(t, log, report, &children, None),
+        Err(e) => t.unreadable(report, &item.key, format!("children: {e}")),
+    }
+    closure::close(
+        t,
+        log,
+        report,
+        shape,
+        &candidate,
+        &item,
+        &published,
+        Some(newest),
+    );
 }
 
 /// The newest candidate of the product and the tags it was read from.
