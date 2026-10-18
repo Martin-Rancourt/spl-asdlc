@@ -112,6 +112,17 @@ fn this_repositorys_workflows_are_its_callers_and_binaries() {
     }
 }
 
+/// BR-ASDLC-023: this repository is the one project outside its own method.
+/// It has no method configuration, so no bridge can take it on, and its
+/// releases are release-please's (`release_please_runs_on_main_as_the_app_with_this_repositorys_files`).
+#[test]
+fn this_repository_has_no_method_configuration() {
+    assert!(
+        !root().join(".spl-asdlc/config.toml").exists(),
+        ".spl-asdlc/config.toml: this repository does not run the method on itself (BR-ASDLC-023)"
+    );
+}
+
 #[test]
 fn every_call_is_to_this_commit_with_declared_inputs_and_secrets() {
     let files = own_workflows();

@@ -99,6 +99,7 @@ pub fn run(
     };
     out.push(pause_check(github, &repo));
     out.extend(files(config, instance, github, &repo, &default));
+    out.push(method_checks(github, &repo, &default));
     out.extend(ruleset_checks(config, &default, &github.rulesets(&repo)));
     out.extend(tracker_checks(config, tracker));
     out
@@ -598,6 +599,48 @@ fn files(
     }
     out.extend(gate_callers(config, github, repo, rev));
     out
+}
+
+/// The method checks every project runs on every PR (BR-ASDLC-024).
+const METHOD_CHECKS: [&str; 2] = ["asdlc-pr-guards.yml", "asdlc-pr-title.yml"];
+
+/// Whether the repository's workflows at `rev` call every reusable workflow
+/// of `METHOD_CHECKS`: `missing` names the ones no job calls. What else its
+/// CI runs is the project's, never judged.
+fn method_checks(github: &dyn GitHub, repo: &RepoSlug, rev: &str) -> Check {
+    const NAME: &str = "method checks";
+    const DIR: &str = ".github/workflows";
+    let names = match github.dir(repo, DIR, rev) {
+        Ok(names) => names,
+        Err(e) if e.is_not_found() => Vec::new(),
+        Err(e) => return check(NAME, Verdict::Missing, e.to_string()),
+    };
+    let mut called = std::collections::BTreeSet::new();
+    for name in names
+        .iter()
+        .filter(|n| n.ends_with(".yml") || n.ends_with(".yaml"))
+    {
+        match github.file(repo, &format!("{DIR}/{name}"), rev) {
+            Ok(text) => called.extend(reusable_callers(&text).into_iter().map(|c| c.called)),
+            Err(e) => return check(NAME, Verdict::Missing, format!("{name}: {e}")),
+        }
+    }
+    let absent: Vec<&str> = METHOD_CHECKS
+        .into_iter()
+        .filter(|w| !called.contains(*w))
+        .collect();
+    if absent.is_empty() {
+        check(NAME, Verdict::Ok, METHOD_CHECKS.join(", "))
+    } else {
+        check(
+            NAME,
+            Verdict::Missing,
+            format!(
+                "no job of {DIR} calls {}: every PR runs the method checks (docs/setup/examples/pr.yml, pr-title.yml)",
+                absent.join(", ")
+            ),
+        )
+    }
 }
 
 /// The reusable workflows that take a `gate-workflow` input and, without
@@ -1358,6 +1401,43 @@ jobs:
         let unreadable = gate_callers(&c, &empty, &repo, "main");
         assert_eq!(unreadable.len(), 1);
         assert_eq!(unreadable[0].verdict, Verdict::Missing, "{unreadable:?}");
+    }
+
+    #[test]
+    fn a_project_that_does_not_call_every_method_check_is_reported() {
+        let g = FakeGitHub::new();
+        let repo = RepoSlug::parse("example-org/acme").unwrap();
+        let caller = |called: &str| {
+            format!("jobs:\n  check:\n    uses: acme/spl-asdlc/.github/workflows/{called}@v1\n")
+        };
+        let file = |p: &str, text: String| {
+            g.state
+                .borrow_mut()
+                .files
+                .insert((repo.clone(), "main".into(), p.into()), Ok(text));
+        };
+        // No workflow at all.
+        let none = method_checks(&g, &repo, "main");
+        assert_eq!(none.verdict, Verdict::Missing, "{none}");
+        file(".github/workflows/pr.yml", caller("asdlc-pr-guards.yml"));
+        file(
+            ".github/workflows/heavy.yml",
+            "jobs:\n  test:\n    runs-on: ubuntu-latest\n".into(),
+        );
+        let half = method_checks(&g, &repo, "main");
+        assert_eq!(
+            half.to_string(),
+            "method checks: missing — no job of .github/workflows calls asdlc-pr-title.yml: every PR runs the method checks (docs/setup/examples/pr.yml, pr-title.yml)"
+        );
+        file(
+            ".github/workflows/pr-title.yml",
+            caller("asdlc-pr-title.yml"),
+        );
+        let all = method_checks(&g, &repo, "main");
+        assert_eq!(
+            all.to_string(),
+            "method checks: ok — asdlc-pr-guards.yml, asdlc-pr-title.yml"
+        );
     }
 
     #[test]

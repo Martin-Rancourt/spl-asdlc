@@ -268,6 +268,32 @@ fn the_title_check_has_no_if_anywhere() {
     }
 }
 
+/// BR-ASDLC-024: no input turns a method check off. The guards job runs on
+/// every PR that is not a draft, whatever the caller passes; the inputs only
+/// add the project's own detectors and commands.
+#[test]
+fn no_input_turns_the_method_checks_off() {
+    let doc = crate::harness::workflow(".github/workflows/asdlc-pr-guards.yml");
+    for (id, job) in doc["jobs"].as_hash().unwrap() {
+        let cond = job["if"].as_str().unwrap_or("");
+        assert!(
+            !cond.contains("inputs."),
+            "job {:?}: its if: reads an input ({cond})",
+            id.as_str()
+        );
+    }
+    for (job, s) in steps(&doc) {
+        let cond = s["if"].as_str().unwrap_or("");
+        // A step may wait on the project's own setup command, never on a switch.
+        let cond = cond.replace("inputs.setup-command != ''", "");
+        assert!(
+            !cond.contains("inputs."),
+            "{job} step {:?}: its if: reads an input ({cond})",
+            s["id"].as_str().or(s["name"].as_str()).unwrap_or("?")
+        );
+    }
+}
+
 #[test]
 fn the_rust_cache_never_cleans_the_cargo_bin_directory() {
     // Its post step deletes what `cargo install` did not put in $CARGO_HOME/bin,
