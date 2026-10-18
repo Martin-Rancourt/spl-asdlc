@@ -557,7 +557,237 @@ fn files(
             Err(e) => check(&format!("workflow {wf}"), Verdict::Missing, e.to_string()),
         });
     }
+    out.extend(gate_callers(config, github, repo, rev));
     out
+}
+
+/// The reusable workflows that take a `gate-workflow` input and, without
+/// it, read `release.gate_workflow` from the configuration.
+const GATE_READERS: [&str; 2] = ["asdlc-release-publish.yml", "asdlc-release-cut.yml"];
+
+/// Each job of the repository's workflows at `rev` that calls a reusable
+/// workflow of `GATE_READERS`: `invalid` when it passes a `gate-workflow`
+/// that is not `release.gate_workflow`, since the publication would then
+/// look for the runs of another workflow than the gate the bridge reads.
+fn gate_callers(config: &Config, github: &dyn GitHub, repo: &RepoSlug, rev: &str) -> Vec<Check> {
+    const DIR: &str = ".github/workflows";
+    let configured = &config.release.gate_workflow;
+    let names = match github.dir(repo, DIR, rev) {
+        Ok(names) => names,
+        // No workflow at all: the workflow checks above say what is missing.
+        Err(e) if e.is_not_found() => return Vec::new(),
+        Err(e) => {
+            return vec![check(
+                "gate-workflow callers",
+                Verdict::Missing,
+                e.to_string(),
+            )];
+        }
+    };
+    let mut out = Vec::new();
+    for name in names
+        .iter()
+        .filter(|n| n.ends_with(".yml") || n.ends_with(".yaml"))
+    {
+        let path = format!("{DIR}/{name}");
+        let text = match github.file(repo, &path, rev) {
+            Ok(text) => text,
+            Err(e) => {
+                out.push(check(
+                    &format!("caller {name}"),
+                    Verdict::Missing,
+                    e.to_string(),
+                ));
+                continue;
+            }
+        };
+        for caller in reusable_callers(&text) {
+            if !GATE_READERS.contains(&caller.called.as_str()) {
+                continue;
+            }
+            let label = format!("caller {name} job {}", caller.job);
+            let called = &caller.called;
+            out.push(match caller.inputs.get("gate-workflow").map(String::as_str) {
+                None | Some("") => check(
+                    &label,
+                    Verdict::Ok,
+                    format!("{called} reads release.gate_workflow ({configured})"),
+                ),
+                Some(v) if v.contains("${{") => check(
+                    &label,
+                    Verdict::Ok,
+                    format!("{called} gets gate-workflow from an expression ({v}): not judged; release.gate_workflow is {configured}"),
+                ),
+                Some(v) if v == configured => check(
+                    &label,
+                    Verdict::Ok,
+                    format!("{called} gets gate-workflow {v}, as release.gate_workflow"),
+                ),
+                Some(v) => check(
+                    &label,
+                    Verdict::Invalid,
+                    format!("{called} gets gate-workflow {v}, but release.gate_workflow is {configured}: drop the input, and it reads the configuration"),
+                ),
+            });
+        }
+    }
+    out
+}
+
+/// A job that calls a reusable workflow: its id, the called file's name and
+/// the inputs it passes on one line each (`with:`).
+#[derive(Debug, PartialEq, Eq)]
+struct Caller {
+    job: String,
+    called: String,
+    inputs: std::collections::BTreeMap<String, String>,
+}
+
+/// The jobs of a workflow that call a reusable workflow (`jobs.<id>.uses`),
+/// read line by line: the shape GitHub's own syntax gives a caller (block
+/// mappings indented with spaces, `with:` as a block or a flow mapping of
+/// plain scalars). An input whose value spans lines is read as empty.
+fn reusable_callers(text: &str) -> Vec<Caller> {
+    // (indent, content) of each line that holds something, comments cut.
+    let lines: Vec<(usize, &str)> = text
+        .lines()
+        .filter_map(|l| {
+            let content = strip_comment(l.trim_start_matches(' ')).trim_end();
+            (!content.is_empty()).then(|| (l.len() - l.trim_start_matches(' ').len(), content))
+        })
+        .collect();
+    let mut out = Vec::new();
+    let Some(start) = lines.iter().position(|(i, c)| *i == 0 && *c == "jobs:") else {
+        return out;
+    };
+    let jobs: Vec<(usize, &str)> = lines[start + 1..]
+        .iter()
+        .take_while(|(i, _)| *i > 0)
+        .copied()
+        .collect();
+    let Some(job_indent) = jobs.first().map(|(i, _)| *i) else {
+        return out;
+    };
+    let mut at = 0;
+    while at < jobs.len() {
+        let (indent, content) = jobs[at];
+        at += 1;
+        if indent != job_indent {
+            continue;
+        }
+        let Some((id, _)) = key_value(content) else {
+            continue;
+        };
+        let body: Vec<(usize, &str)> = jobs[at..]
+            .iter()
+            .take_while(|(i, _)| *i > job_indent)
+            .copied()
+            .collect();
+        let Some(key_indent) = body.first().map(|(i, _)| *i) else {
+            continue;
+        };
+        let mut uses = None;
+        let mut inputs = std::collections::BTreeMap::new();
+        let mut k = 0;
+        while k < body.len() {
+            let (i, c) = body[k];
+            k += 1;
+            if i != key_indent {
+                continue;
+            }
+            match key_value(c) {
+                Some(("uses", v)) => uses = Some(unquote(v).to_string()),
+                Some(("with", v)) if v.starts_with('{') => {
+                    let flow = v.trim_start_matches('{').trim_end_matches('}');
+                    for pair in flow.split(',') {
+                        if let Some((key, value)) = key_value(pair.trim()) {
+                            inputs.insert(key.to_string(), unquote(value).to_string());
+                        }
+                    }
+                }
+                Some(("with", "")) => {
+                    let children: Vec<(usize, &str)> = body[k..]
+                        .iter()
+                        .take_while(|(ci, _)| *ci > key_indent)
+                        .copied()
+                        .collect();
+                    let input_indent = children.first().map_or(0, |(ci, _)| *ci);
+                    for (ci, cc) in children {
+                        if ci == input_indent {
+                            if let Some((key, value)) = key_value(cc) {
+                                inputs.insert(key.to_string(), scalar(value));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(uses) = uses {
+            let path = uses.split('@').next().unwrap_or_default();
+            let called = path.rsplit('/').next().unwrap_or_default().to_string();
+            out.push(Caller {
+                job: id.to_string(),
+                called,
+                inputs,
+            });
+        }
+        at += body.len();
+    }
+    out
+}
+
+/// `key: value` (a value possibly empty), the key unquoted; `None` for a
+/// line that is not a mapping entry (a list item, a scalar's text).
+fn key_value(content: &str) -> Option<(&str, &str)> {
+    if content.starts_with('-') {
+        return None;
+    }
+    let (key, value) = match content.split_once(": ") {
+        Some((k, v)) => (k, v.trim()),
+        None => (content.strip_suffix(':')?, ""),
+    };
+    let key = unquote(key.trim());
+    (!key.is_empty() && !key.contains(' ')).then_some((key, value))
+}
+
+/// A one-line scalar: a block scalar (`|`, `>`) spans lines and reads empty.
+fn scalar(value: &str) -> String {
+    if value.starts_with('|') || value.starts_with('>') {
+        String::new()
+    } else {
+        unquote(value).to_string()
+    }
+}
+
+fn unquote(value: &str) -> &str {
+    let v = value.trim();
+    for q in ['\'', '"'] {
+        if let Some(inner) = v.strip_prefix(q).and_then(|s| s.strip_suffix(q)) {
+            return inner;
+        }
+    }
+    v
+}
+
+/// The line without its comment: a `#` that starts it or follows a space,
+/// outside a quoted scalar (one whose quote opens it, so that an apostrophe
+/// in plain text opens nothing).
+fn strip_comment(line: &str) -> &str {
+    let mut quote = None;
+    let mut previous = ' ';
+    for (i, c) in line.char_indices() {
+        let opens = previous.is_whitespace() || matches!(previous, ':' | '{' | ',' | '[');
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if (c == '\'' || c == '"') && opens => quote = Some(c),
+            None if c == '#' && previous.is_whitespace() => return &line[..i],
+            None => {}
+        }
+        previous = c;
+    }
+    line
 }
 
 fn tracker_checks(config: &Config, tracker: &dyn Tracker) -> Vec<Check> {
@@ -896,6 +1126,156 @@ mod tests {
                 .any(|c| c.name == "release base" && c.verdict == Verdict::Missing),
             "{checks:#?}"
         );
+    }
+
+    #[test]
+    fn the_callers_of_a_reusable_workflow_are_read_with_the_inputs_they_pass() {
+        let example = include_str!("../docs/setup/examples/release-publish.yml");
+        let callers = reusable_callers(example);
+        let jobs: Vec<(&str, &str)> = callers
+            .iter()
+            .map(|c| (c.job.as_str(), c.called.as_str()))
+            .collect();
+        // `publish` runs steps: its `- uses:` are actions, not a call.
+        assert_eq!(
+            jobs,
+            [
+                ("verify", "asdlc-release-publish.yml"),
+                ("close", "asdlc-release-publish.yml")
+            ]
+        );
+        assert_eq!(callers[0].inputs["stage"], "verify");
+        assert_eq!(callers[0].inputs["qa-angles"], r#"["security", "product"]"#);
+        assert!(!callers[0].inputs.contains_key("gate-workflow"));
+
+        let text = "\
+name: x # a comment
+on:
+  push:
+jobs:
+  # a comment
+  'verify':
+    uses: acme/spl-asdlc/.github/workflows/asdlc-release-publish.yml@v1 # pinned
+    with:
+      gate-workflow: \"pre-release-qa.yml\"   # the gate
+      note: it's # a comment after an apostrophe
+      long: >-
+        gate-workflow: not-an-input.yml
+  cut:
+    uses: \"./.github/workflows/asdlc-release-cut.yml\"
+    with: {action: open, gate-workflow: 'gate.yml'}
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        gate-workflow: a-step.yml
+";
+        let callers = reusable_callers(text);
+        assert_eq!(callers.len(), 2, "{callers:#?}");
+        assert_eq!(callers[0].job, "verify");
+        assert_eq!(callers[0].called, "asdlc-release-publish.yml");
+        assert_eq!(callers[0].inputs["gate-workflow"], "pre-release-qa.yml");
+        assert_eq!(callers[0].inputs["note"], "it's");
+        assert_eq!(callers[0].inputs["long"], "");
+        assert_eq!(callers[1].job, "cut");
+        assert_eq!(callers[1].called, "asdlc-release-cut.yml");
+        assert_eq!(callers[1].inputs["gate-workflow"], "gate.yml");
+        assert_eq!(callers[1].inputs["action"], "open");
+        assert!(reusable_callers("on: push\n").is_empty());
+    }
+
+    #[test]
+    fn a_caller_whose_gate_workflow_differs_from_the_configuration_is_invalid() {
+        let c = config();
+        assert_eq!(c.release.gate_workflow, "release-gate.yml");
+        let g = FakeGitHub::new();
+        let repo = RepoSlug::parse("example-org/acme").unwrap();
+        let caller = |job: &str, called: &str, with: &str| {
+            format!(
+                "jobs:\n  {job}:\n    uses: acme/spl-asdlc/.github/workflows/{called}@v1\n    with:\n      stage: verify\n{with}"
+            )
+        };
+        {
+            let mut s = g.state.borrow_mut();
+            let mut file = |p: &str, text: String| {
+                s.files
+                    .insert((repo.clone(), "main".into(), p.into()), Ok(text));
+            };
+            file(
+                ".github/workflows/release-publish.yml",
+                caller(
+                    "verify",
+                    "asdlc-release-publish.yml",
+                    "      gate-workflow: pre-release-qa.yml\n",
+                ),
+            );
+            file(
+                ".github/workflows/release-cut.yml",
+                caller(
+                    "cut",
+                    "asdlc-release-cut.yml",
+                    "      gate-workflow: release-gate.yml\n",
+                ),
+            );
+            file(
+                ".github/workflows/deploy.yaml",
+                caller("verify", "asdlc-release-publish.yml", ""),
+            );
+            file(
+                ".github/workflows/dynamic.yml",
+                caller(
+                    "verify",
+                    "asdlc-release-publish.yml",
+                    "      gate-workflow: ${{ vars.GATE }}\n",
+                ),
+            );
+            // Another reusable workflow's input of the same name is not judged.
+            file(
+                ".github/workflows/release-gate.yml",
+                caller(
+                    "gate",
+                    "asdlc-release-gate.yml",
+                    "      gate-workflow: other.yml\n",
+                ),
+            );
+            file(".github/workflows/notes.txt", "jobs:\n".into());
+        }
+        let checks = gate_callers(&c, &g, &repo, "main");
+        let lines: Vec<String> = checks.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            lines,
+            [
+                "caller deploy.yaml job verify: ok — asdlc-release-publish.yml reads release.gate_workflow (release-gate.yml)",
+                "caller dynamic.yml job verify: ok — asdlc-release-publish.yml gets gate-workflow from an expression (${{ vars.GATE }}): not judged; release.gate_workflow is release-gate.yml",
+                "caller release-cut.yml job cut: ok — asdlc-release-cut.yml gets gate-workflow release-gate.yml, as release.gate_workflow",
+                "caller release-publish.yml job verify: invalid — asdlc-release-publish.yml gets gate-workflow pre-release-qa.yml, but release.gate_workflow is release-gate.yml: drop the input, and it reads the configuration",
+            ],
+            "{lines:#?}"
+        );
+        // The check runs within doctor, at the default branch.
+        g.state
+            .borrow_mut()
+            .default_branch
+            .insert(repo.clone(), "main".into());
+        let all = run(&c, None, &g, &FakeTracker::default(), "workstation");
+        assert!(
+            all.iter()
+                .any(|x| x.name == "caller release-publish.yml job verify"
+                    && x.verdict == Verdict::Invalid),
+            "{all:#?}"
+        );
+        // No workflow directory: nothing to judge, the workflow lines say so.
+        let empty = FakeGitHub::new();
+        assert!(gate_callers(&c, &empty, &repo, "main").is_empty());
+        // An unreadable directory is never ok.
+        empty.state.borrow_mut().dirs.insert(
+            (repo.clone(), "main".into(), ".github/workflows".into()),
+            Err(ReadError::unreadable("the directory", "boom")),
+        );
+        let unreadable = gate_callers(&c, &empty, &repo, "main");
+        assert_eq!(unreadable.len(), 1);
+        assert_eq!(unreadable[0].verdict, Verdict::Missing, "{unreadable:?}");
     }
 
     #[test]

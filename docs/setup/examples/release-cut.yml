@@ -71,6 +71,8 @@ jobs:
       release-tag: acme-v{version}
       spl-asdlc-repository: <owner>/spl-asdlc
       spl-asdlc-version: latest
+      # The summary names the gate `[release] gate_workflow` of this file
+      # sets: no `gate-workflow` to repeat (`doctor` flags one that differs).
       config-file: .spl-asdlc/config.toml
     secrets:
       SPL_ASDLC_APP_ID: ${{ secrets.SPL_ASDLC_APP_ID }}

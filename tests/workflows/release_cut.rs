@@ -1422,3 +1422,66 @@ fn a_dry_run_creates_and_pushes_nothing() {
     assert!(r.log.contains("(dry run: nothing tagged, nothing pushed)"));
     assert!(repo.git(&["tag", "--list", "acme-v1.1.0-rc.1"]).is_empty());
 }
+
+#[test]
+fn the_summary_names_the_configured_gate_unless_the_caller_names_one() {
+    let doc = workflow(CUT);
+    let inputs = &doc["on"]["workflow_call"]["inputs"];
+    assert_eq!(inputs["gate-workflow"]["default"].as_str(), Some(""));
+    assert_eq!(
+        step(&doc, "cut", "Summary")["env"]["CONFIG_FILE"].as_str(),
+        Some("${{ inputs.config-file }}")
+    );
+    let repo = Repo::new();
+    repo.write(
+        ".spl-asdlc/config.toml",
+        "[release]\ngate_workflow = \"pre-release-qa.yml\"\n",
+    );
+    repo.commit("chore: configure the gate");
+    let stubs = Scratch::new("cut-summary");
+    let out = stubs.0.join("summary");
+    let out = out.to_str().unwrap().to_string();
+    let line = |gate: &str, config: &str| {
+        let r = exec(
+            "cut",
+            "Summary",
+            &repo,
+            &stubs.0,
+            &[
+                ("GITHUB_STEP_SUMMARY", &out),
+                ("PUSHED", "acme-v1.2.0-rc.1"),
+                ("TAG", "acme-v1.2.0-rc.1"),
+                ("BRANCH", "release/2026-10-01-10-00-utc"),
+                ("VERSION", "1.2.0"),
+                ("ROUND", "1"),
+                ("CLASS_OUT", "routine"),
+                ("CLASS_REASON", "no reviewed path"),
+                ("SURFACES", "none"),
+                ("BASE", "acme-v1.1.0"),
+                ("PREVIOUS", ""),
+                ("GATE_WORKFLOW", gate),
+                ("CONFIG_FILE", config),
+            ],
+        );
+        assert_eq!(r.code, 0, "{}", r.log);
+        let text = std::fs::read_to_string(&out).unwrap();
+        std::fs::remove_file(&out).unwrap();
+        text.lines()
+            .find(|l| l.starts_with("The gate: "))
+            .unwrap_or_default()
+            .to_string()
+    };
+    // Configured, explicit, default.
+    let configured = line("", ".spl-asdlc/config.toml");
+    assert!(
+        configured.contains("--workflow=pre-release-qa.yml "),
+        "{configured}"
+    );
+    let explicit = line("gate.yml", ".spl-asdlc/config.toml");
+    assert!(explicit.contains("--workflow=gate.yml "), "{explicit}");
+    let default = line("", "ci/absent.toml");
+    assert!(
+        default.contains("--workflow=release-gate.yml "),
+        "{default}"
+    );
+}

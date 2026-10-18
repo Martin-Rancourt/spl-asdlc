@@ -502,26 +502,182 @@ fn a_resume_deploys_the_newest_candidate_on_its_exact_commit() {
 }
 
 fn gate(runs: Option<&str>) -> (Ran, Scratch) {
+    gate_with(None, runs, &[])
+}
+
+/// The gate step, in `cwd` (the checkout of the release) or a scratch
+/// directory, with `env` over an explicit `release-gate.yml`. The stub `gh`
+/// answers `runs` for any workflow: the call names the one read.
+fn gate_with(cwd: Option<&Path>, runs: Option<&str>, env: &[(&str, &str)]) -> (Ran, Scratch) {
     let dir = Scratch::new("gate");
     if let Some(runs) = runs {
         put(&dir.0, "runs", runs);
     }
     gh(
         &dir.0,
-        r#"api\ repos/o/r/actions/workflows/release-gate.yml/runs*) [ -f "$S/runs" ] || exit 1; cat "$S/runs" ;;"#,
+        r#"api\ repos/o/r/actions/workflows/*/runs*) [ -f "$S/runs" ] || exit 1; cat "$S/runs" ;;"#,
     );
-    let r = run_with(
-        &body("verify", "gate"),
-        &dir.0,
-        &dir.0,
-        &[
-            ("REPO", "o/r"),
-            ("GATE_WORKFLOW", "release-gate.yml"),
-            ("RC_TAG", "acme-v1.2.0-rc.10"),
-            ("RC_SHA", "abc"),
-        ],
-    );
+    let mut all: Vec<(&str, &str)> = vec![
+        ("REPO", "o/r"),
+        ("GATE_WORKFLOW", "release-gate.yml"),
+        ("CONFIG_FILE", ".spl-asdlc/config.toml"),
+        ("RELEASE_TAG", "acme-v1.2.0"),
+        ("RELEASE_SHA", ""),
+        ("RC_TAG", "acme-v1.2.0-rc.10"),
+        ("RC_SHA", "abc"),
+    ];
+    for (k, v) in env {
+        all.retain(|(x, _)| x != k);
+        all.push((k, v));
+    }
+    let r = run_with(&body("verify", "gate"), &dir.0, cwd.unwrap_or(&dir.0), &all);
     (r, dir)
+}
+
+/// The workflow whose runs the gate step read.
+fn gate_read(dir: &Scratch) -> String {
+    let call = calls(&dir.0, "gh").into_iter().next().unwrap_or_default();
+    call.split("actions/workflows/")
+        .nth(1)
+        .and_then(|rest| rest.split('/').next())
+        .unwrap_or_default()
+        .to_string()
+}
+
+#[test]
+fn the_gate_workflow_is_the_configured_one_unless_the_caller_names_one() {
+    let green = format!(
+        r#"{{"workflow_runs": [{}]}}"#,
+        gate_run("abc", "acme-v1.2.0-rc.10", "push", "\"success\"")
+    );
+    let repo = Repo::new();
+    repo.write(
+        ".spl-asdlc/config.toml",
+        "schema = 1\n[release]\ngate_workflow = \"pre-release-qa.yml\"\n",
+    );
+    let sha = repo.commit("chore: configure the gate");
+    // The file as the release's commit holds it, never the working tree's.
+    repo.write(
+        ".spl-asdlc/config.toml",
+        "[release]\ngate_workflow = \"elsewhere.yml\"\n",
+    );
+    let at = |env: &[(&str, &str)]| {
+        let mut all = vec![("RELEASE_SHA", sha.as_str())];
+        all.extend_from_slice(env);
+        let (r, dir) = gate_with(Some(&repo.dir.0), Some(&green), &all);
+        let read = gate_read(&dir);
+        (r, read)
+    };
+
+    // Configured: an empty input reads `release.gate_workflow`.
+    let (r, read) = at(&[("GATE_WORKFLOW", "")]);
+    assert_eq!(r.code, 0, "{}", r.log);
+    assert_eq!(read, "pre-release-qa.yml");
+    assert!(
+        r.log.contains(
+            "Gate workflow: pre-release-qa.yml (release.gate_workflow of .spl-asdlc/config.toml at acme-v1.2.0)."
+        ),
+        "{}",
+        r.log
+    );
+
+    // Explicit: the input wins over the configuration.
+    let (r, read) = at(&[("GATE_WORKFLOW", "release-gate.yml")]);
+    assert_eq!(r.code, 0, "{}", r.log);
+    assert_eq!(read, "release-gate.yml");
+    assert!(r.log.contains("(the gate-workflow input)"), "{}", r.log);
+
+    // Default: a configuration that is absent, or that does not set it.
+    let (r, read) = at(&[("GATE_WORKFLOW", ""), ("CONFIG_FILE", "ci/other.toml")]);
+    assert_eq!(r.code, 0, "{}", r.log);
+    assert_eq!(read, "release-gate.yml");
+    assert!(
+        r.log.contains("acme-v1.2.0 carries no ci/other.toml"),
+        "{}",
+        r.log
+    );
+    repo.write("ci/bare.toml", "schema = 1\n[release]\nmax_rc_passes = 2\n");
+    let bare = repo.commit("chore: a configuration without the key");
+    let (r, read) = at(&[
+        ("GATE_WORKFLOW", ""),
+        ("CONFIG_FILE", "ci/bare.toml"),
+        ("RELEASE_SHA", &bare),
+    ]);
+    assert_eq!(r.code, 0, "{}", r.log);
+    assert_eq!(read, "release-gate.yml");
+    assert!(
+        r.log
+            .contains("Gate workflow: release-gate.yml (the default of release.gate_workflow)."),
+        "{}",
+        r.log
+    );
+
+    // Unreadable: the default, with a warning that names the file.
+    for (path, text) in [
+        ("ci/broken.toml", "[release\n"),
+        ("ci/number.toml", "[release]\ngate_workflow = 3\n"),
+    ] {
+        repo.write(path, text);
+        let commit = repo.commit("chore: an unreadable configuration");
+        let (r, read) = at(&[
+            ("GATE_WORKFLOW", ""),
+            ("CONFIG_FILE", path),
+            ("RELEASE_SHA", &commit),
+        ]);
+        assert_eq!(r.code, 0, "{path}: {}", r.log);
+        assert_eq!(read, "release-gate.yml", "{path}");
+        assert!(
+            r.log.contains(&format!(
+                "::warning title=Configuration unreadable::release.gate_workflow could not be read from {path}"
+            )),
+            "{path}: {}",
+            r.log
+        );
+    }
+
+    // A configured value that is no workflow file name reads nothing.
+    repo.write("ci/path.toml", "[release]\ngate_workflow = \"../x.yml\"\n");
+    let commit = repo.commit("chore: a path");
+    let (r, read) = at(&[
+        ("GATE_WORKFLOW", ""),
+        ("CONFIG_FILE", "ci/path.toml"),
+        ("RELEASE_SHA", &commit),
+    ]);
+    assert_eq!(r.code, 1, "{}", r.log);
+    assert!(read.is_empty(), "{read}");
+    assert!(r.log.contains("is not a workflow file name"), "{}", r.log);
+
+    // The configuration is a path inside the repository.
+    for path in ["/etc/config.toml", "../config.toml", ""] {
+        let (r, read) = at(&[("GATE_WORKFLOW", ""), ("CONFIG_FILE", path)]);
+        assert_eq!(r.code, 1, "{path:?}: {}", r.log);
+        assert!(read.is_empty(), "{path:?}");
+        assert!(r.log.contains("Invalid config-file"), "{path:?}: {}", r.log);
+    }
+}
+
+#[test]
+fn the_gate_workflow_defaults_to_the_configuration_at_the_release() {
+    let d = doc();
+    let inputs = &d["on"]["workflow_call"]["inputs"];
+    assert_eq!(inputs["gate-workflow"]["default"].as_str(), Some(""));
+    assert_eq!(
+        inputs["config-file"]["default"].as_str(),
+        Some(".spl-asdlc/config.toml")
+    );
+    let s = step(&d, "verify", "gate");
+    assert_eq!(
+        s["env"]["GATE_WORKFLOW"].as_str(),
+        Some("${{ inputs.gate-workflow }}")
+    );
+    assert_eq!(
+        s["env"]["CONFIG_FILE"].as_str(),
+        Some("${{ inputs.config-file }}")
+    );
+    assert_eq!(
+        s["env"]["RELEASE_SHA"].as_str(),
+        Some("${{ steps.candidate.outputs.release-sha }}")
+    );
 }
 
 fn gate_run(sha: &str, branch: &str, event: &str, conclusion: &str) -> String {
