@@ -60,6 +60,9 @@ impl GitHub for DryGitHub<'_> {
     fn file(&self, repo: &RepoSlug, path: &str, rev: &str) -> Read<String> {
         self.inner.file(repo, path, rev)
     }
+    fn file_from(&self, repo: &RepoSlug, source: &RepoSlug, path: &str, rev: &str) -> Read<String> {
+        self.inner.file_from(repo, source, path, rev)
+    }
     fn dir(&self, repo: &RepoSlug, path: &str, rev: &str) -> Read<Vec<String>> {
         self.inner.dir(repo, path, rev)
     }

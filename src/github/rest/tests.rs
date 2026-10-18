@@ -1428,3 +1428,44 @@ fn an_artifact_that_cannot_be_downloaded_or_read_is_unreadable() {
         .unwrap_err();
     assert!(!e.is_not_found(), "{e}");
 }
+
+#[test]
+fn a_file_of_another_repository_is_read_with_the_projects_installation_token() {
+    let (gh, t) = app_client();
+    script_installation(&t, "inst-1");
+    t.on(
+        "GET",
+        &url("/repos/example-org/spl-asdlc/contents/docs/agents/review-pr.md?ref=v1.3.0"),
+        200,
+        "# Review a PR from one angle",
+    );
+    t.on(
+        "GET",
+        &url("/repos/example-org/spl-asdlc/contents/docs/agents/angles/legacy.md?ref=v1.3.0"),
+        404,
+        r#"{"message":"Not Found"}"#,
+    );
+    let method = RepoSlug::parse("example-org/spl-asdlc").unwrap();
+    assert_eq!(
+        gh.file_from(&repo(), &method, "docs/agents/review-pr.md", "v1.3.0")
+            .unwrap(),
+        "# Review a PR from one angle"
+    );
+    let err = gh
+        .file_from(&repo(), &method, "docs/agents/angles/legacy.md", "v1.3.0")
+        .unwrap_err();
+    assert!(matches!(err, ReadError::NotFound { .. }), "{err:?}");
+    assert!(
+        err.to_string().contains("in example-org/spl-asdlc"),
+        "{err}"
+    );
+    let calls = t.calls();
+    assert!(
+        !calls
+            .iter()
+            .any(|c| c.contains("/repos/example-org/spl-asdlc/installation")),
+        "no installation of its own is looked up: {calls:?}"
+    );
+    let log = t.log.lock().unwrap();
+    assert_eq!(bearer_of(log.last().unwrap()), "Bearer inst-1");
+}

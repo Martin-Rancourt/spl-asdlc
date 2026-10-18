@@ -32,6 +32,12 @@ pub struct FakeState {
     /// `(repo, rev, path)`: a directory listing scripted as such (a failed
     /// read); otherwise `dir` lists the `files` directly under `path`.
     pub dirs: HashMap<(RepoSlug, String, String), Read<Vec<String>>>,
+    /// `(repo, path)`: a file the same at every revision, unless `files`
+    /// scripts one at that revision (a project's workflow callers).
+    pub everywhere: HashMap<(RepoSlug, String), String>,
+    /// Every `file_from` read, as `<source>@<rev> <path> via <repo>`: what
+    /// a project's token was asked to read of another repository.
+    pub reads_from: Vec<String>,
     pub open_pulls: BTreeMap<RepoSlug, Read<Vec<PullRequest>>>,
     pub merged_pulls: BTreeMap<RepoSlug, Read<Vec<PullRequest>>>,
     /// Closed without merge; none when not scripted.
@@ -64,9 +70,54 @@ fn not_scripted<T>(what: String) -> Read<T> {
     Err(ReadError::unreadable(what, "not scripted in the fake"))
 }
 
+/// The method's repository the fixtures pin a project on.
+pub const METHOD_REPO: &str = "example-org/spl-asdlc";
+/// The ref the fixtures pin a project on.
+pub const METHOD_REF: &str = "v1";
+/// Where the fixtures' method texts are read, `<METHOD_REPO>@<METHOD_REF>`.
+pub const METHOD_AT: &str = "example-org/spl-asdlc@v1";
+
 impl FakeGitHub {
     pub fn new() -> FakeGitHub {
         FakeGitHub::default()
+    }
+
+    /// `repo` pinned on the method at `METHOD_REPO@rev` at every revision
+    /// (one workflow caller naming it), with this build's texts of the
+    /// method at that ref (`crate::method::pin`).
+    pub fn pin_method(&self, repo: &RepoSlug, rev: &str) {
+        self.pin_caller(repo, METHOD_REPO, rev);
+        self.method_texts(&RepoSlug::parse(METHOD_REPO).unwrap(), rev);
+    }
+
+    /// `repo`'s workflow caller of the method, at every revision, naming
+    /// `method@rev`.
+    pub fn pin_caller(&self, repo: &RepoSlug, method: &str, rev: &str) {
+        self.state.borrow_mut().everywhere.insert(
+            (repo.clone(), ".github/workflows/pr-title.yml".to_string()),
+            format!(
+                "on: pull_request\njobs:\n  title:\n    uses: {method}/.github/workflows/asdlc-pr-title.yml@{rev}\n"
+            ),
+        );
+    }
+
+    /// This build's texts of the method (its protocols and angles), in the
+    /// repository `method` at `rev`.
+    pub fn method_texts(&self, method: &RepoSlug, rev: &str) {
+        use crate::method::texts::protocol::{self, Job};
+        let mut s = self.state.borrow_mut();
+        let mut put = |path: String, text: &str| {
+            s.files.insert(
+                (method.clone(), rev.to_string(), path),
+                Ok(text.to_string()),
+            );
+        };
+        for job in [Job::PrAngle, Job::ReleaseAngle, Job::PrConsolidation] {
+            put(job.path().to_string(), job.compiled());
+        }
+        for (key, text) in protocol::ANGLES {
+            put(protocol::angle_path(key), text);
+        }
     }
 
     pub fn writes(&self) -> Vec<String> {
@@ -219,10 +270,26 @@ impl GitHub for FakeGitHub {
             .get(&(repo.clone(), rev.to_string(), path.to_string()))
         {
             Some(f) => f.clone(),
-            None => Err(ReadError::NotFound {
-                what: format!("{path} at {rev}"),
-            }),
+            None => match self
+                .state
+                .borrow()
+                .everywhere
+                .get(&(repo.clone(), path.to_string()))
+            {
+                Some(text) => Ok(text.clone()),
+                None => Err(ReadError::NotFound {
+                    what: format!("{path} at {rev}"),
+                }),
+            },
         }
+    }
+
+    fn file_from(&self, repo: &RepoSlug, source: &RepoSlug, path: &str, rev: &str) -> Read<String> {
+        self.state
+            .borrow_mut()
+            .reads_from
+            .push(format!("{source}@{rev} {path} via {repo}"));
+        self.file(source, path, rev)
     }
 
     fn dir(&self, repo: &RepoSlug, path: &str, rev: &str) -> Read<Vec<String>> {
@@ -239,6 +306,12 @@ impl GitHub for FakeGitHub {
             .iter()
             .filter(|((r, at, _), text)| r == repo && at == rev && text.is_ok())
             .filter_map(|((_, _, p), _)| p.strip_prefix(&prefix))
+            .chain(
+                s.everywhere
+                    .keys()
+                    .filter(|(r, _)| r == repo)
+                    .filter_map(|(_, p)| p.strip_prefix(&prefix)),
+            )
             .filter(|name| !name.contains('/'))
             .map(str::to_string)
             .collect();
@@ -248,6 +321,7 @@ impl GitHub for FakeGitHub {
             });
         }
         names.sort();
+        names.dedup();
         Ok(names)
     }
 

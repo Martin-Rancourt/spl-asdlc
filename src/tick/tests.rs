@@ -5,7 +5,7 @@
 use super::*;
 use crate::action_log::Outcome;
 use crate::config::Config;
-use crate::github::fake::{FakeGitHub, pull_request};
+use crate::github::fake::{FakeGitHub, METHOD_REF, METHOD_REPO, pull_request};
 use crate::github::{
     Actor, CheckEntry, CheckKind, Identity, PrState, PullRequest, RequiredChecks, Review,
     ReviewThread,
@@ -46,6 +46,7 @@ fn log_file() -> std::path::PathBuf {
 impl World {
     fn new() -> World {
         let github = FakeGitHub::new();
+        github.pin_method(&repo(), METHOD_REF);
         {
             let mut s = github.state.borrow_mut();
             s.identity = Some(Identity::App {
@@ -85,6 +86,7 @@ impl World {
             now: crate::github::Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
             deadline: None,
             dry_run,
+            method_texts: Default::default(),
         };
         // A dry run keeps its log in memory, as the command line does.
         let mut log = if dry_run {
@@ -252,7 +254,8 @@ fn a_rounds_items_carry_their_protocol_and_one_found_by_its_marker_is_never_rewr
         .unwrap();
     assert!(
         consolidation.description.contains(&format!(
-            "Embedded by spl-asdlc {}",
+            "The method's texts at `{}`, the version of spl-asdlc this project's workflows are pinned on, copied by the bridge (spl-asdlc {})",
+            crate::github::fake::METHOD_AT,
             texts::protocol::VERSION
         )) && consolidation.description.contains("### Consolidate"),
         "{}",
@@ -294,6 +297,230 @@ fn a_new_angle_sub_item_embeds_the_pr_review_protocol_and_links_the_projects_not
         "{d}"
     );
     assert!(crate::method::contract::missing_from_contract(d).is_empty());
+}
+
+// ---- BR-ASDLC-032: the texts of the version the project is pinned on ----
+
+/// The method's protocols and angle texts at `METHOD_REPO@rev`, each
+/// carrying `word`.
+fn method_at(w: &World, rev: &str, word: &str) {
+    use crate::method::texts::protocol::{Job, angle_path};
+    let method = RepoSlug::parse(METHOD_REPO).unwrap();
+    let mut s = w.github.state.borrow_mut();
+    let mut put = |path: String, text: String| {
+        s.files
+            .insert((method.clone(), rev.to_string(), path), Ok(text));
+    };
+    put(
+        Job::PrAngle.path().into(),
+        format!("# Review a PR from one angle\n\nThe {word} PR-review protocol."),
+    );
+    put(
+        Job::PrConsolidation.path().into(),
+        format!("# Consolidate\n\nThe {word} consolidation protocol."),
+    );
+    for key in ["maintainability", "security"] {
+        put(
+            angle_path(key),
+            format!("# Angle: {key}\n\nThe {word} {key} text."),
+        );
+    }
+}
+
+fn round_items(w: &World, key: &str) -> Vec<crate::tracker::Item> {
+    children_of(w, key)
+        .into_iter()
+        .filter(|c| {
+            matches!(
+                texts::bridge_item(&c.description, c.parent.as_deref()),
+                Some(BridgeItem::Angle { .. } | BridgeItem::Consolidation { .. })
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_rounds_items_carry_the_texts_of_the_version_the_projects_callers_pin() {
+    let w = World::new();
+    w.github.pin_caller(&repo(), METHOD_REPO, "v1.3.0");
+    method_at(&w, "v1.3.0", "pinned");
+    let pr = green(pull_request(7));
+    w.ticket("ABC-1", Status::InProgress, &pr);
+    w.open(pr.clone());
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    let items = round_items(&w, "ABC-1");
+    assert_eq!(items.len(), 2, "{items:?}");
+    for i in &items {
+        let d = &i.description;
+        assert!(
+            d.contains("The method's texts at `example-org/spl-asdlc@v1.3.0`"),
+            "{d}"
+        );
+        // Never this build's own copy.
+        assert!(
+            !d.contains("### Review a PR from one angle\n\n**Input**"),
+            "{d}"
+        );
+        assert!(!d.contains("### Consolidate\n\n**Input**"), "{d}");
+    }
+    let angle = items
+        .iter()
+        .find(|i| i.title.starts_with("Maintainability review"))
+        .unwrap();
+    assert!(angle.description.contains("The pinned PR-review protocol."));
+    assert!(
+        angle
+            .description
+            .contains("The pinned maintainability text.")
+    );
+    let consolidation = items
+        .iter()
+        .find(|i| i.title.starts_with("Consolidation"))
+        .unwrap();
+    assert!(
+        consolidation
+            .description
+            .contains("The pinned consolidation protocol.")
+    );
+    // Read with the project's token, from the method's repository the
+    // callers name, at their ref.
+    let reads = w.github.state.borrow().reads_from.clone();
+    assert!(
+        reads
+            .iter()
+            .all(|r| r.starts_with("example-org/spl-asdlc@v1.3.0 ")
+                && r.ends_with(" via example-org/acme")),
+        "{reads:?}"
+    );
+}
+
+#[test]
+fn two_projects_pinned_on_two_versions_each_get_their_own_texts_read_once_per_tick() {
+    use crate::method::texts::protocol::Job;
+    let w = World::new();
+    let beta = RepoSlug::parse("example-org/beta").unwrap();
+    w.github.pin_caller(&repo(), METHOD_REPO, "v1.2.0");
+    w.github.pin_caller(&beta, METHOD_REPO, "v1.3.0");
+    method_at(&w, "v1.2.0", "older");
+    method_at(&w, "v1.3.0", "newer");
+    // One bridge, one GitHub client: a tick per repository.
+    let tick_of = |r: &RepoSlug| Tick {
+        config: &w.config,
+        repo: r.clone(),
+        github: &w.github,
+        tracker: &w.tracker,
+        signal: &w.signal,
+        github_login: bot("spl-asdlc"),
+        now: crate::github::Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
+        deadline: None,
+        dry_run: false,
+        method_texts: Default::default(),
+    };
+    let (acme, b) = (tick_of(&repo()), tick_of(&beta));
+    let older = method_texts::texts(&acme, "main", Job::PrAngle, Some("security")).unwrap();
+    let newer = method_texts::texts(&b, "main", Job::PrAngle, Some("security")).unwrap();
+    assert_eq!(older.at, "example-org/spl-asdlc@v1.2.0");
+    assert!(older.protocol.contains("The older PR-review protocol."));
+    assert_eq!(
+        older.angle.as_deref(),
+        Some("# Angle: security\n\nThe older security text.")
+    );
+    assert_eq!(newer.at, "example-org/spl-asdlc@v1.3.0");
+    assert!(newer.protocol.contains("The newer PR-review protocol."));
+    assert!(newer.angle.unwrap().contains("The newer security text."));
+    // A second item of the same tick reads nothing again; the protocol
+    // already read is shared with another angle's.
+    assert_eq!(
+        method_texts::texts(&acme, "main", Job::PrAngle, Some("security")).unwrap(),
+        older
+    );
+    method_texts::texts(&acme, "main", Job::PrAngle, Some("maintainability")).unwrap();
+    let reads = w.github.state.borrow().reads_from.clone();
+    let of_acme: Vec<_> = reads
+        .iter()
+        .filter(|r| r.ends_with("via example-org/acme"))
+        .collect();
+    assert_eq!(of_acme.len(), 3, "{reads:?}");
+    assert!(of_acme.iter().all(|r| r.contains("@v1.2.0 ")), "{reads:?}");
+    // An angle the pinned version has no text for: a project's own.
+    let own = method_texts::texts(&acme, "main", Job::PrAngle, Some("accessibility")).unwrap();
+    assert_eq!((own.angle, own.retired), (None, None));
+    // The next tick reads again.
+    let again = tick_of(&repo());
+    method_texts::texts(&again, "main", Job::PrAngle, Some("security")).unwrap();
+    assert_eq!(
+        w.github
+            .state
+            .borrow()
+            .reads_from
+            .iter()
+            .filter(|r| r.ends_with("via example-org/acme"))
+            .count(),
+        6
+    );
+}
+
+#[test]
+fn texts_that_cannot_be_read_open_no_round_and_are_said_once_never_replaced() {
+    let w = World::new();
+    // Pinned on a ref the method's repository does not hold (or a private
+    // repository the token cannot see: GitHub says 404 for both).
+    w.github.pin_caller(&repo(), METHOD_REPO, "v9.9.9");
+    let pr = green(pull_request(7));
+    w.ticket("ABC-1", Status::InProgress, &pr);
+    w.open(pr.clone());
+    for _ in 0..2 {
+        let (report, _) = w.tick(false);
+        assert!(!report.ok(), "{report:?}");
+        let said = report.failures.join("; ");
+        assert!(
+            said.contains("the method's texts for the review round of")
+                && said.contains("docs/agents/review-pr.md is not at example-org/spl-asdlc@v9.9.9")
+                && said.contains("docs/setup/github-app.md"),
+            "{said}"
+        );
+    }
+    assert!(
+        round_items(&w, "ABC-1").is_empty(),
+        "no item, so no fallback"
+    );
+    let comments = w.tracker.comments("ABC-1").unwrap();
+    let notices: Vec<_> = comments
+        .iter()
+        .filter(|c| c.body.contains("spl-asdlc:method-texts"))
+        .collect();
+    assert_eq!(notices.len(), 1, "said once: {comments:?}");
+    assert!(
+        notices[0]
+            .body
+            .contains("It never copies other texts instead"),
+        "{}",
+        notices[0].body
+    );
+    // Once the texts can be read, the round opens with them.
+    method_at(&w, "v9.9.9", "late");
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    let items = round_items(&w, "ABC-1");
+    assert_eq!(items.len(), 2);
+    assert!(items.iter().all(|i| i.description.contains("@v9.9.9`")));
+}
+
+#[test]
+fn without_a_caller_of_the_method_no_version_is_told_and_no_round_opens() {
+    let w = World::new();
+    w.github.state.borrow_mut().everywhere.clear();
+    let pr = green(pull_request(7));
+    w.ticket("ABC-1", Status::InProgress, &pr);
+    w.open(pr.clone());
+    let (report, _) = w.tick(false);
+    let said = report.failures.join("; ");
+    assert!(
+        said.contains("calls a reusable workflow of the method"),
+        "{said}"
+    );
+    assert!(round_items(&w, "ABC-1").is_empty());
 }
 
 #[test]
@@ -772,6 +999,7 @@ fn a_dry_run_reads_everything_and_writes_nothing() {
         now: crate::github::Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
         deadline: None,
         dry_run: true,
+        method_texts: Default::default(),
     };
     let mut log = ActionLog::in_memory();
     run(&t, &mut log);
@@ -2003,6 +2231,7 @@ fn a_dry_run_says_the_relations_it_would_write() {
         now: crate::github::Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
         deadline: None,
         dry_run: true,
+        method_texts: Default::default(),
     };
     let mut log = ActionLog::in_memory();
     run(&t, &mut log);
@@ -2251,6 +2480,7 @@ fn a_dry_run_shows_a_merge_with_no_pr_review() {
         now: crate::github::Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
         deadline: None,
         dry_run: true,
+        method_texts: Default::default(),
     };
     let mut log = ActionLog::in_memory();
     run(&t, &mut log);
@@ -2691,6 +2921,7 @@ fn a_dry_run_prints_the_dismissals_before_the_merge() {
         now: crate::github::Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
         deadline: None,
         dry_run: true,
+        method_texts: Default::default(),
     };
     let mut log = ActionLog::in_memory();
     run(&t, &mut log);

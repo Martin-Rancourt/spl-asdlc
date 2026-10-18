@@ -14,6 +14,7 @@ pub mod closure;
 pub mod identity;
 pub mod link;
 pub mod merge;
+pub mod method_texts;
 pub mod pause;
 pub mod post_deploy;
 pub mod release;
@@ -50,6 +51,9 @@ pub struct Tick<'a> {
     /// budget); what it skipped is taken at the next tick.
     pub deadline: Option<Instant>,
     pub dry_run: bool,
+    /// The method's texts this tick has read ([`method_texts`]): each pin
+    /// and each file once.
+    pub method_texts: method_texts::MethodTexts,
 }
 
 /// What a tick did, for its host.

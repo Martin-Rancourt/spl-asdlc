@@ -123,6 +123,7 @@ pub fn pass_with(host: &Host, config: &Config, github: &dyn GitHub) -> PassOutco
         now: Timestamp::now(),
         deadline: host.budget.map(|b| started + b),
         dry_run: false,
+        method_texts: Default::default(),
     };
     let mut log = match path {
         Some(p) => ActionLog::at(p),
