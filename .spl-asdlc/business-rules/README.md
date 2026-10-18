@@ -28,3 +28,5 @@ This page is an index for people, kept by hand; the method never reads it, and a
 | [BR-ASDLC-020](BR-ASDLC-020.md) | A release angle's item follows the normal flow and is Done when its angle PR merges; the candidate's consolidation is the overall review, served only once every angle is merged. | Enforced |
 | [BR-ASDLC-021](BR-ASDLC-021.md) | Every step of the flow can be done by a human in GitHub; the bridge automates the steps and is never the only actor able to perform them. | Enforced |
 | [BR-ASDLC-022](BR-ASDLC-022.md) | A release QA finding is blocking or not: a blocking one becomes an urgent fix ticket assigned to the release fixer and blocks the GO until fixed in a later candidate; a non-blocking one becomes a ticket logged for later. | Proposed |
+| [BR-ASDLC-023](BR-ASDLC-023.md) | spl-asdlc is the one project outside its own method: it releases with release-please and its tickets are Done at merge, so that a bug of the flow never blocks the release that fixes it. | Enforced |
+| [BR-ASDLC-024](BR-ASDLC-024.md) | The project owns its CI content; the method checks always run on every PR and cannot be turned off. | Enforced |

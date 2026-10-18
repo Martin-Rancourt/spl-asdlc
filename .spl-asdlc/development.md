@@ -1,6 +1,6 @@
 # How spl-asdlc itself is developed
 
-This repository does not run the SPL-ASDLC method on itself, so that a bug in the flow never blocks its own fix.
+This repository does not run the SPL-ASDLC method on itself, so that a bug in the flow never blocks its own fix (BR-ASDLC-023).
 
 ## Changes
 
@@ -12,13 +12,10 @@ release-please's normal mode on `main` (`release-please.yml`): it keeps a releas
 
 ## Tickets
 
-The tickets of this repository live in the tracker's ASDLC project and keep the method's statuses, but no bridge moves them here: the session that does a step moves the ticket.
+This repository is the one project outside its own method (BR-ASDLC-023): no bridge moves its tickets, and it has no release cycle for them to follow. Its tickets live in the tracker's ASDLC project; the session that does a step moves the ticket.
 - **In Progress** when the work starts, **In Review** when its PR is opened.
-- **To Deploy** when its PR is merged into `main`: every box the PR delivers is ticked in the ticket itself (not only in the PR's body).
-- **Done** when the release that carries it is published. Publishing a release is a gesture of the owner's (a session merges the release-please PR only on the owner's explicit go for that release); right after, the same session moves to Done every ticket of that release, found by the `SID-…` in the titles of the PRs listed in the release's CHANGELOG section, with a comment naming the release tag. A ticket whose work landed through another ticket's PR is closed with it, the PR linked.
-- A ticket left in To Deploy after its code shipped is found by checking its PR's merge commit against the published tags (`git tag --contains <commit>`, `vX.Y.Z` only).
-
-This repository may go back to running the method on itself once the bridge is stable enough; the release closure would then do the last step.
+- **Done** when its PR is merged into `main`, every box the PR delivers ticked in the ticket itself. To Deploy is not used here. A ticket whose work landed through another ticket's PR is closed with it, the PR linked.
+- Publishing a release (merging the release-please PR, moving the major tag) moves no ticket. It is a gesture of the owner's: a session does it only on the owner's explicit go for that release.
 
 ## Testing the method
 
