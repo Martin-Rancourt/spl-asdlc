@@ -290,6 +290,9 @@ impl Tracker for DryTracker<'_> {
     fn user(&self, reference: &str) -> TResult<User> {
         self.inner.user(reference)
     }
+    fn project(&self, reference: &str) -> TResult<Option<String>> {
+        self.inner.project(reference)
+    }
     fn get(&self, key: &str) -> TResult<Item> {
         self.inner.get(key)
     }

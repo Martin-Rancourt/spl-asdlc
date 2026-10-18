@@ -137,6 +137,9 @@ pub struct Tracker {
     pub service_identity: String,
     /// Identifier prefixes of the team's items; empty means "ask the tracker".
     pub team_keys: Vec<String>,
+    /// The tracker project (its name or id) every item the bridge creates
+    /// lands in; `None` creates them in the team alone.
+    pub project: Option<String>,
     pub link_fallback: LinkFallback,
     /// The label of a ticket with nothing to deploy (documentation, say):
     /// it goes Done at the merge of its PR rather than To Deploy, and no
@@ -847,6 +850,7 @@ impl Validator {
                 );
             }
         }
+        let project = self.optional("tracker.project", raw.project);
         let link_fallback = self.choice(
             "tracker.link_fallback",
             raw.link_fallback,
@@ -864,6 +868,7 @@ impl Validator {
             team: team?,
             service_identity: service_identity?,
             team_keys,
+            project,
             link_fallback: link_fallback?,
             no_deploy_label,
         })

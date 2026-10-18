@@ -12,6 +12,7 @@
   - The runner depends on the `spl-asdlc` crate by version, from crates.io; `spl-asdlc` depends on nothing of Livela (contract, point 3; BR-ASDLC-010).
 - **Locks**: the bridge writes its transitions whoever holds the item's lock; a lock protects an agent's work on the content, not the status (contract, point 6; BR-ASDLC-011).
 - **Links**: the bridge adds the PR URL as a web link on the item and finds items by that URL (contract, point 4).
+- **Project**: `[tracker] project` is accepted and ignored for now: the bridge creates its items in the workspace, and `doctor` reports the key as ignored.
 
 **Verify**: `spl-asdlc doctor` run from the runner's environment reports `tracker: ok` and `bridge-host: livela-runner`.
 

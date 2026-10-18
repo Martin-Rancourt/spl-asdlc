@@ -812,6 +812,46 @@ fn the_release_fixer_is_an_optional_instance_key_set_in_one_file_only() {
     assert_merge_refused_with(&both, &overlay, "release.fix_assignee: is set in both");
 }
 
+#[test]
+fn the_tracker_project_is_an_optional_instance_key_set_in_one_file_only() {
+    assert_eq!(Config::parse(MINIMAL).unwrap().tracker.project, None);
+    let single = MINIMAL.replace(
+        "service_identity = \"spl-asdlc\"\n",
+        "service_identity = \"spl-asdlc\"\nproject = \"acme\"\n",
+    );
+    assert_eq!(
+        Config::parse(&single).unwrap().tracker.project.as_deref(),
+        Some("acme")
+    );
+    let empty = MINIMAL.replace(
+        "service_identity = \"spl-asdlc\"\n",
+        "service_identity = \"spl-asdlc\"\nproject = \" \"\n",
+    );
+    assert_refused_with(&empty, "tracker.project");
+    let overlay = OVERLAY.replace(
+        "service_identity = \"spl-asdlc\"\n",
+        "service_identity = \"spl-asdlc\"\nproject = \"acme\"\n",
+    );
+    let c = merged(NEUTRAL, &overlay).unwrap();
+    assert_eq!(c.tracker.project.as_deref(), Some("acme"));
+    let both = NEUTRAL.replace(
+        "kind = \"linear\"\n",
+        "kind = \"linear\"\nproject = \"acme\"\n",
+    );
+    assert_eq!(
+        merged(&both, OVERLAY).unwrap().tracker.project.as_deref(),
+        Some("acme"),
+        "in the repository's file alone"
+    );
+    assert_merge_refused_with(&both, &overlay, "tracker.project: is set in both");
+    // A Livela tracker accepts it too.
+    let livela = single.replace("kind = \"linear\"", "kind = \"livela\"");
+    assert_eq!(
+        Config::parse(&livela).unwrap().tracker.project.as_deref(),
+        Some("acme")
+    );
+}
+
 // ---- every project has the release cycle (spec 05, spec 08 rule 11) ----
 
 /// MINIMAL without its `[release]` section.

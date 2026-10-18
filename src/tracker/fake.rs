@@ -47,6 +47,9 @@ pub struct FakeTracker {
     /// Whether it archives, as a tracker with an open-item limit does
     /// (true by default); false plays a tracker without one.
     pub archiving: bool,
+    /// The tracker's projects, by name; `None` plays a tracker that places
+    /// no item in a project (the key is ignored).
+    pub projects: Option<Vec<String>>,
     pub state: RefCell<FakeState>,
 }
 
@@ -66,6 +69,7 @@ impl FakeTracker {
             },
             status_names: Status::ALL.iter().map(|s| s.name().to_string()).collect(),
             archiving: true,
+            projects: Some(Vec::new()),
             state: RefCell::new(FakeState::default()),
         }
     }
@@ -195,6 +199,19 @@ impl Tracker for FakeTracker {
 
     fn team_key(&self) -> TResult<String> {
         Ok(self.team.clone())
+    }
+
+    fn project(&self, reference: &str) -> TResult<Option<String>> {
+        let Some(projects) = &self.projects else {
+            return Ok(None);
+        };
+        projects
+            .iter()
+            .find(|p| p.eq_ignore_ascii_case(reference))
+            .map(|p| Some(p.clone()))
+            .ok_or_else(|| TrackerError::NotFound {
+                what: format!("project {reference} in team {}", self.team),
+            })
     }
 
     fn status_names(&self) -> TResult<Vec<String>> {
