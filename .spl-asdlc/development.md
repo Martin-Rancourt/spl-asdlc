@@ -24,3 +24,4 @@ The method (the bridge, the `asdlc-*` workflows, the release cycle) is exercised
 - `requirements/`: the requirements the method was extracted from, with dated correction notes where the method later changed.
 - `open-points.md`: the questions still open.
 - `qa/`: QA records.
+- `brand.md`: the logo, what it means, its colors, which file in `assets/brand/` to use where, and how to regenerate it.

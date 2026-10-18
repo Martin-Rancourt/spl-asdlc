@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/brand/wordmark-dark.svg">
+  <img alt="<asdlc />" src="assets/brand/wordmark.svg" width="280">
+</picture>
+
 # SPL-ASDLC
 
 **ASDLC by Side Projects Lab.** A delivery method for software written by agents, and the tooling that applies it to any repository: ticket contracts, business rules proven by tests, optional review by angle, a release cycle with a computed GO, and a bridge that keeps the tracker and GitHub in step.
