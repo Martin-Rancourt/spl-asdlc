@@ -19,6 +19,7 @@ Consequences for the bridge and the coordinator:
 - They are the ones who move an item through `in_review → to_deploy → post_deploy → done`; no implementing agent will ever receive it.
 - The canonical names "To Deploy" and "Post Deploy" map to `to_deploy` and `post_deploy`; `set_status` accepts the id or the English name.
 - There is no `post_release` status.
+- Refined is not a status: a refined ticket stays in Backlog, and Livela marks it with a `refined` field computed from the description (a goal, at least one acceptance criterion and a release note). No agent writes it, and the bridge does not read it.
 - The method reads every tracker the same way: only Done and Canceled are resolved (`ItemState::is_resolved`). A tracker that files To Deploy as a completed state, as a Linear team may, changes nothing.
 
 ## 2. No heartbeat in the data

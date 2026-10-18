@@ -4,7 +4,7 @@ SPL-ASDLC is a development process for repositories where agents write code, tog
 
 ## Invariants
 
-1. **The contract comes before the implementation.** A ticket is implementable only when it carries a goal, non-goals, acceptance criteria and business rules, and that contract has been verified by refinement. The release-note snippet is written at refinement time. Nothing without a contract is taken.
+1. **The contract comes before the implementation.** A ticket is implementable only when it carries a goal, acceptance criteria and business rules, and that contract has been verified by refinement. Non-goals and the release-note snippet are recommended at refinement, not required. Nothing without a contract is taken.
 2. **An implementation ends in a pull request, and the acceptance criteria are ticked as they are met.** One pull request per ticket is the default, with as many commits as needed; several only for a real reason, which the implementer records in the ticket's comments. Every pull request is independently deployable: once merged, it may ship to production at any time, even when it does not close its ticket (`04-pr-review.md` §10).
 3. **Business rules are global and permanent.** They apply to the whole current state of the project, not to the diff; they live in the repository; each one has a deterministic test in CI. A rule without a test is only believed to be respected.
 4. **PR review, when configured, is fast and on the diff.** A project may configure none (`04-pr-review.md` §11). CI first (build, tests, lint; the content is the project's). Then several reviewers, each with its own angle, configurable per project. Then one consolidator who applies the retained suggestions. Then CI again, then merge, then "To Deploy".

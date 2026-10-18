@@ -36,7 +36,7 @@ flowchart LR
 
   A `## Non-goals` and a `## Release note` paragraph are recommended.
 - `spl-asdlc ticket check` judges the contract.
-- A refined ticket stays in Backlog and is marked refined: a label in Linear, a dedicated state in Livela.
+- A refined ticket stays in Backlog and is marked refined: a label in Linear, a `refined` field Livela computes from the description (a goal, at least one acceptance criterion and a release note), which nobody writes in Livela.
 
 **Ready.** A person moves a refined ticket to Ready when it may be taken. Implementing agents take work from Ready only, so Ready is how a person controls what agents work on, and when.
 

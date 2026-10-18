@@ -24,7 +24,7 @@ Driven by <who>. Gestures outside the method: <n>, listed below.
 - <time> — release issue created by the bridge
 - <time> — gate green on RC1
 - <time> — angle sub-items, consolidation item (blocked by them) and brief created by the bridge (once the gate is green)
-- <time> — angle PRs: <angle> (go), <angle> (hold: 1 blocker fixed in branch), …, each reviewed by the coordinator as it came
+- <time> — angle PRs: <angle> (go), <angle> (hold: 1 blocking finding, filed as a fix ticket), …, each reviewed by the coordinator as it came
 - <time> — angle PRs merged; overall review by the coordinator; RC2 tagged, gate green
 - <time> — GO computed; release tag and release published by the bridge
 - <time> — published; merge-back merged

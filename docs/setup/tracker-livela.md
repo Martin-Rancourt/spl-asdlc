@@ -2,7 +2,7 @@
 
 - **Service participant**: an `agent` participant named `spl-asdlc` (`docs/reference/livela-contract.md`, point 4).
 - **Statuses**: `in_review`, `to_deploy` and `post_deploy` are the `validation` group: open, still blocking, never served by "what's next" (contract, point 1). `set_status` accepts the English names, so the canonical names are the tracker's (the configuration maps no status).
-- **Refined, Ready, In Progress**: a refined ticket stays in Backlog, in the dedicated refined state; a person moves it to Ready when agents may take it. An implementing agent takes work from Ready only, and its verb ("implement the next ticket") moves the ticket it takes to In Progress.
+- **Refined, Ready, In Progress**: a refined ticket stays in Backlog, marked by a `refined` field Livela computes from the description (a goal, at least one acceptance criterion and a release note), which nobody writes; a person moves it to Ready when agents may take it. An implementing agent takes work from Ready only, and its verb ("implement the next ticket") moves the ticket it takes to In Progress.
 - **Hosting**: the bridge is a `DaemonJob` of the Livela runner (contract, point 3).
   - The daemon calls it every pass with `LIVELA_SPL_ASDLC_CONFIG` (the path of `.spl-asdlc/config.toml`; its instance overlay is the `config.instance.toml` beside it, when there is one) and `LIVELA_JOB_BUDGET_SECONDS` (60 by default).
   - The App's key and the tracker identity come from the environment the runner starts with.

@@ -49,7 +49,7 @@ const TICKET: &str = "docs/setup/templates/ticket.md";
 
 // ---- the templates ----
 
-/// The template as written is the light configuration: no PR review, the
+/// The template as written is the configuration with no optional step: no PR review, the
 /// release cycle with no QA angle, no channel.
 #[test]
 fn the_configuration_template_is_valid_as_written_and_light() {

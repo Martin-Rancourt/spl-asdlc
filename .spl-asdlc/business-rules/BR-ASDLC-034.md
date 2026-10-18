@@ -4,11 +4,11 @@ Status: Enforced
 
 ## Rule
 
-A new angle or a retirement is a ticket and a PR on spl-asdlc, shipped in a version like any change. A retired angle's file is removed and its key is listed in the `## Retired angles` table of `docs/agents/angles/README.md`, with the version that retired it. A project pinned on an older version keeps the angle's text. Once its pin reaches that version, `spl-asdlc doctor` reports the angle `invalid`, and the angle's items say the method retired it; the configuration stays valid, so the bridge keeps serving the project until it drops the angle or keeps it as its own under another key. Never ignored silently. `docs/reference/08-configuration.md`, "Angles".
+A new angle or a retirement is a ticket and a PR on spl-asdlc, shipped in a version like any change. A retired angle's file is removed and its key is listed in the `## Retired angles` table of `docs/agents/angles/README.md`, with the version that retired it. A project pinned on an older version keeps the angle's text. Once its pin reaches that version, `spl-asdlc doctor` reports the angle `invalid`, and the angle's items say the method retired it; the configuration stays valid, so the bridge keeps serving the project until it drops the angle or keeps it as its own under another key. Never ignored silently. `doctor` is where it is reported: `config check` reads no pin (it runs offline) and the PR guards run no binary, so neither says it. `docs/reference/08-configuration.md`, "Angles".
 
 ## Evidence
 
-The owner's decision in the angle brainstorm of 2026-10-18 (SID-974), implemented by SID-1192.
+The owner's decision in the angle brainstorm of 2026-10-18 (SID-974), implemented by SID-1192; reported by `doctor` only, the owner's answer to the spec review of 2026-10-18 (SID-867).
 
 ## Test
 

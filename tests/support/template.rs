@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 pub const PATH: &str = "docs/setup/templates/config.toml";
 
-/// The template as written: the light configuration.
+/// The template as written: the configuration with no optional step.
 pub fn light() -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(PATH);
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{PATH}: {e}"))
