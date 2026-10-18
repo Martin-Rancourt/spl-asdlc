@@ -32,11 +32,10 @@ pub fn linear(config: &Config, env: &dyn Fn(&str) -> Option<String>) -> Result<L
             let token = env(ENV_TOKEN)
                 .filter(|t| !t.trim().is_empty())
                 .ok_or_else(|| format!("{ENV_TOKEN} is not set on this host"))?;
-            Ok(Linear::new(
-                &token,
-                &config.tracker.team,
-                StatusTable::identity(),
-            ))
+            Ok(
+                Linear::new(&token, &config.tracker.team, StatusTable::identity())
+                    .with_project(config.tracker.project.as_deref()),
+            )
         }
         TrackerKind::Livela => Err(
             "a Livela tracker is reached from the Livela runner, where the bridge runs as a daemon job; the binary cannot open it"

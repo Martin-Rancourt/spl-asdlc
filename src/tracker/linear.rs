@@ -40,6 +40,8 @@ pub struct Linear {
     endpoint: String,
     token: String,
     team_key: String,
+    /// `tracker.project`: the project every created item lands in.
+    project: Option<String>,
     statuses: StatusTable,
     cache: RefCell<Cache>,
 }
@@ -49,6 +51,8 @@ struct Cache {
     viewer: Option<User>,
     team: Option<(String, BTreeMap<String, String>)>,
     labels: BTreeMap<String, String>,
+    /// Projects by the reference that named them: `(id, name)`.
+    projects: BTreeMap<String, (String, String)>,
 }
 
 fn kind_of(t: &str) -> StateKind {
@@ -140,9 +144,17 @@ impl Linear {
             endpoint: endpoint.to_string(),
             token: token.to_string(),
             team_key: team_key.to_string(),
+            project: None,
             statuses,
             cache: RefCell::new(Cache::default()),
         }
+    }
+
+    /// The project every item it creates lands in (`tracker.project`, a
+    /// project's name or id); `None` creates them in the team alone.
+    pub fn with_project(mut self, project: Option<&str>) -> Linear {
+        self.project = project.map(str::to_string);
+        self
     }
 
     /// One GraphQL call; `Err((not_found, detail))`.
@@ -370,6 +382,71 @@ impl Linear {
         Ok(id)
     }
 
+    /// The team's project a reference names, by id or else by name (without
+    /// case), as `(id, name)`; resolved once per instance, so once per tick.
+    /// A project of another team is not found: Linear files an issue only in
+    /// a project of its team.
+    fn project_of(&self, reference: &str) -> TResult<(String, String)> {
+        if let Some(p) = self.cache.borrow().projects.get(reference) {
+            return Ok(p.clone());
+        }
+        let (team_id, _) = self.team()?;
+        let what = format!("project {reference} in team {}", self.team_key);
+        let not_found = || TrackerError::NotFound { what: what.clone() };
+        let found = if looks_like_uuid(reference) {
+            let data = self.read(
+                &what,
+                "query($id: String!) { project(id: $id) { id name teams(first: 100) { nodes { id } pageInfo { hasNextPage } } } }",
+                json!({"id": reference}),
+            )?;
+            let p = &data["project"];
+            if p.is_null() {
+                return Err(not_found());
+            }
+            let teams = &p["teams"];
+            let in_team = teams["nodes"]
+                .as_array()
+                .is_some_and(|n| n.iter().any(|t| t["id"].as_str() == Some(team_id.as_str())));
+            if !in_team {
+                if teams["pageInfo"]["hasNextPage"].as_bool() != Some(false) {
+                    return Err(TrackerError::unreadable(
+                        &what,
+                        "the project's team list is cut or missing",
+                    ));
+                }
+                return Err(not_found());
+            }
+            (s(p, "id"), s(p, "name"))
+        } else {
+            let data = self.read(
+                &what,
+                "query($team: String!, $name: String!) { team(id: $team) { projects(filter: {name: {eqIgnoreCase: $name}}, first: 2) { nodes { id name } } } }",
+                json!({"team": team_id, "name": reference}),
+            )?;
+            let nodes = data["team"]["projects"]["nodes"]
+                .as_array()
+                .ok_or_else(|| TrackerError::unreadable(&what, "no project list"))?;
+            match nodes.as_slice() {
+                [p] => (s(p, "id"), s(p, "name")),
+                [] => return Err(not_found()),
+                _ => {
+                    return Err(TrackerError::unreadable(
+                        &what,
+                        "several projects of the team answer to this name: name it by its id",
+                    ));
+                }
+            }
+        };
+        if found.0.is_empty() {
+            return Err(TrackerError::unreadable(&what, "a project without an id"));
+        }
+        self.cache
+            .borrow_mut()
+            .projects
+            .insert(reference.to_string(), found.clone());
+        Ok(found)
+    }
+
     fn issue_id(&self, key: &str) -> TResult<String> {
         Ok(self.get(key)?.id)
     }
@@ -398,6 +475,10 @@ impl Tracker for Linear {
 
     fn status_names(&self) -> TResult<Vec<String>> {
         Ok(self.team()?.1.into_keys().collect())
+    }
+
+    fn project(&self, reference: &str) -> TResult<Option<String>> {
+        Ok(Some(self.project_of(reference)?.1))
     }
 
     fn user(&self, reference: &str) -> TResult<User> {
@@ -644,6 +725,17 @@ impl Tracker for Linear {
     fn create_item(&self, item: &NewItem) -> TResult<Item> {
         let (team_id, _) = self.team()?;
         let state = self.state_id(item.status)?;
+        // Before the first write (a label): an unknown project creates
+        // nothing, never an item outside it.
+        let project = match &self.project {
+            Some(p) => Some(self.project_of(p).map_err(|e| {
+                TrackerError::refused(
+                    format!("creation of \"{}\"", item.title),
+                    format!("tracker.project: {e}"),
+                )
+            })?),
+            None => None,
+        };
         let mut label_ids = Vec::new();
         for l in &item.labels {
             self.ensure_label(l)?;
@@ -665,6 +757,10 @@ impl Tracker for Linear {
         }
         if let Some(parent) = &item.parent {
             input["parentId"] = json!(self.issue_id(parent)?);
+        }
+        // A sub-item too: Linear does not give a child its parent's project.
+        if let Some((id, _)) = project {
+            input["projectId"] = json!(id);
         }
         let r = self.write(
             &format!("creation of \"{}\"", item.title),

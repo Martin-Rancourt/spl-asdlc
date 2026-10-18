@@ -611,6 +611,7 @@ fn tracker_checks(config: &Config, tracker: &dyn Tracker) -> Vec<Check> {
         }
         Err(e) => check("statuses", Verdict::Missing, e.to_string()),
     });
+    out.push(project_check(config, tracker));
     // The configured value and whom it resolves to: an owner configured by
     // full name reads as the same person as the tracker's handle.
     out.push(match tracker.user(&config.owner.tracker_user) {
@@ -680,6 +681,42 @@ fn tracker_checks(config: &Config, tracker: &dyn Tracker) -> Vec<Check> {
         });
     }
     out
+}
+
+/// The tracker project every created item lands in (`tracker.project`): a
+/// project the tracker does not know is invalid, since every creation would
+/// be refused.
+fn project_check(config: &Config, tracker: &dyn Tracker) -> Check {
+    let name = "tracker.project";
+    let Some(reference) = &config.tracker.project else {
+        return check(
+            name,
+            Verdict::Ok,
+            "none: the bridge creates its items in the team, in no project",
+        );
+    };
+    match tracker.project(reference) {
+        Ok(Some(p)) => check(
+            name,
+            Verdict::Ok,
+            format!(
+                "\"{reference}\" is project {p} in the tracker: every item the bridge creates lands in it"
+            ),
+        ),
+        Ok(None) => check(
+            name,
+            Verdict::Ok,
+            format!(
+                "\"{reference}\" is ignored: this tracker does not place its items in a project yet, the bridge creates them in the team"
+            ),
+        ),
+        Err(e) if e.is_not_found() => check(
+            name,
+            Verdict::Invalid,
+            format!("{e}: unknown to the tracker, every creation is refused"),
+        ),
+        Err(e) => check(name, Verdict::Missing, e.to_string()),
+    }
 }
 
 /// The configured assignees, named by their key: each angle's `assignee`
@@ -957,6 +994,47 @@ mod tests {
             present.detail.ends_with("it exists in the tracker"),
             "{present}"
         );
+    }
+
+    #[test]
+    fn the_tracker_project_is_reported_found_unknown_ignored_or_none() {
+        let mut c = config();
+        let mut t = FakeTracker {
+            projects: Some(vec!["Acme".into()]),
+            ..FakeTracker::default()
+        };
+        let line = |c: &Config, t: &FakeTracker| {
+            tracker_checks(c, t)
+                .into_iter()
+                .find(|c| c.name == "tracker.project")
+                .unwrap_or_else(|| panic!("no project line"))
+        };
+        let none = line(&c, &t);
+        assert_eq!(none.verdict, Verdict::Ok, "{none}");
+        assert!(none.detail.starts_with("none: "), "{none}");
+
+        c.tracker.project = Some("acme".into());
+        let found = line(&c, &t);
+        assert_eq!(found.verdict, Verdict::Ok, "{found}");
+        assert!(
+            found
+                .detail
+                .starts_with("\"acme\" is project Acme in the tracker"),
+            "{found}"
+        );
+
+        c.tracker.project = Some("elsewhere".into());
+        let unknown = line(&c, &t);
+        assert_eq!(unknown.verdict, Verdict::Invalid, "{unknown}");
+        assert!(
+            unknown.detail.contains("unknown to the tracker"),
+            "{unknown}"
+        );
+
+        t.projects = None;
+        let ignored = line(&c, &t);
+        assert_eq!(ignored.verdict, Verdict::Ok, "{ignored}");
+        assert!(ignored.detail.contains("is ignored"), "{ignored}");
     }
 
     #[test]

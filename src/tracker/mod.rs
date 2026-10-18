@@ -184,6 +184,14 @@ pub trait Tracker {
     fn status_names(&self) -> TResult<Vec<String>>;
     /// Resolve a person by id, name or display name (assignee hints).
     fn user(&self, reference: &str) -> TResult<User>;
+    /// Resolve the tracker project a reference names (`tracker.project`, its
+    /// name or id), by its name. An adapter built with that key creates every
+    /// item in that project, a sub-item too: [`NewItem`] does not carry it.
+    /// `Ok(None)`: this tracker does not place its items in a project yet,
+    /// and the key is ignored.
+    fn project(&self, _reference: &str) -> TResult<Option<String>> {
+        Ok(None)
+    }
 
     fn get(&self, key: &str) -> TResult<Item>;
     fn relations(&self, key: &str) -> TResult<Relations>;

@@ -41,6 +41,7 @@ pub(super) struct RawTracker {
     pub team: Option<String>,
     pub service_identity: Option<String>,
     pub team_keys: Option<Vec<String>>,
+    pub project: Option<String>,
     pub link_fallback: Option<String>,
     pub no_deploy_label: Option<String>,
 }
@@ -178,6 +179,7 @@ pub(super) struct RawOverlayTracker {
     pub team: Option<String>,
     pub service_identity: Option<String>,
     pub team_keys: Option<Vec<String>>,
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

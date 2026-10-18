@@ -280,6 +280,14 @@ fn the_livela_adapter_passes_the_conformance_suite_without_comment_edits() {
 }
 
 #[test]
+fn a_tracker_project_is_ignored_and_items_are_created_as_without_it() {
+    // Its project scoping is the work of the Livela milestone: `doctor`
+    // says the key is ignored.
+    let t = Livela::new(MemStore::default(), StatusTable::identity());
+    assert_eq!(t.project("acme").unwrap(), None);
+}
+
+#[test]
 fn every_write_is_signed_by_the_bridge_and_the_runner_keeps_its_author() {
     let t = Livela::new(MemStore::default(), StatusTable::identity());
     let a = t.create_item(&new_item("a", Status::Ready)).unwrap();

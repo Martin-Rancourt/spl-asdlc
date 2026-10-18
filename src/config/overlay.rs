@@ -26,7 +26,10 @@ pub const INSTANCE_FILE_NAME: &str = "config.instance.toml";
 pub const INSTANCE_KEYS: [(&str, &[&str]); 5] = [
     ("product", &["repository"]),
     ("owner", &["tracker_user", "github_login"]),
-    ("tracker", &["team", "service_identity", "team_keys"]),
+    (
+        "tracker",
+        &["team", "service_identity", "team_keys", "project"],
+    ),
     (
         "release",
         &["coordinators", "coordinator_assignee", "fix_assignee"],
@@ -156,6 +159,7 @@ pub(super) fn merge(
             t.service_identity.map(Value::from),
         );
         m.put("tracker", "team_keys", t.team_keys.map(Value::from));
+        m.put("tracker", "project", t.project.map(Value::from));
     }
     // The overlay never creates the `[release]` section, which every
     // repository's file carries: without it, the file is refused for it,

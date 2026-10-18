@@ -351,6 +351,172 @@ fn an_item_is_created_with_its_state_labels_parent_and_priority() {
     ] {
         assert!(body.contains(needle), "{needle} in {body}");
     }
+    assert!(
+        !body.contains("projectId"),
+        "without tracker.project, the team alone: {body}"
+    );
+    assert!(!t.bodies().iter().any(|b| b.contains("projects(")));
+}
+
+/// A project id as Linear writes one, built here so that the repository
+/// carries no id-shaped literal.
+fn project_uuid() -> String {
+    format!(
+        "{}-{}-4{}-8{}-{}",
+        "a".repeat(8),
+        "b".repeat(4),
+        "c".repeat(3),
+        "d".repeat(3),
+        "e".repeat(12)
+    )
+}
+
+fn created(t: &ScriptedTransport) {
+    t.on_body(
+        "POST",
+        URL,
+        "issueCreate",
+        200,
+        &format!(
+            r#"{{"data":{{"issueCreate":{{"success":true,"issue":{}}}}}}}"#,
+            issue("ABC-5", "Ready", "unstarted")
+        ),
+    );
+}
+
+fn new_item(parent: Option<&str>) -> NewItem {
+    NewItem {
+        title: "Release acme v1.2.3".into(),
+        description: "d".into(),
+        labels: Vec::new(),
+        status: Status::Ready,
+        priority: None,
+        assignee: None,
+        parent: parent.map(str::to_string),
+    }
+}
+
+#[test]
+fn with_a_project_every_item_is_created_in_it_a_sub_item_too_resolved_once() {
+    let (l, t) = linear();
+    let l = l.with_project(Some("acme"));
+    team(&t);
+    t.on_body(
+        "POST",
+        URL,
+        "projects(filter",
+        200,
+        r#"{"data":{"team":{"projects":{"nodes":[{"id":"p-1","name":"Acme"}]}}}}"#,
+    );
+    t.on_body(
+        "POST",
+        URL,
+        "issue(id: $id) { id identifier",
+        200,
+        &format!(
+            r#"{{"data":{{"issue":{}}}}}"#,
+            issue("ABC-1", "Ready", "unstarted")
+        ),
+    );
+    created(&t);
+    l.create_item(&new_item(None)).unwrap();
+    l.create_item(&new_item(Some("ABC-1"))).unwrap();
+    let bodies = t.bodies();
+    let creates: Vec<&String> = bodies
+        .iter()
+        .filter(|b| b.contains("issueCreate"))
+        .collect();
+    assert_eq!(creates.len(), 2);
+    for b in &creates {
+        assert!(b.contains(r#""projectId":"p-1""#), "{b}");
+    }
+    assert!(creates[1].contains(r#""parentId":"id-ABC-1""#));
+    let lookups: Vec<&String> = bodies.iter().filter(|b| b.contains("projects(")).collect();
+    assert_eq!(lookups.len(), 1, "resolved once: {lookups:?}");
+    assert!(
+        lookups[0].contains(r#""team":"team-1""#) && lookups[0].contains(r#""name":"acme""#),
+        "by name, within the team: {}",
+        lookups[0]
+    );
+    assert_eq!(
+        Tracker::project(&l, "acme").unwrap().as_deref(),
+        Some("Acme")
+    );
+}
+
+#[test]
+fn an_unknown_project_refuses_the_creation_before_any_write() {
+    let (l, t) = linear();
+    let l = l.with_project(Some("elsewhere"));
+    team(&t);
+    t.on_body(
+        "POST",
+        URL,
+        "projects(filter",
+        200,
+        r#"{"data":{"team":{"projects":{"nodes":[]}}}}"#,
+    );
+    created(&t);
+    let mut item = new_item(None);
+    item.labels = vec!["release/acme-v1.2.3".into()];
+    let e = l.create_item(&item).unwrap_err();
+    assert!(matches!(e, TrackerError::Refused { .. }), "{e}");
+    assert!(e.to_string().contains("tracker.project"), "{e}");
+    assert!(
+        !t.bodies().iter().any(|b| b.contains("mutation")),
+        "nothing written"
+    );
+    assert!(
+        Tracker::project(&l, "elsewhere")
+            .unwrap_err()
+            .is_not_found()
+    );
+}
+
+#[test]
+fn a_project_named_by_id_must_be_one_of_the_teams() {
+    let id = project_uuid();
+    let (l, t) = linear();
+    team(&t);
+    t.on_body(
+        "POST",
+        URL,
+        "project(id: $id)",
+        200,
+        &format!(
+            r#"{{"data":{{"project":{{"id":"{id}","name":"Acme","teams":{{"nodes":[{{"id":"team-1"}}],"pageInfo":{{"hasNextPage":false}}}}}}}}}}"#
+        ),
+    );
+    assert_eq!(Tracker::project(&l, &id).unwrap().as_deref(), Some("Acme"));
+    let (l, t) = linear();
+    team(&t);
+    t.on_body(
+        "POST",
+        URL,
+        "project(id: $id)",
+        200,
+        &format!(
+            r#"{{"data":{{"project":{{"id":"{id}","name":"Other","teams":{{"nodes":[{{"id":"team-2"}}],"pageInfo":{{"hasNextPage":false}}}}}}}}}}"#
+        ),
+    );
+    assert!(Tracker::project(&l, &id).unwrap_err().is_not_found());
+}
+
+#[test]
+fn several_projects_of_one_name_are_unreadable_never_a_guess() {
+    let (l, t) = linear();
+    team(&t);
+    t.on_body(
+        "POST",
+        URL,
+        "projects(filter",
+        200,
+        r#"{"data":{"team":{"projects":{"nodes":[{"id":"p-1","name":"Acme"},{"id":"p-2","name":"acme"}]}}}}"#,
+    );
+    assert!(matches!(
+        Tracker::project(&l, "acme").unwrap_err(),
+        TrackerError::Unreadable { .. }
+    ));
 }
 
 #[test]
