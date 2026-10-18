@@ -34,6 +34,7 @@ One deterministic process, `spl-asdlc tick`, that turns GitHub facts into tracke
 | Angle report | The file `.spl-asdlc/qa/<candidate>/<angle>.json` at the angle PR's head |
 | Release notes | The version's section of `CHANGELOG.md` at the candidate, prepared by the cut (`release prepare`) |
 | Release tag, published release | Tags and the Releases API, the release's author |
+| A release's publication | The newest run of `release.publish_workflow` on the `release` event at the release tag's commit, and the jobs of its latest attempt: whether anything was deployed (`05-release-cycle.md` §9) |
 | Merge-back | PR from `release/*` into `main`, merged |
 
 ## What it writes to the tracker (the `Tracker` trait)
@@ -44,7 +45,7 @@ An item it serves to an agent is a complete contract that carries its protocol (
 
 ## What it writes to GitHub
 
-Merges (REST, pinned to a head SHA), branch deletions, labels, comments on PRs (one per cause, never repeated), the dismissal of an App's standing request for changes that a coordinator's approval at the head supersedes, right before the merge (`04-pr-review.md` §6), the update of a PR branch behind a base it must be up to date with (`review.require_up_to_date`), a review request to `review.human_reviewer` for a green PR held by something only a human can lift, the dispatch of the cut workflow when the policy tags the next RC automatically, and on a computed GO the annotated release tag and its GitHub release. The ticket it opens for an App's PR that has none (`review.ticketless_authors`, `04-pr-review.md` §9) is a tracker write: created labelled `ticketless-pr` and linked to the PR there.
+Merges (REST, pinned to a head SHA), branch deletions, labels, comments on PRs (one per cause, never repeated), the dismissal of an App's standing request for changes that a coordinator's approval at the head supersedes, right before the merge (`04-pr-review.md` §6), the update of a PR branch behind a base it must be up to date with (`review.require_up_to_date`), a review request to `review.human_reviewer` for a green PR held by something only a human can lift, the dispatch of the cut workflow when the policy tags the next RC automatically, and on a computed GO the annotated release tag and its GitHub release; the deletion of a GitHub release and its tag when its publication failed before deploying (its retraction, `05-release-cycle.md` §9). The ticket it opens for an App's PR that has none (`review.ticketless_authors`, `04-pr-review.md` §9) is a tracker write: created labelled `ticketless-pr` and linked to the PR there.
 
 ## What it sends (the `Notifier` trait)
 
@@ -60,6 +61,7 @@ Notices go through the channels of `[[notify]]` that take their event (spec 08);
 | `release prepare [--version <X.Y.Z>] [--notes <file>] [--dir <path>] [--repository <owner>/<repo>] [--date <YYYY-MM-DD>] [--dry-run]` | Run by the cut's `open` in a checkout of the new release branch: the next version from the commits since the last release, along the git graph, written into the version files and the CHANGELOG, and the release notes; prints `version=`, `tag=`, `previous-tag=`. Reads the repository's file only, never an instance overlay, and talks to no service (`05-release-cycle.md` §1) |
 | `release requalify <ticket> --blocking <true\|false> --reason <r>` | Human requalification of a finding: blocking or not |
 | `release abandon --product <p>` | Abandon the cycle in flight (`05-release-cycle.md` §13) |
+| `release retract <release tag> --product <p>` | Retract a release whose publication failed before deploying: the release issue's comment, then its GitHub release and its tag deleted; refused when a deploy or a merge back ran, or the run cannot be read (`05-release-cycle.md` §9) |
 | `ticket check <item>` | Contract judgement |
 | `config check` | Validate `.spl-asdlc/config.toml` (the default of every `--file`), merged with its instance overlay (spec 08) |
 | `doctor` | Verify the setup of a repository (App, secrets, rulesets, tracker identity, config and its instance overlay); `release cycle` (its QA angles, or none), each workflow job that calls `asdlc-release-publish.yml` or `asdlc-release-cut.yml` (`caller <file> job <job>`, invalid when it passes a `gate-workflow` other than `release.gate_workflow`), and `release base`: the published release the next candidate is measured from, or none yet, the first release being measured from the repository's root |

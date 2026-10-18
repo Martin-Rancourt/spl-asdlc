@@ -514,6 +514,7 @@ impl GitHub for FakeGitHub {
         self.record(format!("create-release {repo} {tag} {name}"))?;
         let identity = self.state.borrow().identity.clone();
         let release = Release {
+            id: self.id(),
             tag: tag.to_string(),
             url: format!("https://github.com/{repo}/releases/tag/{tag}"),
             body: body.to_string(),
@@ -530,6 +531,22 @@ impl GitHub for FakeGitHub {
             .releases
             .insert((repo.clone(), tag.to_string()), Ok(release.clone()));
         Ok(release)
+    }
+
+    fn delete_release(&self, repo: &RepoSlug, release_id: u64) -> Write<()> {
+        self.record(format!("delete-release {repo} {release_id}"))?;
+        self.state.borrow_mut().releases.retain(|(r, _), release| {
+            r != repo || !release.as_ref().is_ok_and(|x| x.id == release_id)
+        });
+        Ok(())
+    }
+
+    fn delete_tag(&self, repo: &RepoSlug, tag: &str) -> Write<()> {
+        self.record(format!("delete-tag {repo} {tag}"))?;
+        if let Some(list) = self.state.borrow_mut().tags.get_mut(repo) {
+            list.retain(|t| t.name != tag);
+        }
+        Ok(())
     }
 
     fn create_branch(&self, repo: &RepoSlug, branch: &str, sha: &str) -> Write<()> {

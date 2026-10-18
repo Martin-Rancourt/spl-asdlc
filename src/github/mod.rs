@@ -99,6 +99,8 @@ pub trait GitHub {
         head_sha: Option<&str>,
         event: Option<&str>,
     ) -> Read<Vec<WorkflowRun>>;
+    /// The jobs of a run's latest attempt, as GitHub names them (a job of a
+    /// called workflow is `<caller job> / <called job>`).
     fn run_jobs(&self, repo: &RepoSlug, run_id: u64) -> Read<Vec<Job>>;
     fn run_artifacts(&self, repo: &RepoSlug, run_id: u64) -> Read<Vec<Artifact>>;
     /// The text of `path` inside the artifact `artifact_id`, read from its
@@ -127,6 +129,12 @@ pub trait GitHub {
     fn create_tag(&self, repo: &RepoSlug, tag: &str, sha: &str, message: &str) -> Write<()>;
     /// Publish the GitHub release of an existing tag, with its notes.
     fn create_release(&self, repo: &RepoSlug, tag: &str, name: &str, body: &str) -> Write<Release>;
+    /// Delete the GitHub release `release_id` (the retraction of a release
+    /// whose publication deployed nothing); its tag is left as it is.
+    fn delete_release(&self, repo: &RepoSlug, release_id: u64) -> Write<()>;
+    /// Delete the tag ref `refs/tags/<tag>`, as the bridge's App, which the
+    /// tag rulesets let bypass them.
+    fn delete_tag(&self, repo: &RepoSlug, tag: &str) -> Write<()>;
     fn add_labels(&self, repo: &RepoSlug, number: u64, labels: &[String]) -> Write<()>;
     /// Removing a label the PR does not carry is a success.
     fn remove_label(&self, repo: &RepoSlug, number: u64, label: &str) -> Write<()>;

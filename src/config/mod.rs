@@ -204,6 +204,10 @@ pub struct Release {
     /// `gate_rerun_workflow` to show up before it opens the gate-fix ticket
     /// anyway (the rerun workflow may be absent or broken).
     pub gate_rerun_wait_minutes: u32,
+    /// The project's publication workflow, run on the published release:
+    /// the bridge reads its run to retract a release whose publication
+    /// failed before anything was deployed (`05-release-cycle.md` §9).
+    pub publish_workflow: String,
     /// The files besides Rust's own that `release prepare` writes the
     /// version into.
     pub version_files: Vec<VersionFile>,
@@ -1053,6 +1057,11 @@ impl Validator {
             raw.gate_rerun_workflow,
             "release-gate-auto-rerun.yml",
         );
+        let publish_workflow = self.workflow(
+            "release.publish_workflow",
+            raw.publish_workflow,
+            "release-publish.yml",
+        );
         let gate_rerun_wait_minutes = self.positive(
             "release.gate_rerun_wait_minutes",
             raw.gate_rerun_wait_minutes,
@@ -1079,6 +1088,7 @@ impl Validator {
             gate_workflow,
             gate_rerun_workflow,
             gate_rerun_wait_minutes,
+            publish_workflow,
             version_files,
             changelog_sections,
             angles,

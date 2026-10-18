@@ -44,8 +44,11 @@ pub fn close(
         Ok(Some(waiting)) => {
             // A fact the closure waits for: nothing written, nothing to say
             // each tick (the stagnation of a published release is a host's
-            // job log matter until the owner settles REQ-REL-082).
+            // job log matter until the owner settles REQ-REL-082). But a
+            // publication that failed before deploying never merges back:
+            // its release is retracted, and the cycle awaits its GO again.
             let _ = waiting;
+            super::retract::when_undeployed(t, log, report, item, published);
             return;
         }
         Err(e) => {

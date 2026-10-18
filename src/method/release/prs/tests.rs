@@ -124,6 +124,7 @@ fn an_angle_item_follows_its_pr_through_the_normal_flow() {
 #[test]
 fn the_go_publisher_line_says_the_bridge_a_human_or_another_app() {
     let mut release = Release {
+        id: 1,
         tag: "app-v1.2.3".into(),
         url: "https://example.test/releases/app-v1.2.3".into(),
         body: String::new(),

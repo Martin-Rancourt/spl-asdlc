@@ -50,6 +50,9 @@ pub struct GoFacts {
     pub unlinked_blockers: Vec<String>,
     pub fix_gaps: Vec<String>,
     pub tip_gaps: Vec<String>,
+    /// The release tag retracted from this candidate, its publication having
+    /// failed before deploying: the candidate gets no second GO.
+    pub retracted: Option<String>,
     pub policy: Policy,
 }
 
@@ -75,6 +78,7 @@ pub struct GoDecision {
     pub unlinked_blockers: Vec<String>,
     pub fix_gaps: Vec<String>,
     pub tip_gaps: Vec<String>,
+    pub retracted: Option<String>,
     pub policy: Policy,
     /// One English sentence per failing condition; never empty when `go` is false.
     pub reasons: Vec<String>,
@@ -149,6 +153,11 @@ pub fn evaluate(facts: &GoFacts) -> GoDecision {
             tip_gaps.join("; ")
         ));
     }
+    if let Some(tag) = &facts.retracted {
+        reasons.push(format!(
+            "{tag} was retracted from this candidate, its publication having failed before deploying: the next candidate takes it"
+        ));
+    }
     match facts.policy {
         Policy::Computed
         | Policy::Human {
@@ -171,6 +180,7 @@ pub fn evaluate(facts: &GoFacts) -> GoDecision {
         unlinked_blockers: unlinked,
         fix_gaps,
         tip_gaps,
+        retracted: facts.retracted.clone(),
         policy: facts.policy,
         reasons,
     }
@@ -203,6 +213,7 @@ impl GoDecision {
             "unlinked_blockers": self.unlinked_blockers,
             "fix_gaps": self.fix_gaps,
             "tip_gaps": self.tip_gaps,
+            "retracted": self.retracted,
             "owner_approved": match self.policy {
                 Policy::Computed => Value::Null,
                 Policy::Human { approved } => json!(approved),
@@ -246,6 +257,22 @@ mod tests {
             assert!(!d.go);
             assert_eq!(d.reasons, vec!["the CI gate is not green"]);
         }
+    }
+
+    #[test]
+    fn a_candidate_whose_release_was_retracted_is_not_a_go() {
+        let d = evaluate(&GoFacts {
+            retracted: Some("acme-v1.2.0".into()),
+            ..all_good()
+        });
+        assert!(!d.go);
+        assert_eq!(
+            d.reasons,
+            vec![
+                "acme-v1.2.0 was retracted from this candidate, its publication having failed before deploying: the next candidate takes it"
+            ]
+        );
+        assert_eq!(d.as_json()["retracted"], "acme-v1.2.0");
     }
 
     #[test]

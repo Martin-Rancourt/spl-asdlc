@@ -410,6 +410,8 @@ impl Ruleset {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Release {
+    /// GitHub's id of the release, by which it is deleted (a retraction).
+    pub id: u64,
     pub tag: String,
     pub url: String,
     pub body: String,

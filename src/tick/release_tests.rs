@@ -191,6 +191,9 @@ impl World {
                 (repo(), "release-gate.yml".into()),
                 Ok(vec![gate_run(1, CAND, "c1", Some("success"))]),
             );
+            // No publication has run yet.
+            s.runs
+                .insert((repo(), "release-publish.yml".into()), Ok(Vec::new()));
             s.artifacts.insert(
                 (repo(), 1),
                 Ok(vec![evidence(&gate::evidence_artifact("c1"))]),
@@ -1305,6 +1308,7 @@ fn the_closure_judges_the_shipped_tickets_sends_the_note_and_closes_the_item() {
         s.releases.insert(
             (repo(), "acme-v1.2.0".into()),
             Ok(Release {
+                id: 1,
                 tag: "acme-v1.2.0".into(),
                 url: "https://github.com/example-org/acme/releases/tag/acme-v1.2.0".into(),
                 body: "### Features\n\n* ship".into(),
@@ -1354,6 +1358,7 @@ fn a_failed_note_send_keeps_the_release_open_and_is_retried() {
         s.releases.insert(
             (repo(), "acme-v1.2.0".into()),
             Ok(Release {
+                id: 1,
                 tag: "acme-v1.2.0".into(),
                 url: String::new(),
                 body: String::new(),
@@ -1687,6 +1692,7 @@ fn publish(w: &World) {
     s.releases.insert(
         (repo(), "acme-v1.2.0".into()),
         Ok(Release {
+            id: 1,
             tag: "acme-v1.2.0".into(),
             url: String::new(),
             body: String::new(),
@@ -4724,4 +4730,364 @@ fn a_release_item_found_ready_or_in_backlog_is_moved_in_progress_once() {
             &w.tracker.writes()[before..]
         );
     }
+}
+
+// ---- SID-1178: a release whose publication failed before deploying is retracted ----
+
+const RELEASE_TAG: &str = "acme-v1.2.0";
+const PUBLISH_WF: &str = "release-publish.yml";
+
+/// The run of the publication workflow on the release `RELEASE_TAG` at `sha`.
+fn publication_run(id: u64, sha: &str, conclusion: Option<&str>) -> WorkflowRun {
+    WorkflowRun {
+        event: "release".into(),
+        head_branch: RELEASE_TAG.into(),
+        created_at: Timestamp::parse("2026-10-05T12:01:00Z"),
+        ..gate_run(id, RELEASE_TAG, sha, conclusion)
+    }
+}
+
+/// The jobs of a publication run, as GitHub names them: the two calls of
+/// `asdlc-release-publish.yml` around the project's `publish` job.
+fn publication_jobs(verify: &str, publish: &str) -> Vec<crate::github::Job> {
+    let close = if publish == "success" {
+        "success"
+    } else {
+        "skipped"
+    };
+    [
+        ("verify / verify", verify),
+        ("verify / close", "skipped"),
+        ("verify / closing-guard", "success"),
+        ("publish", publish),
+        ("close / verify", "skipped"),
+        ("close / close", close),
+        ("close / closing-guard", "failure"),
+    ]
+    .into_iter()
+    .map(|(name, c)| crate::github::Job {
+        name: name.into(),
+        conclusion: Some(c.into()),
+    })
+    .collect()
+}
+
+impl World {
+    /// rc.1 released on its GO (no QA angle), then its publication run as
+    /// given, with its jobs.
+    fn published_then(
+        run: WorkflowRun,
+        jobs: crate::github::Read<Vec<crate::github::Job>>,
+    ) -> World {
+        let w = World::without_angles();
+        let r = w.tick();
+        assert_eq!(w.go_writes(), go_lines("c1"), "{r:?}");
+        let mut s = w.github.state.borrow_mut();
+        s.jobs.insert((repo(), run.id), jobs);
+        s.runs.insert((repo(), PUBLISH_WF.into()), Ok(vec![run]));
+        drop(s);
+        w
+    }
+
+    fn retraction_comments(&self) -> Vec<String> {
+        let release = self.release_item();
+        self.tracker
+            .comments(&release.key)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.body)
+            .filter(|b| b.contains("spl-asdlc:retracted"))
+            .collect()
+    }
+
+    fn retract_writes(&self) -> Vec<String> {
+        self.github
+            .writes()
+            .into_iter()
+            .filter(|l| l.starts_with("delete-release") || l.starts_with("delete-tag"))
+            .collect()
+    }
+
+    fn release_tag_exists(&self) -> bool {
+        self.github.state.borrow().tags[&repo()]
+            .iter()
+            .any(|t| t.name == RELEASE_TAG)
+    }
+
+    /// rc.2 cut on the fix, its gate green.
+    fn rc2_green(&self) {
+        self.cut_rc2();
+        self.gate(vec![
+            gate_run(2, CAND2, "c2", Some("success")),
+            gate_run(1, CAND, "c1", Some("success")),
+        ]);
+    }
+}
+
+#[test]
+fn a_release_whose_verification_refused_is_retracted_once_and_awaits_its_go() {
+    let w = World::published_then(
+        publication_run(50, "c1", Some("failure")),
+        Ok(publication_jobs("failure", "skipped")),
+    );
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let writes = w.retract_writes();
+    assert_eq!(writes.len(), 2, "{writes:?}");
+    assert!(writes[0].starts_with("delete-release example-org/acme "));
+    assert_eq!(
+        writes[1],
+        format!("delete-tag example-org/acme {RELEASE_TAG}")
+    );
+    assert!(w.github.release(&repo(), RELEASE_TAG).is_err(), "deleted");
+    assert!(!w.release_tag_exists(), "the tag is deleted");
+    let said = w.retraction_comments();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0].contains("actions/runs/50")
+            && said[0].contains("`verify / verify` concluded `failure`")
+            && said[0].contains(&format!("the next candidate takes `{RELEASE_TAG}`")),
+        "{}",
+        said[0]
+    );
+    // Idempotent: nothing left to retract, and no second GO on rc.1.
+    let (gh, tr) = (w.github.writes().len(), w.tracker.writes().len());
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        (w.github.writes().len(), w.tracker.writes().len()),
+        (gh, tr),
+        "{:?}",
+        &w.tracker.writes()[tr..]
+    );
+    let (_, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
+    assert!(!d.go);
+    assert_eq!(d.retracted.as_deref(), Some(RELEASE_TAG));
+    assert!(
+        d.reasons.iter().any(|r| r.contains("was retracted")),
+        "{:?}",
+        d.reasons
+    );
+}
+
+#[test]
+fn after_a_retraction_the_next_green_candidate_gets_the_go_on_the_same_version() {
+    let w = World::published_then(
+        publication_run(50, "c1", Some("failure")),
+        Ok(publication_jobs("failure", "skipped")),
+    );
+    w.tick();
+    assert_eq!(w.retract_writes().len(), 2);
+    w.rc2_green();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let go = w.go_writes();
+    assert_eq!(go[2..], go_lines("c2"), "{go:?}");
+    let release = w.github.release(&repo(), RELEASE_TAG).unwrap();
+    assert_eq!(release.body, NOTES);
+    assert_eq!(w.go_comments(), 2);
+}
+
+#[test]
+fn a_tag_left_by_a_failed_retraction_is_deleted_at_the_next_candidates_go() {
+    let w = World::published_then(
+        publication_run(50, "c1", Some("failure")),
+        Ok(publication_jobs("failure", "skipped")),
+    );
+    w.github
+        .fail_writes_starting_with("delete-tag", Some(422), "refused");
+    let r = w.tick();
+    assert!(!r.ok(), "the failed deletion is said");
+    assert!(w.github.release(&repo(), RELEASE_TAG).is_err());
+    assert!(w.release_tag_exists());
+    w.github.state.borrow_mut().failing_writes.clear();
+    // rc.1 gets no second GO on its leftover tag.
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(w.go_writes(), go_lines("c1"));
+    let leftover = w.github.state.borrow().tags[&repo()]
+        .iter()
+        .find(|t| t.name == RELEASE_TAG)
+        .cloned()
+        .unwrap();
+    w.rc2_green();
+    w.github
+        .state
+        .borrow_mut()
+        .tags
+        .get_mut(&repo())
+        .unwrap()
+        .push(leftover);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let writes = w.github.writes();
+    let tail = &writes[writes.len() - 3..];
+    assert_eq!(
+        tail[0],
+        format!("delete-tag example-org/acme {RELEASE_TAG}")
+    );
+    assert_eq!(tail[1..], go_lines("c2"));
+    assert_eq!(w.retraction_comments().len(), 1, "said once");
+}
+
+#[test]
+fn a_release_whose_publication_deployed_runs_or_was_taken_over_is_never_retracted() {
+    let dispatched = WorkflowRun {
+        event: "workflow_dispatch".into(),
+        head_branch: BRANCH.into(),
+        created_at: Timestamp::parse("2026-10-05T12:30:00Z"),
+        ..gate_run(51, "", "c1", Some("success"))
+    };
+    let cases: Vec<(&str, Vec<WorkflowRun>, Vec<crate::github::Job>)> = vec![
+        (
+            "delivered",
+            vec![publication_run(50, "c1", Some("success"))],
+            publication_jobs("success", "success"),
+        ),
+        (
+            "the deploy failed",
+            vec![publication_run(50, "c1", Some("failure"))],
+            publication_jobs("success", "failure"),
+        ),
+        (
+            "still running",
+            vec![publication_run(50, "c1", None)],
+            publication_jobs("failure", "skipped"),
+        ),
+        (
+            "a resume dispatched",
+            vec![dispatched, publication_run(50, "c1", Some("failure"))],
+            publication_jobs("failure", "skipped"),
+        ),
+        (
+            "another release's run",
+            vec![publication_run(50, "c0", Some("failure"))],
+            publication_jobs("failure", "skipped"),
+        ),
+    ];
+    for (case, runs, jobs) in cases {
+        let w = World::published_then(publication_run(50, "c1", None), Ok(jobs));
+        w.github
+            .state
+            .borrow_mut()
+            .runs
+            .insert((repo(), PUBLISH_WF.into()), Ok(runs));
+        let r = w.tick();
+        assert!(r.ok(), "{case}: {r:?}");
+        assert!(w.retract_writes().is_empty(), "{case}");
+        assert!(w.retraction_comments().is_empty(), "{case}");
+        assert!(w.github.release(&repo(), RELEASE_TAG).is_ok(), "{case}");
+        let refused = crate::verbs::retract(
+            &w.tick_ctx(),
+            &mut ActionLog::in_memory(),
+            RELEASE_TAG,
+            "a person",
+        );
+        assert!(refused.is_err(), "{case}: {refused:?}");
+        assert!(w.retract_writes().is_empty(), "{case}");
+    }
+}
+
+#[test]
+fn jobs_that_cannot_be_read_retract_nothing_and_are_said() {
+    let w = World::published_then(
+        publication_run(50, "c1", Some("failure")),
+        Err(crate::github::ReadError::unreadable(
+            "jobs of run 50",
+            "boom",
+        )),
+    );
+    let r = w.tick();
+    assert!(
+        r.failures
+            .iter()
+            .any(|f| f.contains("the publication run of acme-v1.2.0")),
+        "{r:?}"
+    );
+    assert!(w.retract_writes().is_empty());
+    assert!(w.retraction_comments().is_empty());
+    let refused = crate::verbs::retract(
+        &w.tick_ctx(),
+        &mut ActionLog::in_memory(),
+        RELEASE_TAG,
+        "a person",
+    )
+    .unwrap_err();
+    assert!(refused.contains("boom"), "{refused}");
+    assert!(w.retract_writes().is_empty());
+}
+
+#[test]
+fn release_retract_retracts_by_hand_once_and_refuses_what_is_not_a_release() {
+    let w = World::published_then(
+        publication_run(50, "c1", Some("failure")),
+        Ok(publication_jobs("cancelled", "skipped")),
+    );
+    let t = w.tick_ctx();
+    let mut log = ActionLog::in_memory();
+    let refused = crate::verbs::retract(&t, &mut log, CAND, "a person").unwrap_err();
+    assert!(refused.contains("is not a release tag"), "{refused}");
+    let line = crate::verbs::retract(&t, &mut log, RELEASE_TAG, "a person").unwrap();
+    assert!(line.contains("retracted"), "{line}");
+    assert_eq!(w.retract_writes().len(), 2);
+    let said = w.retraction_comments();
+    assert_eq!(said.len(), 1);
+    assert!(
+        said[0].contains("a person, with `spl-asdlc release retract`, retracts it"),
+        "{}",
+        said[0]
+    );
+    let again = crate::verbs::retract(&t, &mut log, RELEASE_TAG, "a person").unwrap();
+    assert!(again.contains("nothing to retract"), "{again}");
+    assert_eq!(w.retract_writes().len(), 2);
+    // The tick finds nothing left to retract either.
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(w.retract_writes().len(), 2);
+    assert_eq!(w.go_writes(), go_lines("c1"), "no second GO on rc.1");
+}
+
+#[test]
+fn a_dry_run_says_it_would_retract_and_writes_nothing() {
+    let w = World::published_then(
+        publication_run(50, "c1", Some("failure")),
+        Ok(publication_jobs("failure", "skipped")),
+    );
+    let (gh, tr) = (w.github.writes().len(), w.tracker.writes().len());
+    let intents = crate::dry::Intents::default();
+    let github = crate::dry::DryGitHub {
+        inner: &w.github,
+        intents: &intents,
+    };
+    let tracker = crate::dry::DryTracker {
+        inner: &w.tracker,
+        intents: &intents,
+    };
+    let signal = crate::dry::DrySignal { intents: &intents };
+    let t = Tick {
+        github: &github,
+        tracker: &tracker,
+        signal: &signal,
+        dry_run: true,
+        ..w.tick_ctx()
+    };
+    let r = run(&t, &mut ActionLog::in_memory());
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        (w.github.writes().len(), w.tracker.writes().len()),
+        (gh, tr)
+    );
+    let lines = intents.lines();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("delete release") && l.ends_with("(would retract)")),
+        "{lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.ends_with(&format!("delete tag {RELEASE_TAG} (would retract)"))),
+        "{lines:?}"
+    );
 }

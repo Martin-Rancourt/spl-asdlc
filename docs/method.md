@@ -115,6 +115,7 @@ The bridge automates; it never owns a step.
 | Cut a release, cut the next candidate | Dispatch the cut workflow (`open` on `main`, `candidate` on the release branch). |
 | Give the GO | Tag the candidate `vX.Y.Z` and publish the release with `gh release create`. The publication accepts it. |
 | Publish when a build failed | Attach the built archives to the release, then rerun the merge back (`replay`). |
+| Retract a release that deployed nothing | `spl-asdlc release retract vX.Y.Z` when the publication's verification refused it: the release and its tag are deleted, and the next candidate takes `vX.Y.Z`. The bridge does it at its next pass; the command refuses when a deploy or a merge back ran. |
 | Fix a failing candidate (code, tests, CI) | Open a PR to the release branch, merge it, then cut the next candidate (`candidate` on the release branch). The merge back brings the fix to `main`. |
 | Stop a cycle | `spl-asdlc release abandon`. |
 

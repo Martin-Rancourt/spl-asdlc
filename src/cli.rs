@@ -121,6 +121,14 @@ enum ReleaseCommand {
     },
     /// Abandon the cycle in flight.
     Abandon,
+    /// Retract a release whose publication failed before anything was
+    /// deployed: delete its GitHub release and its tag, say so on the release
+    /// issue; the next candidate takes the version. Refused when a deploy or
+    /// a merge back ran, or when the publication run cannot be read.
+    Retract {
+        /// The release tag (`release.release_tag`).
+        tag: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -546,6 +554,7 @@ fn release(
             reason,
         } => crate::verbs::requalify(&t, &mut log, &ticket, blocking, &reason, &who()),
         ReleaseCommand::Abandon => crate::verbs::abandon(&t, &mut log, &who()),
+        ReleaseCommand::Retract { tag } => crate::verbs::retract(&t, &mut log, &tag, &who()),
     };
     let _ = log.flush();
     match result {
@@ -813,6 +822,24 @@ mod tests {
             } => Ok((ticket, blocking, reason)),
             other => Err(format!("{other:?}")),
         }
+    }
+
+    #[test]
+    fn the_retract_verb_takes_the_release_tag_and_no_force() {
+        let parse = |args: &[&str]| {
+            let mut argv = vec!["spl-asdlc", "release", "retract"];
+            argv.extend_from_slice(args);
+            Cli::try_parse_from(argv).map(|c| c.command)
+        };
+        match parse(&["acme-v1.2.0"]) {
+            Ok(Command::Release {
+                command: ReleaseCommand::Retract { tag },
+                ..
+            }) => assert_eq!(tag, "acme-v1.2.0"),
+            other => panic!("{other:?}"),
+        }
+        assert!(parse(&[]).is_err(), "the tag is required");
+        assert!(parse(&["acme-v1.2.0", "--force"]).is_err(), "no override");
     }
 
     #[test]

@@ -15,6 +15,7 @@ pub mod link;
 pub mod merge;
 pub mod post_deploy;
 pub mod release;
+pub mod retract;
 pub mod sweep;
 
 #[cfg(test)]
