@@ -90,6 +90,10 @@ fn no_decision_is_taken_on_a_pipe_into_a_quiet_grep() {
         .flatten()
     {
         let p = entry.path();
+        // A folder (the logo generator in scripts/brand/) holds no shell script.
+        if !p.is_file() {
+            continue;
+        }
         bodies.push((relative(&p), std::fs::read_to_string(&p).unwrap()));
     }
     for (what, body) in bodies {
