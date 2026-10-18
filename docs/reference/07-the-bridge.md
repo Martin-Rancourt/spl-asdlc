@@ -30,7 +30,7 @@ One deterministic process, `spl-asdlc tick`, that turns GitHub facts into tracke
 | Linked ticket | The tracker's attachment for the PR URL (tracker side), or the item URL in the PR body as a fallback declared by configuration |
 | Release branch, RC tag, class | Refs and annotated tag message |
 | Gate result and evidence pack | Workflow run on the tag's SHA and its attempt; artifact `release-gate-evidence-<sha>`, and `results/suites.json` inside it for a red gate |
-| A red gate's automatic rerun | The `workflow_run` runs of `release.gate_rerun_workflow` on the tag's SHA |
+| A red gate's automatic rerun | The `workflow_run` runs of `release.gate_rerun_workflow` created from the gate run's completion until `release.gate_rerun_wait_minutes` after it (GitHub runs them on the default branch's head, not the tag's SHA) |
 | Angle report | The file `.spl-asdlc/qa/<candidate>/<angle>.json` at the angle PR's head |
 | Release notes | The version's section of `CHANGELOG.md` at the candidate, prepared by the cut (`release prepare`) |
 | Release tag, published release | Tags and the Releases API, the release's author |

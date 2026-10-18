@@ -94,13 +94,18 @@ pub struct RerunWait {
 /// the bridge cannot read the rerun decision, so it waits for what it can
 /// see. A rerun attempt that completed red is final (one rerun at most). A
 /// first attempt is final once the rerun workflow ran for it and every such
-/// run completed: `reruns` are that workflow's `workflow_run` runs on the
-/// candidate's commit. While none exists the rerun may still come, but only
-/// for `wait.bound` after the gate run completed (its `updated_at`, else
-/// its `created_at`): past it the red is final all the same, the rerun
-/// workflow may be absent or broken. A rerun run that showed up and is
-/// still running keeps the wait, whatever the bound. The caller reads them
-/// before it reads the gate run again, so that a rerun they made is seen.
+/// run completed: `reruns` are that workflow's `workflow_run` runs, and
+/// this gate run's are those created from its completion (its `updated_at`,
+/// else its `created_at`) until `wait.bound` after it. They are matched by
+/// time, not by commit: GitHub gives a `workflow_run` run the default
+/// branch's head commit, never the triggering run's, and a listed run does
+/// not name the run that triggered it. A time GitHub did not give keeps the
+/// rerun run. While none exists the rerun may still come, but only for
+/// `wait.bound` after the gate run completed: past it the red is final all
+/// the same, the rerun workflow may be absent or broken. A rerun run that
+/// showed up and is still running keeps the wait, whatever the bound. The
+/// caller reads them before it reads the gate run again, so that a rerun
+/// they made is seen.
 pub fn red_gate(run: &WorkflowRun, reruns: &[WorkflowRun], wait: &RerunWait) -> RedGate {
     if run.status != "completed" || colour(run.conclusion.as_deref()) != Colour::Red {
         return RedGate::NotRed;
@@ -108,18 +113,20 @@ pub fn red_gate(run: &WorkflowRun, reruns: &[WorkflowRun], wait: &RerunWait) -> 
     if run.attempt > 1 {
         return RedGate::Settled;
     }
+    let completed = run.updated_at.or(run.created_at);
     let mine: Vec<&WorkflowRun> = reruns
         .iter()
-        .filter(|r| r.event == "workflow_run" && r.head_sha == run.head_sha)
-        // A rerun workflow run older than the gate run is another run's.
-        .filter(|r| match (&r.created_at, &run.created_at) {
-            (Some(a), Some(b)) => a.0 >= b.0,
+        .filter(|r| r.event == "workflow_run")
+        // One created before the gate run completed, or from the bound on,
+        // is another gate run's.
+        .filter(|r| match (&r.created_at, &completed) {
+            (Some(a), Some(done)) => a.0 >= done.0 && a.0 < done.0 + wait.bound,
             _ => true,
         })
         .collect();
     if mine.is_empty() {
         let minutes = wait.bound.whole_minutes();
-        return match run.updated_at.or(run.created_at) {
+        return match completed {
             Some(done) if wait.now.0 - done.0 >= wait.bound => RedGate::Unseen(format!(
                 "no run of the automatic rerun workflow showed up within {minutes} minutes of the completion of {}",
                 run.url
@@ -311,11 +318,13 @@ mod tests {
         }
     }
 
-    fn rerun(sha: &str, status: &str, at: &str) -> WorkflowRun {
+    /// A run of the rerun workflow created `at`: as GitHub gives a
+    /// `workflow_run` run, on the default branch's head, not the candidate's.
+    fn rerun(status: &str, at: &str) -> WorkflowRun {
         WorkflowRun {
             id: 9,
-            head_sha: sha.into(),
-            head_branch: TAG.into(),
+            head_sha: "main-head".into(),
+            head_branch: "main".into(),
             event: "workflow_run".into(),
             status: status.into(),
             conclusion: (status == "completed").then(|| "success".to_string()),
@@ -352,20 +361,66 @@ mod tests {
             red_gate(&red(1), &[], &soon()),
             RedGate::Awaiting(_)
         ));
-        let running = [rerun("s", "in_progress", "2026-10-05T11:20:00Z")];
+        let running = [rerun("in_progress", "2026-10-05T11:05:00Z")];
         assert!(matches!(
             red_gate(&red(1), &running, &soon()),
             RedGate::Awaiting(_)
         ));
-        let done = [rerun("s", "completed", "2026-10-05T11:20:00Z")];
+        let done = [rerun("completed", "2026-10-05T11:05:00Z")];
         assert_eq!(red_gate(&red(1), &done, &soon()), RedGate::Settled);
-        // Another commit's, or an older run's, is not this gate run's rerun.
-        let other = [
-            rerun("t", "completed", "2026-10-05T11:20:00Z"),
-            rerun("s", "completed", "2026-10-05T10:00:00Z"),
+        // One created before the gate run completed is another gate run's.
+        let older = [rerun("completed", "2026-10-05T10:59:59Z")];
+        assert!(matches!(
+            red_gate(&red(1), &older, &soon()),
+            RedGate::Awaiting(_)
+        ));
+        // So is one created from the bound on: the red is then final as
+        // one whose rerun never showed up.
+        let later = [
+            rerun("completed", "2026-10-05T11:30:00Z"),
+            rerun("in_progress", "2026-10-05T11:31:00Z"),
+            rerun("completed", "2026-10-05T10:00:00Z"),
         ];
         assert!(matches!(
-            red_gate(&red(1), &other, &soon()),
+            red_gate(&red(1), &later, &at("2026-10-05T11:40:00Z")),
+            RedGate::Unseen(_)
+        ));
+    }
+
+    #[test]
+    fn the_rerun_of_a_gate_run_is_found_on_the_default_branch_head_by_its_time() {
+        // The gate failed at 00:17:58 on the candidate's commit `s`; its
+        // rerun workflow ran at 00:18:03 on the default branch's head.
+        let gate = WorkflowRun {
+            created_at: Timestamp::parse("2026-10-18T00:05:00Z"),
+            updated_at: Timestamp::parse("2026-10-18T00:17:58Z"),
+            ..red(1)
+        };
+        let decided = [rerun("completed", "2026-10-18T00:18:03Z")];
+        assert_eq!(decided[0].head_sha, "main-head");
+        assert_ne!(decided[0].head_sha, gate.head_sha);
+        // At the next tick, long before the bound: final.
+        let next_tick = at("2026-10-18T00:20:00Z");
+        assert_eq!(red_gate(&gate, &decided, &next_tick), RedGate::Settled);
+        // Still deciding: it waits.
+        let deciding = [rerun("in_progress", "2026-10-18T00:18:03Z")];
+        assert!(matches!(
+            red_gate(&gate, &deciding, &next_tick),
+            RedGate::Awaiting(_)
+        ));
+        // One created while the gate run still ran is another run's.
+        let earlier = [rerun("completed", "2026-10-18T00:10:00Z")];
+        assert!(matches!(
+            red_gate(&gate, &earlier, &next_tick),
+            RedGate::Awaiting(_)
+        ));
+        // Only the `workflow_run` runs of the rerun workflow count.
+        let dispatched = [WorkflowRun {
+            event: "workflow_dispatch".into(),
+            ..rerun("completed", "2026-10-18T00:18:03Z")
+        }];
+        assert!(matches!(
+            red_gate(&gate, &dispatched, &next_tick),
             RedGate::Awaiting(_)
         ));
     }
@@ -389,7 +444,7 @@ mod tests {
         }
         assert!(after.is_final());
         // A rerun run that showed up and still runs keeps the wait past it.
-        let running = [rerun("s", "in_progress", "2026-10-05T11:41:00Z")];
+        let running = [rerun("in_progress", "2026-10-05T11:41:00Z")];
         assert!(matches!(
             red_gate(&completed, &running, &at("2026-10-05T14:00:00Z")),
             RedGate::Awaiting(_)
