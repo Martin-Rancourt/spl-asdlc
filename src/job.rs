@@ -192,7 +192,11 @@ mod tests {
     /// it, its instance overlay, which the pass finds by itself.
     fn spec_config() -> (Config, PathBuf) {
         use crate::config::spec_example;
-        let dir = std::env::temp_dir().join(format!("spl-asdlc-job-{}", std::process::id()));
+        // One directory per call: the tests run in parallel, and a shared
+        // one is rewritten by one test while another reads it.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("spl-asdlc-job-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(crate::config::FILE_NAME);
         std::fs::write(&path, spec_example::repository()).unwrap();
