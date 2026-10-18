@@ -147,6 +147,9 @@ pub struct Tracker {
     pub no_deploy_label: String,
 }
 
+/// The default of `release.hold_label`.
+pub const DEFAULT_HOLD_LABEL: &str = "hold";
+
 /// The default of `tracker.no_deploy_label`.
 pub const DEFAULT_NO_DEPLOY_LABEL: &str = "no-deploy";
 
@@ -194,6 +197,9 @@ pub struct Release {
     /// are assigned to it; `None` leaves them unassigned, taken by role.
     pub fix_assignee: Option<String>,
     pub escalation_label: String,
+    /// The label a person puts on the release item to hold its GO: while
+    /// it is there the bridge neither tags nor publishes the release.
+    pub hold_label: String,
     pub auto_candidate: bool,
     pub cut_workflow: String,
     pub gate_workflow: String,
@@ -1044,6 +1050,17 @@ impl Validator {
         let escalation_label = self
             .optional("release.escalation_label", raw.escalation_label)
             .unwrap_or_else(|| "blocked-by-human".to_string());
+        let hold_label = self
+            .optional("release.hold_label", raw.hold_label)
+            .unwrap_or_else(|| DEFAULT_HOLD_LABEL.to_string());
+        // The escalation adds its label itself: the same name would let the
+        // bridge hold a GO a person never held.
+        if hold_label.eq_ignore_ascii_case(&escalation_label) {
+            self.err(
+                "release.hold_label",
+                format!("\"{hold_label}\" is also release.escalation_label: the label a person puts to hold the GO must differ from the one the bridge adds at an escalation"),
+            );
+        }
         let auto_candidate = raw.auto_candidate.unwrap_or(false);
         let cut_workflow =
             self.workflow("release.cut_workflow", raw.cut_workflow, "release-cut.yml");
@@ -1083,6 +1100,7 @@ impl Validator {
             coordinator_assignee,
             fix_assignee,
             escalation_label,
+            hold_label,
             auto_candidate,
             cut_workflow,
             gate_workflow,

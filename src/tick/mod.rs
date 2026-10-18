@@ -13,6 +13,7 @@
 pub mod closure;
 pub mod link;
 pub mod merge;
+pub mod pause;
 pub mod post_deploy;
 pub mod release;
 pub mod retract;
@@ -64,6 +65,12 @@ pub struct Report {
     /// tick, written nowhere but the action log, and there only when the
     /// reason changes.
     pub waiting: Vec<Waiting>,
+    /// The pause switch is on (`pause::VARIABLE`): the tick wrote nothing
+    /// but, once, the notice on the release item of a cycle in flight.
+    pub paused: bool,
+    /// What the host should know that is no failure: a pause switch that
+    /// could not be read, and so did not pause.
+    pub notes: Vec<String>,
 }
 
 /// What became of a notice ([`Tick::notify`]).
@@ -108,7 +115,12 @@ impl Report {
 
     /// One line for a host's job log.
     pub fn summary(&self) -> String {
-        let mut s = format!("{} action(s)", self.actions);
+        let mut s = if self.paused {
+            format!("paused by {}: ", pause::VARIABLE)
+        } else {
+            String::new()
+        };
+        s.push_str(&format!("{} action(s)", self.actions));
         if !self.failures.is_empty() {
             s.push_str(&format!(
                 ", {} failure(s): {}",
@@ -118,6 +130,9 @@ impl Report {
         }
         if self.out_of_time {
             s.push_str(", stopped at the time budget");
+        }
+        for n in &self.notes {
+            s.push_str(&format!("; {n}"));
         }
         s
     }
@@ -212,9 +227,22 @@ impl Tick<'_> {
 /// One tick over the repository of `t.config`: the release pass (with its
 /// closure), the PR pass, the sweep, the post-deploy validation (spec 07,
 /// "What a tick does"). At most one merge per repository per tick
-/// (invariant 6). The caller flushes the action log.
+/// (invariant 6). The pause switch, read first, stops it before any pass
+/// ([`pause`]). The caller flushes the action log.
 pub fn run(t: &Tick, log: &mut ActionLog) -> Report {
     let mut report = Report::default();
+    match pause::switch(t.github, &t.repo) {
+        pause::Switch::On(variable) => {
+            report.paused = true;
+            pause::notice(t, log, &mut report, &variable);
+            return report;
+        }
+        pause::Switch::Unreadable(e) => report.notes.push(format!(
+            "the pause switch {} could not be read, so the bridge acts as not paused (the GitHub App needs Variables: read): {e}",
+            pause::VARIABLE
+        )),
+        pause::Switch::Off | pause::Switch::Other(_) => {}
+    }
     passes(t, log, &mut report);
     // Why each held PR waits is in the report at every tick; the log keeps
     // it only when it changes (a dry run keeps nothing).

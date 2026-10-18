@@ -60,6 +60,7 @@ fn a_minimal_file_gets_every_documented_default() {
     assert_eq!(c.release.changelog_sections, default_changelog_sections());
     assert_eq!(c.release.stagnation_hours, 2);
     assert_eq!(c.release.escalation_label, "blocked-by-human");
+    assert_eq!(c.release.hold_label, "hold");
     assert!(!c.release.auto_candidate);
     assert!(c.release.bookkeeping_paths.is_empty());
     assert_eq!(c.release.gate_workflow, "release-gate.yml");
@@ -709,6 +710,21 @@ fn the_no_deploy_label_is_configurable_and_never_empty() {
             "service_identity = \"spl-asdlc\"\nno_deploy_label = \"\"\n",
         ),
         "tracker.no_deploy_label: must not be empty when given",
+    );
+}
+
+#[test]
+fn the_hold_label_is_configurable_and_never_the_escalation_label() {
+    let with = |line: &str| MINIMAL.replacen("[release]\n", &format!("[release]\n{line}\n"), 1);
+    let c = Config::parse(&with("hold_label = \"on-hold\"")).expect("a hold label is valid");
+    assert_eq!(c.release.hold_label, "on-hold");
+    assert_refused_with(
+        &with("hold_label = \"\""),
+        "release.hold_label: must not be empty when given",
+    );
+    assert_refused_with(
+        &with("hold_label = \"Blocked-By-Human\""),
+        "release.hold_label: \"Blocked-By-Human\" is also release.escalation_label",
     );
 }
 

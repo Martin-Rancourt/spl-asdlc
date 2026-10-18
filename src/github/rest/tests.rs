@@ -812,6 +812,41 @@ fn an_update_branch_is_accepted_only_on_202() {
 }
 
 #[test]
+fn a_repository_variable_is_read_by_name_and_its_absence_is_not_found() {
+    let (gh, t) = client();
+    t.on(
+        "GET",
+        &url("/repos/example-org/acme/actions/variables/SPL_ASDLC_PAUSED"),
+        200,
+        r#"{"name":"SPL_ASDLC_PAUSED","value":"true","created_at":"2026-10-18T09:00:00Z","updated_at":"2026-10-18T09:05:00Z"}"#,
+    );
+    let v = gh.variable(&repo(), "SPL_ASDLC_PAUSED").unwrap();
+    assert_eq!(v.value, "true");
+    assert_eq!(v.updated_at.as_deref(), Some("2026-10-18T09:05:00Z"));
+    let (gh, t) = client();
+    t.on(
+        "GET",
+        &url("/repos/example-org/acme/actions/variables/SPL_ASDLC_PAUSED"),
+        404,
+        r#"{"message":"Not Found"}"#,
+    );
+    assert!(
+        gh.variable(&repo(), "SPL_ASDLC_PAUSED")
+            .unwrap_err()
+            .is_not_found()
+    );
+    let (gh, t) = client();
+    t.on(
+        "GET",
+        &url("/repos/example-org/acme/actions/variables/SPL_ASDLC_PAUSED"),
+        403,
+        r#"{"message":"Resource not accessible by integration"}"#,
+    );
+    let e = gh.variable(&repo(), "SPL_ASDLC_PAUSED").unwrap_err();
+    assert!(!e.is_not_found(), "a refusal is not an absence: {e}");
+}
+
+#[test]
 fn a_retraction_deletes_the_release_by_its_id_then_the_tag_ref() {
     let (gh, t) = client();
     t.on(

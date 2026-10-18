@@ -28,6 +28,7 @@ record = ".spl-asdlc/qa/{candidate}/"  # where angle reports live
 bookkeeping_paths = []                  # files allowed to change after the candidate
 stagnation_hours = 2
 escalation_label = "blocked-by-human"
+hold_label = "hold"                    # a person's label on the release issue: no GO while it is there
 auto_candidate = false
 cut_workflow = "release-cut.yml"
 gate_workflow = "release-gate.yml"
@@ -207,6 +208,7 @@ The section is required: every project has the release cycle (rule 11). One of i
 | `release.coordinator_assignee` | none | The tracker participant (an agent the tracker serves, like an angle's `assignee`) who receives the consolidation item of each candidate, assigned when the bridge creates it (`05-release-cycle.md` §3), and each angle sub-item when it goes In Review, in the same write, to review its angle PR (§4, BR-ASDLC-020); an existing consolidation item is never reassigned. | Absent, or unknown to the tracker: the consolidation item is created unassigned, and an angle sub-item goes In Review with its assignee left as it is; `doctor` reports an unknown participant. |
 | `release.fix_assignee` | none | The tracker participant who fixes release problems (an agent the tracker serves, like an angle's `assignee`): the gate-fix ticket of a red gate (`05-release-cycle.md` §3, BR-ASDLC-016) and the urgent fix ticket of a blocking QA finding (§5, BR-ASDLC-022) are created assigned to it, as is a finding requalified as blocking (`09-requalification-and-human-gestures.md`). | Absent, or unknown to the tracker: those tickets are created unassigned, taken by role; `doctor` reports an unknown participant. |
 | `release.escalation_label` | `blocked-by-human` | Label added to the release issue when it waits for the owner; the bridge creates it at the first escalation when the tracker lacks it. | — (`doctor` says whether it exists yet) |
+| `release.hold_label` | `hold` | Label a person puts on the release issue to hold its GO: while it is there (in any case) the bridge neither tags nor publishes the release, and `release status` says the GO is held by it; merges and ticket moves go on (`05-release-cycle.md` §8). The bridge only reads it, and never creates it. | Empty, or the same name as `release.escalation_label`: file invalid. |
 | `release.auto_candidate` | `false` | When true the bridge dispatches the next RC itself once a pass is merged; otherwise the coordinator does. | — |
 | `release.cut_workflow` | `release-cut.yml` | Workflow the bridge dispatches for `release cut`. | Not a file name: file invalid; absent on GitHub: the dispatch fails and says so. |
 | `release.gate_workflow` | `release-gate.yml` | Workflow whose run on the RC tag is the gate. The bridge reads it here; the publication (`asdlc-release-publish.yml`) reads it from this file (its `config-file` input) at the release's commit, and the cut's summary at the cut's commit, unless the caller passes `gate-workflow`, which wins; a file the workflow cannot read leaves the default, with a warning. | No run on the tag: the gate is not green. A caller that passes a `gate-workflow` other than this value: `doctor` reports it invalid. |

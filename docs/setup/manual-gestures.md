@@ -172,6 +172,28 @@ Or in GitHub: the review, its menu, **Dismiss review**, with a message.
 
 **The bridge, next tick**: the request no longer stands; the PR merges if every other condition holds, or the `waiting:` line names the next reason.
 
+## Pause the bridge for a project
+
+When the bridge must not act on a repository for a while (a release to delete by hand before it tags the candidate again, an incident), without access to the host that runs it:
+
+```sh
+gh variable set SPL_ASDLC_PAUSED --repo OWNER/REPO --body true
+```
+
+Or in GitHub: **Settings**, **Secrets and variables**, **Actions**, **Variables**, a repository variable `SPL_ASDLC_PAUSED` with the value `true`. To resume, delete it or set it to `false`:
+
+```sh
+gh variable delete SPL_ASDLC_PAUSED --repo OWNER/REPO
+```
+
+**The bridge, next tick**: it reads the variable first, and while it is `true` it writes nothing for the repository, on GitHub or in the tracker, but one comment on the release issue of a cycle in flight, once per setting of the variable; its report says `paused by SPL_ASDLC_PAUSED`, and `spl-asdlc doctor` reports `pause: ok — paused`. Unset or `false`, it acts again where the flow stands. Any other value pauses nothing (`doctor` says it is invalid). The App needs Variables read (`github-app.md`): a variable it cannot read pauses nothing, and the tick says so.
+
+## Hold a release's GO
+
+When the release must not be tagged and published yet, while the rest of the flow goes on: in the tracker, put the label `hold` (`release.hold_label` in `.spl-asdlc/config.toml`) on the release issue.
+
+**The bridge, next tick**: it keeps merging PRs (the angle PRs included) and moving tickets, but gives no GO: it neither tags nor publishes the release. `spl-asdlc release status` says the GO is held, and by which label on which issue. Remove the label to let the GO be computed again at the next tick. The hold label is not the escalation label (`release.escalation_label`), which the bridge adds itself: the configuration refuses the same name for both.
+
 ## Abandon a cycle
 
 On the bridge's host:
@@ -202,6 +224,7 @@ An AI session (Claude Code, for instance) can take these gestures on the owner's
 | `Bash(gh pr ready *)` | Put a PR in draft, or mark it ready again |
 | `Bash(git push origin <release tag>)`, `Bash(gh release create *)` | Tag and publish the release by hand |
 | `Bash(gh workflow run *)` | Open a cycle, cut a candidate, replay the publication |
+| `Bash(gh variable set SPL_ASDLC_PAUSED *)`, `Bash(gh variable delete SPL_ASDLC_PAUSED *)` | Pause the bridge for a project, resume it |
 | `Bash(gh run rerun *)` | Rerun the gate, rerun a failed publication job |
 | `Bash(gh run download *)` | Download a run's build artifacts |
 | `Bash(gh release upload *)` | Attach files to a release |
@@ -209,4 +232,4 @@ An AI session (Claude Code, for instance) can take these gestures on the owner's
 | `Bash(ssh <bridge host> spl-asdlc release status*)`, `Bash(ssh <bridge host> spl-asdlc tick --dry-run*)` | Read the GO and what the next tick would do |
 | `Bash(ssh <bridge host> spl-asdlc release *)` | Cut, requalify, abandon, retract |
 
-The reads (`gh pr list`, `gh pr view`, `gh run list`, `gh run view`, `gh api` without `--method`) change nothing. Every rule of the table but the two dry reads is an **outward action**: it merges, drafts, dispatches, publishes or writes the tracker, on the shared repository, and most cannot be undone (a merge, an uploaded asset that replaced another, an abandoned cycle). A rule only lets the session run the command; each gesture still waits for the owner's go.
+The reads (`gh pr list`, `gh pr view`, `gh run list`, `gh run view`, `gh variable get`, `gh api` without `--method`) change nothing. Every rule of the table but the two dry reads is an **outward action**: it merges, drafts, dispatches, publishes, pauses or writes the tracker, on the shared repository, and most cannot be undone (a merge, an uploaded asset that replaced another, an abandoned cycle). A rule only lets the session run the command; each gesture still waits for the owner's go.

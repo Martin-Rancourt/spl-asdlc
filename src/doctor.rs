@@ -97,10 +97,48 @@ pub fn run(
             return out;
         }
     };
+    out.push(pause_check(github, &repo));
     out.extend(files(config, instance, github, &repo, &default));
     out.extend(ruleset_checks(config, &default, &github.rulesets(&repo)));
     out.extend(tracker_checks(config, tracker));
     out
+}
+
+/// The pause switch (`crate::tick::pause`): a paused project is reported,
+/// as is a switch the App cannot read, which pauses nothing.
+fn pause_check(github: &dyn GitHub, repo: &RepoSlug) -> Check {
+    use crate::tick::pause::{self, Switch};
+    let name = "pause";
+    let var = pause::VARIABLE;
+    match pause::switch(github, repo) {
+        Switch::Off => check(
+            name,
+            Verdict::Ok,
+            format!("not paused ({var} unset or false)"),
+        ),
+        Switch::On(v) => check(
+            name,
+            Verdict::Ok,
+            format!(
+                "paused: {var} is true{}; the bridge writes nothing for {repo} until it is unset or false",
+                v.updated_at
+                    .map(|at| format!(" (set {at})"))
+                    .unwrap_or_default()
+            ),
+        ),
+        Switch::Other(value) => check(
+            name,
+            Verdict::Invalid,
+            format!("{var} is \"{value}\": only `true` pauses the bridge, which acts"),
+        ),
+        Switch::Unreadable(e) => check(
+            name,
+            Verdict::Missing,
+            format!(
+                "{e}: the GitHub App needs Variables: read; until then the bridge acts as not paused"
+            ),
+        ),
+    }
 }
 
 /// What reviews a PR (spec 04 §11): its angles on every PR and what can add one,
@@ -1047,6 +1085,12 @@ mod tests {
         };
         assert_eq!(by("github-app"), Verdict::Ok);
         assert!(
+            checks.iter().any(
+                |c| c.to_string() == "pause: ok — not paused (SPL_ASDLC_PAUSED unset or false)"
+            ),
+            "{checks:#?}"
+        );
+        assert!(
             checks
                 .iter()
                 .any(|c| c.to_string() == "instance overlay: ok — none"),
@@ -1127,6 +1171,43 @@ mod tests {
                 .any(|c| c.name == "release base" && c.verdict == Verdict::Missing),
             "{checks:#?}"
         );
+    }
+
+    #[test]
+    fn a_paused_project_is_reported_and_an_unreadable_switch_pauses_nothing() {
+        use crate::github::Variable;
+        let g = FakeGitHub::new();
+        let repo = RepoSlug::parse("example-org/acme").unwrap();
+        let set = |value: Read<Variable>| {
+            g.state
+                .borrow_mut()
+                .variables
+                .insert((repo.clone(), "SPL_ASDLC_PAUSED".into()), value);
+        };
+        let var = |value: &str| {
+            Ok(Variable {
+                name: "SPL_ASDLC_PAUSED".into(),
+                value: value.into(),
+                updated_at: Some("2026-10-18T09:00:00Z".into()),
+            })
+        };
+        set(var("true"));
+        assert_eq!(
+            pause_check(&g, &repo).to_string(),
+            "pause: ok — paused: SPL_ASDLC_PAUSED is true (set 2026-10-18T09:00:00Z); the bridge writes nothing for example-org/acme until it is unset or false"
+        );
+        set(var("false"));
+        assert_eq!(pause_check(&g, &repo).verdict, Verdict::Ok);
+        set(var("yes"));
+        assert_eq!(pause_check(&g, &repo).verdict, Verdict::Invalid);
+        set(Err(ReadError::Unreadable {
+            what: "variable SPL_ASDLC_PAUSED of example-org/acme".into(),
+            status: Some(403),
+            detail: "HTTP 403: Resource not accessible by integration".into(),
+        }));
+        let c = pause_check(&g, &repo);
+        assert_eq!(c.verdict, Verdict::Missing, "{c}");
+        assert!(c.detail.contains("Variables: read"), "{c}");
     }
 
     #[test]

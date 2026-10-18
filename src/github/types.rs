@@ -408,6 +408,16 @@ impl Ruleset {
     }
 }
 
+/// A repository variable of GitHub Actions (REST `actions/variables`): the
+/// bridge reads its pause switch there (`SPL_ASDLC_PAUSED`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Variable {
+    pub name: String,
+    pub value: String,
+    /// When it was last set, as GitHub says it; `None` when it did not.
+    pub updated_at: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Release {
     /// GitHub's id of the release, by which it is deleted (a retraction).

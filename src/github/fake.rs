@@ -4,7 +4,7 @@
 //! A read nobody scripted answers `Unreadable` ("not scripted"), never an
 //! empty list: a test that forgot a fact fails loudly instead of passing on
 //! "nothing there". Only lookups by name answer `NotFound` when unscripted:
-//! a file, a release, a tag object (GitHub's 404 for "it does not exist").
+//! a file, a release, a tag object, a variable (GitHub's 404 for "it does not exist").
 //! Writes are recorded and applied where a later read must see them (a
 //! merged PR moves to the merged list; labels and branches change).
 
@@ -18,6 +18,8 @@ use super::types::*;
 pub struct FakeState {
     pub identity: Option<Identity>,
     pub default_branch: BTreeMap<RepoSlug, String>,
+    /// `(repo, name)`: a repository variable; a missing entry is `NotFound`.
+    pub variables: HashMap<(RepoSlug, String), Read<Variable>>,
     pub branches: BTreeMap<RepoSlug, Vec<GitRef>>,
     pub tags: BTreeMap<RepoSlug, Vec<GitRef>>,
     pub tag_objects: HashMap<(RepoSlug, String), AnnotatedTag>,
@@ -120,6 +122,20 @@ impl GitHub for FakeGitHub {
         match self.state.borrow().default_branch.get(repo) {
             Some(b) => Ok(b.clone()),
             None => not_scripted(format!("default branch of {repo}")),
+        }
+    }
+
+    fn variable(&self, repo: &RepoSlug, name: &str) -> Read<Variable> {
+        match self
+            .state
+            .borrow()
+            .variables
+            .get(&(repo.clone(), name.to_string()))
+        {
+            Some(v) => v.clone(),
+            None => Err(ReadError::NotFound {
+                what: format!("variable {name}"),
+            }),
         }
     }
 

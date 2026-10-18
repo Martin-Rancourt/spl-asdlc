@@ -5091,3 +5091,134 @@ fn a_dry_run_says_it_would_retract_and_writes_nothing() {
         "{lines:?}"
     );
 }
+
+// ---- the pause switch and the hold label (a person's gestures) ----
+
+impl World {
+    /// A person sets the repository variable `SPL_ASDLC_PAUSED` in GitHub.
+    fn pause(&self, value: &str, at: &str) {
+        self.github.state.borrow_mut().variables.insert(
+            (repo(), "SPL_ASDLC_PAUSED".into()),
+            Ok(crate::github::Variable {
+                name: "SPL_ASDLC_PAUSED".into(),
+                value: value.into(),
+                updated_at: Some(at.into()),
+            }),
+        );
+    }
+
+    fn pause_notices(&self) -> usize {
+        let item = self.release_item();
+        self.tracker
+            .comments(&item.key)
+            .unwrap()
+            .iter()
+            .filter(|c| c.body.contains("The bridge is paused"))
+            .count()
+    }
+}
+
+#[test]
+fn a_paused_tick_writes_nothing_and_an_unpaused_one_acts_again() {
+    let w = World::new();
+    w.pause("true", "2026-10-05T11:45:00Z");
+    // No cycle in flight yet: nothing at all is written.
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(r.paused);
+    assert_eq!(r.summary(), "paused by SPL_ASDLC_PAUSED: 0 action(s)");
+    assert!(w.github.writes().is_empty(), "{:?}", w.github.writes());
+    assert!(w.tracker.writes().is_empty(), "{:?}", w.tracker.writes());
+
+    // Unset: the bridge acts again and opens the cycle.
+    w.github.state.borrow_mut().variables.clear();
+    let r = w.tick();
+    assert!(r.ok() && !r.paused, "{r:?}");
+    assert!(r.actions > 0);
+
+    // Paused with a cycle in flight and its GO due: the release item is
+    // told once, nothing else is written, the release is not tagged.
+    all_angles_merged(&w);
+    w.pause("true", "2026-10-05T11:50:00Z");
+    let (github_before, tracker_before) = (w.github.writes(), w.tracker.writes().len());
+    let r = w.tick();
+    assert!(r.ok() && r.paused, "{r:?}");
+    assert_eq!(r.actions, 1, "{r:?}");
+    assert_eq!(w.pause_notices(), 1);
+    assert_eq!(w.tracker.writes().len(), tracker_before + 1);
+    assert_eq!(w.github.writes(), github_before, "nothing on GitHub");
+    let r = w.tick();
+    assert_eq!(r.actions, 0, "{r:?}");
+    assert_eq!(w.pause_notices(), 1, "said once per setting");
+
+    // `false` is no pause: the GO is computed, the release tagged.
+    w.pause("false", "2026-10-05T11:55:00Z");
+    let r = w.tick();
+    assert!(r.ok() && !r.paused, "{r:?}");
+    assert_eq!(w.go_writes(), go_lines("c1"), "{r:?}");
+}
+
+#[test]
+fn a_pause_switch_that_cannot_be_read_pauses_nothing_and_is_said() {
+    let w = World::new();
+    w.github.state.borrow_mut().variables.insert(
+        (repo(), "SPL_ASDLC_PAUSED".into()),
+        Err(crate::github::ReadError::Unreadable {
+            what: "variable SPL_ASDLC_PAUSED of example-org/acme".into(),
+            status: Some(403),
+            detail: "HTTP 403: Resource not accessible by integration".into(),
+        }),
+    );
+    let r = w.tick();
+    assert!(r.ok() && !r.paused, "{r:?}");
+    assert!(r.actions > 0, "the bridge acts as before: {r:?}");
+    assert!(
+        r.summary()
+            .contains("could not be read, so the bridge acts as not paused"),
+        "{}",
+        r.summary()
+    );
+}
+
+#[test]
+fn a_held_go_tags_nothing_until_the_label_goes_and_release_status_says_so() {
+    let w = World::new();
+    w.tick();
+    let item = w.release_item();
+    // A person holds the GO with the hold label on the release item.
+    w.tracker.add_label(&item.key, "hold").unwrap();
+    // The angle PR is still merged under the hold.
+    let pr = w.angle_pr(30, "security", &report_json("security", ""));
+    w.open_on_branch(vec![pr.clone()]);
+    w.tick();
+    assert!(
+        w.github.writes().contains(&format!(
+            "merge example-org/acme#30 at {} merge",
+            pr.head_sha
+        )),
+        "{:?}",
+        w.github.writes()
+    );
+    all_angles_merged(&w);
+    w.open_on_branch(Vec::new());
+    for _ in 0..2 {
+        let r = w.tick();
+        assert!(r.ok(), "{r:?}");
+        assert!(w.go_writes().is_empty(), "held: {:?}", w.go_writes());
+    }
+    let (_, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
+    assert!(!d.go);
+    assert_eq!(d.held.as_deref(), Some("hold"));
+    assert_eq!(
+        d.reasons,
+        vec![format!(
+            "the GO is held by the label `hold` on {}: removing it lets the GO be computed again",
+            item.key
+        )]
+    );
+    // The label removed: the GO is computed again.
+    w.tracker.remove_label(&item.key, "hold").unwrap();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(w.go_writes(), go_lines("c1"), "{r:?}");
+}
