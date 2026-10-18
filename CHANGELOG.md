@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.2.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.1.1...v1.2.0) (2026-10-18)
+
+
+### Features
+
+* **bridge:** pause a project or hold a release's GO without touching its host ([#82](https://github.com/Martin-Rancourt/spl-asdlc/issues/82)) ([34b71bd](https://github.com/Martin-Rancourt/spl-asdlc/commit/34b71bdc80bdf670bb30c928bf6c5af1d57134ae))
+* **release:** retract a release whose publication failed before deploying ([#81](https://github.com/Martin-Rancourt/spl-asdlc/issues/81)) ([c160e3c](https://github.com/Martin-Rancourt/spl-asdlc/commit/c160e3cbdfb954fc64e11b0f17bd35f8f90caa6a))
+* **release:** the publication reads the gate workflow from the configuration ([#80](https://github.com/Martin-Rancourt/spl-asdlc/issues/80)) ([2564333](https://github.com/Martin-Rancourt/spl-asdlc/commit/2564333443faee271d9a82502a40f2e7a4ce1694))
+* **tracker:** create the bridge's items in the configured tracker project ([#76](https://github.com/Martin-Rancourt/spl-asdlc/issues/76)) ([526c178](https://github.com/Martin-Rancourt/spl-asdlc/commit/526c178904dc2310c0e3e5b844ebcf74d09c91fa))
+
+
+### Bug Fixes
+
+* **release:** find the gate's automatic rerun on the default branch's head ([#77](https://github.com/Martin-Rancourt/spl-asdlc/issues/77)) ([b555114](https://github.com/Martin-Rancourt/spl-asdlc/commit/b555114a548d8ca65d91419f620a4c4a53a39388))
+* **tracker:** find the bridge's items even when their description loses its marker ([#83](https://github.com/Martin-Rancourt/spl-asdlc/issues/83)) ([4dcbd6c](https://github.com/Martin-Rancourt/spl-asdlc/commit/4dcbd6cac7ea9eb31aa230bcb7d6ddb41fe029f8))
+
 ## [1.1.1](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.1.0...v1.1.1) (2026-10-16)
 
 
