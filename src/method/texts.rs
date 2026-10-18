@@ -503,7 +503,7 @@ pub fn gate_fix_ticket(f: &RedGateFacts) -> (String, String) {
         "{marker}\n\n## Goal\nMake the release gate green on the release branch `{branch}`. The gate run of the \
          candidate `{candidate}` concluded `{conclusion}` ({run_url}) after its automatic rerun of known flakes, if \
          any, had settled: fix what the failure needs on `{branch}`, through a PR whose base is `{branch}` \
-         (`docs/agents/implement.md` step 2), so that the gate of the next candidate is green.\n\n\
+         (`.spl-asdlc/process.md`, \"Implement a ticket\" step 2), so that the gate of the next candidate is green.\n\n\
          ## Non-goals\n- No new feature.\n- No change beyond what the failure needs.\n\
          - Cutting the next candidate: the coordinator does it through the cut workflow (or the bridge, when \
          `auto_candidate = true`).\n\n\

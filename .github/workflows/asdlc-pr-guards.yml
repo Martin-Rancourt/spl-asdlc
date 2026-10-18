@@ -3,7 +3,15 @@ name: asdlc-pr-guards
 # Everything a pull request runs before merge that is not the project's own
 # test suite, and nothing that can release or deploy
 # (.spl-asdlc/requirements/ci.md, REQ-CI-022..034): the "does anything beyond prose
-# change?" detector, the project's extra detectors, and its guard commands.
+# change?" detector, the project's extra detectors, the method check of the
+# process page, and its guard commands.
+#
+# The process page (docs/agents/process.md) is copied into the project at
+# `process-page` and never edited there (BR-ASDLC-028): the check refuses a PR
+# whose copy is not the page of the version this workflow is called at. That
+# version's page is known by its git blob id, written below in this very
+# file, so the check needs no download and no permission; the tests keep the
+# id equal to the file (tests/workflows/pr_guards.rs).
 #
 # The caller owns the trigger (pull_request on main and release/**, no path
 # filter), the concurrency group keyed on the ref and the draft state, its test
@@ -59,6 +67,12 @@ on:
         description: JSON array of {"name", "run"}; each runs with BASE_SHA, HEAD_SHA, HEAD_REF and BASE_REF set.
         type: string
         default: '[]'
+      process-page:
+        description: >-
+          Where the project keeps its copy of the method's process page; the
+          check refuses a PR whose copy differs from this version's page.
+        type: string
+        default: .spl-asdlc/process.md
       setup-command:
         description: Run once before the guard commands.
         type: string
@@ -232,6 +246,44 @@ jobs:
             result="$(jq -c --arg k "$id" --arg v "$verdict" '. + {($k): $v}' <<< "$result")"
           done
           echo "detections=$result" >> "$out"
+
+      - name: The process page is the pinned version's
+        id: process
+        if: steps.skip.outputs.skipped != 'true'
+        env:
+          HEAD_SHA: ${{ inputs.head-sha }}
+          PAGE: ${{ inputs.process-page }}
+          # The git blob id of docs/agents/process.md at this commit.
+          PINNED_BLOB: 9d62d9f9864eddd1f5cf50a51c193fda2b283738
+        shell: bash
+        run: |
+          set -euo pipefail
+          source='docs/agents/process.md'
+          if [ -z "$PAGE" ]; then
+            echo "::error title=Invalid process-page::the process-page input is empty."
+            exit 1
+          fi
+          # How to refresh it: from the ref this repository's callers name,
+          # when one is found (only <owner>/<repo> and ref characters).
+          refresh="copy $source of the spl-asdlc version your workflow callers name (their @<ref>) to $PAGE, unchanged, and commit it"
+          calls="$(mktemp)"
+          trap 'rm -f "$calls"' EXIT
+          grep -rhoE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/\.github/workflows/asdlc-pr-guards\.yml@[A-Za-z0-9_./-]+' .github/workflows > "$calls" 2>/dev/null || true
+          call="$(sed -n 1p "$calls")"
+          if [ -n "$call" ]; then
+            repo="${call%%/.github/*}"
+            ref="${call##*@}"
+            refresh="run 'gh api \"repos/$repo/contents/$source?ref=$ref\" -H \"Accept: application/vnd.github.raw\" > $PAGE' (the page of $repo@$ref, the version your callers pin) and commit the file unchanged"
+          fi
+          if ! blob="$(git rev-parse --verify --quiet "${HEAD_SHA:-HEAD}:$PAGE")"; then
+            echo "::error title=No process page::$PAGE is missing. SPL-ASDLC delivers it and every PR must carry it: $refresh."
+            exit 1
+          fi
+          if [ "$blob" != "$PINNED_BLOB" ]; then
+            echo "::error title=Process page changed::$PAGE is not the page of the pinned spl-asdlc version (blob $blob, expected $PINNED_BLOB). It is never edited in the project: put the project's own instructions in AGENTS.md, around it. To bring it to the pinned version, $refresh."
+            exit 1
+          fi
+          echo "$PAGE is the page of the pinned version."
 
       - name: Set up the guard commands
         if: steps.skip.outputs.skipped != 'true' && inputs.setup-command != ''

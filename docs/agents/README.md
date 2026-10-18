@@ -4,9 +4,10 @@ Runtime-agnostic instructions an agent loads before doing one of the method's jo
 
 | File | Job |
 |---|---|
-| `refine-ticket.md` | Turn a Backlog ticket into a contract and mark it refined |
-| `implement.md` | Take a Ready ticket, move it to In Progress, work on a branch, open the PR |
+| `process.md` | The one procedure: which steps the project's configuration enables, the ticket's statuses and who moves them, refine a ticket, implement it (branch, PR, merge), the release cycle, what an agent never does by hand |
 | `review-pr.md` | Review a diff from one angle and post findings on the PR |
 | `consolidate.md` | Read every angle's findings, decide, fix, approve (PR review); review each angle PR as it comes, then the overall review once every angle PR is merged (release QA) |
 | `review-release.md` | Review a whole candidate from one angle, on an angle branch, with a report |
 | `angles/*.md` | What each angle looks for (security, design, product, maintainability) |
+
+`process.md` reaches a project another way: it is copied into the project's repository, at `.spl-asdlc/process.md`, at the version its workflows pin, and the project's agent file (`AGENTS.md`) points to it (`docs/setup/repository.md`, "The process page"). The project adds its own instructions around it, never inside it, and the method check of `asdlc-pr-guards.yml` refuses a PR whose copy differs from the pinned version's (BR-ASDLC-025 to BR-ASDLC-028).

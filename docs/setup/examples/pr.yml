@@ -40,6 +40,9 @@ jobs:
       head-ref: ${{ github.event.pull_request.head.ref }}
       base-ref: ${{ github.event.pull_request.base.ref }}
       head-repo: ${{ github.event.pull_request.head.repo.full_name }}
+      # guards also refuses a PR whose .spl-asdlc/process.md is not the page
+      # of the version named after the @ above (docs/setup/repository.md,
+      # "The process page").
       # The same list as the gate's (release-gate.yml): a guard that runs on
       # PRs also runs on the candidate, or carries a written exception (REQ-CI-033).
       guard-commands: '[{"name": "lint", "run": "make lint"}]'

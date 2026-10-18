@@ -17,7 +17,7 @@ It works with any agent runtime that can read a ticket and open a pull request (
 |---|---|---|
 | [`docs/method.md`](docs/method.md) | Anyone deciding whether to use the method | The method, authoritative |
 | [`docs/setup/`](docs/setup/) | A project adopting it | Setting a repository up: the GitHub App, the rulesets, the workflow callers (`examples/`), the configuration template (`templates/`), the tracker, the bridge's host, and the commands to take any step over by hand (`manual-gestures.md`) |
-| [`docs/agents/`](docs/agents/) | The agents | The protocols an agent loads to refine a ticket, implement it, review a PR or a release, or consolidate findings |
+| [`docs/agents/`](docs/agents/) | The agents | The process page every project copies (the one procedure: refine a ticket, implement it, how it moves, the release), and the protocols to review a PR or a release, or consolidate findings |
 | [`docs/reference/`](docs/reference/) | Whoever implements or operates the bridge | The detailed rules behind `method.md`, one file per topic, with every edge case |
 | [`.spl-asdlc/`](.spl-asdlc/) | The people developing spl-asdlc | This repository's own internal documentation: its business rules (one file per rule), the requirements it was built from, the open points, how spl-asdlc itself is developed and tested, and its QA records |
 
