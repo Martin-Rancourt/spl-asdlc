@@ -5,34 +5,35 @@
 
 # SPL-ASDLC
 
-**ASDLC by Side Projects Lab.** An agentic software development life cycle: a defined process, the documentation that explains it, and the executable tooling that applies it to any repository where agents write code.
+**ASDLC by Side Projects Lab.** A delivery method for software written by agents, and the tooling that applies it to any repository: ticket contracts, business rules proven by tests, optional review by angle, a release cycle with a computed GO, and a bridge that keeps the tracker and GitHub in step.
 
-SPL-ASDLC is agnostic to the agent runtime (AgentForge, a Claude Code session, Codex, anything that can read a ticket and open a pull request) and to the tracker (Linear and Livela first, Jira later). The core is the CI and QA tooling: ticket contracts, business rules with deterministic tests, multi-angle PR review with a consolidator, release candidates reviewed by parallel QA angles, a computed GO, closure that re-verifies every shipped ticket, and a release note that is sent as part of the delivery.
+It works with any agent runtime that can read a ticket and open a pull request (AgentForge, Claude Code, Codex…) and with Linear or Livela as the tracker.
 
-## The three layers
+**Start with [`docs/method.md`](docs/method.md): the method in ten minutes.**
 
-1. **The method** — `docs/spec/`. What a ticket must contain before anyone takes it, how a PR is reviewed and merged, how a release is cut, reviewed, gated and closed, and the vocabulary everything else uses.
-2. **Agent protocols** — `docs/agents/`. Runtime-agnostic Markdown that any agent can load as a skill: review a PR, review a release on an angle branch, consolidate findings, refine a ticket.
-3. **The tooling** — the Rust crate `spl-asdlc` (library and `spl-asdlc` binary) and the reusable GitHub Actions workflows `spl-asdlc-ci`. The crate is "the bridge": one deterministic process that runs in the user's environment, polls GitHub, writes state transitions to the tracker, computes the GO and merges what must be merged. CI workflows only publish GitHub facts; they never write to a tracker. Agents never change a status; the bridge does.
+## How the documentation is organised
+
+| Where | For whom | What |
+|---|---|---|
+| [`docs/method.md`](docs/method.md) | Anyone deciding whether to use the method | The method, authoritative |
+| [`docs/setup/`](docs/setup/) | A project adopting it | Setting a repository up: the GitHub App, the rulesets, the workflow callers (`examples/`), the configuration template (`templates/`), the tracker, the bridge's host, and the commands to take any step over by hand (`manual-gestures.md`) |
+| [`docs/agents/`](docs/agents/) | The agents | The protocols an agent loads to refine a ticket, implement it, review a PR or a release, or consolidate findings |
+| [`docs/reference/`](docs/reference/) | Whoever implements or operates the bridge | The detailed rules behind `method.md`, one file per topic, with every edge case |
+| [`.spl-asdlc/`](.spl-asdlc/) | The people developing spl-asdlc | This repository's own internal documentation: its business rules (one file per rule), the requirements it was built from, the open points, how spl-asdlc itself is developed and tested, and its QA records |
+
+`.spl-asdlc/` is also the one folder the method asks of every project that uses it: its configuration (`config.toml`), its business rules and its QA reports live there, and the rest of the repository is organised as the project likes. spl-asdlc follows the same convention for its own internal documentation.
+
+## The tooling
+
+- **The bridge**: the Rust crate `spl-asdlc` and its binary. It runs at a regular interval on a host the project chooses, reads GitHub facts, moves the tickets, merges what may be merged, and drives the release.
+- **The reusable workflows**: `.github/workflows/asdlc-*.yml` and the composite action `actions/required-check`, which a project calls from its own workflows, pinned to a major tag (`@v1`). They only publish facts and never write to a tracker. They live in this repository, beside the bridge, because the two are released together under one version; the `asdlc-` prefix sets them apart from this repository's own workflows (GitHub requires a reusable workflow to sit directly in `.github/workflows/`).
+
+The other workflows in `.github/workflows/` are this repository's own CI. spl-asdlc does not run the method on itself; `.spl-asdlc/development.md` explains how it is developed and released.
 
 ## Status
 
-First draft. The specification and the requirements are written (`docs/requirements/` is derived from the Python implementation this product replaces). The crate is being built lot by lot: `cargo test` runs the suite, `spl-asdlc config check` validates a `spl-asdlc.toml`. The repository is private until the pilot on Linear is green (step 4a of the plan); it then becomes public, here and as the `spl-asdlc` crate on crates.io, before the Livela pilot, which depends on the published crate. It is published under the Apache License 2.0 (see `LICENSE`).
-
-## Layout
-
-| Path | Content |
-|---|---|
-| `docs/spec/` | The method, one file per topic |
-| `docs/agents/` | Agent protocols (skills) |
-| `docs/requirements/` | Requirements for the crate and the workflows, with the test cases to carry over |
-| `docs/setup/` | How to configure a repository, a GitHub App and a tracker identity for SPL-ASDLC |
-| `docs/business-rules.md` | The product's own business rules, each with its test |
-| `docs/livela-contract.md` | What the Livela tracker must offer for its adapter |
-| `docs/brand.md` | The logo: what it means, its colors, which file to use where |
-| `assets/brand/` | Logo files: SVG masters, favicons, app icon PNGs |
-| `scripts/` | Checks that run in CI (no instance names, …) and the logo generator (`scripts/brand/`) |
+In use. The bridge is released, with binaries for Linux, macOS and Windows. The repository is private until its public switch; it is published under the Apache License 2.0 (see `LICENSE`).
 
 ## Rule zero
 
-This repository carries no name of any product, agent, person or installation that uses the method. Integrations the method supports (Linear, Livela, Jira, AgentForge, Claude Code, Codex, GitHub) are named; installations are not. `scripts/check-no-instance-names.sh` enforces it (business rule BR-ASDLC-001).
+This repository carries no name of any product, agent, person or installation that uses the method. The integrations it supports (Linear, Livela, Jira, AgentForge, Claude Code, Codex, GitHub) are named; installations are not. `scripts/check-no-instance-names.sh` enforces it.

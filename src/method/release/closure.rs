@@ -1,4 +1,4 @@
-//! The closure of a cycle (`docs/spec/05-release-cycle.md` §11,
+//! The closure of a cycle (`docs/reference/05-release-cycle.md` §11,
 //! REQ-REL-084..091): what happens to each member of the release, judged by
 //! code, and the comment that says so.
 
@@ -46,6 +46,39 @@ pub fn classify(member: &Member) -> Action {
     }
 }
 
+/// What an item is to a closed cycle, for its archiving (BR-ASDLC-019).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resolved {
+    /// A child of the release item: an angle sub-item, the consolidation
+    /// item, a gate-fix ticket.
+    ReleaseChild,
+    /// The shared nits ticket of the release.
+    Nits,
+    /// A ticket carrying the release label: an embarked ticket, a finding.
+    Embarked,
+    /// An angle sub-item or the consolidation item of a PR review round of
+    /// an embarked ticket (recognised by its bridge marker).
+    ReviewRound,
+}
+
+/// Whether the closure archives this item (BR-ASDLC-019): a release child,
+/// the nits ticket or a review round item once resolved (Done or Canceled);
+/// an embarked ticket only in Done, as the closure moves it. An open item
+/// never: Post Deploy, In Progress, a finding in Triage, an open nits
+/// ticket; nor a state the status table does not place (fail closed). An
+/// item already archived is not archived again.
+pub fn archivable(kind: Resolved, state: &ItemState, archived: bool) -> bool {
+    if archived {
+        return false;
+    }
+    match kind {
+        Resolved::ReleaseChild | Resolved::Nits | Resolved::ReviewRound => {
+            state.status.is_some_and(Status::is_resolved)
+        }
+        Resolved::Embarked => state.status == Some(Status::Done),
+    }
+}
+
 /// Whether judging this ticket needs the registry at the release tag.
 pub fn needs_registry(description: &str) -> bool {
     !cited_ids(description).is_empty()
@@ -59,10 +92,10 @@ pub enum Judgement {
     /// Only its own post-deploy boxes remain.
     PostDeploy,
     /// Open boxes, unreadable or absent contract: back to In Progress,
-    /// reassigned to its implementer.
+    /// unassigned (BR-ASDLC-009).
     Reopen,
     /// It cites rules the registry at the tag does not declare: back to In
-    /// Progress (no reassignment), with the missing ids.
+    /// Progress, unassigned too, with the missing ids.
     UnknownRules(Vec<String>),
     /// It cites rules and the registry could not be read: left in its state.
     RulesUnverified(String),
@@ -108,16 +141,18 @@ pub fn judge(
 }
 
 /// The comment on a ticket reopened for rules the registry lacks.
-pub fn unknown_rules_comment(missing: &[String], registry_path: &str, product: &str) -> String {
+pub fn unknown_rules_comment(missing: &[String], product: &str) -> String {
     let ids = missing
         .iter()
         .map(|i| format!("`{i}`"))
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "Business rules: {ids} cited in `Business rules` (absent from `{registry_path}` of `{product}` at this release's tag; \
-         if the id is a typo, fix it in `Business rules`; if the rule is new, open a PR adding it to the registry — it ships \
-         with the next release). Returned to `In Progress` by the release closure."
+        "Business rules: {ids} cited in `Business rules` (no file in `{}/` of `{product}` at this release's tag; \
+         if the id is a typo, fix it in `Business rules`; if the rule is new, open a PR adding its file — it ships \
+         with the next release). {}",
+        crate::method::business_rules::REGISTRY_DIR,
+        crate::method::done_gate::RETURNED_UNASSIGNED
     )
 }
 
@@ -175,7 +210,7 @@ pub fn comment(r: &CloseResult) -> String {
     }
     if !r.awaiting_post_release.is_empty() {
         out.push_str(&format!(
-            "\n\nMoved to `Post Deploy`: {} — their `## Post deploy` boxes are verified in production and ticked with `spl-asdlc release post-release-check`; each ticket moves to `Done` when all its boxes are.",
+            "\n\nMoved to `Post Deploy`: {} — their `## Post deploy` boxes are verified in production and checked on each ticket, as its validation sub-task asks; the bridge moves each ticket to `Done` at the tick that finds all its `## Post deploy` boxes checked.",
             list(&r.awaiting_post_release)
         ));
     }
@@ -199,6 +234,43 @@ mod tests {
             state,
             bridge_child,
         }
+    }
+
+    #[test]
+    fn the_closure_archives_resolved_items_and_never_an_open_one() {
+        use super::Resolved::*;
+        let of = ItemState::of;
+        for kind in [ReleaseChild, Nits, ReviewRound] {
+            assert!(archivable(kind, &of(Status::Done), false), "{kind:?}");
+            assert!(archivable(kind, &of(Status::Canceled), false), "{kind:?}");
+            assert!(!archivable(kind, &of(Status::Ready), false), "{kind:?}");
+            assert!(!archivable(kind, &of(Status::Triage), false), "{kind:?}");
+        }
+        assert!(archivable(Embarked, &of(Status::Done), false));
+        for open in [
+            Status::PostDeploy,
+            Status::InProgress,
+            Status::InReview,
+            Status::ToDeploy,
+            Status::Triage,
+            Status::Backlog,
+            Status::Canceled,
+        ] {
+            assert!(!archivable(Embarked, &of(open), false), "{open}");
+        }
+        assert!(
+            !archivable(ReleaseChild, &of(Status::Done), true),
+            "already archived"
+        );
+        let unplaced = ItemState {
+            name: "Shipped".into(),
+            status: None,
+            kind: StateKind::Completed,
+        };
+        assert!(
+            !archivable(ReleaseChild, &unplaced, false),
+            "a state the table does not place is never archived"
+        );
     }
 
     #[test]
@@ -282,9 +354,9 @@ mod tests {
             ),
             Judgement::UnknownRules(vec!["BR-ACME-001".into()])
         );
-        let text = unknown_rules_comment(&["BR-ACME-001".into()], "docs/business-rules.md", "acme");
+        let text = unknown_rules_comment(&["BR-ACME-001".into()], "acme");
         assert!(text.contains("at this release's tag"));
-        assert!(text.ends_with("Returned to `In Progress` by the release closure."));
+        assert!(text.ends_with(crate::method::done_gate::RETURNED_UNASSIGNED));
     }
 
     #[test]
@@ -380,6 +452,9 @@ mod tests {
         assert!(text.contains("Back to `In Progress` (open boxes in their contract): `ABC-3`"));
         assert!(text.contains("the next tick judges them again"));
         assert!(text.contains("Moved to `Post Deploy`: `ABC-4`"));
+        // BR-ASDLC-002: the boxes are the gesture, no verb.
+        assert!(text.contains("at the tick that finds all its `## Post deploy` boxes checked"));
+        assert!(!text.contains("post-release-check"));
         assert!(!r.complete());
         assert_eq!(
             comment(&CloseResult::default()),

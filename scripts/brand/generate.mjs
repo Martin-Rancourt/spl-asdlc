@@ -1,4 +1,4 @@
-// Generates every SPL-ASDLC logo asset from one geometry (docs/brand.md): the mark </> and the
+// Generates every SPL-ASDLC logo asset from one geometry (.spl-asdlc/brand.md): the mark </> and the
 // wordmark <asdlc />. The « < » diverges (the review angles open up), the « > » converges (the
 // consolidator, the computed GO) and is the only green stroke. Type: IBM Plex Mono 600, outlined,
 // so no asset needs a font.

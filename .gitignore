@@ -1,3 +1,4 @@
 /target/
 /.spl-asdlc/forbidden-words.txt
+spl-asdlc.instance.toml
 /scripts/brand/node_modules/

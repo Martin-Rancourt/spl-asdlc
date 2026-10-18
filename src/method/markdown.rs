@@ -1,6 +1,6 @@
 //! The one reader of ticket descriptions every guard uses (REQ-MERGE-030,
 //! REQ-MERGE-032, REQ-MERGE-067): fenced blocks, checkboxes, headings and
-//! sections. One reading, never two (`docs/spec/01-ticket-contract.md`).
+//! sections. One reading, never two (`docs/reference/01-ticket-contract.md`).
 
 use std::sync::LazyLock;
 
@@ -235,9 +235,55 @@ pub fn clip_words(text: &str, max: usize) -> String {
     format!("{} …", cut.trim_end_matches([' ', ',', ';', ':']))
 }
 
+/// Whether two texts are the same markdown once a tracker stored one of
+/// them. A tracker rewrites what it keeps (Linear turns `- ` and `+ ` list
+/// bullets into `* `, changes the spacing after a bullet, indents the lines
+/// it nests, adds or drops blank lines, trims trailing spaces), so a
+/// description differing only in that is not written again: the write
+/// would change nothing the tracker keeps and come back restyled.
+pub fn same_stored(a: &str, b: &str) -> bool {
+    fn lines(text: &str) -> impl Iterator<Item = String> + '_ {
+        text.lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(|l| match l.strip_prefix(['-', '+', '*']) {
+                Some(item) if item.starts_with([' ', '\t']) => {
+                    format!("* {}", item.trim_start())
+                }
+                _ => l.to_string(),
+            })
+    }
+    lines(a).eq(lines(b))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_text_restyled_by_the_tracker_is_the_same_text() {
+        let written = "## Release note\n- **ABC-1** — one\n+ two\n\n\n---\n";
+        let stored = "## Release note\n\n* **ABC-1** — one  \n\n* two\n\n---";
+        assert!(same_stored(written, stored));
+        assert!(!same_stored(
+            written,
+            "## Release note\n* **ABC-1** — one\n"
+        ));
+        assert!(!same_stored("-not a bullet", "*not a bullet"));
+        assert!(!same_stored("- one", "* two"));
+        assert!(!same_stored("**bold**", "* *bold**"));
+    }
+
+    #[test]
+    fn a_text_whose_lines_the_tracker_indented_or_respaced_is_the_same_text() {
+        let written = "- **ABC-1** — one\n- **ABC-2** — two\n`spl-asdlc:release-note:end`\n";
+        let stored = "*   **ABC-1** — one\n\n* **ABC-2** — two\n  `spl-asdlc:release-note:end`";
+        assert!(same_stored(written, stored));
+        assert!(!same_stored(
+            written,
+            "* **ABC-1** — one\n* **ABC-2** — two\n"
+        ));
+    }
 
     #[test]
     fn completion_checklist_items_reads_a_box_under_any_heading() {

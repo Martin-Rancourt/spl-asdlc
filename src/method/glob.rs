@@ -4,6 +4,17 @@
 //! pattern without its trailing `*` and `/` is a directory the path lies
 //! under. Case-sensitive. A glob library whose `*` stops at `/` would drift
 //! from the verified behaviour.
+//!
+//! Paths are repository paths, `/`-separated on every platform, as GitHub
+//! gives them. A path read from the file system goes through [`repo_path`]
+//! first: on Windows its separator is `\`, which no pattern matches.
+
+/// A path relative to the repository root, in the `/` form patterns are
+/// written in. Every `\` becomes `/`, whatever the platform: a repository
+/// path never holds a literal `\`.
+pub fn repo_path(relative: &std::path::Path) -> String {
+    relative.to_string_lossy().replace('\\', "/")
+}
 
 /// Shell-style match of a whole path.
 pub fn fnmatch(path: &str, pattern: &str) -> bool {
@@ -178,6 +189,20 @@ mod tests {
             v(&["src/auth/a.rs", "src/auth/b.rs"])
         );
         assert!(hits(&paths, &v(&[""])).is_empty());
+    }
+
+    #[test]
+    fn a_windows_path_is_matched_in_its_slash_form() {
+        // Built as a string, so the test means the same on every platform.
+        let walked = std::path::Path::new(".github\\workflows\\ci.yml");
+        assert_eq!(repo_path(walked), ".github/workflows/ci.yml");
+        assert_eq!(
+            repo_path(std::path::Path::new("src/github/auth.rs")),
+            "src/github/auth.rs",
+            "a path already in `/` form is unchanged"
+        );
+        let paths = vec![repo_path(walked)];
+        assert_eq!(hits(&paths, &v(&[".github/workflows/ci.yml"])), paths);
     }
 
     #[test]

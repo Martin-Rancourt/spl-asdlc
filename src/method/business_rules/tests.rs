@@ -2,7 +2,8 @@
 
 use super::*;
 
-const REGISTRY: &str = "| ID | Rule | Evidence | Test | Status |\n|---|---|---|---|---|\n| BR-AF-001 | **one** | e | t | Enforced |\n| BR-AF-004 | **four** see BR-HC-151 | e | t | Enforced |\n";
+/// The registry's directory, as listed: two rules and the index.
+const REGISTRY: &[&str] = &["BR-AF-001.md", "BR-AF-004.md", "README.md"];
 
 fn ids(list: &[&str]) -> Registry {
     Registry::Ids(list.iter().map(|s| s.to_string()).collect())
@@ -20,11 +21,12 @@ fn paths(p: &[&str]) -> Vec<String> {
     p.iter().map(|s| s.to_string()).collect()
 }
 
-const REG: &str = "docs/business-rules.md";
+/// A rule file of the registry, as a changed path.
+const RULE_FILE: &str = ".spl-asdlc/business-rules/BR-AF-005.md";
 
 fn judge(rules: &str, changed: &[&str]) -> RuleGate {
     let changed = paths(changed);
-    evaluate(&ticket(rules), &registry(), Some(&changed), REG)
+    evaluate(&ticket(rules), &registry(), Some(&changed))
 }
 
 #[test]
@@ -32,34 +34,51 @@ fn a_referenced_rule_must_exist_in_the_registry() {
     let gate = judge("- BR-AF-999 applies", &["src/a.rs"]);
     assert_eq!(gate.unknown_ids, vec!["BR-AF-999"]);
     assert!(!gate.ok());
-    let text = refusal(&gate, "ABC-1", REG);
+    let text = refusal(&gate, "ABC-1");
     assert!(text.contains("`BR-AF-999`"));
     assert!(text.contains("typo"));
+    assert!(text.contains("`.spl-asdlc/business-rules/`"), "{text}");
 }
 
 #[test]
 fn a_rule_born_in_the_ticket_must_reach_the_registry_in_the_same_pr() {
     let gate = judge("- Every export is signed.", &["src/export.rs"]);
     assert!(gate.unpromoted);
-    let text = refusal(&gate, "ABC-1", REG);
+    let text = refusal(&gate, "ABC-1");
     assert!(text.contains("**in the same PR**"));
     assert!(text.contains("Non-goals"));
-    let promoted = judge(
-        "- Every export is signed.",
-        &["src/export.rs", "docs/business-rules.md"],
-    );
+    let promoted = judge("- Every export is signed.", &["src/export.rs", RULE_FILE]);
     assert!(promoted.ok());
 }
 
 #[test]
+fn only_a_rule_file_of_the_registry_promotes_a_rule() {
+    for not_a_rule in [
+        ".spl-asdlc/business-rules/README.md",
+        ".spl-asdlc/business-rules/notes.md",
+        ".spl-asdlc/business-rules/old/BR-AF-005.md",
+        "docs/business-rules.md",
+        "docs/BR-AF-005.md",
+    ] {
+        assert!(!is_rule_file(not_a_rule), "{not_a_rule}");
+        assert!(
+            judge("- Every export is signed.", &[not_a_rule]).unpromoted,
+            "{not_a_rule}"
+        );
+    }
+    assert!(is_rule_file(RULE_FILE));
+    assert!(is_rule_file(".spl-asdlc\\business-rules\\BR-AF-005.md"));
+}
+
+#[test]
 fn a_rule_promoted_and_cited_by_its_new_id_in_the_same_pr_passes() {
-    let head_registry = format!("{REGISTRY}| BR-AF-005 | **new** | e | t | Proposed |\n");
-    let changed = paths(&["docs/business-rules.md"]);
+    let mut head_registry = REGISTRY.to_vec();
+    head_registry.push("BR-AF-005.md");
+    let changed = paths(&[RULE_FILE]);
     let gate = evaluate(
         &ticket("- BR-AF-005: every export is signed."),
         &Registry::Ids(registry_ids(&head_registry)),
         Some(&changed),
-        REG,
     );
     assert!(gate.ok(), "{gate:?}");
 }
@@ -81,28 +100,21 @@ fn a_product_without_a_registry_still_owes_its_rules_to_one() {
         &ticket("- Every export is signed."),
         &Registry::Absent,
         Some(&changed),
-        REG,
     );
     assert!(stated.unpromoted);
     assert!(!stated.registry_present);
-    let cited = evaluate(
-        &ticket("- BR-AF-001"),
-        &Registry::Absent,
-        Some(&changed),
-        REG,
-    );
+    let cited = evaluate(&ticket("- BR-AF-001"), &Registry::Absent, Some(&changed));
     assert_eq!(cited.unknown_ids, vec!["BR-AF-001"]);
-    let created = paths(&["docs/business-rules.md"]);
+    let created = paths(&[RULE_FILE]);
     assert!(
         evaluate(
             &ticket("- Every export is signed."),
             &Registry::Absent,
-            Some(&created),
-            REG
+            Some(&created)
         )
         .ok()
     );
-    assert!(evaluate(&ticket("None."), &Registry::Absent, Some(&changed), REG).ok());
+    assert!(evaluate(&ticket("None."), &Registry::Absent, Some(&changed)).ok());
 }
 
 #[test]
@@ -112,7 +124,6 @@ fn a_ticket_with_no_business_rules_section_is_not_refused() {
         "## Goal\nx\nBR-AF-999 in prose",
         &registry(),
         Some(&changed),
-        REG,
     );
     assert!(gate.ok());
 }
@@ -137,30 +148,215 @@ fn a_heading_or_a_table_row_is_not_a_new_rule() {
 
 #[test]
 fn no_diff_to_read_skips_the_promotion_half_but_still_checks_ids() {
-    let gate = evaluate(
-        &ticket("- BR-AF-999\n- A new rule."),
-        &registry(),
-        None,
-        REG,
-    );
+    let gate = evaluate(&ticket("- BR-AF-999\n- A new rule."), &registry(), None);
     assert_eq!(gate.unknown_ids, vec!["BR-AF-999"]);
     assert!(!gate.unpromoted);
 }
 
+/// This repository's own registry, read from the working tree: `(path,
+/// text)` of every file of its directory.
+fn this_repos_registry() -> Vec<(String, String)> {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(REGISTRY_DIR);
+    let mut files: Vec<(String, String)> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.is_file())
+        .map(|p| {
+            let name = p.file_name().unwrap().to_string_lossy().to_string();
+            let text = std::fs::read_to_string(&p).unwrap();
+            (format!("{REGISTRY_DIR}/{name}"), text)
+        })
+        .collect();
+    files.sort();
+    files
+}
+
 #[test]
 fn the_registry_of_this_repo_parses_into_its_real_ids() {
-    let real = include_str!("../../../docs/business-rules.md");
-    let parsed = registry_ids(real);
-    assert!(parsed.contains("BR-ASDLC-001"), "{parsed:?}");
-    assert!(duplicate_registry_ids(real).is_empty());
+    let files = this_repos_registry();
+    let read = parse_registry(&files);
+    assert!(read.invalid.is_empty(), "{:#?}", read.invalid);
+    let names: Vec<&str> = files
+        .iter()
+        .map(|(p, _)| p.rsplit('/').next().unwrap())
+        .collect();
+    let ids = registry_ids(&names);
+    for id in ["BR-ASDLC-001", "BR-ASDLC-002", "BR-ASDLC-003"] {
+        assert!(ids.contains(id), "{id}: {ids:?}");
+    }
+    // Every rule file is a rule the guard counts, and the other way round.
+    let parsed: BTreeSet<String> = read.rules.iter().map(|r| r.id.clone()).collect();
+    assert_eq!(parsed, ids);
+}
+
+#[test]
+fn this_repos_index_lists_every_rule_and_only_them() {
+    let files = this_repos_registry();
+    let index = files
+        .iter()
+        .find(|(p, _)| p.ends_with("/README.md"))
+        .map(|(_, t)| t.clone())
+        .expect("this repository keeps an index");
+    let listed = rule_ids(&index);
+    let names: Vec<&str> = files
+        .iter()
+        .map(|(p, _)| p.rsplit('/').next().unwrap())
+        .collect();
+    assert_eq!(listed, registry_ids(&names));
 }
 
 #[test]
 fn this_repos_registry_owns_only_its_own_prefix() {
-    let real = include_str!("../../../docs/business-rules.md");
-    let ids = registry_ids(real);
+    let files = this_repos_registry();
+    let names: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
+    let ids = registry_ids(&names);
     let prefixes: BTreeSet<&str> = ids.iter().map(|i| rule_prefix(i)).collect();
     assert_eq!(prefixes.into_iter().collect::<Vec<_>>(), vec!["BR-ASDLC"]);
+}
+
+// ---- the rule file (spec 02, "The rule file") ----
+
+const RULE: &str = "# BR-AF-001 — Every export is signed.\n\nStatus: Enforced\n\n## Rule\nThe export carries a signature.\n\n## Evidence\nAn unsigned export was replayed.\n\n## Test\n`exports_are_signed` (CI job `test`).\n";
+
+#[test]
+fn a_rule_file_gives_its_id_title_and_status() {
+    let rule = parse_rule_file("BR-AF-001.md", RULE).unwrap();
+    assert_eq!(rule.id, "BR-AF-001");
+    assert_eq!(rule.title, "Every export is signed.");
+    assert_eq!(rule.status, RuleStatus::Enforced);
+    let proposed = RULE.replace("Status: Enforced", "**Status:** Proposed");
+    assert_eq!(
+        parse_rule_file("x/BR-AF-001.md", &proposed).unwrap().status,
+        RuleStatus::Proposed
+    );
+    let tests = RULE.replace("## Test\n", "## Tests\n");
+    assert!(parse_rule_file("BR-AF-001.md", &tests).is_ok());
+    let extra = format!("{RULE}\n## Domain\nExports.\n");
+    assert!(
+        parse_rule_file("BR-AF-001.md", &extra).is_ok(),
+        "more sections are allowed"
+    );
+}
+
+#[test]
+fn an_invalid_rule_file_says_what_is_wrong() {
+    let cases: Vec<(String, &str, &str)> = vec![
+        (RULE.into(), "export.md", "the file name is not"),
+        (
+            RULE.into(),
+            "BR-AF-002.md",
+            "the title names `BR-AF-001`, the file name `BR-AF-002`",
+        ),
+        (
+            RULE.replace("# BR-AF-001 — ", "# "),
+            "BR-AF-001.md",
+            "the first line is not the title",
+        ),
+        (
+            RULE.replace("Status: Enforced\n", ""),
+            "BR-AF-001.md",
+            "no `Status: Proposed` or `Status: Enforced` line",
+        ),
+        (
+            RULE.replace("Status: Enforced", "Status: Done"),
+            "BR-AF-001.md",
+            "the status is `Done`",
+        ),
+        (
+            RULE.replace("## Evidence\nAn unsigned export was replayed.\n\n", ""),
+            "BR-AF-001.md",
+            "no `## Evidence` section",
+        ),
+        (
+            RULE.replace("`exports_are_signed` (CI job `test`).\n", ""),
+            "BR-AF-001.md",
+            "the `## Test` section is empty",
+        ),
+    ];
+    for (text, name, why) in cases {
+        let err = parse_rule_file(name, &text).unwrap_err();
+        assert!(err.contains(why), "{name}: {err}");
+    }
+}
+
+#[test]
+fn a_status_inside_a_code_block_is_not_the_rules() {
+    let text = RULE.replace("Status: Enforced\n", "```\nStatus: Enforced\n```\n");
+    assert!(parse_rule_file("BR-AF-001.md", &text).is_err());
+}
+
+#[test]
+fn a_directory_of_rule_files_parses_and_names_each_invalid_file_by_its_path() {
+    let dir = ".spl-asdlc/business-rules";
+    let files: Vec<(String, String)> = vec![
+        (format!("{dir}/BR-AF-001.md"), RULE.into()),
+        (
+            format!("{dir}/BR-AF-002.md"),
+            RULE.replace("BR-AF-001", "BR-AF-002")
+                .replace("Enforced", "Proposed"),
+        ),
+        (
+            format!("{dir}/README.md"),
+            "# Index\n\n- BR-AF-001\n".into(),
+        ),
+        (format!("{dir}/.gitkeep"), String::new()),
+        (format!("{dir}/BR-AF-003.md"), "No title.\n".into()),
+        (format!("{dir}/draft.md"), RULE.into()),
+    ];
+    let read = parse_registry(&files);
+    let ids: Vec<&str> = read.rules.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(ids, ["BR-AF-001", "BR-AF-002"]);
+    let invalid: Vec<&str> = read.invalid.iter().map(|(p, _)| p.as_str()).collect();
+    assert_eq!(
+        invalid,
+        [
+            ".spl-asdlc/business-rules/BR-AF-003.md",
+            ".spl-asdlc/business-rules/draft.md"
+        ]
+    );
+}
+
+#[test]
+fn the_guard_reads_the_registrys_listing_at_the_judged_revision() {
+    use crate::github::fake::FakeGitHub;
+    use crate::github::{ReadError, RepoSlug};
+    let g = FakeGitHub::new();
+    let repo = RepoSlug::parse("example-org/acme").unwrap();
+    let put = |rev: &str, path: &str| {
+        g.state
+            .borrow_mut()
+            .files
+            .insert((repo.clone(), rev.into(), path.into()), Ok(String::new()));
+    };
+    put("head", ".spl-asdlc/business-rules/BR-AF-001.md");
+    put("head", ".spl-asdlc/business-rules/README.md");
+    put("head", ".spl-asdlc/business-rules/old/BR-AF-009.md");
+    put("main", ".spl-asdlc/business-rules/BR-AF-002.md");
+    assert_eq!(read_registry(&g, &repo, "head"), ids(&["BR-AF-001"]));
+    // No directory at a revision that exists: no registry.
+    g.state.borrow_mut().commits.insert(
+        (repo.clone(), "bare".into()),
+        Ok(crate::github::Commit {
+            sha: "bare".into(),
+            message: "a commit".into(),
+            committer_date: None,
+            parents: Vec::new(),
+        }),
+    );
+    assert_eq!(read_registry(&g, &repo, "bare"), Registry::Absent);
+    // At a revision that does not exist, a 404 proves nothing.
+    assert!(matches!(
+        read_registry(&g, &repo, "gone"),
+        Registry::Unreadable(_)
+    ));
+    g.state.borrow_mut().dirs.insert(
+        (repo.clone(), "head".into(), REGISTRY_DIR.into()),
+        Err(ReadError::unreadable("the listing", "HTTP 502")),
+    );
+    assert!(matches!(
+        read_registry(&g, &repo, "head"),
+        Registry::Unreadable(_)
+    ));
 }
 
 #[test]
@@ -198,14 +394,14 @@ fn a_wrapped_rule_without_an_id_is_still_refused() {
 #[test]
 fn the_refusal_quotes_the_sentence_it_read_as_a_new_rule() {
     let gate = judge("- Exports are signed.", &["src/a.rs"]);
-    let text = refusal(&gate, "ABC-1", REG);
+    let text = refusal(&gate, "ABC-1");
     assert!(text.contains("> Exports are signed."));
     assert!(text.contains("the sentence above"));
 }
 
 #[test]
 fn a_passing_section_carries_no_quoted_statement() {
-    let gate = judge("- Exports are signed.", &["docs/business-rules.md"]);
+    let gate = judge("- Exports are signed.", &[RULE_FILE]);
     assert!(gate.ok());
     assert_eq!(gate.statement, None);
 }
@@ -241,12 +437,12 @@ fn a_nested_bullet_is_its_own_statement_not_its_parents_continuation() {
 fn an_unknown_id_alone_quotes_nothing() {
     let gate = judge("- BR-AF-999", &["src/a.rs"]);
     assert_eq!(gate.statement, None);
-    assert!(!refusal(&gate, "ABC-1", REG).contains("\n> "));
+    assert!(!refusal(&gate, "ABC-1").contains("\n> "));
 }
 
 #[test]
 fn an_unknown_id_alone_does_not_point_at_a_paragraph_that_is_not_there() {
-    let text = refusal(&judge("- BR-AF-999", &["src/a.rs"]), "ABC-1", REG);
+    let text = refusal(&judge("- BR-AF-999", &["src/a.rs"]), "ABC-1");
     assert!(!text.contains("below"));
     assert!(!text.contains("the sentence above"));
     assert!(text.contains("in this PR"));
@@ -354,7 +550,7 @@ fn an_empty_section_declares_no_rule_either() {
 
 #[test]
 fn the_refusal_says_how_to_declare_that_there_is_no_rule() {
-    let text = refusal(&judge("- Exports are signed.", &["src/a.rs"]), "ABC-1", REG);
+    let text = refusal(&judge("- Exports are signed.", &["src/a.rs"]), "ABC-1");
     assert!(text.contains(ABSENCE_DECLARATION));
     assert!(text.contains("If the ticket really has no new rule"));
 }
@@ -374,12 +570,11 @@ fn a_registry_that_could_not_be_read_is_its_own_refusal() {
         &ticket("- BR-AF-999\n- A new rule."),
         &Registry::Unreadable("HTTP 502: `bad gateway`\n  retry".into()),
         Some(&changed),
-        REG,
     );
     assert!(!gate.ok());
     assert!(gate.unknown_ids.is_empty());
     assert!(!gate.unpromoted);
-    let text = refusal(&gate, "ABC-1", REG);
+    let text = refusal(&gate, "ABC-1");
     assert!(text.contains("Registry unreadable"));
     assert!(text.contains("HTTP 502: 'bad gateway' retry"));
     for gesture in ["typo", "promote", "does not exist", "Non-goal", "same PR"] {
@@ -421,7 +616,6 @@ fn the_same_ticket_is_judged_against_the_other_products_registry_too() {
         &ticket("- BR-HC-151\n- BR-AF-777"),
         &ids(&["BR-HC-001"]),
         Some(&changed),
-        REG,
     );
     assert_eq!(gate.unknown_ids, vec!["BR-HC-151"]);
 }
@@ -429,21 +623,25 @@ fn the_same_ticket_is_judged_against_the_other_products_registry_too() {
 #[test]
 fn a_registry_that_declares_nothing_still_judges_every_id() {
     let changed = paths(&["src/a.rs"]);
-    let gate = evaluate(&ticket("- BR-HC-151"), &ids(&[]), Some(&changed), REG);
+    let gate = evaluate(&ticket("- BR-HC-151"), &ids(&[]), Some(&changed));
     assert_eq!(gate.unknown_ids, vec!["BR-HC-151"]);
 }
 
 #[test]
-fn a_mention_in_another_rows_cell_is_not_a_declaration() {
+fn only_a_rule_files_name_declares_an_id() {
     let parsed = registry_ids(REGISTRY);
-    assert!(!parsed.contains("BR-HC-151"));
-    assert!(registry_ids("|BR-AF-088|x|\n").contains("BR-AF-088"));
-    let prose = registry_ids("We keep BR-AF-010 and BR-AF-011 in prose.");
     assert_eq!(
-        prose.len(),
-        2,
-        "a registry with no table row falls back to every id"
+        parsed,
+        BTreeSet::from(["BR-AF-001".into(), "BR-AF-004".into()])
     );
+    let others = registry_ids(&[
+        "BR-AF-010.txt",
+        "notes-BR-AF-011.md",
+        "BR-AF-012.md.bak",
+        "br-af-013.md",
+    ]);
+    assert!(others.is_empty(), "{others:?}");
+    assert_eq!(rule_file_id("a/b/BR-AF-088.md"), Some("BR-AF-088"));
 }
 
 #[test]

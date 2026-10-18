@@ -1,5 +1,5 @@
 //! The conformance suite every `Tracker` adapter must pass
-//! (`docs/livela-contract.md`, Conformance): create a release item with two
+//! (`docs/reference/livela-contract.md`, Conformance): create a release item with two
 //! angle children, link a PR URL and find the item back by it, move a child
 //! through In Review → To Deploy → Post Deploy → Done, lay a `blocks`
 //! relation and read it back from both ends (and only there), comment twice
@@ -146,7 +146,7 @@ fn suite(
             description: "Conformance run of the spl-asdlc tracker adapter.".into(),
             labels: vec![label.clone()],
             status: Status::Ready,
-            priority: Some(1),
+            priority: Some(Priority::Urgent),
             assignee: None,
             parent: None,
         }),
@@ -173,7 +173,7 @@ fn suite(
                 description: "- [ ] a box".into(),
                 labels: vec![label.clone()],
                 status: Status::Ready,
-                priority: Some(3),
+                priority: Some(Priority::Normal),
                 assignee: None,
                 parent: Some(release.key.clone()),
             }),

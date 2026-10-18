@@ -1,6 +1,7 @@
 //! An in-memory tracker for tests: items, relations, comments and links held
-//! in memory, every write recorded, failures injected by write prefix. Like
-//! the real adapters, a write of an unchanged value records nothing.
+//! in memory, every write recorded (an archive too), failures injected by
+//! write prefix. Like the real adapters, a write of an unchanged value records
+//! nothing.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -13,6 +14,8 @@ struct Stored {
     item: Item,
     comments: Vec<Comment>,
     links: Vec<String>,
+    /// The priority it was created with.
+    priority: Option<Priority>,
 }
 
 #[derive(Default)]
@@ -39,7 +42,14 @@ impl FakeState {
 pub struct FakeTracker {
     pub team: String,
     pub bridge: User,
-    pub statuses: StatusTable,
+    /// The team's status names: the canonical ones unless a test removes one.
+    pub status_names: Vec<String>,
+    /// Whether it archives, as a tracker with an open-item limit does
+    /// (true by default); false plays a tracker without one.
+    pub archiving: bool,
+    /// The tracker's projects, by name; `None` plays a tracker that places
+    /// no item in a project (the key is ignored).
+    pub projects: Option<Vec<String>>,
     pub state: RefCell<FakeState>,
 }
 
@@ -57,7 +67,9 @@ impl FakeTracker {
                 id: "u-bridge".into(),
                 name: "spl-asdlc".into(),
             },
-            statuses: StatusTable::identity(),
+            status_names: Status::ALL.iter().map(|s| s.name().to_string()).collect(),
+            archiving: true,
+            projects: Some(Vec::new()),
             state: RefCell::new(FakeState::default()),
         }
     }
@@ -82,12 +94,27 @@ impl FakeTracker {
                 item,
                 comments: Vec::new(),
                 links: Vec::new(),
+                priority: None,
             },
         );
     }
 
     pub fn item(&self, key: &str) -> Item {
         self.state.borrow().items[key].item.clone()
+    }
+
+    /// The priority the item was created with (`None` for a seeded item).
+    pub fn priority(&self, key: &str) -> Option<Priority> {
+        self.state.borrow().items[key].priority
+    }
+
+    /// The tracker rewrites the markdown it stores (Linear normalises a
+    /// `- ` bullet to `* `, for one): the item's description becomes `f` of
+    /// it, and no write is recorded.
+    pub fn restyle(&self, key: &str, f: impl FnOnce(&str) -> String) {
+        let mut s = self.state.borrow_mut();
+        let st = s.items.get_mut(key).expect("a seeded item");
+        st.item.description = f(&st.item.description);
     }
 
     pub fn writes(&self) -> Vec<String> {
@@ -101,7 +128,7 @@ impl FakeTracker {
             .push(prefix.to_string());
     }
 
-    /// Reads of this key answer `Unreadable`.
+    /// Reads of this key (or lists of this label) answer `Unreadable`.
     pub fn make_unreadable(&self, key: &str) {
         self.state.borrow_mut().unreadable.push(key.to_string());
     }
@@ -174,11 +201,21 @@ impl Tracker for FakeTracker {
         Ok(self.team.clone())
     }
 
-    fn status_names(&self) -> TResult<Vec<String>> {
-        Ok(Status::ALL
+    fn project(&self, reference: &str) -> TResult<Option<String>> {
+        let Some(projects) = &self.projects else {
+            return Ok(None);
+        };
+        projects
             .iter()
-            .map(|s| self.statuses.tracker_name(*s).to_string())
-            .collect())
+            .find(|p| p.eq_ignore_ascii_case(reference))
+            .map(|p| Some(p.clone()))
+            .ok_or_else(|| TrackerError::NotFound {
+                what: format!("project {reference} in team {}", self.team),
+            })
+    }
+
+    fn status_names(&self) -> TResult<Vec<String>> {
+        Ok(self.status_names.clone())
     }
 
     fn user(&self, reference: &str) -> TResult<User> {
@@ -239,6 +276,9 @@ impl Tracker for FakeTracker {
     }
 
     fn list_by_label(&self, label: &str) -> TResult<Vec<Item>> {
+        if self.state.borrow().unreadable.iter().any(|k| k == label) {
+            return Err(TrackerError::unreadable(label, "injected outage"));
+        }
         Ok(self
             .state
             .borrow()
@@ -258,6 +298,10 @@ impl Tracker for FakeTracker {
             .filter(|s| s.links.iter().any(|l| l == pr_url))
             .map(|s| s.item.key.clone())
             .collect())
+    }
+
+    fn label_exists(&self, name: &str) -> TResult<bool> {
+        Ok(self.state.borrow().labels.iter().any(|l| l == name))
     }
 
     fn ensure_label(&self, name: &str) -> TResult<()> {
@@ -281,6 +325,7 @@ impl Tracker for FakeTracker {
             st.item.labels = new.labels.clone();
             st.item.assignee = new.assignee.clone();
             st.item.parent = new.parent.clone();
+            st.priority = new.priority;
         })?;
         Ok(self.item(&key))
     }
@@ -333,7 +378,7 @@ impl Tracker for FakeTracker {
         self.record(format!("status {key} {status}{who}"))?;
         self.with(key, |st| {
             st.item.state = ItemState {
-                name: self.statuses.tracker_name(status).to_string(),
+                name: status.name().to_string(),
                 status: Some(status),
                 kind: StateKind::of(status),
             };
@@ -443,6 +488,18 @@ impl Tracker for FakeTracker {
         keys.sort();
         keys.dedup();
         keys
+    }
+
+    fn archives(&self) -> bool {
+        self.archiving
+    }
+
+    fn archive(&self, key: &str) -> TResult<()> {
+        if !self.archiving || self.read(key)?.item.archived {
+            return Ok(());
+        }
+        self.record(format!("archive {key}"))?;
+        self.with(key, |st| st.item.archived = true)
     }
 
     fn link_pr(&self, key: &str, pr_url: &str, _title: &str) -> TResult<()> {

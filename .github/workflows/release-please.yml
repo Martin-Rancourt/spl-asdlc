@@ -1,0 +1,47 @@
+name: release-please
+
+# This repository's releases: release-please in its normal mode, on `main`,
+# with release-please-config.json and .release-please-manifest.json. Every
+# push to `main` updates the release PR; merging that PR tags `v<X.Y.Z>` and
+# publishes the GitHub release, which starts publish.yml.
+#
+# It runs as the App: with GITHUB_TOKEN its release PR would get no checks,
+# and the release it creates would start no publication workflow.
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release-please:
+    name: release-please
+    runs-on: ${{ fromJSON(vars.SPL_ASDLC_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      releases-created: ${{ steps.release.outputs.releases_created }}
+      prs-created: ${{ steps.release.outputs.prs_created }}
+    steps:
+      - name: Mint the App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.SPL_ASDLC_APP_ID }}
+          private-key: ${{ secrets.SPL_ASDLC_APP_PRIVATE_KEY }}
+
+      - name: Run release-please on main
+        id: release
+        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          target-branch: main
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

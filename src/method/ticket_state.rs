@@ -1,0 +1,322 @@
+//! A ticket and its PRs (`docs/reference/04-pr-review.md` §10): one PR per ticket
+//! by default, every PR independently deployable, and the state of the
+//! ticket decided by two rules applied in order (BR-ASDLC-008) whenever one
+//! of its PRs resolves (merged, or closed without merge) or a ticket past the
+//! merge has an open PR:
+//!
+//! 1. **The review rule** has priority: while another PR of the ticket is in
+//!    review (opened, not sent back), the ticket is In Review and
+//!    that PR's review → deploy cycle runs in full; a PR the coordinator sent
+//!    back puts it In Progress (spec 04 §5).
+//! 2. **The completeness rule**: with no PR in review, a ticket whose boxes
+//!    are not all checked (its `## Post deploy` section set apart) goes back
+//!    In Progress; an implementer resumes, and its next PR brings it to
+//!    review again.
+//!
+//! Then only a ticket with nothing open, every box checked and a PR merged
+//! goes To Deploy. A draft PR is out of the flow: it is not among the
+//! ticket's open PRs and counts for nothing here.
+//!
+//! A ticket with nothing to deploy (the `tracker.no_deploy_label`,
+//! `docs/method.md`, "Merge") waits for no release: merging is delivering, so [`delivered`] judges at once the
+//! ticket the rules put To Deploy, by the Done gate the closure would use.
+
+use super::contract;
+use super::done_gate::{self, ClosureVerdict, DoneGate};
+use super::vocabulary::Status;
+
+/// An open PR of the ticket, as the bridge sees it (never a draft, which
+/// is out of the flow).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenPr {
+    pub number: u64,
+    /// A coordinator's request for changes stands at its head (spec 04 §5).
+    pub sent_back: bool,
+}
+
+impl OpenPr {
+    /// In review: opened and not sent back. The ticket is In
+    /// Review as soon as its PR is opened, before its CI and its review
+    /// round (spec 03); a PR whose round is done but which waits for its
+    /// merge is still in review.
+    pub fn in_review(&self) -> bool {
+        !self.sent_back
+    }
+}
+
+/// What the rules read.
+#[derive(Debug, Clone)]
+pub struct Facts<'a> {
+    /// The ticket's open PRs, the one resolving now excluded.
+    pub open: &'a [OpenPr],
+    /// Every open PR of the repository had its ticket read: "no other PR"
+    /// can be said. When it cannot, only "another PR is in review" can.
+    pub open_known: bool,
+    pub description: &'a str,
+    /// A PR of the ticket was merged: the one resolving now, or one before.
+    pub merged: bool,
+}
+
+/// Why the rules put the ticket where they do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Why {
+    /// The review rule: another PR of the ticket is in review.
+    InReview(u64),
+    /// The review rule: the coordinator sent another PR of the ticket back.
+    SentBack(u64),
+    /// The completeness rule: these boxes are open; empty when the ticket
+    /// declares no box at all (nothing declared is not everything checked).
+    BoxesOpen(Vec<String>),
+    /// Every box checked but no PR of the ticket merged.
+    NothingMerged,
+    /// Every box checked, a PR merged, nothing open.
+    Complete,
+    /// Nothing to deploy: every box checked, a PR merged, nothing open; the
+    /// merge delivered it.
+    Delivered,
+    /// Nothing to deploy: delivered, but its own `## Post deploy` boxes wait
+    /// to be verified in production.
+    AwaitsPostDeploy,
+}
+
+impl Why {
+    /// The `next:` line of the comment that records the transition.
+    pub fn next(&self) -> String {
+        match self {
+            Why::InReview(n) => format!(
+                "PR #{n} of this ticket is in review: the ticket stays `In Review` until that PR resolves."
+            ),
+            Why::SentBack(n) => format!(
+                "the coordinator requested changes on PR #{n} of this ticket: its implementer resumes there."
+            ),
+            Why::BoxesOpen(open) if open.is_empty() => {
+                "this ticket declares no box, so nothing says it is complete: its implementer resumes."
+                    .to_string()
+            }
+            Why::BoxesOpen(open) => format!(
+                "{} box(es) of its contract remain open: its implementer resumes, and the next PR brings it back to review.",
+                open.len()
+            ),
+            Why::NothingMerged => {
+                "no PR of this ticket is merged: its implementer resumes.".to_string()
+            }
+            Why::Complete => {
+                "the release closure moves it to `Done` once every box of its contract is checked."
+                    .to_string()
+            }
+            Why::Delivered => {
+                "it has nothing to deploy, so the merge delivered it: every box of its contract is checked."
+                    .to_string()
+            }
+            Why::AwaitsPostDeploy => {
+                "it has nothing to deploy, so the merge delivered it; its `## Post deploy` boxes are verified in production through its validation sub-task, and the bridge moves it to `Done` once they are all checked."
+                    .to_string()
+            }
+        }
+    }
+}
+
+/// Where the ticket goes. `None` when it cannot be said (an open PR whose
+/// ticket could not be read may be this ticket's): fail closed, nothing is
+/// written, the next tick decides.
+pub fn decide(f: &Facts) -> Option<(Status, Why)> {
+    if let Some(pr) = f.open.iter().find(|p| p.in_review()) {
+        return Some((Status::InReview, Why::InReview(pr.number)));
+    }
+    if !f.open_known {
+        return None;
+    }
+    if let Some(pr) = f.open.iter().find(|p| p.sent_back) {
+        return Some((Status::InProgress, Why::SentBack(pr.number)));
+    }
+    match contract::open_before_deploy(f.description) {
+        None => return Some((Status::InProgress, Why::BoxesOpen(Vec::new()))),
+        Some(open) if !open.is_empty() => return Some((Status::InProgress, Why::BoxesOpen(open))),
+        Some(_) => {}
+    }
+    if !f.merged {
+        return Some((Status::InProgress, Why::NothingMerged));
+    }
+    Some((Status::ToDeploy, Why::Complete))
+}
+
+/// Where a ticket the rules put To Deploy goes when it has nothing to
+/// deploy: the merge delivered it, so it is judged at once by the
+/// Done gate (its boxes and its duplicates', REQ-MERGE-064), as the closure
+/// judges a shipped ticket (`05-release-cycle.md` §11): every box checked →
+/// Done; only its own `## Post deploy` boxes open → Post Deploy, verified in
+/// production through its validation sub-task (fail closed: never Done
+/// before they are checked); a box of a duplicate open → In Progress.
+/// `None` when the contract could not be read in full: nothing is written.
+pub fn delivered(id: &str, gate: &DoneGate) -> Option<(Status, Why)> {
+    if gate.unreadable_reason.is_some() {
+        return None;
+    }
+    Some(
+        match done_gate::closure_verdict(id, Some(Status::ToDeploy), gate) {
+            ClosureVerdict::Done => (Status::Done, Why::Delivered),
+            ClosureVerdict::PostDeploy => (Status::PostDeploy, Why::AwaitsPostDeploy),
+            ClosureVerdict::Reopen => (
+                Status::InProgress,
+                Why::BoxesOpen(gate.open_items.iter().map(|b| b.line.clone()).collect()),
+            ),
+        },
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ALL: &str =
+        "## Acceptance criteria\n- [x] a\n- [x] b\n\n## Post deploy\n- [ ] in production\n";
+    const OPEN: &str = "## Acceptance criteria\n- [x] a\n- [ ] b\n";
+
+    fn pr(number: u64) -> OpenPr {
+        OpenPr {
+            number,
+            sent_back: false,
+        }
+    }
+
+    fn facts<'a>(open: &'a [OpenPr], description: &'a str) -> Facts<'a> {
+        Facts {
+            open,
+            open_known: true,
+            description,
+            merged: true,
+        }
+    }
+
+    // ---- BR-ASDLC-008 ----
+
+    #[test]
+    fn every_box_checked_and_nothing_open_goes_to_deploy() {
+        assert_eq!(
+            decide(&facts(&[], ALL)),
+            Some((Status::ToDeploy, Why::Complete)),
+            "the post-deploy section is set apart"
+        );
+    }
+
+    #[test]
+    fn an_open_box_sends_the_ticket_back_to_work() {
+        assert_eq!(
+            decide(&facts(&[], OPEN)),
+            Some((Status::InProgress, Why::BoxesOpen(vec!["- [ ] b".into()])))
+        );
+        assert_eq!(
+            decide(&facts(&[], "no box at all")),
+            Some((Status::InProgress, Why::BoxesOpen(Vec::new()))),
+            "nothing declared is not everything checked"
+        );
+        assert_eq!(
+            decide(&facts(
+                &[],
+                "## Notes\n- [ ] a box under any heading\n## Acceptance criteria\n- [x] a\n"
+            ))
+            .map(|d| d.0),
+            Some(Status::InProgress),
+            "every box of the description counts (spec 01 §3)"
+        );
+    }
+
+    #[test]
+    fn the_review_rule_comes_before_the_completeness_rule() {
+        // Opened is in review, round or not (spec 03).
+        let open = [pr(8)];
+        assert_eq!(
+            decide(&facts(&open, OPEN)),
+            Some((Status::InReview, Why::InReview(8)))
+        );
+        assert_eq!(
+            decide(&Facts {
+                open_known: false,
+                ..facts(&open, OPEN)
+            }),
+            Some((Status::InReview, Why::InReview(8))),
+            "a PR in review is enough, whatever else is unknown"
+        );
+    }
+
+    #[test]
+    fn a_pr_sent_back_is_not_in_review() {
+        let sent_back = [OpenPr {
+            sent_back: true,
+            ..pr(8)
+        }];
+        assert_eq!(
+            decide(&facts(&sent_back, ALL)),
+            Some((Status::InProgress, Why::SentBack(8)))
+        );
+    }
+
+    #[test]
+    fn what_cannot_be_read_decides_nothing() {
+        assert_eq!(
+            decide(&Facts {
+                open_known: false,
+                ..facts(&[], ALL)
+            }),
+            None
+        );
+    }
+
+    // ---- nothing to deploy ----
+
+    fn gate(members: &[(&str, &str)]) -> DoneGate {
+        let members: Vec<done_gate::ContractMember> = members
+            .iter()
+            .map(|(id, description)| done_gate::ContractMember {
+                id: id.to_string(),
+                description: description.to_string(),
+            })
+            .collect();
+        done_gate::evaluate(&members, None)
+    }
+
+    #[test]
+    fn with_nothing_to_deploy_a_complete_ticket_is_delivered_done() {
+        assert_eq!(
+            delivered(
+                "ABC-1",
+                &gate(&[("ABC-1", "## Acceptance criteria\n- [x] a\n")])
+            ),
+            Some((Status::Done, Why::Delivered))
+        );
+    }
+
+    #[test]
+    fn with_nothing_to_deploy_post_deploy_boxes_wait_in_post_deploy() {
+        assert_eq!(
+            delivered("ABC-1", &gate(&[("ABC-1", ALL)])),
+            Some((Status::PostDeploy, Why::AwaitsPostDeploy)),
+            "fail closed: never Done before the post-deploy boxes are checked"
+        );
+    }
+
+    #[test]
+    fn with_nothing_to_deploy_a_duplicates_open_box_sends_the_ticket_back() {
+        let g = gate(&[
+            ("ABC-1", "## Acceptance criteria\n- [x] a\n"),
+            ("ABC-2", "## Acceptance criteria\n- [ ] b\n"),
+        ]);
+        assert_eq!(
+            delivered("ABC-1", &g),
+            Some((Status::InProgress, Why::BoxesOpen(vec!["- [ ] b".into()])))
+        );
+        let unreadable = done_gate::evaluate(&[], Some("relations cut".into()));
+        assert_eq!(delivered("ABC-1", &unreadable), None);
+    }
+
+    #[test]
+    fn a_complete_ticket_with_nothing_merged_is_not_to_deploy() {
+        assert_eq!(
+            decide(&Facts {
+                merged: false,
+                ..facts(&[], ALL)
+            }),
+            Some((Status::InProgress, Why::NothingMerged))
+        );
+    }
+}

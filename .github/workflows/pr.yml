@@ -1,0 +1,170 @@
+name: pr
+
+# This repository's own pull request check: the caller of asdlc-pr-guards.yml
+# and of the required-check action, as docs/setup/examples/pr.yml shows them,
+# called from this commit (`./`), so a PR exercises the workflows it changes.
+# The ruleset requires one context, `required-check`; the title check lives
+# in pr-title.yml.
+#
+# No path filter: a required check that never reports can never be satisfied
+# (REQ-CI-022). The concurrency key holds the draft state, so the ready run
+# never cancels itself against the draft one (REQ-CI-023). Every job of this
+# file is a need of `required-check`, and only the jobs listed in `may-skip`
+# may be skipped (REQ-CI-024, REQ-CI-025). A draft PR is out of the flow:
+# every job, `required-check` included, runs only when the PR is not a draft
+# (`if:`), so a draft run starts no runner. GitHub reports those skipped jobs, and a skipped job
+# passes a required check: the bridge counts only a success, and marking the
+# PR ready fires `ready_for_review`, whose run reports the check on the same
+# head. A job added here gets the same condition.
+#
+# GitHub Flow: every change reaches main through a PR to main, so the PR is
+# the only trigger. No run on a push to main: the PR already ran on its merge
+# commit, and the hosted minutes are a budget. Linux only: a macOS minute
+# counts ten and a Windows minute two; binaries.yml builds and tests those
+# once per release.
+#
+# The repository variable SPL_ASDLC_RUNS_ON (a JSON string such as
+# "ubuntu-latest", or a JSON array of labels such as
+# ["self-hosted","linux","x64"]) moves every job to another runner. A job of
+# this file reads it with fromJSON; a reusable workflow takes a label or a
+# JSON array, so a JSON string is decoded to its label before it is passed.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
+
+concurrency:
+  group: pr-${{ github.ref }}-${{ github.event.pull_request.draft }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  guards:
+    if: github.event.pull_request.draft == false
+    permissions:
+      contents: read
+    uses: ./.github/workflows/asdlc-pr-guards.yml
+    with:
+      base-sha: ${{ github.event.pull_request.base.sha }}
+      head-sha: ${{ github.event.pull_request.head.sha }}
+      head-ref: ${{ github.event.pull_request.head.ref }}
+      base-ref: ${{ github.event.pull_request.base.ref }}
+      head-repo: ${{ github.event.pull_request.head.repo.full_name }}
+      # Nothing here is prose: the tests read docs/reference/, .spl-asdlc/business-rules/,
+      # docs/setup/templates/ and docs/setup/examples/, and rule zero reads
+      # every file. Only the licence text, which no test reads, skips the suite.
+      prose-regex: '^LICENSE$'
+      # This repository's checks are jobs of their own.
+      guard-commands: '[]'
+      runs-on: ${{ startsWith(vars.SPL_ASDLC_RUNS_ON, '"') && fromJSON(vars.SPL_ASDLC_RUNS_ON) || vars.SPL_ASDLC_RUNS_ON || 'ubuntu-latest' }}
+
+  # BR-ASDLC-001, on every PR but a draft, release-please's included: it
+  # reads every tracked file and costs seconds.
+  rule-zero:
+    name: BR-ASDLC-001 — no instance data
+    if: github.event.pull_request.draft == false
+    runs-on: ${{ fromJSON(vars.SPL_ASDLC_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Scan every tracked file
+        env:
+          # A repository secret or, failing that, a repository variable of the same name.
+          SPL_ASDLC_FORBIDDEN_WORDS: ${{ secrets.SPL_ASDLC_FORBIDDEN_WORDS || vars.SPL_ASDLC_FORBIDDEN_WORDS }}
+        run: bash scripts/check-no-instance-names.sh
+
+  # Skipped on release-please's PRs (guards reports no code): they change
+  # only the version and the changelog, and binaries.yml tests the release on
+  # every target before attaching it.
+  fmt:
+    name: rustfmt
+    needs: guards
+    if: github.event.pull_request.draft == false && needs.guards.outputs.code == 'true'
+    runs-on: ${{ fromJSON(vars.SPL_ASDLC_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: stable
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  # Not on release-please's PRs either.
+  clippy:
+    name: clippy
+    needs: guards
+    if: github.event.pull_request.draft == false && needs.guards.outputs.code == 'true'
+    runs-on: ${{ fromJSON(vars.SPL_ASDLC_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: stable
+          components: clippy
+      # cache-bin off: its post step deletes every file of $CARGO_HOME/bin not
+      # installed by `cargo install`, rustup included, which breaks a
+      # self-hosted runner whose cargo home persists between jobs.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-bin: "false"
+      - run: cargo clippy --all-targets --locked -- -D warnings
+
+  test:
+    name: test
+    needs: guards
+    if: github.event.pull_request.draft == false && needs.guards.outputs.code == 'true'
+    runs-on: ${{ fromJSON(vars.SPL_ASDLC_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: stable
+      # cache-bin off: its post step deletes every file of $CARGO_HOME/bin not
+      # installed by `cargo install`, rustup included, which breaks a
+      # self-hosted runner whose cargo home persists between jobs.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-bin: "false"
+      - run: cargo test --locked
+
+  # The action is this commit's, so it is checked out first. always(): it
+  # runs whatever its needs gave, but never on a draft.
+  required-check:
+    name: required-check
+    if: always() && github.event.pull_request.draft == false
+    needs: [guards, rule-zero, fmt, clippy, test]
+    runs-on: ${{ fromJSON(vars.SPL_ASDLC_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: actions/required-check
+      - uses: ./actions/required-check
+        with:
+          needs: ${{ toJSON(needs) }}
+          may-skip: fmt,clippy,test

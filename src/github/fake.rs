@@ -23,19 +23,29 @@ pub struct FakeState {
     pub tag_objects: HashMap<(RepoSlug, String), AnnotatedTag>,
     pub commits: HashMap<(RepoSlug, String), Read<Commit>>,
     pub compares: HashMap<(RepoSlug, String, String), Read<Comparison>>,
+    /// `(repo, head)`: `head`'s whole history (`since_root`).
+    pub histories: HashMap<(RepoSlug, String), Read<Comparison>>,
     /// `(repo, rev, path)`; a missing entry is `NotFound`.
     pub files: HashMap<(RepoSlug, String, String), Read<String>>,
+    /// `(repo, rev, path)`: a directory listing scripted as such (a failed
+    /// read); otherwise `dir` lists the `files` directly under `path`.
+    pub dirs: HashMap<(RepoSlug, String, String), Read<Vec<String>>>,
     pub open_pulls: BTreeMap<RepoSlug, Read<Vec<PullRequest>>>,
     pub merged_pulls: BTreeMap<RepoSlug, Read<Vec<PullRequest>>>,
+    /// Closed without merge; none when not scripted.
+    pub closed_pulls: BTreeMap<RepoSlug, Read<Vec<PullRequest>>>,
     pub pull_files: HashMap<(RepoSlug, u64), Read<Vec<String>>>,
     pub commit_pulls: HashMap<(RepoSlug, String), Read<Vec<CommitPull>>>,
     pub required_checks: HashMap<(RepoSlug, String), Read<RequiredChecks>>,
+    pub rulesets: BTreeMap<RepoSlug, Read<Vec<Ruleset>>>,
     pub comments: HashMap<(RepoSlug, u64), Read<Vec<Comment>>>,
     /// A missing entry is `NotFound` (the release does not exist).
     pub releases: HashMap<(RepoSlug, String), Read<Release>>,
     pub runs: HashMap<(RepoSlug, String), Read<Vec<WorkflowRun>>>,
     pub jobs: HashMap<(RepoSlug, u64), Read<Vec<Job>>>,
     pub artifacts: HashMap<(RepoSlug, u64), Read<Vec<Artifact>>>,
+    /// `(repo, artifact id, path)`: a file inside an artifact's zip.
+    pub artifact_files: HashMap<(RepoSlug, u64, String), Read<String>>,
     /// Every write, as one line (`merge acme#12 at <sha> squash`, …).
     pub writes: Vec<String>,
     /// Writes whose line starts with a key here fail with that error.
@@ -173,6 +183,18 @@ impl GitHub for FakeGitHub {
         }
     }
 
+    fn since_root(&self, repo: &RepoSlug, head: &str) -> Read<Comparison> {
+        match self
+            .state
+            .borrow()
+            .histories
+            .get(&(repo.clone(), head.to_string()))
+        {
+            Some(c) => c.clone(),
+            None => not_scripted(format!("the history of {head}")),
+        }
+    }
+
     fn file(&self, repo: &RepoSlug, path: &str, rev: &str) -> Read<String> {
         match self
             .state
@@ -185,6 +207,32 @@ impl GitHub for FakeGitHub {
                 what: format!("{path} at {rev}"),
             }),
         }
+    }
+
+    fn dir(&self, repo: &RepoSlug, path: &str, rev: &str) -> Read<Vec<String>> {
+        let s = self.state.borrow();
+        if let Some(d) = s
+            .dirs
+            .get(&(repo.clone(), rev.to_string(), path.to_string()))
+        {
+            return d.clone();
+        }
+        let prefix = format!("{}/", path.trim_end_matches('/'));
+        let mut names: Vec<String> = s
+            .files
+            .iter()
+            .filter(|((r, at, _), text)| r == repo && at == rev && text.is_ok())
+            .filter_map(|((_, _, p), _)| p.strip_prefix(&prefix))
+            .filter(|name| !name.contains('/'))
+            .map(str::to_string)
+            .collect();
+        if names.is_empty() {
+            return Err(ReadError::NotFound {
+                what: format!("{path} at {rev}"),
+            });
+        }
+        names.sort();
+        Ok(names)
     }
 
     fn open_pulls(&self, repo: &RepoSlug, base: Option<&str>) -> Read<Vec<PullRequest>> {
@@ -252,6 +300,32 @@ impl GitHub for FakeGitHub {
         }
     }
 
+    fn closed_pulls(
+        &self,
+        repo: &RepoSlug,
+        since: Timestamp,
+        limit: usize,
+    ) -> Read<Vec<PullRequest>> {
+        match self.state.borrow().closed_pulls.get(repo) {
+            Some(Ok(p)) => {
+                let list: Vec<PullRequest> = p
+                    .iter()
+                    .filter(|p| p.updated_at.is_none_or(|u| u >= since))
+                    .cloned()
+                    .collect();
+                if list.len() > limit {
+                    return Err(ReadError::unreadable(
+                        format!("closed PRs of {repo}"),
+                        format!("more than {limit} closed PRs"),
+                    ));
+                }
+                Ok(list)
+            }
+            Some(Err(e)) => Err(e.clone()),
+            None => Ok(Vec::new()),
+        }
+    }
+
     fn pull_files(&self, repo: &RepoSlug, number: u64) -> Read<Vec<String>> {
         match self.state.borrow().pull_files.get(&(repo.clone(), number)) {
             Some(f) => f.clone(),
@@ -280,6 +354,13 @@ impl GitHub for FakeGitHub {
         {
             Some(r) => r.clone(),
             None => not_scripted(format!("required checks of {branch}")),
+        }
+    }
+
+    fn rulesets(&self, repo: &RepoSlug) -> Read<Vec<Ruleset>> {
+        match self.state.borrow().rulesets.get(repo) {
+            Some(r) => r.clone(),
+            None => not_scripted(format!("rulesets of {repo}")),
         }
     }
 
@@ -344,6 +425,18 @@ impl GitHub for FakeGitHub {
         }
     }
 
+    fn artifact_file(&self, repo: &RepoSlug, artifact_id: u64, path: &str) -> Read<String> {
+        match self
+            .state
+            .borrow()
+            .artifact_files
+            .get(&(repo.clone(), artifact_id, path.to_string()))
+        {
+            Some(f) => f.clone(),
+            None => not_scripted(format!("{path} in artifact {artifact_id}")),
+        }
+    }
+
     fn merge_pull(
         &self,
         repo: &RepoSlug,
@@ -393,6 +486,50 @@ impl GitHub for FakeGitHub {
             list.retain(|b| b.name != branch);
         }
         Ok(())
+    }
+
+    fn create_tag(&self, repo: &RepoSlug, tag: &str, sha: &str, message: &str) -> Write<()> {
+        self.record(format!("create-tag {repo} {tag} at {sha}"))?;
+        let object = format!("tag-object-{tag}");
+        let mut s = self.state.borrow_mut();
+        s.tag_objects.insert(
+            (repo.clone(), object.clone()),
+            AnnotatedTag {
+                name: tag.to_string(),
+                message: message.to_string(),
+                tagger_date: None,
+                target_sha: sha.to_string(),
+                target_type: ObjectType::Commit,
+            },
+        );
+        s.tags.entry(repo.clone()).or_default().push(GitRef {
+            name: tag.to_string(),
+            sha: object,
+            object_type: ObjectType::Tag,
+        });
+        Ok(())
+    }
+
+    fn create_release(&self, repo: &RepoSlug, tag: &str, name: &str, body: &str) -> Write<Release> {
+        self.record(format!("create-release {repo} {tag} {name}"))?;
+        let identity = self.state.borrow().identity.clone();
+        let release = Release {
+            tag: tag.to_string(),
+            url: format!("https://github.com/{repo}/releases/tag/{tag}"),
+            body: body.to_string(),
+            draft: false,
+            prerelease: false,
+            published_at: None,
+            author: identity.map(|i| Actor {
+                login: i.login(),
+                is_bot: true,
+            }),
+        };
+        self.state
+            .borrow_mut()
+            .releases
+            .insert((repo.clone(), tag.to_string()), Ok(release.clone()));
+        Ok(release)
     }
 
     fn create_branch(&self, repo: &RepoSlug, branch: &str, sha: &str) -> Write<()> {
@@ -512,6 +649,24 @@ impl GitHub for FakeGitHub {
             "request-reviewers {repo}#{number} {}",
             logins.join(", ")
         ))
+    }
+
+    fn dismiss_review(
+        &self,
+        repo: &RepoSlug,
+        number: u64,
+        review_id: u64,
+        message: &str,
+    ) -> Write<()> {
+        self.record(format!(
+            "dismiss-review {repo}#{number} {review_id}: {message}"
+        ))?;
+        self.with_open_pull(repo, number, |p| {
+            for r in p.reviews.iter_mut().filter(|r| r.id == Some(review_id)) {
+                r.state = "DISMISSED".into();
+            }
+        });
+        Ok(())
     }
 }
 

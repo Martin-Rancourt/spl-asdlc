@@ -15,6 +15,8 @@ use regex::Regex;
 use crate::method::contract::is_acceptance_heading;
 use crate::method::markdown;
 
+pub mod protocol;
+
 // ---- markers ----
 
 /// A hidden marker: `<!-- spl-asdlc:<kind> k=v … -->`. Values carry no
@@ -159,13 +161,26 @@ pub fn release_description(
             )
         })
         .collect();
+    let (angle_condition, angle_scope) = if angles.is_empty() {
+        (
+            "",
+            "No QA angle is configured (`release.angles = []`): the GO rests on the gate and the conditions that \
+             involve no angle.\n"
+                .to_string(),
+        )
+    } else {
+        (
+            " every angle's PR merged,",
+            format!("| Angle | Owner |\n|---|---|\n{table}"),
+        )
+    };
     format!(
-        "{marker}\n\n## Goal\nDeliver {product} {v} to production: the gate green on the latest candidate, every angle's PR \
-         merged, no open blocker, the release-please note covering the range, the fixes in the candidate. The GO belongs \
+        "{marker}\n\n## Goal\nDeliver {product} {v} to production: the gate green on the latest candidate,{angle_condition} \
+         no open blocker, the fixes in the candidate, nothing but its own QA reports after it. The GO belongs \
          to nobody: it is computed. Nobody closes this item by hand: the closure does.\n\n\
          ## Release note\n\n_{placeholder}_\n\n\
          ## Candidates\n\n\
-         ## Scope\nThe label `{label}` groups the release's issues.\n\n| Angle | Owner |\n|---|---|\n{table}",
+         ## Scope\nThe label `{label}` groups the release's issues.\n\n{angle_scope}",
         marker = marker("release", &[("product", product), ("version", &v)]),
         placeholder = crate::method::release::note::PLACEHOLDER,
     )
@@ -179,11 +194,25 @@ pub fn candidate_log_line(candidate: &str, class: &str, previous: Option<&str>) 
     }
 }
 
-/// Append a line to the `## Candidates` section, once.
-pub fn append_candidate(description: &str, line: &str) -> String {
-    if description.contains(line) {
-        return description.to_string();
+/// The candidate a line of the `## Candidates` log names: its first inline
+/// code, after a list bullet of any kind (`-`, `*`, `+`). A tracker
+/// rewrites the markdown it stores (Linear turns `- ` into `* `, spaces the
+/// items with blank lines), so a line is found again by its tag, never by
+/// its exact text.
+fn listed_candidate(line: &str) -> Option<&str> {
+    let rest = line.trim().strip_prefix(['-', '*', '+'])?;
+    if !rest.starts_with(char::is_whitespace) {
+        return None;
     }
+    let rest = rest.trim_start().strip_prefix('`')?;
+    rest.split_once('`').map(|(tag, _)| tag)
+}
+
+/// Append `line`, the log line of `candidate`, to the `## Candidates`
+/// section, unless a line of the section already names `candidate`
+/// (whatever its bullet, blank lines or trailing spaces): the description
+/// comes back unchanged then.
+pub fn append_candidate(description: &str, candidate: &str, line: &str) -> String {
     let lines: Vec<&str> = description.lines().collect();
     match lines
         .iter()
@@ -195,6 +224,12 @@ pub fn append_candidate(description: &str, line: &str) -> String {
                 .position(|l| l.starts_with("## "))
                 .map(|i| h + 1 + i)
                 .unwrap_or(lines.len());
+            if lines[h + 1..end]
+                .iter()
+                .any(|l| listed_candidate(l) == Some(candidate))
+            {
+                return description.to_string();
+            }
             let mut body: Vec<&str> = lines[h + 1..end]
                 .iter()
                 .copied()
@@ -215,7 +250,8 @@ pub fn append_candidate(description: &str, line: &str) -> String {
 }
 
 /// An angle sub-item of a release candidate (REQ-REL-048): self-contained,
-/// with real checkboxes.
+/// with real checkboxes, the protocol of a release angle and the method's
+/// notes of the angle embedded (BR-ASDLC-015), the project's notes linked.
 #[allow(clippy::too_many_arguments)]
 pub fn release_angle_item(
     product: &str,
@@ -231,24 +267,41 @@ pub fn release_angle_item(
     let v = crate::method::vocabulary::normalise_version(version);
     let title = format!("{} — {product} {v} (rc.{rc})", angle.title);
     let body = format!(
-        "{marker}\n\n## Goal\nRender the {key} review of the whole project at candidate `{candidate}`, as \
-         `docs/agents/review-release.md` and `docs/agents/angles/{key}.md` describe it.\n\n\
+        "{marker}\n\n## Goal\nRender the {key} review of the whole project at candidate `{candidate}`, as the \
+         protocol below describes it (`## Protocol`: the release angle's protocol and the angle's notes).\n\n\
          ## Non-goals\n- Another angle's review: the angles run in parallel.\n\n\
          ## Acceptance criteria\n\
          - [ ] The branch `qa/{candidate}/{key}` is cut from `{branch}`.\n\
-         - [ ] Every blocking finding is fixed in that branch, with a test each.\n\
+         - [ ] Every finding is documented in the report, blocking or not, and nothing is fixed in that branch.\n\
          - [ ] The report `{report_path}` is committed (mandatory, even when nothing was found).\n\
          - [ ] A PR from `qa/{candidate}/{key}` to `{branch}` names this item.\n\n\
          ## Business rules\n{absence}\n\n\
-         ## Context\n- Candidate: `{candidate}`\n- Release label: `{label}`\n- Project notes: {notes}\n- The brief is on the release item.",
+         ## What closes this item\nThe bridge sets this sub-item Done when it merges your angle PR into `{branch}`, \
+         which it does once the PR is ready (not a draft), names this item's key in its title or body, carries a valid \
+         report at `{report_path}` on its head and no other change, is approved at its head by a release coordinator with no request for \
+         changes standing, has its required checks green and is up to date with `{branch}`. A report that is missing or \
+         invalid is said in a comment here and the PR is not merged. An item still open when the cycle closes is closed \
+         with the release.\n\n\
+         ## Context\n- Candidate: `{candidate}`\n- Release label: `{label}`\n- Project notes: {notes}\n- The brief is on the release item.\n\
+         - This item follows your PR: `In Progress` once it appears; `In Review` once it is ready with its checks green, \
+         assigned to the coordinator who reviews it; back `In Progress` when the coordinator requests changes, assigned to \
+         this angle's assignee again (or to nobody); `Done` when the bridge merges it after the coordinator's approval.\n\n\
+         {protocol}",
         marker = marker("angle", &[("scope", candidate), ("angle", &angle.key)]),
         key = angle.key,
         absence = crate::method::business_rules::ABSENCE_DECLARATION,
-        notes = notes
-            .map(|n| format!("`{n}`"))
-            .unwrap_or_else(|| "none".into()),
+        notes = project_notes(notes),
+        protocol = protocol::section(protocol::Job::ReleaseAngle, Some(&angle.key)),
     );
     (title, body)
+}
+
+/// The project's notes of an angle, linked (never embedded): they live in
+/// the project's repository.
+fn project_notes(notes: Option<&str>) -> String {
+    notes
+        .map(|n| format!("`{n}`, in the project's repository"))
+        .unwrap_or_else(|| "none".into())
 }
 
 /// The scope of a PR review round: the PR and the head it opened at. A
@@ -258,12 +311,15 @@ pub fn round_scope(pr_url: &str, head: &str) -> String {
     format!("{pr_url}@{}", short(head))
 }
 
-/// An angle sub-item of a PR review (spec 04 §3).
+/// An angle sub-item of a PR review (spec 04 §3): the PR-review protocol
+/// and the method's notes of the angle embedded (BR-ASDLC-015), the
+/// project's notes linked.
 pub fn review_angle_item(
     ticket: &str,
     pr_url: &str,
     head: &str,
     angle: &str,
+    notes: Option<&str>,
     reasons: &[String],
 ) -> (String, String) {
     let title = format!("{} review — {ticket} ({})", capitalised(angle), short(head));
@@ -276,36 +332,290 @@ pub fn review_angle_item(
         )
     };
     let body = format!(
-        "{marker}\n\n## Goal\nReview the diff of {pr_url} at `{head12}` from the {angle} angle, as \
-         `docs/agents/review-pr.md` describes it, and post the findings as review comments on the PR (one thread per \
-         finding, severity in the first line).\n\n\
+        "{marker}\n\n## Goal\nReview the diff of {pr_url} at `{head12}` from the {angle} angle, as the protocol below \
+         describes it (`## Protocol`: the PR-review protocol and the angle's notes), and post the findings as review \
+         comments on the PR (one thread per finding, severity in the first line).\n\n\
          ## Non-goals\n- The other angles of the round.\n- Fixing: the coordinator applies the retained fixes.\n\n\
          ## Acceptance criteria\n- [ ] Every finding is a review thread on the PR, with its severity.\n\
-         - [ ] The review is submitted on GitHub.\n\n\
+         - [ ] The review is submitted on GitHub, its body naming this item's key.\n\n\
          ## Business rules\n{absence}\n\n\
-         ## Context\n- Ticket: {ticket}{why}",
+         ## What closes this item\nThe bridge sets this sub-item Done at the first tick that finds on {pr_url} a \
+         submitted review (any state but pending) whose body names this item's key as a whole word: name it in the \
+         body of your review. The PR's merge closes it too (Done), its close without merge cancels it.\n\n\
+         ## Context\n- Ticket: {ticket}\n- Project notes: {notes}{why}\n\n\
+         {protocol}",
         marker = marker(
             "angle",
             &[("scope", &round_scope(pr_url, head)), ("angle", angle)]
         ),
         head12 = short(head),
         absence = crate::method::business_rules::ABSENCE_DECLARATION,
+        notes = project_notes(notes),
+        protocol = protocol::section(protocol::Job::PrAngle, Some(angle)),
     );
     (title, body)
 }
 
-/// The consolidation item of a PR review or of a release candidate.
-pub fn consolidation_item(scope: &str, title_of: &str, protocol: &str) -> (String, String) {
-    let title = format!("Consolidation — {title_of}");
+/// The marker of the ticket the bridge opened for the PR at `pr_url`.
+pub fn pr_ticket_marker(pr_url: &str) -> String {
+    marker("pr-ticket", &[("pr", pr_url)])
+}
+
+/// The ticket the bridge opens for a PR of an App that needs none
+/// (`review.ticketless_authors`, spec 04): a complete contract whose one box
+/// the PR meets, so the PR takes the path of every ticketed PR.
+pub fn pr_ticket(number: u64, title: &str, author: &str, pr_url: &str) -> (String, String) {
+    let title = format!("PR #{number}: {}", inert(title));
     let body = format!(
-        "{marker}\n\n## Goal\nConsolidate every angle of {scope} as `{protocol}` describes it: confirm or reject each finding \
-         exactly once, with a reason for every rejection, apply the retained fixes, and approve.\n\n\
-         ## Non-goals\n- New findings beyond what a fix requires.\n\n\
-         ## Acceptance criteria\n- [ ] Every finding is confirmed or rejected in its thread.\n\
-         - [ ] The retained fixes are commits of the branch.\n- [ ] The approval is submitted at the head.\n\n\
+        "{marker}\n\n## Goal\nShip {pr_url}, opened by `{author}`, an App whose PRs need no ticket: the bridge \
+         opened this one so the PR is reviewed, merged, released and deployed like any other.\n\n\
+         ## Non-goals\n- Anything beyond the PR's diff.\n\n\
+         ## Acceptance criteria\n- [x] The PR's change is reviewed and merged with its checks green.\n\n\
          ## Business rules\n{absence}",
+        marker = pr_ticket_marker(pr_url),
+        author = inert(author),
+        absence = crate::method::business_rules::ABSENCE_DECLARATION,
+    );
+    (title, body)
+}
+
+/// The marker of the gate-fix ticket of a candidate whose gate is red.
+pub fn gate_fix_marker(candidate: &str) -> String {
+    marker("gate-fix", &[("candidate", candidate)])
+}
+
+/// The candidate a gate-fix ticket was opened for, read off its marker.
+pub fn gate_fix_candidate(description: &str) -> Option<String> {
+    static GATE_FIX: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"spl-asdlc:gate-fix candidate=([^\s`>]+)").unwrap());
+    GATE_FIX.captures(description).map(|c| c[1].to_string())
+}
+
+/// The facts of a red gate the gate-fix ticket carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RedGateFacts<'a> {
+    pub release: &'a str,
+    pub candidate: &'a str,
+    pub sha: &'a str,
+    pub branch: &'a str,
+    pub conclusion: &'a str,
+    pub run_url: &'a str,
+    /// The failed suites of the evidence pack, or why it could not be read.
+    pub suites: Result<Vec<String>, String>,
+    /// Why the red is taken as final although no automatic rerun was seen
+    /// (the bounded wait ran out), when that is the case.
+    pub rerun_unseen: Option<&'a str>,
+}
+
+/// At most this many failed suites are named one by one.
+const SUITES_SHOWN: usize = 30;
+
+/// The gate-fix ticket the bridge opens when a candidate's gate is red and
+/// its automatic rerun settled (BR-ASDLC-016): served to an implementer by
+/// role, a complete contract whose goal is the gate green on the release
+/// branch.
+pub fn gate_fix_ticket(f: &RedGateFacts) -> (String, String) {
+    // Suite names and read errors come from the evidence pack and from
+    // GitHub: one line each, no marker, no backtick that closes a span.
+    let code = |s: &str| inert(s).replace('`', "'");
+    let title = format!("Make the gate green — {}", code(f.candidate));
+    let (criterion, found) = match &f.suites {
+        Ok(suites) if suites.is_empty() => (
+            format!(
+                "- [ ] The step that failed outside the suites (every suite passed: see the gate run {}) is fixed on `{}`.",
+                f.run_url, f.branch
+            ),
+            "none: every suite passed, a step outside the suites failed".to_string(),
+        ),
+        Ok(suites) => {
+            let mut names: Vec<String> = suites
+                .iter()
+                .take(SUITES_SHOWN)
+                .map(|s| format!("`{}`", code(s)))
+                .collect();
+            if suites.len() > SUITES_SHOWN {
+                names.push(format!("and {} more", suites.len() - SUITES_SHOWN));
+            }
+            let names = names.join(", ");
+            (
+                format!(
+                    "- [ ] Each failing suite passes on `{}`: {names}.",
+                    f.branch
+                ),
+                names,
+            )
+        }
+        Err(why) => (
+            format!(
+                "- [ ] The suites that failed in the gate run {} (unknown here: the evidence pack could not be read) pass on `{}`.",
+                f.run_url, f.branch
+            ),
+            format!(
+                "unknown: the evidence pack could not be read ({})",
+                inert(why)
+            ),
+        ),
+    };
+    let body = format!(
+        "{marker}\n\n## Goal\nMake the release gate green on the release branch `{branch}`. The gate run of the \
+         candidate `{candidate}` concluded `{conclusion}` ({run_url}) after its automatic rerun of known flakes, if \
+         any, had settled: fix what the failure needs on `{branch}`, through a PR whose base is `{branch}` \
+         (`docs/agents/implement.md` step 2), so that the gate of the next candidate is green.\n\n\
+         ## Non-goals\n- No new feature.\n- No change beyond what the failure needs.\n\
+         - Cutting the next candidate: the coordinator does it through the cut workflow (or the bridge, when \
+         `auto_candidate = true`).\n\n\
+         ## Acceptance criteria\n{criterion}\n\n\
+         ## Business rules\n{absence}\n\n\
+         ## Context\n- Release: {release}\n- Candidate: `{candidate}` at `{sha12}`\n- Gate run: {run_url}\n\
+         - Failing suites (`{suites_file}` of the evidence pack `{pack}`): {found}\n{unseen}\
+         - This ticket follows the flow of any ticket: To Deploy at its fix's merge, Done at the release's \
+         closure. The gate of the next candidate is the verification: when it is green and no PR of this ticket \
+         was merged yet, the bridge closes it (Done, with a comment naming that candidate); when it is red, the \
+         bridge opens a new gate-fix ticket for that candidate.",
+        marker = gate_fix_marker(f.candidate),
+        branch = f.branch,
+        candidate = code(f.candidate),
+        conclusion = code(f.conclusion),
+        run_url = f.run_url,
+        release = f.release,
+        sha12 = short(f.sha),
+        suites_file = crate::method::release::gate::SUITES_FILE,
+        pack = crate::method::release::gate::evidence_artifact(f.sha),
+        absence = crate::method::business_rules::ABSENCE_DECLARATION,
+        unseen = f
+            .rerun_unseen
+            .map(|why| format!(
+                "- Automatic rerun: {}; check the rerun workflow.\n",
+                inert(why)
+            ))
+            .unwrap_or_default(),
+    );
+    (title, body)
+}
+
+/// The comment of the bridge closing a gate-fix ticket: the gate is green on
+/// a newer candidate (or on the same one, rerun by hand).
+pub fn gate_fix_closed_comment(candidate: &str, green: &str, run_url: &str) -> String {
+    let why = if green == candidate {
+        format!("the gate of `{candidate}` this ticket was opened for is green now ({run_url})")
+    } else {
+        format!(
+            "the gate of the newer candidate `{green}` is green ({run_url}): the red gate of `{candidate}` this \
+             ticket was opened for is superseded"
+        )
+    };
+    format!(
+        "Done: {why}, so the bridge closes this ticket.\n\n{}",
+        marker(
+            "gate-fix-closed",
+            &[("candidate", candidate), ("green", green)]
+        )
+    )
+}
+
+/// The marker of the validation sub-task of a ticket in Post Deploy.
+pub fn post_deploy_validation_marker(parent: &str) -> String {
+    marker("post-deploy-validation", &[("parent", parent)])
+}
+
+/// The validation sub-task of a ticket the closure moved to Post Deploy
+/// (BR-ASDLC-003): served to an agent like any ticket, with a complete
+/// contract, it asks for the parent's `## Post deploy` boxes to be verified
+/// in production and checked, and hands to the owner what an agent cannot
+/// verify.
+pub fn post_deploy_validation_item(
+    parent: &str,
+    parent_title: &str,
+    parent_url: &str,
+    owner: &str,
+) -> (String, String) {
+    let title = format!("Post-deploy validation — {parent}: {}", inert(parent_title));
+    let body = format!(
+        "{marker}\n\n## Goal\nValidate in production the `## Post deploy` boxes of {parent} ({parent_url}), now that its \
+         release is deployed: check on {parent} each box you can verify yourself, then close this sub-task. If a check \
+         needs a human or is beyond you, name it in a comment here and reassign this sub-task to the owner (`{owner}`), \
+         so a human finishes. The bridge moves {parent} to `Done` at the tick that finds every one of its `## Post deploy` \
+         boxes checked.\n\n\
+         ## Non-goals\n- Changing the code, or any box of {parent} outside its `## Post deploy` section.\n\
+         - Checking a box whose check was not verified in production.\n\n\
+         ## Acceptance criteria\n\
+         - [ ] Every `## Post deploy` box of {parent} is either checked, once its check was verified in production, or \
+         named in a comment here as a check you could not verify, with this sub-task reassigned to the owner (`{owner}`).\n\n\
+         ## Business rules\n{absence}\n\n\
+         ## Context\n- Parent: {parent}\n- The owner: `{owner}`",
+        marker = post_deploy_validation_marker(parent),
+        owner = inert(owner),
+        absence = crate::method::business_rules::ABSENCE_DECLARATION,
+    );
+    (title, body)
+}
+
+/// What a consolidation item consolidates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Consolidating {
+    /// The review round of a PR.
+    PullRequest,
+    /// The QA of a release candidate.
+    Candidate,
+}
+
+/// The consolidation item of a PR review or of a release candidate, with
+/// the consolidation protocol embedded (BR-ASDLC-015). A candidate's is the
+/// overall review (BR-ASDLC-020): served once every angle PR of the
+/// candidate is merged, its item blocked by every angle sub-item; the
+/// coordinator reviewed each angle PR as it came, this item reads them
+/// together.
+pub fn consolidation_item(scope: &str, title_of: &str, of: Consolidating) -> (String, String) {
+    let title = format!("Consolidation — {title_of}");
+    let (goal, non_goals, criteria, closes, job) = match of {
+        Consolidating::PullRequest => (
+            format!(
+                "Consolidate every angle of {scope} as the protocol below describes it (`## Protocol`, its part \
+                 \"For a PR review\"): confirm or reject each finding exactly once, with a reason for every rejection, \
+                 apply the retained fixes, and approve."
+            ),
+            "- New findings beyond what a fix requires.",
+            "- [ ] Every finding is confirmed or rejected in its thread.\n\
+             - [ ] The retained fixes are commits of the branch.\n- [ ] The approval is submitted at the head.",
+            "Nothing you set closes this item: its PR does. The bridge sets it Done when it merges the PR, which it does \
+             once a coordinator's approval stands at the PR's head commit (of each coordinator's latest approval or \
+             request for changes, none requests changes and one approves the current head), the required checks are \
+             green there, every review thread is resolved, the branch is up to date when the base requires it, no hold \
+             stands and, when the project requires one, a human approved too. A close of the PR without merge cancels \
+             it. A request for changes at the head sends the ticket back to In Progress and leaves this item open.",
+            protocol::Job::PrConsolidation,
+        ),
+        Consolidating::Candidate => (
+            format!(
+                "The overall review of candidate `{scope}`, as the protocol below describes it (`## Protocol`, its part \
+                 \"For a release candidate\", the overall review), once every angle PR of the candidate is merged: read \
+                 every merged report together, confirm or reject each non-blocking finding in a comment on its ticket, \
+                 with a reason for every rejection, check that nothing falls between the angles, then tag the next \
+                 candidate (the cut workflow, action `candidate`) unless the project automates it."
+            ),
+            "- Reviewing an angle PR: the coordinator reviews each one as it comes, before the bridge merges it.\n\
+             - Filing tickets: the bridge creates them from the merged reports.\n- Declaring the GO: the bridge computes it.",
+            "- [ ] Every merged report of the candidate is read, with the others.\n\
+             - [ ] Every non-blocking finding is confirmed or rejected on its ticket, with a reason for every rejection.\n\
+             - [ ] What falls between the angles is checked, and said on the release item.\n\
+             - [ ] The next candidate is tagged, or the project's automation tags it.",
+            "Nothing you set closes this item. It is served once every angle sub-item of the candidate is resolved, \
+             that is once the bridge merged every angle PR, since it is blocked by each of them. The bridge sets it Done \
+             when a newer candidate is tagged, or when the release is published; the cycle's closure closes it \
+             otherwise. The GO is computed from the facts, never declared.",
+            protocol::Job::ReleaseConsolidation,
+        ),
+    };
+    let body = format!(
+        "{marker}\n\n## Goal\n{goal}\n\n\
+         ## Non-goals\n{non_goals}\n\n\
+         ## Acceptance criteria\n{criteria}\n\n\
+         ## Business rules\n{absence}\n\n\
+         ## What closes this item\n{closes}\n\n\
+         {protocol}",
         marker = marker("consolidation", &[("scope", scope)]),
         absence = crate::method::business_rules::ABSENCE_DECLARATION,
+        protocol = protocol::section(job, None),
     );
     (title, body)
 }
@@ -327,6 +637,24 @@ pub fn short(sha: &str) -> &str {
 
 // ---- release comments ----
 
+/// Which angles a candidate is offered, and why (spec 05 §3, §7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AngleScope {
+    /// The configured angles, while passes remain.
+    Configured,
+    /// A later pass under `later_passes = "gate-and-coordinator"`: none.
+    LighterPass,
+    /// No QA angle is configured (`release.angles = []`): none, and the
+    /// candidate keeps none should angles be configured before its GO.
+    NoQaAngle,
+}
+
+/// The marker of a candidate recorded while no QA angle was configured:
+/// angles configured later apply from the next candidate, never to it.
+pub fn no_qa_angle_marker(candidate: &str) -> String {
+    marker("no-qa-angle", &[("candidate", candidate)])
+}
+
 /// The comment posted once per candidate (REQ-REL-041).
 pub fn candidate_comment(
     candidate: &str,
@@ -335,7 +663,7 @@ pub fn candidate_comment(
     gate_url: Option<&str>,
     paths_since_previous: &[String],
     offered: &[String],
-    lighter_pass: bool,
+    scope: AngleScope,
 ) -> String {
     let mut out = format!("### Candidate `{candidate}`\n\n- Class: {class}\n");
     out.push_str(&match previous {
@@ -358,7 +686,9 @@ pub fn candidate_comment(
             paths_since_previous.len() - 20
         ));
     }
-    if lighter_pass {
+    if scope == AngleScope::NoQaAngle {
+        out.push_str("\nNo QA angle is configured (`release.angles = []`): this candidate opens no angle sub-item and no consolidation item, and its GO rests on the gate and the conditions that involve no angle. Angles configured later apply from the next candidate.\n");
+    } else if scope == AngleScope::LighterPass {
         out.push_str("\nNo angle is offered on this candidate: later passes are judged by the gate and the coordinator (`later_passes = \"gate-and-coordinator\"`).\n");
     } else if offered.is_empty() {
         out.push_str("\nNo review reopened: no angle is offered on this candidate.\n");
@@ -370,6 +700,10 @@ pub fn candidate_comment(
     }
     out.push('\n');
     out.push_str(&marker("candidate", &[("tag", candidate)]));
+    if scope == AngleScope::NoQaAngle {
+        out.push('\n');
+        out.push_str(&no_qa_angle_marker(candidate));
+    }
     out
 }
 
@@ -399,6 +733,8 @@ pub struct Brief {
     pub tickets: Vec<BriefTicket>,
     pub untracked: Vec<String>,
     pub rule_files_touched: Vec<String>,
+    /// The candidate has no QA angle (`release.angles = []`).
+    pub no_qa_angle: bool,
 }
 
 pub fn brief(b: &Brief) -> String {
@@ -411,7 +747,10 @@ pub fn brief(b: &Brief) -> String {
             "- Diff since the last published release: `{t}` — {} file(s)\n",
             b.paths_since_release.len()
         ),
-        None => "- Diff since the last published release: (first release)\n".to_string(),
+        None => format!(
+            "- Diff since the repository's root: first release, no earlier release to measure from — {} file(s)\n",
+            b.paths_since_release.len()
+        ),
     });
     out.push_str(&match (&b.previous_candidate, &b.paths_since_candidate) {
         (None, _) => "- Diff since the previous candidate: first candidate of this version, identical to the diff above\n".to_string(),
@@ -423,6 +762,11 @@ pub fn brief(b: &Brief) -> String {
     }
     if let Some(u) = &b.evidence_url {
         out.push_str(&format!("- Evidence pack: {u}\n"));
+    }
+    if b.no_qa_angle {
+        out.push_str(
+            "\n#### QA angles\n\nNo QA angle is configured (`release.angles = []`): no angle sub-item and no consolidation item are opened for this candidate. The GO rests on the gate green on the latest candidate, no open blocker and nothing but bookkeeping after the candidate.\n",
+        );
     }
     out.push_str("\n#### Tickets included\n\n");
     if b.tickets.is_empty() {
@@ -500,7 +844,11 @@ pub fn brief(b: &Brief) -> String {
         s
     };
     out.push_str(&details(
-        "Paths since the last release",
+        if b.last_release.is_some() {
+            "Paths since the last release"
+        } else {
+            "Paths since the repository's root"
+        },
         &b.paths_since_release,
     ));
     if let Some(p) = &b.paths_since_candidate {
@@ -538,8 +886,8 @@ pub fn hold_comment(
     key: &str,
 ) -> String {
     format!(
-        "**HOLD computed on `{candidate}`** — the release PRs stay open.\n\n{}\n\nBlockers-Carried: {blockers_carried}\n\n\
-         The GO is recomputed at every tick and the PRs are merged by code as soon as it is true; nothing to tick by hand.\n\n{}",
+        "**HOLD computed on `{candidate}`** — the release is not tagged.\n\n{}\n\nBlockers-Carried: {blockers_carried}\n\n\
+         The GO is recomputed at every tick and the release is tagged and published by code as soon as it is true; nothing to tick by hand.\n\n{}",
         reasons
             .iter()
             .map(|r| format!("- {r}"))
@@ -615,78 +963,74 @@ pub fn stagnation_message(
     out
 }
 
-/// The gate record (REQ-REL-078); the `Blockers-Carried:` line is the GO's.
-#[allow(clippy::too_many_arguments)]
-pub fn gate_record(
-    version: &str,
-    candidate: &str,
-    sha: &str,
-    branch: &str,
-    release: &str,
-    release_url: &str,
-    computed_at: &str,
-    go: &crate::method::release::go::GoDecision,
-    angles: &[(String, String)],
-    prs: &[(String, String, u64)],
-) -> Option<String> {
-    // A record only ever attests a computed GO.
-    if !go.go {
-        return None;
-    }
-    let blockers_carried = go.blockers_carried();
-    let rows: String = angles
-        .iter()
-        .map(|(a, s)| format!("| {a} | {s} |\n"))
-        .collect();
-    let prs: String = prs
-        .iter()
-        .map(|(c, v, n)| format!("- `{c}` {v}: #{n}\n"))
-        .collect();
-    Some(format!(
-        "# Release v{version}\n\n{marker}\n\n- Candidate: {candidate} ({sha12}) on {branch}\n- Release item: [{release}]({release_url})\n\
-         - GO computed at {computed_at} UTC by the release pass\n\nBlockers-Carried: {blockers_carried}\n\n## Computed GO\n\n\
-         The gate is green on the candidate, every angle PR is merged, no blocker is open.\n\n| angle | state |\n|---|---|\n{rows}\n\
-         ## Release PRs of the cycle\n\n{prs}",
-        marker = record_marker(candidate),
-        sha12 = short(sha),
-    ))
-}
-
-pub fn record_marker(candidate: &str) -> String {
-    marker("release-record", &[("candidate", candidate)])
-}
-
-/// A record attests `candidate` iff its marker is a line of its own and it
-/// carries exactly one `Blockers-Carried:` line whose value is `none`.
-pub fn record_names(text: &str, candidate: &str) -> bool {
-    let m = record_marker(candidate);
-    let has_marker = text.lines().any(|l| l.trim() == m);
-    let carried: Vec<&str> = text
-        .lines()
-        .filter_map(|l| l.strip_prefix("Blockers-Carried:"))
-        .collect();
-    has_marker && carried.len() == 1 && carried[0].trim().eq_ignore_ascii_case("none")
-}
-
-/// The comment on a ticket when its PR is merged (REQ-MERGE-062 as the
-/// specification corrects it: always `To Deploy`).
-pub fn merged_comment(pr_url: &str, base: &str, merged_by: Option<&str>, state: &str) -> String {
+/// The comment on a ticket when one of its PRs is merged (REQ-MERGE-062 as
+/// spec 04 §10 corrects it): the state the rules gave the ticket, and what
+/// comes next. Its `merged_pr:` line is the record of the merge
+/// (REQ-MERGE-075). It states only the conditions that applied to the merge.
+pub fn merged_comment(
+    pr_url: &str,
+    base: &str,
+    merged_by: &MergedBy,
+    state: &str,
+    next: &str,
+) -> String {
     let how = match merged_by {
-        None => format!(
-            "{pr_url} was green, approved and up to date with `{base}`, so the bridge merged it."
-        ),
-        Some(who) => format!(
+        MergedBy::Bridge {
+            approved_by,
+            up_to_date,
+        } => {
+            let mut held = vec!["green".to_string()];
+            if let Some(by) = approved_by {
+                held.push(format!("approved by `{by}`"));
+            }
+            if *up_to_date {
+                held.push(format!("up to date with `{base}`"));
+            }
+            let last = held.pop().unwrap_or_default();
+            let held = if held.is_empty() {
+                last
+            } else {
+                format!("{} and {last}", held.join(", "))
+            };
+            match approved_by {
+                Some(_) => format!("{pr_url} was {held}, so the bridge merged it."),
+                None => format!(
+                    "{pr_url} was {held}; no review angle applies to it, so the bridge merged it with no PR review."
+                ),
+            }
+        }
+        MergedBy::Outside(who) => format!(
             "{pr_url} was merged by `{who}` outside the bridge; the bridge applies the same state rule to it."
         ),
     };
-    let next = if state == "To Deploy" {
-        "the release closure moves it to `Done` once every box of its contract is checked."
-    } else {
-        "none — its state is left alone."
+    let by = match merged_by {
+        MergedBy::Bridge { .. } => "bridge",
+        MergedBy::Outside(who) => who,
     };
+    format!("{how}\n\nmerged_by: {by}\nmerged_pr: {pr_url}\nstate: {state}\nnext: {next}")
+}
+
+/// Who merged a PR, as the merge comment says it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergedBy<'a> {
+    /// The bridge: `approved_by` is the coordinator whose approval at the
+    /// head let it merge (`None` for a PR with no angle, merged with no PR
+    /// review, spec 04 §11); `up_to_date` when the project requires a PR up
+    /// to date with its base (`review.require_up_to_date`).
+    Bridge {
+        approved_by: Option<&'a str>,
+        up_to_date: bool,
+    },
+    /// Someone outside the bridge.
+    Outside(&'a str),
+}
+
+/// The comment on a ticket when one of its PRs is closed without merge and
+/// the state rules move the ticket (spec 04 §10).
+pub fn closed_unmerged_comment(pr_url: &str, state: &str, next: &str) -> String {
     format!(
-        "{how}\n\nmerged_by: {}\nmerged_pr: {pr_url}\nstate: {state}\nnext: {next}",
-        merged_by.unwrap_or("bridge")
+        "{pr_url} was closed without merge: its review round is canceled and it delivers nothing.\n\nstate: {state}\nnext: {next}\n\n{}",
+        marker("closed-unmerged", &[("pr", pr_url)])
     )
 }
 

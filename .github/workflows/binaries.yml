@@ -1,17 +1,30 @@
 name: Binaries
 
-# On a version tag `v<X.Y.Z>`: build the `spl-asdlc` binary for Linux, macOS
-# and Windows, run the tests on each, and attach the archives and their
-# SHA-256 sums to the GitHub release of the tag. It writes to GitHub only; it
-# never touches a tracker.
+# Build the `spl-asdlc` binary for Linux, macOS and Windows from a version tag
+# `v<X.Y.Z>`, run the tests on each, and attach the archives and their SHA-256
+# sums to the GitHub release of the tag. It writes to GitHub only; it never
+# touches a tracker. The only place macOS and Windows are built and tested
+# (pr.yml is Linux only): a macOS minute counts ten.
+#
+# Called by publish.yml once release-please has published the release; a
+# dispatch rebuilds an existing tag. No tag push trigger: the release-please
+# tag would start a second, duplicate build. The one write,
+# `contents: write` to attach to the release, is the `release` job's; the
+# caller's job grants it, as a called job holds at most its caller's
+# permissions.
 
 on:
-  push:
-    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_call:
+    inputs:
+      tag:
+        description: "The tag v<X.Y.Z> to build and attach to"
+        type: string
+        required: true
   workflow_dispatch:
     inputs:
       tag:
         description: "An existing tag v<X.Y.Z> to rebuild"
+        type: string
         required: true
 
 permissions:
@@ -26,41 +39,51 @@ jobs:
         include:
           - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, archive: tar.gz }
           - { os: macos-latest, target: aarch64-apple-darwin, archive: tar.gz }
-          - { os: macos-13, target: x86_64-apple-darwin, archive: tar.gz }
+          - { os: macos-15-intel, target: x86_64-apple-darwin, archive: tar.gz }
           - { os: windows-latest, target: x86_64-pc-windows-msvc, archive: zip }
     runs-on: ${{ matrix.os }}
+    # A build takes a few minutes (seven at most, Windows); a hung runner
+    # held a macOS job, ten minutes billed for one, for an hour.
+    timeout-minutes: 15
+    permissions:
+      contents: read
     env:
-      TAG: ${{ inputs.tag || github.ref_name }}
+      TAG: ${{ inputs.tag }}
+      TARGET: ${{ matrix.target }}
+      ARCHIVE: ${{ matrix.archive }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.TAG }}
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
       - name: The tag is the crate's version
         shell: bash
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           test "v$version" = "$TAG" || { echo "Cargo.toml says $version, the tag is $TAG"; exit 1; }
-      - run: cargo test --locked --target ${{ matrix.target }}
-      - run: cargo build --locked --release --target ${{ matrix.target }}
+      - shell: bash
+        run: cargo test --locked --target "$TARGET"
+      - shell: bash
+        run: cargo build --locked --release --target "$TARGET"
       - name: Package
         shell: bash
         run: |
-          name="spl-asdlc-$TAG-${{ matrix.target }}"
+          name="spl-asdlc-$TAG-$TARGET"
           mkdir "$name"
           cp README.md LICENSE "$name/"
-          if [ "${{ matrix.archive }}" = zip ]; then
-            cp "target/${{ matrix.target }}/release/spl-asdlc.exe" "$name/"
+          if [ "$ARCHIVE" = zip ]; then
+            cp "target/$TARGET/release/spl-asdlc.exe" "$name/"
             7z a "$name.zip" "$name" > /dev/null
             echo "ASSET=$name.zip" >> "$GITHUB_ENV"
           else
-            cp "target/${{ matrix.target }}/release/spl-asdlc" "$name/"
+            cp "target/$TARGET/release/spl-asdlc" "$name/"
             tar czf "$name.tar.gz" "$name"
             echo "ASSET=$name.tar.gz" >> "$GITHUB_ENV"
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ env.ASSET }}
           path: ${{ env.ASSET }}
@@ -70,13 +93,14 @@ jobs:
     name: attach to the release
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     env:
-      TAG: ${{ inputs.tag || github.ref_name }}
+      TAG: ${{ inputs.tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist
           merge-multiple: true

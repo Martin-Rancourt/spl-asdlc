@@ -1,0 +1,88 @@
+name: required-check
+description: >-
+  The one required status check of a PR workflow: fails unless every gated job
+  succeeded, or was skipped while the caller declared it may be
+  (.spl-asdlc/requirements/ci.md, REQ-CI-024). Run it as the only step of a
+  job named `required-check`, with `if: always() &&
+  github.event.pull_request.draft == false`, `needs:` every other job of the
+  workflow, on a hosted runner. On a draft PR, which is out of the flow, the
+  job does not run at all, and the caller's `ready_for_review` run reports
+  the check; should the step ever run on a draft (a caller that lost its
+  `if:`), it fails.
+
+inputs:
+  needs:
+    description: '`toJSON(needs)` of the aggregating job.'
+    required: true
+  may-skip:
+    description: >-
+      Comma list of job ids that may be skipped (for example the test jobs a
+      prose-only PR does not run). Any other skipped job fails the check.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Aggregate the gated jobs
+      shell: bash
+      env:
+        NEEDS: ${{ inputs.needs }}
+        MAY_SKIP: ${{ inputs.may-skip }}
+        DRAFT: ${{ github.event.pull_request.draft }}
+      run: |
+        set -euo pipefail
+        # A defence in depth: the caller's job never runs on a draft.
+        if [ "${DRAFT:-}" = "true" ]; then
+          echo "::error title=required-check::A draft PR is out of the flow: required-check never passes on a draft, and its job should not run there (if: github.event.pull_request.draft == false). Mark the PR ready for review; its ready_for_review run reports the check."
+          exit 1
+        fi
+        if ! command -v jq > /dev/null; then
+          echo "::error title=required-check::jq is not installed on this runner."
+          exit 1
+        fi
+        if ! jq -e 'type == "object" and length > 0' > /dev/null 2>&1 <<< "$NEEDS"; then
+          echo "::error title=required-check::No job results supplied; refusing to pass by default."
+          exit 1
+        fi
+        # The declared names, as ",a,b," (bash 3 has no associative arrays).
+        may=","
+        IFS=',' read -r -a skippable <<< "$MAY_SKIP"
+        for name in ${skippable[@]+"${skippable[@]}"}; do
+          name="${name//[[:space:]]/}"
+          if [ -n "$name" ]; then
+            may="$may$name,"
+          fi
+        done
+        bad=()
+        # A job the caller may skip that is not among the needs is a typo.
+        for name in ${skippable[@]+"${skippable[@]}"}; do
+          name="${name//[[:space:]]/}"
+          if [ -n "$name" ] && ! jq -e --arg n "$name" 'has($n)' > /dev/null <<< "$NEEDS"; then
+            echo "::error title=required-check::may-skip names '$name', which is not a job of needs."
+            bad+=("$name (not a job)")
+          fi
+        done
+        while IFS=$'\t' read -r name result; do
+          verdict=ok
+          case "$result" in
+            success) ;;
+            skipped)
+              if [[ "$may" != *",$name,"* ]]; then
+                verdict="skipped, and not declared in may-skip"
+              fi
+              ;;
+            failure | cancelled) verdict="$result" ;;
+            "") verdict="reported no result (check the needs: list)" ;;
+            *) verdict="unknown result '$result'" ;;
+          esac
+          printf '%-30s %-10s %s\n' "$name" "${result:-?}" "$verdict"
+          if [ "$verdict" != ok ]; then
+            bad+=("$name: $verdict")
+          fi
+        done < <(jq -r 'to_entries[] | [.key, (.value.result // "")] | @tsv' <<< "$NEEDS")
+        if [ "${#bad[@]}" -gt 0 ]; then
+          echo "::error title=required-check::Gated job(s) failed: ${bad[*]}"
+          exit 1
+        fi
+        echo "Every gated job passed."

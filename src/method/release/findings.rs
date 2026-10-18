@@ -1,6 +1,8 @@
-//! Findings turned into tickets (`docs/spec/06-qa-report.md` rules 4-6,
-//! REQ-REL-052..061, 096): their markers, identity keys, bodies, the shared
-//! nits ticket, the `blocks` cycle check, and the requalification plan.
+//! Findings turned into tickets (`docs/reference/06-qa-report.md` rules 3-5,
+//! BR-ASDLC-022): their markers, identity keys and bodies (a blocking
+//! finding an urgent fix ticket, a non-blocking one a ticket logged for
+//! later, each a contract), the `blocks` cycle check, and the
+//! requalification plan.
 
 use std::collections::{BTreeSet, VecDeque};
 use std::sync::LazyLock;
@@ -9,7 +11,6 @@ use regex::Regex;
 
 use super::report::Finding;
 use crate::method::business_rules::ABSENCE_DECLARATION;
-use crate::method::vocabulary::Severity;
 
 static BLOCKER_MARKER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"release_blocker::\s*\**\s*`?([A-Z][A-Z0-9]{1,9}-\d+)`?").unwrap()
@@ -20,11 +21,9 @@ static FINDING_MARKER: LazyLock<Regex> = LazyLock::new(|| {
     )
     .unwrap()
 });
-static NIT_LINE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\s*[-*+]\s+\[[ xX]\]\s+(.*)$").unwrap());
 
-/// The marker a blocker carries in its own description, written by the same
-/// create as the ticket (REQ-REL-056).
+/// The marker a blocking finding's ticket carries in its own description,
+/// written by the same create as the ticket (REQ-REL-056).
 pub fn blocker_marker(release: &str) -> String {
     format!(
         "release_blocker:: {release}\n\nThis finding blocks the release above. The marker is written with the ticket; the \
@@ -43,7 +42,7 @@ pub fn parse_blocker_marker(description: &str) -> Option<String> {
 }
 
 /// The description without its blocker marker paragraph (requalification
-/// to a non-blocking severity removes it).
+/// to non-blocking removes it).
 pub fn remove_blocker_marker(description: &str) -> String {
     let marker_start = match BLOCKER_MARKER.find(description) {
         Some(m) => m.start(),
@@ -69,7 +68,7 @@ pub fn remove_blocker_marker(description: &str) -> String {
     out
 }
 
-/// The identity of a finding ticket (spec 06 rule 5: candidate, angle,
+/// The identity of a finding ticket (spec 06 rule 4: candidate, angle,
 /// finding id; report ids restart with every candidate): survives a retitle.
 pub fn finding_marker(release: &str, candidate: &str, angle: &str, finding_id: &str) -> String {
     crate::method::texts::marker(
@@ -104,8 +103,16 @@ pub fn title_key(title: &str) -> String {
         .to_lowercase()
 }
 
-/// The ticket a blocker or should-fix finding becomes: a complete contract,
-/// whose acceptance criteria carry the proposed test (rule 6).
+/// How a finding is named in titles and comments.
+pub fn grade(blocking: bool) -> &'static str {
+    if blocking { "blocking" } else { "non-blocking" }
+}
+
+/// The ticket a finding becomes (BR-ASDLC-012, BR-ASDLC-022): a complete
+/// contract whose acceptance criteria carry the finding as the report gives
+/// it (what was observed, where, in what context) and its proposed test. A
+/// blocking finding's ticket carries the blocker marker and asks for the fix
+/// on the release branch; a non-blocking one is logged for later.
 pub fn finding_ticket(
     release: &str,
     candidate: &str,
@@ -118,14 +125,17 @@ pub fn finding_ticket(
     // The report is an agent's text: one line each, no marker, no backtick
     // that could close a code span.
     let code = |s: &str| inert(s).replace('`', "'");
-    let title = format!(
-        "{} ({} — {angle})",
-        inert(&finding.summary),
-        finding.severity
-    );
+    let grade = grade(finding.blocking);
+    let title = format!("{} ({grade} — {angle})", inert(&finding.summary));
+    let context = if finding.evidence.trim().is_empty() {
+        "(none given)".to_string()
+    } else {
+        inert(&finding.evidence)
+    };
     let mut criteria = vec![format!(
-        "- [ ] The finding no longer reproduces at `{}`.",
-        code(&finding.anchor)
+        "- [ ] The finding no longer reproduces: {what} — where: `{anchor}` — context: {context}",
+        what = inert(&finding.summary),
+        anchor = code(&finding.anchor),
     )];
     if let Some(test) = &finding.proposed_test {
         criteria.push(format!(
@@ -134,70 +144,35 @@ pub fn finding_ticket(
         ));
     }
     let mut body = String::new();
-    if finding.severity == Severity::Blocker {
+    let goal = if finding.blocking {
         body.push_str(&blocker_marker(release));
         body.push_str("\n\n");
-    }
-    let evidence = if finding.evidence.trim().is_empty() {
-        "(none given)".to_string()
+        "It holds the release's GO: fix it on the release branch (a PR whose base is that branch); the fix merged there \
+         makes the next candidate."
     } else {
-        inert(&finding.evidence)
+        "It does not hold the release: it is logged for later, to refine and schedule like any ticket."
     };
     body.push_str(&format!(
-        "## Goal\nFix the {severity} finding `{id}` of the {angle} review of `{candidate}`: {summary}\n\n\
+        "## Goal\nFix the {grade} finding `{id}` of the {angle} review of `{candidate}`. {goal}\n\n\
          ## Non-goals\n- Anything the finding does not name.\n\n\
          ## Acceptance criteria\n{criteria}\n\n\
          ## Business rules\n{ABSENCE_DECLARATION}\n\n\
-         ## Context\n- Anchor: `{anchor}`\n- Evidence: {evidence}\n- Angle PR: {angle_pr_url}\n- Report: `{report_path}`, finding `{id}`\n\n{marker}",
-        severity = finding.severity,
+         ## Context\n- Angle PR: {angle_pr_url}\n- Report: `{report_path}`, finding `{id}`\n\n{marker}",
         id = code(&finding.id),
-        summary = inert(&finding.summary),
         criteria = criteria.join("\n"),
-        anchor = code(&finding.anchor),
         marker = finding_marker(release, candidate, angle, &finding.id),
     ));
     (title, body)
 }
 
-/// The title of a release's single shared nits ticket (REQ-REL-061).
+/// The title of the shared nits ticket an older bridge opened per release:
+/// the closure still recognises it, to archive it once resolved
+/// (BR-ASDLC-019). No nits ticket is opened any more (BR-ASDLC-022).
 pub fn nits_title(product: &str, version: &str) -> String {
     format!(
         "Nits — {product} {}",
         crate::method::vocabulary::normalise_version(version)
     )
-}
-
-/// One nit as one checkbox line: anchor and text each collapsed to a line.
-pub fn nit_line(anchor: &str, text: &str) -> String {
-    let one = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
-    format!("- [ ] {}: {}", one(anchor), one(text))
-}
-
-fn nit_text(line: &str) -> Option<String> {
-    NIT_LINE.captures(line).map(|c| c[1].trim().to_string())
-}
-
-/// Append a nit to the shared ticket's description, unless a line with the
-/// same text is there, ticked or not. Content this did not write survives.
-pub fn append_nit(description: &str, line: &str) -> Option<String> {
-    let text = nit_text(line)?;
-    if description
-        .lines()
-        .any(|l| nit_text(l).as_deref() == Some(text.as_str()))
-    {
-        return None;
-    }
-    let base = description.trim_end_matches('\n');
-    Some(if base.is_empty() {
-        format!("{line}\n")
-    } else {
-        format!("{base}\n{line}\n")
-    })
-}
-
-/// Unchecked nit lines of the shared ticket (the status count).
-pub fn open_nits(description: &str) -> usize {
-    crate::method::markdown::checklist(description).1.len()
 }
 
 /// Bounds of the walk that proves a `blocks` relation closes no loop.
@@ -253,39 +228,37 @@ pub fn may_block(
 pub enum RequalifyStep {
     WriteBlockerMarker,
     LayBlocksRelation,
+    RemoveFindingLabel,
+    /// Ready, assigned to `release.fix_assignee` (unassigned when unset or
+    /// unknown), as a blocking finding's ticket is created.
+    ServeFixer,
     RemoveBlocksRelation,
     RemoveBlockerMarker,
     AddFindingLabel,
-    SetTriage,
-    MoveToNitsTicket,
-    CancelTicket,
+    LayRelatedRelation,
+    /// Triage, unassigned, as a non-blocking finding's ticket is created.
+    LogForLater,
 }
 
-/// What requalifying a finding ticket from `from` to `to` takes; empty
-/// when it already has that severity.
-pub fn requalify_plan(from: Severity, to: Severity) -> Vec<RequalifyStep> {
+/// What requalifying a finding ticket takes; empty when it already is
+/// what is asked. The priority is left as it is (the trackers' interface
+/// writes it at creation only): the person changes it in the tracker.
+pub fn requalify_plan(from_blocking: bool, to_blocking: bool) -> Vec<RequalifyStep> {
     use RequalifyStep::*;
-    match (from, to) {
-        (f, t) if f == t => Vec::new(),
-        (_, Severity::Blocker) => vec![WriteBlockerMarker, LayBlocksRelation],
-        (Severity::Blocker, Severity::ShouldFix) => {
-            vec![
-                RemoveBlocksRelation,
-                RemoveBlockerMarker,
-                AddFindingLabel,
-                SetTriage,
-            ]
-        }
-        (Severity::Blocker, Severity::Nit) => {
-            vec![
-                RemoveBlocksRelation,
-                RemoveBlockerMarker,
-                MoveToNitsTicket,
-                CancelTicket,
-            ]
-        }
-        (Severity::ShouldFix, Severity::Nit) => vec![MoveToNitsTicket, CancelTicket],
-        (Severity::Nit, Severity::ShouldFix) => vec![AddFindingLabel, SetTriage],
+    match (from_blocking, to_blocking) {
+        (false, true) => vec![
+            WriteBlockerMarker,
+            LayBlocksRelation,
+            RemoveFindingLabel,
+            ServeFixer,
+        ],
+        (true, false) => vec![
+            RemoveBlocksRelation,
+            RemoveBlockerMarker,
+            AddFindingLabel,
+            LayRelatedRelation,
+            LogForLater,
+        ],
         _ => Vec::new(),
     }
 }
@@ -294,15 +267,17 @@ pub fn requalify_plan(from: Severity, to: Severity) -> Vec<RequalifyStep> {
 /// The reason is mandatory (spec 09): an empty one is refused.
 pub fn requalify_comment(
     who: &str,
-    from: Severity,
-    to: Severity,
+    from_blocking: bool,
+    to_blocking: bool,
     reason: &str,
 ) -> Result<String, String> {
     if reason.trim().is_empty() {
         return Err("a requalification needs a reason".into());
     }
     Ok(format!(
-        "Requalified by {who}: `{from}` → `{to}`.\n\nReason: {}\n\nThe GO is recomputed at the next tick.",
+        "Requalified by {who}: `{}` → `{}`.\n\nReason: {}\n\nThe GO is recomputed at the next tick.",
+        grade(from_blocking),
+        grade(to_blocking),
         crate::method::texts::inert(reason)
     ))
 }

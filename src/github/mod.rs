@@ -1,5 +1,5 @@
 //! GitHub: the facts the bridge reads and the few writes it makes
-//! (`docs/spec/07-the-bridge.md`, REQ-REL-099).
+//! (`docs/reference/07-the-bridge.md`, REQ-REL-099).
 //!
 //! Every read answers with a value, [`ReadError::NotFound`] (GitHub said 404)
 //! or [`ReadError::Unreadable`] (anything else, including a list GitHub cut):
@@ -12,6 +12,7 @@ pub mod fake;
 pub use crate::http;
 mod rest;
 pub mod types;
+pub(crate) mod zip;
 
 pub use rest::RestGitHub;
 pub use types::*;
@@ -37,9 +38,18 @@ pub trait GitHub {
     fn commit(&self, repo: &RepoSlug, rev: &str) -> Read<Commit>;
     /// `base...head`, refused when GitHub cannot return it whole.
     fn compare(&self, repo: &RepoSlug, base: &str, head: &str) -> Read<Comparison>;
+    /// `head`'s whole history, as a comparison from the repository's root:
+    /// every commit `head` reaches and every file at `head` (no base, so no
+    /// `base_committed_at`). The range of a first release, which no earlier
+    /// release bounds; refused when GitHub cannot return it whole.
+    fn since_root(&self, repo: &RepoSlug, head: &str) -> Read<Comparison>;
     /// The text of `path` at `rev`; `NotFound` when GitHub says 404 (the
     /// caller decides whether the revision itself exists).
     fn file(&self, repo: &RepoSlug, path: &str, rev: &str) -> Read<String>;
+    /// The names of the files directly in the directory `path` at `rev`
+    /// (no sub-directory), sorted; `NotFound` when GitHub says 404 (the
+    /// caller decides whether the revision itself exists).
+    fn dir(&self, repo: &RepoSlug, path: &str, rev: &str) -> Read<Vec<String>>;
 
     // ---- pull requests ----
 
@@ -55,12 +65,23 @@ pub trait GitHub {
         since: Option<Timestamp>,
         limit: usize,
     ) -> Read<Vec<PullRequest>>;
+    /// PRs closed without being merged and updated since `since`, newest
+    /// first; more than `limit` of them is unreadable.
+    fn closed_pulls(
+        &self,
+        repo: &RepoSlug,
+        since: Timestamp,
+        limit: usize,
+    ) -> Read<Vec<PullRequest>>;
     /// Paths a PR changes; a listing GitHub caps is unreadable.
     fn pull_files(&self, repo: &RepoSlug, number: u64) -> Read<Vec<String>>;
     /// PRs GitHub associates with a commit.
     fn commit_pulls(&self, repo: &RepoSlug, sha: &str) -> Read<Vec<CommitPull>>;
     /// Required status checks of a branch: classic protection and rulesets.
     fn required_checks(&self, repo: &RepoSlug, branch: &str) -> Read<RequiredChecks>;
+    /// Every ruleset that applies to the repository, whatever its target or
+    /// enforcement, each read by id (conditions and rules).
+    fn rulesets(&self, repo: &RepoSlug) -> Read<Vec<Ruleset>>;
     /// Comments on a PR or an issue, oldest first.
     fn issue_comments(&self, repo: &RepoSlug, number: u64) -> Read<Vec<Comment>>;
 
@@ -80,6 +101,10 @@ pub trait GitHub {
     ) -> Read<Vec<WorkflowRun>>;
     fn run_jobs(&self, repo: &RepoSlug, run_id: u64) -> Read<Vec<Job>>;
     fn run_artifacts(&self, repo: &RepoSlug, run_id: u64) -> Read<Vec<Artifact>>;
+    /// The text of `path` inside the artifact `artifact_id`, read from its
+    /// zip: `NotFound` when the zip holds no such file; a zip that cannot be
+    /// downloaded or read is unreadable.
+    fn artifact_file(&self, repo: &RepoSlug, artifact_id: u64, path: &str) -> Read<String>;
 
     // ---- writes ----
 
@@ -96,6 +121,12 @@ pub trait GitHub {
     fn update_branch(&self, repo: &RepoSlug, number: u64, head_sha: &str) -> Write<()>;
     fn delete_branch(&self, repo: &RepoSlug, branch: &str) -> Write<()>;
     fn create_branch(&self, repo: &RepoSlug, branch: &str, sha: &str) -> Write<()>;
+    /// Create the annotated tag `tag` on the commit `sha`, under the
+    /// bridge's identity: the tag object, then its ref. GitHub refuses a tag
+    /// that exists.
+    fn create_tag(&self, repo: &RepoSlug, tag: &str, sha: &str, message: &str) -> Write<()>;
+    /// Publish the GitHub release of an existing tag, with its notes.
+    fn create_release(&self, repo: &RepoSlug, tag: &str, name: &str, body: &str) -> Write<Release>;
     fn add_labels(&self, repo: &RepoSlug, number: u64, labels: &[String]) -> Write<()>;
     /// Removing a label the PR does not carry is a success.
     fn remove_label(&self, repo: &RepoSlug, number: u64, label: &str) -> Write<()>;
@@ -127,4 +158,13 @@ pub trait GitHub {
         inputs: &[(String, String)],
     ) -> Write<()>;
     fn request_reviewers(&self, repo: &RepoSlug, number: u64, logins: &[String]) -> Write<()>;
+    /// Dismiss a review of a PR (REST `dismissals`), with the message GitHub
+    /// shows in its place.
+    fn dismiss_review(
+        &self,
+        repo: &RepoSlug,
+        number: u64,
+        review_id: u64,
+        message: &str,
+    ) -> Write<()>;
 }

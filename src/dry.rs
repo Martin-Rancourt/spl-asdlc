@@ -5,7 +5,7 @@
 
 use std::cell::RefCell;
 
-use crate::github::{self, GitHub, Read, RepoSlug, Timestamp, Write};
+use crate::github::{self, GitHub, Read, Release, RepoSlug, Timestamp, Write};
 use crate::method::vocabulary::{ItemState, Status};
 use crate::notify::Signal;
 use crate::tracker::{Comment, Item, NewItem, RelationKind, Relations, TResult, Tracker, User};
@@ -51,8 +51,14 @@ impl GitHub for DryGitHub<'_> {
     fn compare(&self, repo: &RepoSlug, base: &str, head: &str) -> Read<github::Comparison> {
         self.inner.compare(repo, base, head)
     }
+    fn since_root(&self, repo: &RepoSlug, head: &str) -> Read<github::Comparison> {
+        self.inner.since_root(repo, head)
+    }
     fn file(&self, repo: &RepoSlug, path: &str, rev: &str) -> Read<String> {
         self.inner.file(repo, path, rev)
+    }
+    fn dir(&self, repo: &RepoSlug, path: &str, rev: &str) -> Read<Vec<String>> {
+        self.inner.dir(repo, path, rev)
     }
     fn open_pulls(&self, repo: &RepoSlug, base: Option<&str>) -> Read<Vec<github::PullRequest>> {
         self.inner.open_pulls(repo, base)
@@ -69,6 +75,14 @@ impl GitHub for DryGitHub<'_> {
     ) -> Read<Vec<github::PullRequest>> {
         self.inner.merged_pulls(repo, base, since, limit)
     }
+    fn closed_pulls(
+        &self,
+        repo: &RepoSlug,
+        since: Timestamp,
+        limit: usize,
+    ) -> Read<Vec<github::PullRequest>> {
+        self.inner.closed_pulls(repo, since, limit)
+    }
     fn pull_files(&self, repo: &RepoSlug, number: u64) -> Read<Vec<String>> {
         self.inner.pull_files(repo, number)
     }
@@ -77,6 +91,9 @@ impl GitHub for DryGitHub<'_> {
     }
     fn required_checks(&self, repo: &RepoSlug, branch: &str) -> Read<github::RequiredChecks> {
         self.inner.required_checks(repo, branch)
+    }
+    fn rulesets(&self, repo: &RepoSlug) -> Read<Vec<github::Ruleset>> {
+        self.inner.rulesets(repo)
     }
     fn issue_comments(&self, repo: &RepoSlug, number: u64) -> Read<Vec<github::Comment>> {
         self.inner.issue_comments(repo, number)
@@ -100,6 +117,9 @@ impl GitHub for DryGitHub<'_> {
     }
     fn run_artifacts(&self, repo: &RepoSlug, run_id: u64) -> Read<Vec<github::Artifact>> {
         self.inner.run_artifacts(repo, run_id)
+    }
+    fn artifact_file(&self, repo: &RepoSlug, artifact_id: u64, path: &str) -> Read<String> {
+        self.inner.artifact_file(repo, artifact_id, path)
     }
 
     fn merge_pull(
@@ -125,6 +145,24 @@ impl GitHub for DryGitHub<'_> {
         self.intents
             .push(format!("github {repo}: delete branch {branch}"));
         Ok(())
+    }
+    fn create_tag(&self, repo: &RepoSlug, tag: &str, sha: &str, _message: &str) -> Write<()> {
+        self.intents
+            .push(format!("github {repo}: create tag {tag} at {sha}"));
+        Ok(())
+    }
+    fn create_release(&self, repo: &RepoSlug, tag: &str, name: &str, body: &str) -> Write<Release> {
+        self.intents
+            .push(format!("github {repo}: publish release {tag} ({name})"));
+        Ok(Release {
+            tag: tag.to_string(),
+            url: format!("(dry run) release {tag}"),
+            body: body.to_string(),
+            draft: false,
+            prerelease: false,
+            published_at: None,
+            author: None,
+        })
     }
     fn create_branch(&self, repo: &RepoSlug, branch: &str, sha: &str) -> Write<()> {
         self.intents
@@ -209,11 +247,30 @@ impl GitHub for DryGitHub<'_> {
         ));
         Ok(())
     }
+    fn dismiss_review(
+        &self,
+        repo: &RepoSlug,
+        number: u64,
+        review_id: u64,
+        message: &str,
+    ) -> Write<()> {
+        self.intents.push(format!(
+            "github {repo}: dismiss review {review_id} on #{number}: {message}"
+        ));
+        Ok(())
+    }
 }
 
 pub struct DryTracker<'a> {
     pub inner: &'a dyn Tracker,
     pub intents: &'a Intents,
+}
+
+/// The key of an item a dry run would create.
+const NEW_KEY: &str = "(new: ";
+
+fn would_create(key: &str) -> bool {
+    key.starts_with(NEW_KEY)
 }
 
 fn first_line(text: &str) -> &str {
@@ -233,41 +290,72 @@ impl Tracker for DryTracker<'_> {
     fn user(&self, reference: &str) -> TResult<User> {
         self.inner.user(reference)
     }
+    fn project(&self, reference: &str) -> TResult<Option<String>> {
+        self.inner.project(reference)
+    }
     fn get(&self, key: &str) -> TResult<Item> {
         self.inner.get(key)
     }
+    // An item this dry run would have created exists nowhere: it has no
+    // relation, comment or child yet, as it would have none once created.
     fn relations(&self, key: &str) -> TResult<Relations> {
+        if would_create(key) {
+            return Ok(Relations::default());
+        }
         self.inner.relations(key)
     }
     fn comments(&self, key: &str) -> TResult<Vec<Comment>> {
+        if would_create(key) {
+            return Ok(Vec::new());
+        }
         self.inner.comments(key)
     }
     fn children(&self, key: &str) -> TResult<Vec<Item>> {
+        if would_create(key) {
+            return Ok(Vec::new());
+        }
         self.inner.children(key)
     }
     fn list_by_label(&self, label: &str) -> TResult<Vec<Item>> {
         self.inner.list_by_label(label)
     }
+    fn find_labelled_containing(&self, label: &str, needle: &str) -> TResult<Vec<Item>> {
+        self.inner.find_labelled_containing(label, needle)
+    }
     fn items_linked_to_pr(&self, pr_url: &str) -> TResult<Vec<String>> {
         self.inner.items_linked_to_pr(pr_url)
     }
+    fn label_exists(&self, name: &str) -> TResult<bool> {
+        self.inner.label_exists(name)
+    }
     fn ensure_label(&self, name: &str) -> TResult<()> {
+        // A label some item carries exists: the real write would be a no-op.
+        if !self.inner.list_by_label(name)?.is_empty() {
+            return Ok(());
+        }
         self.intents.push(format!("tracker: ensure label {name}"));
         Ok(())
     }
     fn create_item(&self, item: &NewItem) -> TResult<Item> {
         self.intents.push(format!(
-            "tracker: create \"{}\" [{}]{}",
+            "tracker: create \"{}\" [{}]{}{}{}",
             item.title,
             item.status,
+            item.priority
+                .map(|p| format!(" priority {p}"))
+                .unwrap_or_default(),
             item.parent
                 .as_ref()
                 .map(|p| format!(" under {p}"))
+                .unwrap_or_default(),
+            item.assignee
+                .as_ref()
+                .map(|u| format!(", assigned to {}", u.name))
                 .unwrap_or_default()
         ));
         Ok(Item {
             id: String::new(),
-            key: format!("(new: {})", item.title),
+            key: format!("{NEW_KEY}{})", item.title),
             title: item.title.clone(),
             description: item.description.clone(),
             url: String::new(),
@@ -346,6 +434,13 @@ impl Tracker for DryTracker<'_> {
             .push(format!("tracker: link {key} to {pr_url}"));
         Ok(())
     }
+    fn archives(&self) -> bool {
+        self.inner.archives()
+    }
+    fn archive(&self, key: &str) -> TResult<()> {
+        self.intents.push(format!("tracker: archive {key}"));
+        Ok(())
+    }
     fn keeps_html_comments(&self) -> bool {
         self.inner.keeps_html_comments()
     }
@@ -386,8 +481,11 @@ mod tests {
         assert_eq!(dry.get("ABC-1").unwrap().key, "ABC-1");
         dry.set_status("ABC-1", Status::ToDeploy, None).unwrap();
         dry.comment("ABC-1", "Merged.\nmore").unwrap();
+        dry.archive("ABC-1").unwrap();
         assert!(t.writes().is_empty(), "the real tracker saw no write");
         assert_eq!(t.item("ABC-1").state.status, Some(Status::InReview));
+        assert!(!t.item("ABC-1").archived);
+        assert_eq!(dry.archives(), t.archives(), "the real capability");
         let repo = RepoSlug::parse("acme/widget").unwrap();
         let dgh = DryGitHub {
             inner: &gh,
@@ -400,7 +498,50 @@ mod tests {
             vec![
                 "tracker: ABC-1 → To Deploy",
                 "tracker: comment on ABC-1: Merged.",
+                "tracker: archive ABC-1",
                 "github acme/widget: merge #7 at abc (squash)",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_dry_run_shows_only_what_a_real_run_would_write() {
+        let t = FakeTracker::default();
+        t.seed(
+            "ABC-1",
+            "t",
+            "d",
+            Status::InReview,
+            &["release/acme-v1.2.0"],
+        );
+        let intents = Intents::default();
+        let dry = DryTracker {
+            inner: &t,
+            intents: &intents,
+        };
+        // A label an item carries exists: ensuring it writes nothing.
+        dry.ensure_label("release/acme-v1.2.0").unwrap();
+        dry.ensure_label("release/acme-v1.3.0").unwrap();
+        // An item it would create is read as new: no comment, child or relation.
+        let new = dry
+            .create_item(&NewItem {
+                title: "Release acme v1.3.0".into(),
+                description: String::new(),
+                labels: Vec::new(),
+                status: Status::Ready,
+                priority: None,
+                assignee: None,
+                parent: None,
+            })
+            .unwrap();
+        assert!(dry.comments(&new.key).unwrap().is_empty());
+        assert!(dry.children(&new.key).unwrap().is_empty());
+        assert_eq!(dry.relations(&new.key).unwrap(), Relations::default());
+        assert_eq!(
+            intents.lines(),
+            vec![
+                "tracker: ensure label release/acme-v1.3.0",
+                "tracker: create \"Release acme v1.3.0\" [Ready]",
             ]
         );
     }

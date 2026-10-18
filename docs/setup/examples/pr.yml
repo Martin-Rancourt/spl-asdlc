@@ -1,0 +1,76 @@
+name: pr
+
+# Example caller of asdlc-pr-guards.yml and of the required-check action: copy
+# it to .github/workflows/ and replace <owner> and the `make` commands with the
+# project's own. The ruleset requires one context, `required-check`
+# (docs/setup/repository.md); the title check lives in pr-title.yml.
+#
+# No path filter: a required check that never reports can never be satisfied
+# (REQ-CI-022). The concurrency key holds the draft state, so the ready run
+# never cancels itself against the draft one (REQ-CI-023). Every job of this
+# file is a need of `required-check`, and only the jobs listed in `may-skip`
+# may be skipped (REQ-CI-024, REQ-CI-025). A draft PR is out of the flow:
+# every job, `required-check` included, runs only when the PR is not a draft
+# (`if:`), so a draft run starts no runner. GitHub reports those skipped jobs, and a skipped job
+# passes a required check: the bridge counts only a success, and marking the
+# PR ready fires `ready_for_review`, whose run reports the check on the same
+# head. A job added here gets the same condition.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main, 'release/**']
+
+concurrency:
+  group: pr-${{ github.ref }}-${{ github.event.pull_request.draft }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  guards:
+    if: github.event.pull_request.draft == false
+    permissions:
+      contents: read
+    uses: <owner>/spl-asdlc/.github/workflows/asdlc-pr-guards.yml@v1
+    with:
+      base-sha: ${{ github.event.pull_request.base.sha }}
+      head-sha: ${{ github.event.pull_request.head.sha }}
+      head-ref: ${{ github.event.pull_request.head.ref }}
+      base-ref: ${{ github.event.pull_request.base.ref }}
+      head-repo: ${{ github.event.pull_request.head.repo.full_name }}
+      # The same list as the gate's (release-gate.yml): a guard that runs on
+      # PRs also runs on the candidate, or carries a written exception (REQ-CI-033).
+      guard-commands: '[{"name": "lint", "run": "make lint"}]'
+
+  # The project's own suite: skipped on a prose-only PR (guards reports no
+  # code), and on drafts as every job.
+  test:
+    needs: guards
+    if: github.event.pull_request.draft == false && needs.guards.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Test
+        run: make test
+
+  # always(): it runs whatever its needs gave, but never on a draft.
+  required-check:
+    name: required-check
+    if: always() && github.event.pull_request.draft == false
+    needs: [guards, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - uses: <owner>/spl-asdlc/actions/required-check@v1
+        with:
+          needs: ${{ toJSON(needs) }}
+          may-skip: test

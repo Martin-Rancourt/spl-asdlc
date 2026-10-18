@@ -22,7 +22,6 @@ fn a_ticket_is_described_by_its_snippet_then_its_goal() {
             ticket("ABC-10", Some(""), "The goal says it.", &[13, 14]),
         ],
         &[],
-        None,
     );
     assert!(b.contains("- **ABC-2** — Title of ABC-2: You can now export. (#12)"));
     assert!(
@@ -37,44 +36,40 @@ fn a_ticket_is_described_by_its_snippet_then_its_goal() {
 
 #[test]
 fn an_unread_ticket_is_named_and_said_unread() {
-    let b = block("rc", &[ticket("ABC-1", None, "", &[7])], &[], None);
+    let b = block("rc", &[ticket("ABC-1", None, "", &[7])], &[]);
     assert!(b.contains(
         "- **ABC-1** — Title of ABC-1 (#7) (ticket unreadable: content not carried over)"
     ));
 }
 
 #[test]
-fn an_orphan_pr_is_described_by_the_changelog_then_its_description() {
-    let changelog = "## [1.2.3]\n* **ci:** faster gate ([#21](u))\n* other ([#210](u))\n";
+fn a_pr_with_no_ticket_is_announced_by_its_release_note_then_its_title() {
     let untracked = [
-        Untracked::Pr {
+        Untracked {
             number: 21,
             title: "ci: speed".into(),
-            body: "ignored".into(),
+            body: "## Summary\nNot this.\n\n## Release note\nThe gate is faster.\n\n## Tests\nx\n"
+                .into(),
         },
-        Untracked::Pr {
+        Untracked {
             number: 22,
             title: "docs: x".into(),
             body: "## Summary\nExplains the gate.\n\n🤖 Generated".into(),
         },
-        Untracked::Commit(CommitSummary {
-            sha: "abcdef01abcdef01".into(),
-            subject: "fix: direct".into(),
-        }),
     ];
-    let b = block("rc", &[], &untracked, Some(changelog));
+    let b = block("rc", &[], &untracked);
     assert!(
-        b.contains("- **PR #21** — ci: speed: **ci:** faster gate"),
+        b.contains("- **PR #21** — ci: speed: The gate is faster."),
         "{b}"
     );
-    assert!(b.contains("- **PR #22** — docs: x: Explains the gate."));
-    assert!(b.contains("- **commit abcdef01abcd** — fix: direct"));
+    assert!(b.contains("- **PR #22** — docs: x\n"), "{b}");
+    assert!(!b.contains("Explains the gate"), "{b}");
     assert!(b.contains("### No linked ticket"));
 }
 
 #[test]
 fn a_release_with_no_change_says_so() {
-    assert!(block("rc", &[], &[], None).contains("No change since the last published release."));
+    assert!(block("rc", &[], &[]).contains("No change since the last published release."));
 }
 
 #[test]
@@ -183,7 +178,7 @@ fn a_ticket_cannot_close_the_block_from_its_snippet() {
         "",
         &[1],
     );
-    let b = block("rc", &[evil], &[], None);
+    let b = block("rc", &[evil], &[]);
     assert_eq!(b.matches("spl-asdlc:release-note:end").count(), 1, "{b}");
 }
 
@@ -199,4 +194,51 @@ fn a_block_whose_delimiters_a_tracker_made_visible_is_replaced_not_doubled() {
     );
     assert!(again.contains("new") && !again.contains("old"), "{again}");
     assert_eq!(again.matches("release-note:start").count(), 1);
+}
+
+#[test]
+fn the_end_marker_is_a_paragraph_of_its_own_never_under_a_bullet() {
+    for b in [
+        block("rc", &[ticket("ABC-1", Some("One."), "", &[1])], &[]),
+        block(
+            "rc",
+            &[],
+            &[Untracked {
+                number: 2,
+                title: "fix: two".into(),
+                body: String::new(),
+            }],
+        ),
+        block("rc", &[], &[]),
+    ] {
+        let lines: Vec<&str> = b.lines().collect();
+        let end = lines
+            .iter()
+            .position(|l| *l == END)
+            .expect("the end marker");
+        assert_eq!(end, lines.len() - 1, "{b}");
+        assert_eq!(lines[end - 1], "", "a blank line before it: {b}");
+        assert!(!lines[end - 2].is_empty(), "{b}");
+    }
+}
+
+#[test]
+fn an_end_marker_the_tracker_indented_into_the_last_bullet_is_found_and_rewritten() {
+    let old = format!(
+        "## Release note\n\n{START}\n_old_\n\n* **ABC-1** — one (#1)\n  {END}\n\nHuman text.\n"
+    );
+    let new = block("rc.2", &[ticket("ABC-2", Some("Two."), "", &[2])], &[]);
+    let visible = crate::method::texts::visible_markers;
+    for (stored, new) in [(old.clone(), new.clone()), (visible(&old), visible(&new))] {
+        let out = splice(&stored, &new);
+        assert!(out.contains("ABC-2") && !out.contains("ABC-1"), "{out}");
+        assert_eq!(out.matches("release-note:start").count(), 1, "{out}");
+        assert_eq!(out.matches("release-note:end").count(), 1, "{out}");
+        assert!(
+            out.lines()
+                .any(|l| l.contains("release-note:end") && !l.starts_with(' ')),
+            "the marker is no longer indented: {out}"
+        );
+        assert!(out.contains("Human text."), "{out}");
+    }
 }

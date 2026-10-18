@@ -1,5 +1,6 @@
-//! Canonical names (`docs/spec/03-vocabulary.md`). A tracker adapter maps
-//! them to the tracker's own names; the method speaks only these.
+//! Canonical names (`docs/reference/03-vocabulary.md`). A tracker names statuses
+//! exactly so; an adapter may map backend-specific IDs internally. The method
+//! speaks only these.
 
 use std::fmt;
 
@@ -30,7 +31,7 @@ impl Status {
         Status::Canceled,
     ];
 
-    /// The canonical name, as `spl-asdlc.toml` writes it.
+    /// The canonical name, as the tracker and the bridge write it.
     pub fn name(self) -> &'static str {
         match self {
             Status::Triage => "Triage",
@@ -125,42 +126,11 @@ impl StateKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Severity {
-    Blocker,
-    ShouldFix,
-    Nit,
-}
-
-impl Severity {
-    pub fn name(self) -> &'static str {
-        match self {
-            Severity::Blocker => "blocker",
-            Severity::ShouldFix => "should-fix",
-            Severity::Nit => "nit",
-        }
-    }
-
-    pub fn from_name(name: &str) -> Option<Severity> {
-        match name {
-            "blocker" => Some(Severity::Blocker),
-            "should-fix" => Some(Severity::ShouldFix),
-            "nit" => Some(Severity::Nit),
-            _ => None,
-        }
-    }
-}
-
-impl fmt::Display for Severity {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.name())
-    }
-}
-
+/// The verdict of a release angle report (`docs/reference/06-qa-report.md`):
+/// `hold` when at least one finding is blocking, `go` otherwise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
     Go,
-    GoWithNote,
     Hold,
 }
 
@@ -168,7 +138,6 @@ impl Verdict {
     pub fn name(self) -> &'static str {
         match self {
             Verdict::Go => "go",
-            Verdict::GoWithNote => "go-with-note",
             Verdict::Hold => "hold",
         }
     }
@@ -176,7 +145,6 @@ impl Verdict {
     pub fn from_name(name: &str) -> Option<Verdict> {
         match name {
             "go" => Some(Verdict::Go),
-            "go-with-note" => Some(Verdict::GoWithNote),
             "hold" => Some(Verdict::Hold),
             _ => None,
         }
@@ -187,8 +155,13 @@ impl Verdict {
 pub const QA_FINDING_LABEL: &str = "qa-finding";
 /// Label a PR author adds to ask for a review whatever the paths say.
 pub const NEEDS_REVIEW_LABEL: &str = "needs-review";
-/// Label a component's deployment job sets on its merged release PR.
-pub const DEPLOYED_LABEL: &str = "deployed: production";
+/// The tickets the bridge opens for PRs of `review.ticketless_authors`.
+pub const TICKETLESS_LABEL: &str = "ticketless-pr";
+/// The label on a ticket waiting in Post Deploy for its validation, per
+/// product: two bridges sharing a tracker team never take each other's.
+pub fn post_deploy_label(product: &str) -> String {
+    format!("post-deploy-validation/{product}")
+}
 
 /// `release/<product>-v<version>`, the version normalised to `vX.Y.Z`.
 pub fn release_label(product: &str, version: &str) -> String {
@@ -245,6 +218,16 @@ mod tests {
             kind: StateKind::Completed,
         };
         assert!(shipped.is_resolved(), "outside the table, the kind decides");
+    }
+
+    #[test]
+    fn post_deploy_stays_outside_the_in_progress_group() {
+        // BR-ASDLC-003: an implementer is served the unstarted and started
+        // kinds (Ready, In Progress); Post Deploy is neither, its
+        // verification is served through the validation sub-task, in Ready.
+        let kind = StateKind::of(Status::PostDeploy);
+        assert!(!matches!(kind, StateKind::Unstarted | StateKind::Started));
+        assert_eq!(StateKind::of(Status::Ready), StateKind::Unstarted);
     }
 
     #[test]

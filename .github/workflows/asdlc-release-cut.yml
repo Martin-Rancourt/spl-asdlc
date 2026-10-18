@@ -1,0 +1,1006 @@
+name: asdlc-release-cut
+
+# The one gesture that starts or advances a release cycle
+# (.spl-asdlc/requirements/ci.md, REQ-CI-035..054; docs/reference/05-release-cycle.md §1,
+# §7). `open` creates the release branch from the default branch, prepares
+# the release on it with `spl-asdlc release prepare` (the version computed
+# from the commits since the last release along the git graph, written into
+# the version files, and the CHANGELOG section that is the release notes),
+# commits `chore(release): v<X.Y.Z>`, and pushes the branch and its first
+# candidate tag, rc.1, at once. `candidate` tags the next RC on the one
+# release branch in flight, whose version is already committed. Nothing
+# else: no tracker, no notification, no wait for another workflow's run (on
+# one runner, a job that waits holds the runner the awaited run needs), no
+# wait for the gate, no merge. The tag push starts the gate.
+#
+# `open` runs the published `spl-asdlc` binary of the channel the caller
+# names (`spl-asdlc-version`: `latest`, a release tag `v<X.Y.Z>`, or
+# `staging`), downloaded from the releases of `spl-asdlc-repository` with
+# the App's token and checked against the release's SHA256SUMS before it
+# runs. `release prepare` reads the caller's `.spl-asdlc/config.toml` (its
+# release tag pattern, version files and CHANGELOG sections), never an
+# instance overlay. The release class reads the same file at the candidate:
+# the paths its review angles carry (`[[review.angles]] paths`) are the
+# reviewed paths.
+#
+# The caller owns the trigger, the concurrency group and the job id. The
+# bridge dispatches the caller by its file name (`[release] cut_workflow`,
+# default `release-cut.yml`) with ONE input, `action`, on the default branch
+# for `open` and on the release branch for `candidate`: every other dispatch
+# input must have a default. Example caller (in full: docs/setup/examples/):
+#
+#   name: release-cut
+#   on:
+#     workflow_dispatch:
+#       inputs:
+#         action: {type: choice, options: [open, candidate], default: open, required: true}
+#         class: {type: string, default: '', description: 'routine, sensible, or empty to compute it'}
+#         routine_because: {type: string, default: ''}
+#         main_merge_because: {type: string, default: ''}
+#         version: {type: string, default: '', description: 'X.Y.Z to force on open, or empty to compute it'}
+#         dry_run: {type: boolean, default: false}
+#   concurrency: {group: release-cut, cancel-in-progress: false}
+#   permissions: {contents: read}
+#   jobs:
+#     release:
+#       uses: <owner>/spl-asdlc/.github/workflows/asdlc-release-cut.yml@<ref>
+#       with:
+#         action: ${{ inputs.action }}
+#         class: ${{ inputs.class }}
+#         routine-because: ${{ inputs.routine_because }}
+#         main-merge-because: ${{ inputs.main_merge_because }}
+#         version: ${{ inputs.version }}
+#         dry-run: ${{ inputs.dry_run == true }}
+#         candidate-tag: acme-v{version}-rc.{rc}
+#         release-tag: acme-v{version}
+#         spl-asdlc-repository: <owner>/spl-asdlc
+#         spl-asdlc-version: latest
+#       secrets:
+#         SPL_ASDLC_APP_ID: ${{ secrets.SPL_ASDLC_APP_ID }}
+#         SPL_ASDLC_APP_PRIVATE_KEY: ${{ secrets.SPL_ASDLC_APP_PRIVATE_KEY }}
+#
+# Called jobs (stable names): `preflight`, `cut`.
+
+on:
+  workflow_call:
+    inputs:
+      action:
+        description: '`open` (a new release branch from the default branch, prepared, with its first candidate) or `candidate` (the next RC on the release branch in flight).'
+        type: string
+        required: true
+      candidate-tag:
+        description: 'The RC tag pattern, as `[release] candidate_tag`: `{version}` then `{rc}`, once each.'
+        type: string
+        required: true
+      release-tag:
+        description: 'The published tag pattern, as `[release] release_tag`: `{version}` once.'
+        type: string
+        required: true
+      spl-asdlc-repository:
+        description: '`<owner>/spl-asdlc`: the repository whose releases hold the `spl-asdlc` binary `open` runs.'
+        type: string
+        required: true
+      spl-asdlc-version:
+        description: 'The channel of that binary: `latest` (the latest release), a release tag `v<X.Y.Z>`, or `staging` (the method''s sandbox only).'
+        type: string
+        default: latest
+      config-file:
+        description: 'The repository''s configuration, read by `release prepare` and, at the candidate, for the reviewed paths of the class.'
+        type: string
+        default: .spl-asdlc/config.toml
+      class:
+        description: Force `routine` or `sensible`; empty computes it.
+        type: string
+        default: ''
+      routine-because:
+        description: Required to keep `routine` on a delta that touches a reviewed path; recorded in the tag.
+        type: string
+        default: ''
+      main-merge-because:
+        description: Required to cut a candidate over commits the default branch handed the cycle; recorded in the tag.
+        type: string
+        default: ''
+      version:
+        description: '`open` only: `X.Y.Z` to force instead of the computed version, passed to `release prepare --version`; empty computes it.'
+        type: string
+        default: ''
+      dry-run:
+        description: Print the plan; create, commit, tag and push nothing.
+        type: boolean
+        default: false
+      branch-prefix:
+        description: Prefix of release branches, as `[release] branch_prefix`.
+        type: string
+        default: release/
+      default-branch:
+        description: The integration branch a cycle is opened from.
+        type: string
+        default: main
+      gate-workflow:
+        description: The gate caller the tag starts, for the summary.
+        type: string
+        default: release-gate.yml
+      runs-on:
+        description: A runner label, or a JSON array of labels.
+        type: string
+        default: ubuntu-latest
+      timeout-minutes:
+        description: The cut job's timeout; keep it under 60, the life of the App token minted at its start.
+        type: number
+        default: 30
+    secrets:
+      SPL_ASDLC_APP_ID:
+        description: The App's id.
+        required: true
+      SPL_ASDLC_APP_PRIVATE_KEY:
+        description: The App's private key.
+        required: true
+    outputs:
+      branch:
+        description: The release branch (empty on a dry run).
+        value: ${{ jobs.cut.outputs.branch }}
+      tag:
+        description: The RC tag pushed (empty on a dry run).
+        value: ${{ jobs.cut.outputs.tag }}
+      version:
+        description: '`X.Y.Z`.'
+        value: ${{ jobs.cut.outputs.version }}
+      round:
+        description: The RC number.
+        value: ${{ jobs.cut.outputs.round }}
+      class:
+        description: '`routine` or `sensible`.'
+        value: ${{ jobs.cut.outputs.class }}
+      class-reason:
+        description: Why the class is what it is.
+        value: ${{ jobs.cut.outputs.class-reason }}
+      previous-tag:
+        description: The previous candidate of the same version, else the last published release, else empty.
+        value: ${{ jobs.cut.outputs.previous-tag }}
+      dry-run:
+        description: '`true` when nothing was pushed by design.'
+        value: ${{ jobs.cut.outputs.dry-run }}
+
+# gh finds the caller's repository without a checkout.
+env:
+  GH_REPO: ${{ github.repository }}
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: preflight
+    # Hosted and token-free: a typo costs a red preflight and nothing else.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Validate the request
+        id: validate
+        env:
+          ACTION: ${{ inputs.action }}
+          CLASS: ${{ inputs.class }}
+          ROUTINE_BECAUSE: ${{ inputs.routine-because }}
+          FORCE_VERSION: ${{ inputs.version }}
+          CANDIDATE_TAG: ${{ inputs.candidate-tag }}
+          RELEASE_TAG: ${{ inputs.release-tag }}
+          SPL_REPOSITORY: ${{ inputs.spl-asdlc-repository }}
+          SPL_VERSION: ${{ inputs.spl-asdlc-version }}
+          CONFIG_FILE: ${{ inputs.config-file }}
+          BRANCH_PREFIX: ${{ inputs.branch-prefix }}
+          DEFAULT_BRANCH: ${{ inputs.default-branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bad=0
+          refuse() {
+            echo "::error title=Release cut refused::$1"
+            bad=1
+          }
+          case "$ACTION" in
+            open) echo "Opening a cycle: ${BRANCH_PREFIX}<YYYY-MM-DD-HH-MM>-utc from $DEFAULT_BRANCH, prepared by spl-asdlc ($SPL_VERSION), with its first candidate." ;;
+            candidate) echo "Cutting the next candidate on the release branch in flight." ;;
+            *) refuse "Unknown action '$ACTION'. Expected 'open' or 'candidate'." ;;
+          esac
+          # An unknown class must never become "cut with no class".
+          case "$CLASS" in
+            '') echo "No class forced: it is computed from the delta since the last published release (the repository's root for a first release)." ;;
+            routine | sensible) echo "Class forced to '$CLASS'." ;;
+            *) refuse "Unknown release class '$CLASS'. Expected 'routine', 'sensible', or empty." ;;
+          esac
+          if [ -n "${ROUTINE_BECAUSE//[[:space:]]/}" ] && [ "$CLASS" != routine ]; then
+            refuse "routine-because only applies to the class 'routine' (the class is '${CLASS:-computed}')."
+          fi
+          # A forced version opens a cycle; a candidate takes the one committed.
+          if [ -n "${FORCE_VERSION:-}" ]; then
+            if [ "$ACTION" != open ]; then
+              refuse "version only applies to 'open': a candidate takes the version committed on its release branch."
+            elif ! [[ "$FORCE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              refuse "version '$FORCE_VERSION' is not X.Y.Z."
+            fi
+          fi
+          template_ok() { # name, value, whether {rc} is required
+            local name="$1" t="$2" with_rc="$3" chars='^[A-Za-z0-9._/{}-]+$' rest
+            if ! [[ "$t" =~ $chars ]]; then
+              refuse "$name '$t' may hold letters, digits, '.', '_', '/', '-' and its placeholders only."
+              return 0
+            fi
+            rest="${t//\{version\}/}"
+            if [ $(((${#t} - ${#rest}) / 9)) -ne 1 ]; then
+              refuse "$name '$t' must hold {version} exactly once."
+            fi
+            if [ "$with_rc" = yes ]; then
+              rest="${rest//\{rc\}/}"
+              if [ $(((${#t} - 9 - ${#rest}) / 4)) -ne 1 ]; then
+                refuse "$name '$t' must hold {rc} exactly once."
+              elif [[ "${t%%\{rc\}*}" != *'{version}'* ]]; then
+                refuse "$name '$t' must name {version} before {rc}."
+              fi
+            fi
+            if [[ "$rest" == *[{}]* ]]; then
+              refuse "$name '$t' holds a placeholder other than {version}$([ "$with_rc" = yes ] && echo ' and {rc}')."
+            fi
+          }
+          template_ok candidate-tag "$CANDIDATE_TAG" yes
+          template_ok release-tag "$RELEASE_TAG" no
+          if [ "$CANDIDATE_TAG" = "$RELEASE_TAG" ]; then
+            refuse "candidate-tag and release-tag are the same pattern."
+          fi
+          prefix_re='^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*/$'
+          if ! [[ "$BRANCH_PREFIX" =~ $prefix_re ]]; then
+            refuse "branch-prefix '$BRANCH_PREFIX' must be a path ending in '/'."
+          fi
+          ref_re='^[A-Za-z0-9._/-]+$'
+          if ! [[ "$DEFAULT_BRANCH" =~ $ref_re ]]; then
+            refuse "default-branch '$DEFAULT_BRANCH' is not a branch name."
+          fi
+          repository_re='^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
+          if ! [[ "$SPL_REPOSITORY" =~ $repository_re ]]; then
+            refuse "spl-asdlc-repository '$SPL_REPOSITORY' is not <owner>/<repo>."
+          fi
+          # A channel, never a branch: only a published binary runs.
+          channel_re='^(latest|staging|v[0-9]+\.[0-9]+\.[0-9]+)$'
+          if ! [[ "$SPL_VERSION" =~ $channel_re ]]; then
+            refuse "spl-asdlc-version '$SPL_VERSION' is not a channel. Expected 'latest', 'staging' or a release tag v<X.Y.Z>."
+          fi
+          if [ -z "$CONFIG_FILE" ] || [[ "$CONFIG_FILE" == /* ]] || [[ "/$CONFIG_FILE/" == */../* ]]; then
+            refuse "'$CONFIG_FILE' must be a path inside the repository."
+          fi
+          if [ "$bad" -ne 0 ]; then
+            exit 1
+          fi
+          echo "The request is valid."
+
+  cut:
+    name: cut
+    needs: preflight
+    if: needs.preflight.result == 'success'
+    runs-on: ${{ startsWith(inputs.runs-on, '[') && fromJSON(inputs.runs-on) || inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+    outputs:
+      branch: ${{ steps.tag.outputs.branch }}
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+      round: ${{ steps.tag.outputs.round }}
+      class: ${{ steps.tag.outputs.class }}
+      class-reason: ${{ steps.tag.outputs.class-reason }}
+      previous-tag: ${{ steps.tag.outputs.previous-tag }}
+      dry-run: ${{ inputs.dry-run && 'true' || 'false' }}
+    env:
+      ACTION: ${{ inputs.action }}
+      DRY_RUN: ${{ inputs.dry-run }}
+      CANDIDATE_TAG: ${{ inputs.candidate-tag }}
+      RELEASE_TAG: ${{ inputs.release-tag }}
+      BRANCH_PREFIX: ${{ inputs.branch-prefix }}
+      DEFAULT_BRANCH: ${{ inputs.default-branch }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      # Minted right before its first use. Every push below is made with it:
+      # GitHub starts no workflow for an event created with GITHUB_TOKEN, and
+      # the tag push must start the gate.
+      - name: Mint the App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.SPL_ASDLC_APP_ID }}
+          private-key: ${{ secrets.SPL_ASDLC_APP_PRIVATE_KEY }}
+
+      # The default branch, whatever ref the run was dispatched on: the
+      # Actions UI lets an operator change it, and a cycle opened from
+      # anything else would certify commits nobody is releasing. A candidate
+      # switches to the release branch it finds on origin.
+      - name: Check out the default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.default-branch }}
+          fetch-depth: 0
+          fetch-tags: true
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Find the cycle
+        id: cycle
+        env:
+          DISPATCHED_REF: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${GITHUB_OUTPUT:-/dev/stdout}"
+          refuse() {
+            echo "::error title=Release cut refused::$1"
+            exit 1
+          }
+          stamp_re='^[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9]{2}-utc$'
+          listing="$(mktemp)"
+          remote="$(mktemp)"
+          status="$(mktemp)"
+          trap 'rm -f "$listing" "$remote" "$status"' EXIT
+          # Its own statement, its status kept (REQ-CI-007): an unreachable
+          # origin must never read as "no cycle in flight".
+          if ! git ls-remote --heads origin "refs/heads/${BRANCH_PREFIX}*" > "$listing"; then
+            refuse "Could not list the release branches on origin (git ls-remote failed). 'No cycle in flight' and 'I could not read' are different answers, and only one of them allows a cut."
+          fi
+          names=()
+          while IFS=$'\t' read -r _ ref; do
+            if [ -n "$ref" ]; then
+              names+=("${ref#refs/heads/}")
+            fi
+          done < "$listing"
+          if [ "$ACTION" = open ]; then
+            if [ "${#names[@]}" -gt 0 ]; then
+              echo "Release branch(es) in flight on origin:"
+              printf '  %s\n' "${names[@]}"
+              echo "One cycle at a time per repository. Finish that cycle (its close merges the branch back and deletes it), or abandon it by hand: carry its merged fixes to $DEFAULT_BRANCH, delete the branch, cancel its release issue."
+              refuse "A release branch is already in flight: ${names[*]}."
+            fi
+            current="$(git rev-parse --abbrev-ref HEAD)"
+            if [ "$current" != "$DEFAULT_BRANCH" ]; then
+              refuse "The checkout is on '$current', not '$DEFAULT_BRANCH': a cycle is opened from the default branch."
+            fi
+            if ! git ls-remote --heads origin "refs/heads/$DEFAULT_BRANCH" > "$remote"; then
+              refuse "Could not read origin/$DEFAULT_BRANCH; refusing to open a cycle blind."
+            fi
+            tip="$(awk -F'\t' -v r="refs/heads/$DEFAULT_BRANCH" '$2 == r { print $1 }' "$remote")"
+            if [ -z "$tip" ]; then
+              refuse "origin has no branch '$DEFAULT_BRANCH'."
+            fi
+            head="$(git rev-parse HEAD)"
+            if [ "$head" != "$tip" ]; then
+              refuse "$DEFAULT_BRANCH moved while this run started: checked out $head, origin/$DEFAULT_BRANCH is $tip. Dispatch again to open a cycle from the current tip."
+            fi
+            # UTC to the minute: cycles stay distinguishable, and UTC never
+            # repeats a minute at a daylight-saving fold.
+            branch="${BRANCH_PREFIX}$(date -u +%Y-%m-%d-%H-%M)-utc"
+          else
+            if [ "${#names[@]}" -eq 0 ]; then
+              refuse "No release branch is in flight on origin: there is nothing to cut a candidate on. Open a cycle with the action 'open'."
+            fi
+            if [ "${#names[@]}" -gt 1 ]; then
+              refuse "Several release branches are in flight (${names[*]}): the one-cycle invariant is broken. Delete the abandoned one by hand, then cut again."
+            fi
+            branch="${names[0]}"
+            stamp="${branch#"$BRANCH_PREFIX"}"
+            if ! [[ "$stamp" =~ $stamp_re ]]; then
+              refuse "'$branch' is not a release branch (${BRANCH_PREFIX}<YYYY-MM-DD-HH-MM>-utc)."
+            fi
+            if [ "$DISPATCHED_REF" != "$branch" ]; then
+              refuse "A candidate is cut on the release branch of the cycle in flight: dispatch the cut on '$branch', not on '$DISPATCHED_REF': gh workflow run <the cut workflow> --ref $branch -f action=candidate"
+            fi
+            tip="$(awk -F'\t' -v r="refs/heads/$branch" '$2 == r { print $1 }' "$listing")"
+            if ! git fetch --quiet --no-tags origin "+refs/heads/$branch:refs/remotes/origin/$branch"; then
+              refuse "Could not fetch $branch from origin."
+            fi
+            git checkout --quiet -B "$branch" "refs/remotes/origin/$branch"
+            head="$(git rev-parse HEAD)"
+            if [ "$head" != "$tip" ]; then
+              refuse "Local $branch ($head) is not origin/$branch ($tip): a tag on a commit origin has not got certifies code nobody else has."
+            fi
+          fi
+          git status --porcelain --untracked-files=no > "$status"
+          if [ -s "$status" ]; then
+            cat "$status"
+            refuse "Tracked files are modified. A candidate must be exactly what is on $branch."
+          fi
+          echo "Branch: $branch at $head"
+          {
+            echo "branch=$branch"
+            echo "proceed=true"
+          } >> "$out"
+
+      # The App token above is scoped to this repository. The method's
+      # releases may live in a private repository the same App is installed
+      # on: a second token, scoped to it, reads them. When the App is not
+      # installed there (a public method repository), the read falls back to
+      # this repository's App token, which reads public releases.
+      - name: Name the method's repository
+        id: method-repo
+        if: inputs.action == 'open' && steps.cycle.outputs.proceed == 'true'
+        env:
+          SPL_REPOSITORY: ${{ inputs.spl-asdlc-repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${GITHUB_OUTPUT:-/dev/stdout}"
+          {
+            echo "owner=${SPL_REPOSITORY%%/*}"
+            echo "name=${SPL_REPOSITORY#*/}"
+          } >> "$out"
+      - name: Mint a token that reads the method's releases
+        id: method-token
+        if: inputs.action == 'open' && steps.cycle.outputs.proceed == 'true'
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.SPL_ASDLC_APP_ID }}
+          private-key: ${{ secrets.SPL_ASDLC_APP_PRIVATE_KEY }}
+          owner: ${{ steps.method-repo.outputs.owner }}
+          repositories: ${{ steps.method-repo.outputs.name }}
+
+      # One read of a published binary, checked before it runs: the archive
+      # of this runner's target from the channel's release, and its line of
+      # the release's SHA256SUMS (docs/setup/bridge.md, "The binary").
+      - name: Fetch spl-asdlc
+        id: binary
+        if: inputs.action == 'open' && steps.cycle.outputs.proceed == 'true'
+        env:
+          SPL_REPOSITORY: ${{ inputs.spl-asdlc-repository }}
+          SPL_VERSION: ${{ inputs.spl-asdlc-version }}
+          GH_TOKEN: ${{ steps.method-token.outputs.token || steps.app-token.outputs.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${GITHUB_OUTPUT:-/dev/stdout}"
+          refuse() {
+            echo "::error title=Release cut refused::$1"
+            exit 1
+          }
+          case "$(uname -s)/$(uname -m)" in
+            Linux/x86_64) target=x86_64-unknown-linux-gnu ;;
+            Darwin/arm64) target=aarch64-apple-darwin ;;
+            Darwin/x86_64) target=x86_64-apple-darwin ;;
+            *) refuse "No spl-asdlc binary is published for this runner ($(uname -s)/$(uname -m)): run the cut on a Linux x86_64 runner (runs-on)." ;;
+          esac
+          case "$SPL_VERSION" in
+            latest)
+              if ! tag="$(gh release view --repo "$SPL_REPOSITORY" --json tagName --jq .tagName)" || [ -z "$tag" ]; then
+                refuse "Could not read the latest release of $SPL_REPOSITORY. Check that the App's token reads it: gh release view --repo $SPL_REPOSITORY"
+              fi
+              ;;
+            *) tag="$SPL_VERSION" ;;
+          esac
+          if [ "$tag" = staging ]; then
+            if [ "$target" != x86_64-unknown-linux-gnu ]; then
+              refuse "The staging channel builds $target for no runner but Linux x86_64."
+            fi
+            name="spl-asdlc-staging-$target"
+          else
+            name="spl-asdlc-$tag-$target"
+          fi
+          dir="$(mktemp -d)"
+          if ! gh release download "$tag" --repo "$SPL_REPOSITORY" --pattern "$name.tar.gz" --pattern SHA256SUMS --dir "$dir"; then
+            refuse "Could not download $name.tar.gz and SHA256SUMS from the release $tag of $SPL_REPOSITORY."
+          fi
+          # The archive's own line of SHA256SUMS, and nothing else, is checked.
+          if ! grep -E "^[0-9a-f]{64}  $name\.tar\.gz$" "$dir/SHA256SUMS" > "$dir/expected"; then
+            refuse "The SHA256SUMS of $tag lists no $name.tar.gz: nothing unverified runs."
+          fi
+          if command -v sha256sum > /dev/null; then
+            check() { sha256sum -c "$1"; }
+          else
+            check() { shasum -a 256 -c "$1"; }
+          fi
+          if ! (cd "$dir" && check expected); then
+            refuse "$name.tar.gz does not match its SHA256SUMS line: nothing unverified runs."
+          fi
+          tar -xzf "$dir/$name.tar.gz" -C "$dir"
+          bin="$dir/$name/spl-asdlc"
+          if ! [ -x "$bin" ] || ! version="$("$bin" --version)"; then
+            refuse "$name.tar.gz holds no spl-asdlc that runs here."
+          fi
+          echo "Using $version, from the release $tag of $SPL_REPOSITORY ($name.tar.gz, checksum verified)."
+          echo "bin=$bin" >> "$out"
+
+      # The release branch from the default branch's tip, prepared at once:
+      # the version, the version files and the CHANGELOG committed on it.
+      # Nothing is pushed here: the branch and its first candidate are pushed
+      # together, once the candidate is computed (the tag step). A dry run
+      # prints the plan on the default branch and commits nothing.
+      - name: Open and prepare the release branch
+        id: open
+        if: steps.binary.outputs.bin != ''
+        env:
+          BRANCH: ${{ steps.cycle.outputs.branch }}
+          BIN: ${{ steps.binary.outputs.bin }}
+          CONFIG_FILE: ${{ inputs.config-file }}
+          FORCE_VERSION: ${{ inputs.version }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${GITHUB_OUTPUT:-/dev/stdout}"
+          refuse() {
+            echo "::error title=Release cut refused::$1"
+            exit 1
+          }
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          if ! git cat-file -e "HEAD:$CONFIG_FILE" 2> /dev/null; then
+            refuse "$DEFAULT_BRANCH carries no $CONFIG_FILE: release prepare reads the release's shape there."
+          fi
+          args=(release prepare --file "$CONFIG_FILE" --repository "$GH_REPO" --notes "$work/notes.md")
+          if [ -n "${FORCE_VERSION:-}" ]; then
+            args+=(--version "$FORCE_VERSION")
+          fi
+          if [ "$DRY_RUN" = true ]; then
+            args+=(--dry-run)
+          else
+            # -B: a leftover local branch of the same minute is overwritten.
+            git checkout --quiet -B "$BRANCH"
+          fi
+          if ! "$BIN" "${args[@]}" > "$work/prepared"; then
+            refuse "spl-asdlc release prepare refused to prepare $BRANCH (above): nothing was created."
+          fi
+          version="$(sed -n 's/^version=//p' "$work/prepared")"
+          previous="$(sed -n 's/^previous-tag=//p' "$work/prepared")"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            refuse "release prepare printed no version."
+          fi
+          if [ -n "$previous" ]; then
+            echo "Version: $version, from the commits since $previous."
+          else
+            echo "Version: $version, from the whole history: a first release."
+          fi
+          echo "Release notes:"
+          sed 's/^/  /' "$work/notes.md"
+          if [ "$DRY_RUN" != true ]; then
+            git add -A
+            # The login is built here, never written out: a bot login is
+            # installation data.
+            committer="${APP_SLUG}[bot]"
+            git -c user.name="$committer" -c user.email="${committer}@users.noreply.github.com" \
+              commit --quiet -m "chore(release): v$version"
+            echo "Committed $(git log -1 --format='%h %s') on $BRANCH (not pushed yet)."
+          fi
+          {
+            echo "branch=$BRANCH"
+            echo "version=$version"
+            echo "proceed=true"
+          } >> "$out"
+
+      # The version of a later candidate is already committed on the branch:
+      # its first candidate names it. A version already published is never
+      # tagged again.
+      - name: Read the cycle's version
+        id: version
+        if: inputs.action == 'candidate' && steps.cycle.outputs.proceed == 'true'
+        env:
+          BRANCH: ${{ steps.cycle.outputs.branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${GITHUB_OUTPUT:-/dev/stdout}"
+          refuse() {
+            echo "::error title=Release cut refused::$1"
+            exit 1
+          }
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          cand_glob="$(printf '%s' "$CANDIDATE_TAG" | sed -e 's/{version}/*/' -e 's/{rc}/*/')"
+          cand_re="^$(printf '%s' "$CANDIDATE_TAG" | sed -e 's/\./\\./g' -e 's/{version}/([0-9]+\\.[0-9]+\\.[0-9]+)/' -e 's/{rc}/([0-9]+)/')\$"
+          if ! git tag --merged HEAD --list "$cand_glob" > "$work/tags"; then
+            refuse "Could not list the candidate tags reachable from $BRANCH."
+          fi
+          : > "$work/ranked"
+          while read -r t; do
+            if [[ "$t" =~ $cand_re ]]; then
+              v="${BASH_REMATCH[1]}"
+              n="${BASH_REMATCH[2]}"
+              IFS=. read -r major minor patch <<< "$v"
+              printf '%012d %012d %012d %012d %s\n' "$major" "$minor" "$patch" "$n" "$v" >> "$work/ranked"
+            fi
+          done < "$work/tags"
+          if [ ! -s "$work/ranked" ]; then
+            refuse "No candidate of this cycle is on $BRANCH to take the version from: 'open' tags the first one. Abandon the cycle with git push origin --delete $BRANCH, then open a new one."
+          fi
+          sort "$work/ranked" > "$work/sorted"
+          version="$(tail -n 1 "$work/sorted" | awk '{ print $5 }')"
+          released="$(printf '%s' "$RELEASE_TAG" | sed -e "s/{version}/$version/")"
+          if git rev-parse --quiet --verify "refs/tags/$released" > /dev/null; then
+            refuse "The version $version of this cycle is already published ($released): nothing is left to cut on $BRANCH."
+          fi
+          echo "Version: $version, prepared on $BRANCH when the cycle opened."
+          {
+            echo "version=$version"
+            echo "proceed=true"
+          } >> "$out"
+
+      - name: Compute the candidate
+        id: candidate
+        if: steps.open.outputs.proceed == 'true' || steps.version.outputs.proceed == 'true'
+        env:
+          BRANCH: ${{ steps.cycle.outputs.branch }}
+          VERSION: ${{ steps.open.outputs.version || steps.version.outputs.version }}
+          CLASS: ${{ inputs.class }}
+          ROUTINE_BECAUSE: ${{ inputs.routine-because }}
+          MAIN_MERGE_BECAUSE: ${{ inputs.main-merge-because }}
+          CONFIG_FILE: ${{ inputs.config-file }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${GITHUB_OUTPUT:-/dev/stdout}"
+          refuse() {
+            echo "::error title=Release cut refused::$1"
+            exit 1
+          }
+          one_line() {
+            printf '%s' "$1" | tr '\r\n\t' '   ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//'
+          }
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          if ! git fetch --quiet --tags origin; then
+            refuse "Could not fetch the tags from origin: the next RC number cannot be known."
+          fi
+          tag_of() { # version, rc
+            printf '%s' "$CANDIDATE_TAG" | sed -e "s/{version}/$1/" -e "s/{rc}/$2/"
+          }
+          # The lowest unused number; a tag is never moved or recreated.
+          round=1
+          while git rev-parse --quiet --verify "refs/tags/$(tag_of "$VERSION" "$round")" > /dev/null; do
+            round=$((round + 1))
+          done
+          tag="$(tag_of "$VERSION" "$round")"
+          if [ "$round" -gt 2 ]; then
+            echo "::warning title=Third round::$tag is round $round. Two rounds is the cap; at the third the problem is usually the scope, not the code."
+          fi
+
+          # The class describes what goes to production: the delta is
+          # measured from the last published release, never from the
+          # previous candidate. A product's first release has none: its delta
+          # is its whole history, measured from the repository's root (the
+          # empty tree), and the tag records the base `root`.
+          rel_glob="$(printf '%s' "$RELEASE_TAG" | sed -e 's/{version}/*/')"
+          cand_glob="$(printf '%s' "$CANDIDATE_TAG" | sed -e 's/{version}/*/' -e 's/{rc}/*/')"
+          rel_re="^$(printf '%s' "$RELEASE_TAG" | sed -e 's/\./\\./g' -e 's/{version}/[0-9]+\\.[0-9]+\\.[0-9]+/')\$"
+          base=none
+          from=''
+          since=''
+          surfaces=unknown
+          why=''
+          : > "$work/hits"
+          if found="$(git describe --tags --abbrev=0 --match "$rel_glob" --exclude "$cand_glob" HEAD 2> /dev/null)"; then
+            if [[ "$found" =~ $rel_re ]]; then
+              base="$found"
+              from="$found"
+              since="$found"
+            else
+              why="the nearest tag '$found' is not a published release"
+            fi
+          else
+            if ! git tag --list "$rel_glob" > "$work/released"; then
+              refuse "Could not list the tags: whether a release was ever published cannot be known."
+            fi
+            published=0
+            while IFS= read -r t; do
+              if [[ "$t" =~ $rel_re ]]; then
+                published=$((published + 1))
+              fi
+            done < "$work/released"
+            if [ "$published" -eq 0 ]; then
+              base=root
+              from="$(git hash-object -t tree /dev/null)"
+              since="the repository's root"
+              echo "No published release ($rel_glob) exists: this is the product's first release, measured from the repository's root (its whole history)."
+            else
+              why="no published release ($rel_glob) is reachable from HEAD"
+            fi
+          fi
+          if [ -z "$from" ]; then
+            :
+          elif ! git -c core.quotePath=false diff --no-renames --name-only "$from" HEAD > "$work/changed"; then
+            why="git diff $since HEAD failed"
+          elif [ ! -s "$work/changed" ]; then
+            why="no path changed since $since"
+          elif ! git cat-file -e "HEAD:$CONFIG_FILE" 2> /dev/null; then
+            why="the candidate carries no $CONFIG_FILE"
+          elif ! git show "HEAD:$CONFIG_FILE" > "$work/config" ||
+            ! python3 - "$work/config" > "$work/patterns" 2> "$work/patterns.err" << 'PY'
+          # The reviewed paths: the union of the `paths` of the review angles
+          # (`[[review.angles]]`), each glob once, in the order written.
+          import sys
+          import tomllib
+
+          try:
+              with open(sys.argv[1], "rb") as f:
+                  config = tomllib.load(f)
+          except (OSError, tomllib.TOMLDecodeError) as e:
+              sys.exit(f"not valid TOML: {e}")
+          review = config.get("review", {})
+          angles = review.get("angles", []) if isinstance(review, dict) else None
+          if not isinstance(angles, list):
+              sys.exit("review.angles is not a list of tables")
+          seen = []
+          for angle in angles:
+              paths = angle.get("paths", []) if isinstance(angle, dict) else None
+              if not isinstance(paths, list) or not all(
+                  isinstance(p, str) and p.strip() and "\n" not in p for p in paths
+              ):
+                  sys.exit("the paths of a review angle are not a list of globs")
+              for p in paths:
+                  if p not in seen:
+                      seen.append(p)
+                      print(p)
+          PY
+          then
+            why="the review angles' paths could not be read from $CONFIG_FILE at the candidate ($(one_line "$(cat "$work/patterns.err" 2> /dev/null)"))"
+          elif [ ! -s "$work/patterns" ]; then
+            echo "No review angle of $CONFIG_FILE carries paths: no path is reviewed apart."
+            surfaces=none
+          else
+            # Shell globs where `*` also crosses `/`, or a directory prefix:
+            # the bridge's rule (src/method/glob.rs).
+            while IFS= read -r path; do
+              while IFS= read -r pattern; do
+                dir="$pattern"
+                while [[ "$dir" == *'*' ]]; do dir="${dir%?}"; done
+                while [[ "$dir" == */ ]]; do dir="${dir%?}"; done
+                # shellcheck disable=SC2053
+                if [[ "$path" == $pattern ]] || { [ -n "$dir" ] && [[ "$path" == "$dir"/* ]]; }; then
+                  printf '%s\t%s\n' "$pattern" "$path" >> "$work/hits"
+                fi
+              done < "$work/patterns"
+            done < "$work/changed"
+            if [ -s "$work/hits" ]; then
+              surfaces="$(awk -F'\t' '!seen[$1]++ { print $1 }' "$work/hits" | paste -sd, - | sed 's/,/, /g')"
+            else
+              surfaces=none
+            fi
+          fi
+
+          because="$(one_line "$ROUTINE_BECAUSE")"
+          if [ -n "$CLASS" ]; then
+            class="$CLASS"
+            reason="forced with the class input"
+            if [ "$class" = routine ] && [ "$surfaces" != none ] && [ -z "$because" ]; then
+              if [ "$surfaces" = unknown ]; then
+                echo "The delta's reviewed paths could not be computed: $why."
+              else
+                echo "The delta since $since touches reviewed paths ($surfaces). First hits:"
+                awk -F'\t' 'NR <= 20 { print "  " $2 "  (" $1 ")" }' "$work/hits"
+              fi
+              echo "Either cut it as what it is (class 'sensible'), or keep 'routine' and record why, in the tag, with routine-because."
+              refuse "Refusing the class 'routine' on a delta whose reviewed paths are '$surfaces' without routine-because."
+            fi
+            if [ "$surfaces" = none ]; then
+              # A justification of a clean delta would read, later, as a waiver.
+              because=''
+            fi
+          elif [ "$surfaces" = unknown ]; then
+            class=sensible
+            reason="the candidate class could not be computed: $why"
+            because=''
+          elif [ "$surfaces" = none ]; then
+            class=routine
+            reason="no reviewed path touched"
+            because=''
+          else
+            class=sensible
+            reason="touches the reviewed path $(head -n 1 "$work/hits" | cut -f2)"
+            because=''
+          fi
+
+          if [ "$base" = root ]; then
+            reason="$reason (first release: measured from the repository's root)"
+          fi
+
+          previous=''
+          if [ "$round" -gt 1 ]; then
+            previous="$(tag_of "$VERSION" $((round - 1)))"
+          elif [ "$base" != none ] && [ "$base" != root ]; then
+            # The first candidate of a first release has no previous tag.
+            previous="$base"
+          fi
+          # The files changed since the previous candidate decide the reviews
+          # this one reopens: unreadable is a refusal, never "nothing".
+          if [ -n "$previous" ]; then
+            if ! git -c core.quotePath=false diff --no-renames --name-only "$previous" HEAD > "$work/delta"; then
+              refuse "Could not list the files changed since $previous, which decide the reviews this candidate reopens. Nothing was pushed."
+            fi
+            count="$(awk 'END { print NR }' "$work/delta")"
+            echo "Changed since $previous ($count file(s)):"
+            awk 'NR <= 30 { print "  " $0 }' "$work/delta"
+            if [ "$count" -gt 30 ]; then
+              echo "  ... and $((count - 30)) more"
+            fi
+          fi
+
+          # What the default branch handed the cycle since QA last looked: a
+          # fix during a cycle is a PR based on the release branch, never the
+          # default branch merged into it.
+          merged_in=0
+          main_because="$(one_line "$MAIN_MERGE_BECAUSE")"
+          if [ "$ACTION" = candidate ] && [ "$round" -gt 1 ]; then
+            if ! git fetch --quiet --no-tags origin "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"; then
+              refuse "Could not read origin/$DEFAULT_BRANCH (git fetch failed): 'nothing came from $DEFAULT_BRANCH' and 'I could not read it' are different answers."
+            fi
+            git rev-list "$previous..refs/remotes/origin/$DEFAULT_BRANCH" > "$work/on-main.raw"
+            git rev-list "$previous..HEAD" > "$work/on-branch.raw"
+            sort "$work/on-main.raw" > "$work/on-main"
+            sort "$work/on-branch.raw" > "$work/on-branch"
+            comm -12 "$work/on-main" "$work/on-branch" > "$work/from-main"
+            merged_in="$(awk 'END { print NR }' "$work/from-main")"
+            if [ "$merged_in" -gt 0 ] && [ -z "$main_because" ]; then
+              echo "$merged_in commit(s) came from $DEFAULT_BRANCH since $previous and no candidate has covered them:"
+              head -n 20 "$work/from-main" > "$work/first"
+              while read -r sha; do
+                git log -1 --format='  %h %s' "$sha"
+              done < "$work/first"
+              echo "A fix during a cycle is a PR based on the release branch, never $DEFAULT_BRANCH merged into it: these changes were prepared into the notes of no release, and no candidate has covered them."
+              echo "If the merge is deliberate, cut again with main-merge-because saying why and what came in."
+              refuse "Refusing $tag: $DEFAULT_BRANCH was merged into $BRANCH since $previous."
+            fi
+          fi
+          if [ "$merged_in" -eq 0 ]; then
+            main_because=''
+          fi
+
+          {
+            echo "Release-Class: $class"
+            echo "Release-Class-Reason: $(one_line "$reason")"
+            echo "Release-Class-Base: $base"
+            echo "Release-Class-Surfaces: $(one_line "$surfaces")"
+            if [ -n "$because" ]; then
+              echo "Release-Class-Justification: $because"
+            fi
+            if [ "$merged_in" -gt 0 ]; then
+              echo "Release-Main-Merge-Commits: $merged_in"
+              echo "Release-Main-Merge-Justification: $main_because"
+            fi
+          } > "$work/trailers"
+
+          echo "Candidate: $tag"
+          echo "Branch:    $BRANCH"
+          echo "Commit:    $(git log -1 --format='%h %s' HEAD)"
+          echo "Class:     $class ($reason)"
+          echo "Surfaces:  $surfaces (since ${since:-$base})"
+          if [ -n "$because" ]; then
+            echo "Routine because: $because"
+          fi
+          if [ "$merged_in" -gt 0 ]; then
+            echo "Main merged in:  $merged_in commit(s), $main_because"
+          fi
+          {
+            echo "tag=$tag"
+            echo "round=$round"
+            echo "class=$class"
+            echo "class-reason=$(one_line "$reason")"
+            echo "previous-tag=$previous"
+            echo "base=$base"
+            echo "surfaces=$(one_line "$surfaces")"
+            echo "commit=$(git rev-parse HEAD)"
+            echo "proceed=true"
+            delimiter="TRAILERS_$(date +%s)_$$"
+            echo "trailers<<$delimiter"
+            cat "$work/trailers"
+            echo "$delimiter"
+          } >> "$out"
+          if [ "$DRY_RUN" = true ]; then
+            if [ "$ACTION" = open ]; then
+              echo "(dry run: $BRANCH not created, nothing committed, tagged or pushed)"
+            else
+              echo "(dry run: nothing tagged, nothing pushed)"
+            fi
+          fi
+
+      # Tag locally, push last: nothing irreversible happens before the push.
+      # For `open`, the new branch and its first candidate go in one atomic
+      # push: a cycle never exists without its rc.1, nor rc.1 without its
+      # branch.
+      - name: Tag and push the candidate
+        id: tag
+        if: "!inputs.dry-run && steps.candidate.outputs.proceed == 'true'"
+        env:
+          BRANCH: ${{ steps.cycle.outputs.branch }}
+          VERSION: ${{ steps.open.outputs.version || steps.version.outputs.version }}
+          TAG: ${{ steps.candidate.outputs.tag }}
+          ROUND: ${{ steps.candidate.outputs.round }}
+          CLASS_OUT: ${{ steps.candidate.outputs.class }}
+          CLASS_REASON: ${{ steps.candidate.outputs.class-reason }}
+          PREVIOUS: ${{ steps.candidate.outputs.previous-tag }}
+          TRAILERS: ${{ steps.candidate.outputs.trailers }}
+          COMMIT: ${{ steps.candidate.outputs.commit }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${GITHUB_OUTPUT:-/dev/stdout}"
+          if [ "$(git rev-parse HEAD)" != "$COMMIT" ]; then
+            echo "::error title=Release cut refused::HEAD moved since the candidate was computed."
+            exit 1
+          fi
+          # The login is built here, never written out: a bot login is
+          # installation data.
+          tagger="${APP_SLUG}[bot]"
+          # Annotated, never lightweight: the gate reads a lightweight tag as
+          # unclassified. Two paragraphs, so the trailers are the body.
+          git -c user.name="$tagger" -c user.email="${tagger}@users.noreply.github.com" \
+            tag -a "$TAG" -m "Release candidate $TAG" -m "$TRAILERS"
+          refs=("refs/tags/$TAG")
+          what="$TAG"
+          if [ "$ACTION" = open ]; then
+            refs=("refs/heads/$BRANCH" "${refs[@]}")
+            what="$BRANCH and $TAG"
+          fi
+          # Fresh refs, never forced: a push onto an existing tag or branch
+          # fails, and an atomic push fails whole.
+          if ! git push --quiet --atomic origin "${refs[@]}"; then
+            git tag -d "$TAG" > /dev/null
+            echo "::error title=Release cut failed::Could not push $what; nothing of it reached origin."
+            exit 1
+          fi
+          if [ "$ACTION" = open ]; then
+            echo "Pushed $BRANCH and its first candidate $TAG: the gate starts on it."
+            echo "Every later candidate is a dispatch on $BRANCH (never on $DEFAULT_BRANCH):"
+            echo "  gh workflow run <the cut workflow> --ref $BRANCH -f action=candidate"
+            echo "Abandon the cycle instead: git push origin --delete $BRANCH"
+          else
+            echo "Pushed $TAG on $BRANCH: the gate starts on it."
+          fi
+          {
+            echo "branch=$BRANCH"
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+            echo "round=$ROUND"
+            echo "class=$CLASS_OUT"
+            echo "class-reason=$CLASS_REASON"
+            echo "previous-tag=$PREVIOUS"
+          } >> "$out"
+
+      - name: Summary
+        if: always()
+        env:
+          BRANCH: ${{ steps.cycle.outputs.branch }}
+          TAG: ${{ steps.candidate.outputs.tag }}
+          PUSHED: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.open.outputs.version || steps.version.outputs.version }}
+          ROUND: ${{ steps.candidate.outputs.round }}
+          CLASS_OUT: ${{ steps.candidate.outputs.class }}
+          CLASS_REASON: ${{ steps.candidate.outputs.class-reason }}
+          SURFACES: ${{ steps.candidate.outputs.surfaces }}
+          BASE: ${{ steps.candidate.outputs.base }}
+          PREVIOUS: ${{ steps.candidate.outputs.previous-tag }}
+          GATE_WORKFLOW: ${{ inputs.gate-workflow }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          summary="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+          {
+            echo "## Release cut ($ACTION)"
+            echo
+            if [ -n "$PUSHED" ] && [ "$ACTION" = open ]; then
+              echo "Opened \`$BRANCH\`, prepared \`$VERSION\` on it, and pushed its first candidate \`$PUSHED\`."
+            elif [ -n "$PUSHED" ]; then
+              echo "Pushed \`$PUSHED\` on \`$BRANCH\`."
+            elif [ "$DRY_RUN" = true ] && [ -n "$TAG" ]; then
+              echo "Dry run: \`$TAG\` would be cut on \`${BRANCH:-?}\`; nothing was committed or pushed."
+            else
+              echo "No candidate was pushed: see the log of the step that failed."
+            fi
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Candidate | \`${TAG:-?}\` (round ${ROUND:-?}) |"
+            echo "| Branch | \`${BRANCH:-?}\` |"
+            echo "| Class | ${CLASS_OUT:-?}: ${CLASS_REASON:-?} |"
+            if [ "${BASE:-}" = root ]; then
+              echo "| Reviewed paths touched | ${SURFACES:-?} (since the repository's root: first release) |"
+            else
+              echo "| Reviewed paths touched | ${SURFACES:-?} (since ${BASE:-?}) |"
+            fi
+            echo "| Previous tag | ${PREVIOUS:-none} |"
+            echo
+            if [ -n "$PUSHED" ]; then
+              echo "The gate: \`gh run list --workflow=$GATE_WORKFLOW --branch $PUSHED --limit 1\`"
+            fi
+          } >> "$summary"

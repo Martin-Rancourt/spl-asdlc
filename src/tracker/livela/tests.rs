@@ -26,6 +26,10 @@ struct MemStore {
     author: String,
     /// `(author, write)`, as the core's fact log signs them.
     facts: Vec<(String, String)>,
+    /// The priority each ticket was created with.
+    priorities: BTreeMap<String, Option<u8>>,
+    /// A status the ticket type lacks, for the refusal tests.
+    lacks: Option<&'static str>,
 }
 
 impl Default for MemStore {
@@ -36,6 +40,8 @@ impl Default for MemStore {
             next: 0,
             author: "runner".into(),
             facts: Vec::new(),
+            priorities: BTreeMap::new(),
+            lacks: None,
         }
     }
 }
@@ -116,7 +122,11 @@ impl LivelaStore for MemStore {
         "TD".into()
     }
     fn ticket_statuses(&self) -> Vec<String> {
-        STATUSES.iter().map(|s| s.to_string()).collect()
+        STATUSES
+            .iter()
+            .filter(|s| Some(**s) != self.lacks)
+            .map(|s| s.to_string())
+            .collect()
     }
     fn find_by_web_link(&self, url: &str) -> Vec<String> {
         self.items
@@ -132,7 +142,7 @@ impl LivelaStore for MemStore {
         tags: &[String],
         assignee: Option<&str>,
         parent: Option<&str>,
-        _priority: Option<u8>,
+        priority: Option<u8>,
         status: &str,
     ) -> Result<String, String> {
         if !STATUSES.contains(&status) {
@@ -140,6 +150,7 @@ impl LivelaStore for MemStore {
         }
         let id = self.id();
         self.fact(format!("create {id}"));
+        self.priorities.insert(id.clone(), priority);
         let item = LivelaItem {
             id: id.clone(),
             short_id: format!("TD-{}", &id[4..]),
@@ -269,6 +280,14 @@ fn the_livela_adapter_passes_the_conformance_suite_without_comment_edits() {
 }
 
 #[test]
+fn a_tracker_project_is_ignored_and_items_are_created_as_without_it() {
+    // Its project scoping is the work of the Livela milestone: `doctor`
+    // says the key is ignored.
+    let t = Livela::new(MemStore::default(), StatusTable::identity());
+    assert_eq!(t.project("acme").unwrap(), None);
+}
+
+#[test]
 fn every_write_is_signed_by_the_bridge_and_the_runner_keeps_its_author() {
     let t = Livela::new(MemStore::default(), StatusTable::identity());
     let a = t.create_item(&new_item("a", Status::Ready)).unwrap();
@@ -292,6 +311,20 @@ fn every_write_is_signed_by_the_bridge_and_the_runner_keeps_its_author() {
 }
 
 #[test]
+fn an_urgent_item_is_created_at_the_stores_priority_one() {
+    let t = Livela::new(MemStore::default(), StatusTable::identity());
+    let urgent = NewItem {
+        priority: Some(Priority::Urgent),
+        ..new_item("a", Status::Ready)
+    };
+    let a = t.create_item(&urgent).unwrap();
+    let b = t.create_item(&new_item("b", Status::Ready)).unwrap();
+    let store = t.into_store();
+    assert_eq!(store.priorities[&a.id], Some(1));
+    assert_eq!(store.priorities[&b.id], None, "the store's default");
+}
+
+#[test]
 fn reads_and_unchanged_writes_leave_no_fact() {
     let t = Livela::new(MemStore::default(), StatusTable::identity());
     let a = t.create_item(&new_item("a", Status::ToDeploy)).unwrap();
@@ -307,10 +340,30 @@ fn reads_and_unchanged_writes_leave_no_fact() {
 }
 
 #[test]
+fn a_status_write_can_unassign_and_a_replay_leaves_no_fact() {
+    let t = Livela::new(MemStore::default(), StatusTable::identity());
+    let me = t.identity().unwrap();
+    let mut item = new_item("a", Status::ToDeploy);
+    item.assignee = Some(me);
+    let a = t.create_item(&item).unwrap();
+    t.set_status(&a.key, Status::InProgress, Some(None))
+        .unwrap();
+    let back = t.get(&a.key).unwrap();
+    assert_eq!(back.state.status, Some(Status::InProgress));
+    assert_eq!(back.assignee, None);
+    let before = t.store.borrow().facts.len();
+    t.set_status(&a.key, Status::InProgress, Some(None))
+        .unwrap();
+    assert_eq!(t.store.borrow().facts.len(), before);
+}
+
+#[test]
 fn a_creation_in_an_unknown_status_writes_nothing() {
-    let mut map = std::collections::BTreeMap::new();
-    map.insert("Ready".to_string(), "Prete".to_string());
-    let t = Livela::new(MemStore::default(), StatusTable::from_config(&map));
+    let store = MemStore {
+        lacks: Some("Ready"),
+        ..MemStore::default()
+    };
+    let t = Livela::new(store, StatusTable::identity());
     let err = t.create_item(&new_item("a", Status::Ready)).unwrap_err();
     assert!(matches!(err, TrackerError::Refused { .. }), "{err}");
     assert!(t.store.borrow().items.is_empty());
@@ -416,4 +469,15 @@ fn an_unknown_short_id_is_not_found_and_a_comment_edit_is_refused() {
         t.update_comment("c-1", "x").unwrap_err(),
         TrackerError::Refused { .. }
     ));
+}
+
+#[test]
+fn livela_has_no_open_item_limit_and_archives_nothing() {
+    let t = Livela::new(MemStore::default(), StatusTable::identity());
+    let a = t.create_item(&new_item("a", Status::Done)).unwrap();
+    let before = t.store.borrow().facts.len();
+    assert!(!t.archives(), "the bridge asks Livela for no archive");
+    t.archive(&a.key).unwrap();
+    assert_eq!(t.store.borrow().facts.len(), before, "no fact recorded");
+    assert!(!t.get(&a.key).unwrap().archived);
 }

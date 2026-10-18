@@ -142,17 +142,104 @@ fn the_required_checks_are_read_for_the_branch_asked() {
     );
 }
 
+// ---- rulesets (spl-asdlc doctor) ----
+
+const RULESETS: &str = "/repos/example-org/acme/rulesets?includes_parents=true&per_page=100";
+
+#[test]
+fn each_ruleset_is_read_by_id_with_its_conditions_and_rules() {
+    let (gh, t) = client();
+    t.on(
+        "GET",
+        &url(RULESETS),
+        200,
+        r#"[{"id":11,"name":"release","target":"branch","enforcement":"active"},{"id":12,"name":"tags","target":"tag","enforcement":"evaluate"}]"#,
+    );
+    t.on(
+        "GET",
+        &url("/repos/example-org/acme/rulesets/11?"),
+        200,
+        r#"{"id":11,"name":"release","target":"branch","enforcement":"active","conditions":{"ref_name":{"include":["refs/heads/release/**"],"exclude":[]}},"rules":[{"type":"pull_request","parameters":{}},{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true,"required_status_checks":[{"context":"required-check"}]}}],"bypass_actors":[]}"#,
+    );
+    t.on(
+        "GET",
+        &url("/repos/example-org/acme/rulesets/12?"),
+        200,
+        r#"{"id":12,"name":"tags","target":"tag","enforcement":"evaluate","conditions":{"ref_name":{"include":["refs/tags/*-rc.*"],"exclude":["refs/tags/v1"]}},"rules":[{"type":"update"},{"type":"deletion"}]}"#,
+    );
+    let r = gh.rulesets(&repo()).unwrap();
+    assert_eq!(r.len(), 2);
+    assert_eq!(r[0].include, vec!["refs/heads/release/**"]);
+    assert!(r[0].is_active());
+    assert_eq!(
+        r[0].rules.iter().cloned().collect::<Vec<_>>(),
+        vec!["pull_request", "required_status_checks"]
+    );
+    assert_eq!(
+        r[0].required_checks.iter().cloned().collect::<Vec<_>>(),
+        vec!["required-check"]
+    );
+    assert_eq!(r[1].target, "tag");
+    assert!(!r[1].is_active());
+    assert_eq!(r[1].exclude, vec!["refs/tags/v1"]);
+    assert!(r[1].rules.contains("update") && r[1].rules.contains("deletion"));
+}
+
+#[test]
+fn rulesets_that_cannot_be_read_whole_are_unreadable() {
+    // The list itself.
+    for status in [404, 403, 500] {
+        let (gh, t) = client();
+        t.on("GET", &url(RULESETS), status, "{}");
+        let err = gh.rulesets(&repo()).unwrap_err();
+        assert!(matches!(err, ReadError::Unreadable { .. }), "{err:?}");
+    }
+    // One ruleset of the list.
+    let listed = r#"[{"id":11,"name":"main","target":"branch","enforcement":"active"}]"#;
+    let one = url("/repos/example-org/acme/rulesets/11?");
+    for (status, body) in [
+        (404, "{}"),
+        (500, "{}"),
+        (200, r#"{"id":11,"name":"main","target":"branch"}"#),
+        (
+            200,
+            r#"{"id":11,"name":"main","target":"branch","enforcement":"active","rules":[{"parameters":{}}]}"#,
+        ),
+        (
+            200,
+            r#"{"id":11,"name":"main","target":"branch","enforcement":"active","conditions":{"ref_name":{"include":[7]}}}"#,
+        ),
+        (
+            200,
+            r#"{"id":11,"name":"main","target":"branch","enforcement":"active","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":null}},"rules":[]}"#,
+        ),
+        (
+            200,
+            r#"{"id":11,"name":"main","target":"branch","enforcement":"active","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}},"rules":null}"#,
+        ),
+    ] {
+        let (gh, t) = client();
+        t.on("GET", &url(RULESETS), 200, listed);
+        t.on("GET", &one, status, body);
+        let err = gh.rulesets(&repo()).unwrap_err();
+        assert!(
+            matches!(err, ReadError::Unreadable { .. }),
+            "{body}: {err:?}"
+        );
+    }
+}
+
 // ---- files at a ref (REQ-MERGE-040) ----
 
 #[test]
 fn a_file_answers_its_text_not_found_or_unreadable() {
     let (gh, t) = client();
-    let path = "/repos/example-org/acme/contents/docs/business-rules.md?ref=";
+    let path = "/repos/example-org/acme/contents/.spl-asdlc/business-rules/BR-ACME-001.md?ref=";
     t.on(
         "GET",
         &url(&format!("{path}abc")),
         200,
-        "| BR-ACME-001 | rule |",
+        "# BR-ACME-001 — A rule",
     );
     t.on(
         "GET",
@@ -167,16 +254,21 @@ fn a_file_answers_its_text_not_found_or_unreadable() {
         r#"{"message":"unavailable"}"#,
     );
     assert_eq!(
-        gh.file(&repo(), "docs/business-rules.md", "abc").unwrap(),
-        "| BR-ACME-001 | rule |"
+        gh.file(&repo(), ".spl-asdlc/business-rules/BR-ACME-001.md", "abc")
+            .unwrap(),
+        "# BR-ACME-001 — A rule"
     );
     assert!(
-        gh.file(&repo(), "docs/business-rules.md", "missing")
-            .unwrap_err()
-            .is_not_found()
+        gh.file(
+            &repo(),
+            ".spl-asdlc/business-rules/BR-ACME-001.md",
+            "missing"
+        )
+        .unwrap_err()
+        .is_not_found()
     );
     assert!(matches!(
-        gh.file(&repo(), "docs/business-rules.md", "flaky")
+        gh.file(&repo(), ".spl-asdlc/business-rules/BR-ACME-001.md", "flaky")
             .unwrap_err(),
         ReadError::Unreadable {
             status: Some(503),
@@ -190,6 +282,55 @@ fn a_file_answers_its_text_not_found_or_unreadable() {
             .iter()
             .any(|(k, v)| k == "Accept" && v == "application/vnd.github.raw+json")
     );
+}
+
+#[test]
+fn a_directory_answers_its_file_names_not_found_or_unreadable() {
+    let (gh, t) = client();
+    let path = "/repos/example-org/acme/contents/.spl-asdlc/business-rules?ref=";
+    t.on(
+        "GET",
+        &url(&format!("{path}abc")),
+        200,
+        r#"[{"name":"README.md","type":"file"},{"name":"BR-ACME-002.md","type":"file"},
+            {"name":"BR-ACME-001.md","type":"file"},{"name":"old","type":"dir"}]"#,
+    );
+    t.on(
+        "GET",
+        &url(&format!("{path}file")),
+        200,
+        r#"{"name":"business-rules","type":"file"}"#,
+    );
+    t.on(
+        "GET",
+        &url(&format!("{path}missing")),
+        404,
+        r#"{"message":"Not Found"}"#,
+    );
+    t.on(
+        "GET",
+        &url(&format!("{path}flaky")),
+        503,
+        r#"{"message":"unavailable"}"#,
+    );
+    let dir = ".spl-asdlc/business-rules";
+    assert_eq!(
+        gh.dir(&repo(), dir, "abc").unwrap(),
+        ["BR-ACME-001.md", "BR-ACME-002.md", "README.md"],
+        "files only, sorted"
+    );
+    assert!(matches!(
+        gh.dir(&repo(), dir, "file").unwrap_err(),
+        ReadError::Unreadable { .. }
+    ));
+    assert!(gh.dir(&repo(), dir, "missing").unwrap_err().is_not_found());
+    assert!(matches!(
+        gh.dir(&repo(), dir, "flaky").unwrap_err(),
+        ReadError::Unreadable {
+            status: Some(503),
+            ..
+        }
+    ));
 }
 
 // ---- lists ----
@@ -264,7 +405,9 @@ fn a_comparison_reads_every_commit_and_refuses_a_cut_file_list() {
         &url(path),
         200,
         r#"{"status":"ahead","ahead_by":2,"behind_by":0,"total_commits":2,
-            "commits":[{"sha":"a1","commit":{"message":"feat: one\n\nbody"}}],
+            "base_commit":{"sha":"r0","commit":{"committer":{"date":"2026-10-11T13:46:10Z"}}},
+            "commits":[{"sha":"a1","commit":{"message":"feat: one\n\nbody",
+                "committer":{"date":"2026-10-11T12:19:55Z"}}}],
             "files":[{"filename":"src/x.rs"}]}"#,
     );
     t.on(
@@ -285,6 +428,17 @@ fn a_comparison_reads_every_commit_and_refuses_a_cut_file_list() {
         vec!["feat: one", "fix: two"]
     );
     assert_eq!(c.files, vec!["src/x.rs"]);
+    // The committer dates; one GitHub did not give
+    // is unknown, never a guess.
+    assert_eq!(
+        c.base_committed_at,
+        Timestamp::parse("2026-10-11T13:46:10Z")
+    );
+    assert_eq!(
+        c.commits[0].committed_at,
+        Timestamp::parse("2026-10-11T12:19:55Z")
+    );
+    assert_eq!(c.commits[1].committed_at, None);
 
     let (gh, t) = client();
     let files: Vec<String> = (0..300)
@@ -319,6 +473,62 @@ fn a_comparison_github_lists_partially_is_unreadable() {
     assert!(gh.compare(&repo(), "a", "b").is_err());
 }
 
+#[test]
+fn the_history_from_the_root_reads_every_commit_and_every_path_or_refuses() {
+    let commits = "/repos/example-org/acme/commits?sha=c2&per_page=100";
+    let tree = "/repos/example-org/acme/git/trees/c2?recursive=1";
+    let (gh, t) = client();
+    t.on(
+        "GET",
+        &url(commits),
+        200,
+        r#"[{"sha":"c2","commit":{"message":"feat: two\n\nbody","committer":{"date":"2026-10-12T10:00:00Z"}}},
+            {"sha":"c1","commit":{"message":"initial"}}]"#,
+    );
+    t.on(
+        "GET",
+        &url(tree),
+        200,
+        r#"{"truncated":false,"tree":[{"path":"src","type":"tree"},{"path":"src/x.rs","type":"blob"},
+            {"path":"README.md","type":"blob"},{"path":"vendor/lib","type":"commit"}]}"#,
+    );
+    let c = gh.since_root(&repo(), "c2").unwrap();
+    // Oldest first, as a comparison lists them, with no base to bound them.
+    assert_eq!(
+        c.commits.iter().map(|c| c.sha.as_str()).collect::<Vec<_>>(),
+        vec!["c1", "c2"]
+    );
+    assert_eq!(c.commits[1].subject, "feat: two");
+    assert_eq!(
+        c.commits[1].committed_at,
+        Timestamp::parse("2026-10-12T10:00:00Z")
+    );
+    assert_eq!(c.ahead_by, 2);
+    assert_eq!(c.base_committed_at, None);
+    assert_eq!(c.files, vec!["src/x.rs", "README.md", "vendor/lib"]);
+
+    // A tree GitHub cut, or one that does not say, is not the tree.
+    for answer in [
+        r#"{"truncated":true,"tree":[]}"#,
+        r#"{"tree":[{"path":"a","type":"blob"}]}"#,
+    ] {
+        let (gh, t) = client();
+        t.on(
+            "GET",
+            &url(commits),
+            200,
+            r#"[{"sha":"c2","commit":{"message":"x"}}]"#,
+        );
+        t.on("GET", &url(tree), 200, answer);
+        assert!(gh.since_root(&repo(), "c2").is_err(), "{answer}");
+    }
+    // A commit list that cannot be read is no history.
+    let (gh, t) = client();
+    t.on("GET", &url(commits), 500, "{}");
+    t.on("GET", &url(tree), 200, r#"{"truncated":false,"tree":[]}"#);
+    assert!(gh.since_root(&repo(), "c2").is_err());
+}
+
 // ---- pull requests over GraphQL ----
 
 fn pull_node(number: u64) -> String {
@@ -328,7 +538,7 @@ fn pull_node(number: u64) -> String {
         "labels":{{"pageInfo":{{"hasNextPage":false}},"nodes":[{{"name":"needs-review"}}]}},
         "mergeable":"CONFLICTING","mergeStateStatus":"DIRTY","additions":10,"deletions":2,
         "createdAt":"2026-10-05T10:00:00Z","updatedAt":"2026-10-05T11:00:00Z","mergedAt":null,"mergedBy":null,"mergeCommit":null,
-        "reviews":{{"pageInfo":{{"hasNextPage":false}},"nodes":[{{"author":{{"login":"coordinator-login"}},"state":"APPROVED","commit":{{"oid":"h{number}"}},"submittedAt":"2026-10-05T11:00:00Z"}}]}},
+        "reviews":{{"pageInfo":{{"hasNextPage":false}},"nodes":[{{"databaseId":7,"author":{{"login":"coordinator-login"}},"state":"APPROVED","commit":{{"oid":"h{number}"}},"submittedAt":"2026-10-05T11:00:00Z"}}]}},
         "reviewThreads":{{"pageInfo":{{"hasNextPage":true}},"nodes":[{{"isResolved":false,"isOutdated":false,"path":"src/x.rs","comments":{{"nodes":[{{"author":{{"login":"reviewer"}},"body":"blocker: x"}}]}}}}]}},
         "commits":{{"nodes":[{{"commit":{{"oid":"h{number}","statusCheckRollup":{{"contexts":{{"pageInfo":{{"hasNextPage":false}},"nodes":[
             {{"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-10-05T10:01:00Z","detailsUrl":"https://github.com/example-org/acme/actions/runs/1/job/2","checkSuite":{{"workflowRun":{{"workflow":{{"name":"Checks"}}}}}}}},
@@ -373,6 +583,7 @@ fn open_pulls_parse_checks_reviews_threads_and_say_what_was_cut() {
     assert_eq!(p.checks[2].kind, CheckKind::Status);
     assert_eq!(p.checks[2].conclusion.as_deref(), Some("FAILURE"));
     assert_eq!(p.reviews[0].commit_sha.as_deref(), Some("h12"));
+    assert_eq!(p.reviews[0].id, Some(7), "a dismissal names it");
     assert!(!p.threads[0].resolved);
     assert_eq!(p.truncated, vec!["reviewThreads"]);
     let body = &t.bodies()[0];
@@ -381,6 +592,44 @@ fn open_pulls_parse_checks_reviews_threads_and_say_what_was_cut() {
         "the base filter is sent"
     );
     assert!(body.contains(r#""base":"main""#));
+}
+
+/// The login REST and the UI show for an App.
+fn bot(slug: &str) -> String {
+    format!("{slug}[bot]")
+}
+
+#[test]
+fn an_app_reviewing_is_named_in_the_rest_spelling() {
+    // GraphQL names an App by its bare slug; the bridge reads it as REST
+    // and the UI show it, and a human as they are.
+    let node = pull_node(12)
+        .replace(
+            r#""author":{"login":"coordinator-login"}"#,
+            r#""author":{"__typename":"Bot","login":"coord-app"}"#,
+        )
+        .replace(
+            r#""author":{"login":"reviewer"}"#,
+            r#""author":{"__typename":"User","login":"reviewer"}"#,
+        );
+    assert!(node.contains(r#""__typename":"User""#), "the fixture moved");
+    let (gh, t) = client();
+    t.on(
+        "POST",
+        &url("/graphql"),
+        200,
+        &format!(
+            r#"{{"data":{{"repository":{{"pullRequests":{{"totalCount":1,"pageInfo":{{"hasNextPage":false,"endCursor":null}},"nodes":[{node}]}}}}}}}}"#
+        ),
+    );
+    let pulls = gh.open_pulls(&repo(), None).unwrap();
+    let p = &pulls[0];
+    assert_eq!(p.reviews[0].author, Some(bot("coord-app")));
+    assert_eq!(p.threads[0].first_author.as_deref(), Some("reviewer"));
+    assert!(
+        t.bodies()[0].contains("nodes { databaseId author { __typename login } state"),
+        "the query asks what the review's author is"
+    );
 }
 
 #[test]
@@ -511,6 +760,31 @@ fn a_refused_merge_carries_its_status() {
         .unwrap_err();
     assert_eq!(err.status, Some(409));
     assert!(err.detail.contains("Head branch was modified"));
+}
+
+#[test]
+fn a_dismissal_names_its_review_and_says_why() {
+    let (gh, t) = client();
+    t.on(
+        "PUT",
+        &url("/repos/example-org/acme/pulls/12/reviews/41/dismissals"),
+        200,
+        r#"{"id":41,"state":"DISMISSED"}"#,
+    );
+    gh.dismiss_review(&repo(), 12, 41, "superseded").unwrap();
+    let body: Value = serde_json::from_str(&t.bodies()[0]).unwrap();
+    assert_eq!(body, json!({"message": "superseded", "event": "DISMISS"}));
+    let (gh, t) = client();
+    t.on(
+        "PUT",
+        &url("/repos/example-org/acme/pulls/12/reviews/41/dismissals"),
+        403,
+        r#"{"message":"Resource not accessible by integration"}"#,
+    );
+    let err = gh
+        .dismiss_review(&repo(), 12, 41, "superseded")
+        .unwrap_err();
+    assert_eq!(err.status, Some(403));
 }
 
 #[test]
@@ -989,4 +1263,94 @@ fn the_app_identity_is_read_with_the_jwt() {
             app_id: "42".into()
         }
     );
+}
+
+// ---- workflow runs and the evidence pack (spec 05 §3, BR-ASDLC-016) ----
+
+#[test]
+fn a_run_says_its_attempt_and_an_absent_attempt_reads_as_the_first() {
+    let (gh, t) = client();
+    t.on(
+        "GET",
+        &url("/repos/example-org/acme/actions/workflows/release-gate.yml/runs"),
+        200,
+        r#"{"workflow_runs":[
+            {"id":2,"head_sha":"s","head_branch":"t","event":"push","status":"completed","conclusion":"failure","run_attempt":2,"html_url":"u2","created_at":"2026-10-05T11:00:00Z","updated_at":"2026-10-05T11:40:00Z"},
+            {"id":1,"head_sha":"s","head_branch":"t","event":"push","status":"completed","conclusion":"failure","html_url":"u1"}]}"#,
+    );
+    let runs = gh
+        .workflow_runs(&repo(), "release-gate.yml", None, Some("s"), None)
+        .unwrap();
+    assert_eq!(runs.iter().map(|r| r.attempt).collect::<Vec<_>>(), [2, 1]);
+    assert_eq!(
+        runs[0].updated_at,
+        crate::github::Timestamp::parse("2026-10-05T11:40:00Z"),
+        "when it completed, for the bounded wait of its rerun"
+    );
+    assert_eq!(runs[1].updated_at, None);
+}
+
+#[test]
+fn a_file_is_read_out_of_an_artifact_zip_without_sending_the_token_to_its_host() {
+    let (gh, t) = client();
+    let zip = crate::github::zip::tests::archive(
+        &[("results/suites.json", br#"{"failed":["tests"]}"#)],
+        true,
+    );
+    t.on_with_headers(
+        "GET",
+        &url("/repos/example-org/acme/actions/artifacts/7/zip"),
+        302,
+        "",
+        &[("Location", "https://blob.test/pack.zip?sig=x")],
+    );
+    t.on_bytes("GET", "https://blob.test/pack.zip", 200, &zip);
+    assert_eq!(
+        gh.artifact_file(&repo(), 7, "results/suites.json").unwrap(),
+        r#"{"failed":["tests"]}"#
+    );
+    let log = t.log.lock().unwrap();
+    let blob = log
+        .iter()
+        .find(|r| r.url.starts_with("https://blob.test/"))
+        .expect("the redirect was followed");
+    assert!(
+        !blob
+            .headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("authorization")),
+        "the token goes to the API host only"
+    );
+    drop(log);
+    assert!(
+        gh.artifact_file(&repo(), 7, "results/other.json")
+            .unwrap_err()
+            .is_not_found()
+    );
+}
+
+#[test]
+fn an_artifact_that_cannot_be_downloaded_or_read_is_unreadable() {
+    let (gh, t) = client();
+    t.on(
+        "GET",
+        &url("/repos/example-org/acme/actions/artifacts/7/zip"),
+        410,
+        r#"{"message":"Artifact has expired"}"#,
+    );
+    let e = gh
+        .artifact_file(&repo(), 7, "results/suites.json")
+        .unwrap_err();
+    assert!(!e.is_not_found(), "{e}");
+    let (gh, t) = client();
+    t.on_bytes(
+        "GET",
+        &url("/repos/example-org/acme/actions/artifacts/8/zip"),
+        200,
+        b"not a zip",
+    );
+    let e = gh
+        .artifact_file(&repo(), 8, "results/suites.json")
+        .unwrap_err();
+    assert!(!e.is_not_found(), "{e}");
 }

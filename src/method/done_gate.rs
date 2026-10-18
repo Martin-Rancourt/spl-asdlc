@@ -238,18 +238,14 @@ pub fn refusal(id: &str, gate: &DoneGate, state_unchanged: bool) -> String {
     s
 }
 
+/// How the closure ends its comment on a ticket it sends back: unassigned,
+/// never handed to someone named (BR-ASDLC-009).
+pub const RETURNED_UNASSIGNED: &str = "Returned to `In Progress` by the release closure, unassigned: \
+     the agent system resumes it by role, with nobody named.";
+
 /// The closure's comment on a ticket it sends back (REQ-REL-089).
-pub fn reopen_comment(id: &str, gate: &DoneGate, assignee: Result<&str, &str>) -> String {
-    let mut s = refusal(id, gate, false);
-    match assignee {
-        Ok(who) => s.push_str(&format!(
-            "\n\nReturned to `In Progress` and reassigned to its implementer ({who}) by the release closure."
-        )),
-        Err(reason) => s.push_str(&format!(
-            "\n\nReturned to `In Progress` by the release closure and left unassigned — {reason}. The default implementer picks it up."
-        )),
-    }
-    s
+pub fn reopen_comment(id: &str, gate: &DoneGate) -> String {
+    format!("{}\n\n{RETURNED_UNASSIGNED}", refusal(id, gate, false))
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 //! Versions, tags and release branches of a product (REQ-REL-004, 008, 018,
-//! 027, 028): the shape is data from `spl-asdlc.toml`, compiled once.
+//! 027, 028): the shape is data from `.spl-asdlc/config.toml`, compiled once.
 
 use std::fmt;
 use std::sync::LazyLock;
@@ -47,12 +47,10 @@ pub struct Shape {
     candidate_re: Regex,
     release_re: Regex,
     pub branch_prefix: String,
-    pub components: Vec<String>,
-    pub version_component: Option<String>,
-    pub gate_record: Option<String>,
 }
 
-fn template_regex(template: &str) -> Regex {
+/// A validated tag template as a regex, `version` (and `rc`) captured.
+pub(crate) fn template_regex(template: &str) -> Regex {
     let escaped = regex::escape(template)
         .replace(r"\{version\}", r"(?P<version>\d+\.\d+\.\d+)")
         .replace(r"\{rc\}", r"(?P<rc>\d+)");
@@ -69,14 +67,7 @@ impl Shape {
             candidate_re: template_regex(&release.candidate_tag),
             release_re: template_regex(&release.release_tag),
             branch_prefix: release.branch_prefix.clone(),
-            components: release.components.clone(),
-            version_component: release.version_component.clone(),
-            gate_record: release.gate_record.clone(),
         }
-    }
-
-    pub fn multi_component(&self) -> bool {
-        !self.components.is_empty()
     }
 
     /// `(version, rc)` of a candidate tag of this product, or `None`.
@@ -116,12 +107,6 @@ impl Shape {
             .split("{version}")
             .next()
             .unwrap_or_default()
-    }
-
-    pub fn gate_record_path(&self, version: Version) -> Option<String> {
-        self.gate_record
-            .as_ref()
-            .map(|t| t.replace("{version}", &version.to_string()))
     }
 
     /// The newest candidate among tag names: the highest `(version, rc)`.
@@ -213,7 +198,7 @@ mod tests {
         let text = format!(
             "schema = 1\n[product]\nname = \"acme\"\nrepository = \"example-org/acme\"\n[owner]\ntracker_user = \"o\"\n\
              [tracker]\nkind = \"linear\"\nteam = \"ABC\"\nservice_identity = \"s\"\n\
-             [release]\nrelease_please_authors = [\"app/r\"]\ncoordinators = [\"c\"]\n{extra}\n[[release.angles]]\nkey = \"security\"\n\
+             [release]\ncoordinators = [\"c\"]\n{extra}\n[[release.angles]]\nkey = \"security\"\n\
              [review]\ncoordinators = [\"c\"]\ndiff_size_extra_angle = 0\n[[review.angles]]\nkey = \"m\"\n"
         );
         let c = Config::parse(&text).unwrap();
@@ -244,20 +229,14 @@ mod tests {
 
     #[test]
     fn the_release_tag_prefix_is_the_template_before_version() {
-        let multi = shape(
-            "candidate_tag = \"v{version}-rc.{rc}\"\nrelease_tag = \"app-v{version}\"\ncomponents = [\"app\", \"website\"]\nversion_component = \"app\"\ngate_record = \"docs/releases/v{version}.md\"",
-        );
-        assert_eq!(multi.release_tag_prefix(), "app-v");
-        assert_eq!(multi.candidate_tag_prefix(), "v");
+        let other =
+            shape("candidate_tag = \"v{version}-rc.{rc}\"\nrelease_tag = \"app-v{version}\"");
+        assert_eq!(other.release_tag_prefix(), "app-v");
+        assert_eq!(other.candidate_tag_prefix(), "v");
         assert_eq!(
-            multi.parse_candidate("v1.36.3-rc.1"),
+            other.parse_candidate("v1.36.3-rc.1"),
             Some((v("1.36.3"), 1))
         );
-        assert_eq!(
-            multi.gate_record_path(v("1.36.3")).as_deref(),
-            Some("docs/releases/v1.36.3.md")
-        );
-        assert!(multi.multi_component());
         assert_eq!(shape("").release_tag_prefix(), "acme-v");
     }
 

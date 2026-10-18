@@ -1,11 +1,13 @@
-//! The tracker behind an interface (`docs/spec/00-overview.md` invariant 8,
+//! The tracker behind an interface (`docs/reference/00-overview.md` invariant 8,
 //! `07-the-bridge.md`, REQ-REL-098): read an item and its contract, set a
 //! status by canonical name, comment, label, relate, link a PR, find by PR
-//! URL, create the bridge's items. Nothing else. Every text is English.
+//! URL, create the bridge's items, archive what a closed cycle resolved.
+//! Nothing else. Every text is English.
 //!
 //! Reads distinguish "not found" from "could not read"; writes say whether
-//! the tracker refused. The method speaks canonical statuses; the adapter
-//! maps them through the project's status table.
+//! the tracker refused. The method speaks canonical statuses. A tracker names
+//! them exactly so; an adapter that uses backend-specific IDs maps those IDs
+//! internally.
 
 pub mod conformance;
 pub mod fake;
@@ -75,6 +77,8 @@ pub struct Item {
     pub assignee: Option<User>,
     /// Identifier of the parent item.
     pub parent: Option<String>,
+    /// Out of the tracker's open items, still readable: never written to
+    /// again by the bridge.
     pub archived: bool,
 }
 
@@ -116,16 +120,55 @@ pub struct Comment {
     pub body: String,
 }
 
+/// The canonical priority of an item the bridge creates; the adapter maps
+/// it to the tracker's own scale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Priority {
+    Urgent,
+    High,
+    Normal,
+    Low,
+}
+
+impl Priority {
+    /// The level on the common 1 (urgent) … 4 (low) scale, Linear's and
+    /// Livela's.
+    pub fn level(self) -> u8 {
+        match self {
+            Priority::Urgent => 1,
+            Priority::High => 2,
+            Priority::Normal => 3,
+            Priority::Low => 4,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Priority::Urgent => "urgent",
+            Priority::High => "high",
+            Priority::Normal => "normal",
+            Priority::Low => "low",
+        }
+    }
+}
+
+impl fmt::Display for Priority {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
 /// What the bridge creates: a release item, an angle sub-item, a
-/// consolidation item, a finding ticket, the nits ticket.
+/// consolidation item, a finding ticket, the nits ticket, a gate-fix
+/// ticket, a validation sub-task.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewItem {
     pub title: String,
     pub description: String,
     pub labels: Vec<String>,
     pub status: Status,
-    /// 1 urgent … 4 low; `None` for none.
-    pub priority: Option<u8>,
+    /// Set at creation; `None` leaves the tracker's default.
+    pub priority: Option<Priority>,
     pub assignee: Option<User>,
     /// Identifier of the parent.
     pub parent: Option<String>,
@@ -141,6 +184,14 @@ pub trait Tracker {
     fn status_names(&self) -> TResult<Vec<String>>;
     /// Resolve a person by id, name or display name (assignee hints).
     fn user(&self, reference: &str) -> TResult<User>;
+    /// Resolve the tracker project a reference names (`tracker.project`, its
+    /// name or id), by its name. An adapter built with that key creates every
+    /// item in that project, a sub-item too: [`NewItem`] does not carry it.
+    /// `Ok(None)`: this tracker does not place its items in a project yet,
+    /// and the key is ignored.
+    fn project(&self, _reference: &str) -> TResult<Option<String>> {
+        Ok(None)
+    }
 
     fn get(&self, key: &str) -> TResult<Item>;
     fn relations(&self, key: &str) -> TResult<Relations>;
@@ -149,9 +200,23 @@ pub trait Tracker {
     fn children(&self, key: &str) -> TResult<Vec<Item>>;
     /// Every item carrying a label (a list the tracker cuts is unreadable).
     fn list_by_label(&self, label: &str) -> TResult<Vec<Item>>;
+    /// Items carrying a label whose description contains `needle` (a
+    /// marker's text): a tracker that can search does it on its side, so the
+    /// answer does not grow with the label's history. The caller still checks
+    /// the marker whole.
+    fn find_labelled_containing(&self, label: &str, needle: &str) -> TResult<Vec<Item>> {
+        Ok(self
+            .list_by_label(label)?
+            .into_iter()
+            .filter(|i| i.description.contains(needle))
+            .collect())
+    }
     /// Items whose link (attachment, web link) is this PR URL.
     fn items_linked_to_pr(&self, pr_url: &str) -> TResult<Vec<String>>;
 
+    /// Whether the label exists, so that adding it to an item would be
+    /// accepted (a tracker whose labels exist by being used: always).
+    fn label_exists(&self, name: &str) -> TResult<bool>;
     fn ensure_label(&self, name: &str) -> TResult<()>;
     fn create_item(&self, item: &NewItem) -> TResult<Item>;
     fn update_description(&self, key: &str, description: &str) -> TResult<()>;
@@ -177,6 +242,19 @@ pub trait Tracker {
     /// the item's key as the tracker reads it back ([`Item::key`]).
     fn link_pr(&self, key: &str, pr_url: &str, title: &str) -> TResult<()>;
 
+    /// Whether the tracker archives items: one that counts its open items
+    /// against a limit (Linear's free plan) archives what a closed cycle
+    /// resolved (BR-ASDLC-019); one without a limit does not, and the bridge
+    /// then asks it for nothing.
+    fn archives(&self) -> bool {
+        false
+    }
+    /// Archive a resolved item: it leaves the open count and stays readable,
+    /// searchable and restorable ([`Item::archived`]). An item already
+    /// archived records nothing. A tracker that does not archive answers `Ok`
+    /// and writes nothing. The caller never archives an open item.
+    fn archive(&self, key: &str) -> TResult<()>;
+
     /// Whether HTML comments survive a write: when they do not, the bridge
     /// writes its markers visible (as inline code).
     fn keeps_html_comments(&self) -> bool {
@@ -190,55 +268,32 @@ pub trait Tracker {
     }
 }
 
-/// The status table of a project: canonical name -> tracker name, and back.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StatusTable {
-    pairs: Vec<(Status, String)>,
-}
+/// The status table of a project: the identity. A tracker names its
+/// statuses exactly as the canonical ones (`docs/reference/03-vocabulary.md`);
+/// the configuration maps none (`docs/reference/08-configuration.md`). An adapter
+/// whose tracker keys statuses by its own ids maps them in its code.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StatusTable;
 
 impl StatusTable {
-    pub fn from_config(statuses: &std::collections::BTreeMap<String, String>) -> StatusTable {
-        StatusTable {
-            pairs: Status::ALL
-                .iter()
-                .map(|s| {
-                    (
-                        *s,
-                        statuses
-                            .get(s.name())
-                            .cloned()
-                            .unwrap_or_else(|| s.name().to_string()),
-                    )
-                })
-                .collect(),
-        }
-    }
-
     pub fn identity() -> StatusTable {
-        StatusTable::from_config(&Default::default())
+        StatusTable
     }
 
-    pub fn tracker_name(&self, status: Status) -> &str {
-        self.pairs
-            .iter()
-            .find(|(s, _)| *s == status)
-            .map(|(_, n)| n.as_str())
-            .unwrap_or_else(|| status.name())
+    pub fn tracker_name(&self, status: Status) -> &'static str {
+        status.name()
     }
 
+    /// The canonical status a tracker status names, by its exact name.
     pub fn canonical(&self, tracker_name: &str) -> Option<Status> {
-        self.pairs
-            .iter()
-            .find(|(_, n)| n.eq_ignore_ascii_case(tracker_name))
-            .map(|(s, _)| *s)
+        Status::from_name(tracker_name)
     }
 
-    /// Canonical statuses whose tracker name the team lacks.
+    /// Canonical statuses the team lacks, by their exact name.
     pub fn missing(&self, names: &[String]) -> Vec<Status> {
-        self.pairs
-            .iter()
-            .filter(|(_, n)| !names.iter().any(|x| x.eq_ignore_ascii_case(n)))
-            .map(|(s, _)| *s)
+        Status::ALL
+            .into_iter()
+            .filter(|s| !names.iter().any(|n| n == s.name()))
             .collect()
     }
 }
@@ -248,16 +303,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_status_table_maps_both_ways() {
-        let mut map = std::collections::BTreeMap::new();
-        map.insert("To Deploy".to_string(), "To deploy".to_string());
-        let t = StatusTable::from_config(&map);
-        assert_eq!(t.tracker_name(Status::ToDeploy), "To deploy");
-        assert_eq!(t.tracker_name(Status::Done), "Done");
-        assert_eq!(t.canonical("to deploy"), Some(Status::ToDeploy));
+    fn the_status_table_is_the_identity_by_exact_name() {
+        let t = StatusTable::identity();
+        assert_eq!(t.tracker_name(Status::ToDeploy), "To Deploy");
+        assert_eq!(t.canonical("To Deploy"), Some(Status::ToDeploy));
+        assert_eq!(t.canonical("To deploy"), None);
         assert_eq!(t.canonical("Shipped"), None);
         let missing = t.missing(&["Done".into(), "To deploy".into()]);
         assert!(missing.contains(&Status::Triage));
-        assert!(!missing.contains(&Status::ToDeploy));
+        assert!(missing.contains(&Status::ToDeploy));
+        assert!(!missing.contains(&Status::Done));
     }
 }
