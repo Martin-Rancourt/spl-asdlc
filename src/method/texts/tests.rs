@@ -899,3 +899,33 @@ fn a_release_with_no_qa_angle_says_so_in_its_texts() {
         .contains("No QA angle")
     );
 }
+
+#[test]
+fn an_identity_marker_is_read_hidden_or_visible_and_never_a_fact_marker() {
+    let gate = gate_fix_marker("acme-v1.2.0-rc.1");
+    let body = format!("{gate}\n\n## Goal\nMake it green.");
+    assert_eq!(identity_marker(&body).as_deref(), Some(gate.as_str()));
+    assert_eq!(
+        identity_marker(&visible_markers(&body)).as_deref(),
+        Some(gate.as_str())
+    );
+    let pr = pr_ticket_marker("https://github.com/acme/app/pull/7");
+    assert_eq!(
+        identity_marker(&format!("text\n{pr}")).as_deref(),
+        Some(pr.as_str())
+    );
+    // Facts about an item, never its identity.
+    for fact in [
+        marker("gate-fix-closed", &[("candidate", "c1"), ("green", "c2")]),
+        marker("candidate", &[("tag", "c1")]),
+        crate::method::release::note::START.to_string(),
+        "release_blocker:: ABC-1".to_string(),
+    ] {
+        assert_eq!(identity_marker(&fact), None, "{fact}");
+    }
+    // The identity comment carries it, whole; the restored comment says so
+    // without it.
+    assert!(has_marker(&identity_comment(&gate), &gate));
+    assert!(!has_marker(&marker_restored_comment(), &gate));
+    assert!(identity_comment(&gate).contains(KEEP_MARKER));
+}

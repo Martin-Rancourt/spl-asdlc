@@ -2,7 +2,8 @@
 //! in every item it serves to an agent (BR-ASDLC-015): an agent never
 //! depends on reading the method's repository to know what to do. An item
 //! carries the protocol of the bridge version that created it, and keeps it:
-//! an item found again by its marker is never rewritten.
+//! an item found again by its marker is never rewritten (but for its marker
+//! written back, `crate::tick::identity`).
 //!
 //! A protocol is Markdown with its own headings. It is embedded under the
 //! item's `## Protocol` section with every heading demoted below it, so the
@@ -100,8 +101,9 @@ pub fn section(job: Job, angle: Option<&str>) -> String {
     }
     format!(
         "## Protocol\n\nEmbedded by spl-asdlc {VERSION} when it created this item, and frozen with it: {}. \
-         It is the whole protocol of this job: no file of the method's repository is needed.\n\n{}\n",
+         It is the whole protocol of this job: no file of the method's repository is needed. {}\n\n{}\n",
         sources.join(", "),
+        super::KEEP_MARKER,
         parts
             .iter()
             .map(|p| p.trim())

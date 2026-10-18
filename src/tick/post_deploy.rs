@@ -22,6 +22,7 @@ use crate::method::vocabulary::{Status, post_deploy_label};
 use crate::tracker::{Item, NewItem, Priority};
 
 use super::closure::contract_gate;
+use super::identity;
 use super::merge::for_tracker;
 use super::{Report, Tick};
 
@@ -167,11 +168,15 @@ pub fn ensure_sub_task(t: &Tick, log: &mut ActionLog, report: &mut Report, paren
             return;
         }
     };
-    if children
-        .iter()
-        .any(|c| texts::has_marker(&c.description, &marker))
-    {
-        return;
+    match identity::find(t, log, report, &children, &marker, |c| {
+        texts::has_marker(&c.description, &marker)
+    }) {
+        Ok(found) if !found.is_empty() => return,
+        Ok(_) => {}
+        Err(e) => {
+            t.unreadable(report, &parent.key, e);
+            return;
+        }
     }
     let (title, body) = texts::post_deploy_validation_item(
         &parent.key,
@@ -179,27 +184,22 @@ pub fn ensure_sub_task(t: &Tick, log: &mut ActionLog, report: &mut Report, paren
         &parent.url,
         &t.config.owner.tracker_user,
     );
-    let description = for_tracker(t, &body);
-    t.act(
+    identity::create(
+        t,
         log,
         report,
         &parent.key,
         "create post-deploy validation",
         json!({"parent": parent.key}),
-        || {
-            t.tracker
-                .create_item(&NewItem {
-                    title: title.clone(),
-                    description: description.clone(),
-                    labels: Vec::new(),
-                    status: Status::Ready,
-                    // Production is waiting on it (BR-ASDLC-017).
-                    priority: Some(Priority::Urgent),
-                    assignee: None,
-                    parent: Some(parent.key.clone()),
-                })
-                .map(|_| ())
-                .map_err(|e| e.to_string())
+        &NewItem {
+            title,
+            description: for_tracker(t, &body),
+            labels: Vec::new(),
+            status: Status::Ready,
+            // Production is waiting on it (BR-ASDLC-017).
+            priority: Some(Priority::Urgent),
+            assignee: None,
+            parent: Some(parent.key.clone()),
         },
     );
 }

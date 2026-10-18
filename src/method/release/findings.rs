@@ -157,7 +157,8 @@ pub fn finding_ticket(
          ## Non-goals\n- Anything the finding does not name.\n\n\
          ## Acceptance criteria\n{criteria}\n\n\
          ## Business rules\n{ABSENCE_DECLARATION}\n\n\
-         ## Context\n- Angle PR: {angle_pr_url}\n- Report: `{report_path}`, finding `{id}`\n\n{marker}",
+         ## Context\n- Angle PR: {angle_pr_url}\n- Report: `{report_path}`, finding `{id}`\n- {keep}\n\n{marker}",
+        keep = crate::method::texts::KEEP_MARKER,
         id = code(&finding.id),
         criteria = criteria.join("\n"),
         marker = finding_marker(release, candidate, angle, &finding.id),

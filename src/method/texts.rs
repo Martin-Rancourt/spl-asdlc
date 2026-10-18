@@ -126,6 +126,47 @@ fn marked_item(description: &str) -> Option<BridgeItem> {
     }
 }
 
+// ---- the identity of the bridge's items ----
+
+/// The kinds of marker that name an item the bridge created: its identity,
+/// never a fact about it.
+static IDENTITY_MARKER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"spl-asdlc:(release|angle|consolidation|gate-fix|finding|pr-ticket|post-deploy-validation)((?: [a-z]+=[^\s`>]+)*)(?:[\s`]|$)",
+    )
+    .unwrap()
+});
+
+/// The identity marker an item's description carries, hidden form (what
+/// [`marker`] writes), hidden or visible in the text.
+pub fn identity_marker(description: &str) -> Option<String> {
+    IDENTITY_MARKER
+        .captures(description)
+        .map(|c| format!("<!-- spl-asdlc:{}{} -->", &c[1], &c[2]))
+}
+
+/// What every item the bridge creates asks of whoever edits it.
+pub const KEEP_MARKER: &str = "When you edit this description, ticking a box included, change only what you mean to: \
+     keep the bridge's `spl-asdlc` marker line, by which it finds this item.";
+
+/// The comment the bridge posts on an item it has just created: its marker,
+/// kept where agents do not edit, should the description lose it.
+pub fn identity_comment(marker: &str) -> String {
+    format!(
+        "The bridge created this item and finds it by the marker below, kept here as well as in the description. \
+         {KEEP_MARKER}\n\n{marker}"
+    )
+}
+
+/// The comment of the bridge writing back the marker an edit removed from
+/// the description.
+pub fn marker_restored_comment() -> String {
+    format!(
+        "The bridge wrote its marker back at the top of the description: an edit had removed it, and the bridge found \
+         this item by its identity comment. {KEEP_MARKER}"
+    )
+}
+
 // ---- the release item ----
 
 pub fn release_title(product: &str, version: &str) -> String {
@@ -371,8 +412,10 @@ pub fn pr_ticket(number: u64, title: &str, author: &str, pr_url: &str) -> (Strin
          opened this one so the PR is reviewed, merged, released and deployed like any other.\n\n\
          ## Non-goals\n- Anything beyond the PR's diff.\n\n\
          ## Acceptance criteria\n- [x] The PR's change is reviewed and merged with its checks green.\n\n\
-         ## Business rules\n{absence}",
+         ## Business rules\n{absence}\n\n\
+         ## Context\n- {keep}",
         marker = pr_ticket_marker(pr_url),
+        keep = KEEP_MARKER,
         author = inert(author),
         absence = crate::method::business_rules::ABSENCE_DECLARATION,
     );
@@ -471,8 +514,9 @@ pub fn gate_fix_ticket(f: &RedGateFacts) -> (String, String) {
          - This ticket follows the flow of any ticket: To Deploy at its fix's merge, Done at the release's \
          closure. The gate of the next candidate is the verification: when it is green and no PR of this ticket \
          was merged yet, the bridge closes it (Done, with a comment naming that candidate); when it is red, the \
-         bridge opens a new gate-fix ticket for that candidate.",
+         bridge opens a new gate-fix ticket for that candidate.\n- {keep}",
         marker = gate_fix_marker(f.candidate),
+        keep = KEEP_MARKER,
         branch = f.branch,
         candidate = code(f.candidate),
         conclusion = code(f.conclusion),
@@ -542,8 +586,9 @@ pub fn post_deploy_validation_item(
          - [ ] Every `## Post deploy` box of {parent} is either checked, once its check was verified in production, or \
          named in a comment here as a check you could not verify, with this sub-task reassigned to the owner (`{owner}`).\n\n\
          ## Business rules\n{absence}\n\n\
-         ## Context\n- Parent: {parent}\n- The owner: `{owner}`",
+         ## Context\n- Parent: {parent}\n- The owner: `{owner}`\n- {keep}",
         marker = post_deploy_validation_marker(parent),
+        keep = KEEP_MARKER,
         owner = inert(owner),
         absence = crate::method::business_rules::ABSENCE_DECLARATION,
     );

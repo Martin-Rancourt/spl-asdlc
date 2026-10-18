@@ -1050,6 +1050,44 @@ fn a_ticket_opened_before_whose_link_was_lost_is_linked_again_not_opened_twice()
 }
 
 #[test]
+fn a_ticket_whose_link_and_marker_were_lost_is_found_by_its_comment_not_opened_twice() {
+    let mut w = World::new();
+    w.config.review.ticketless_authors = vec!["dependabot".into()];
+    let pr = app_pr(7, "dependabot");
+    let marker = texts::pr_ticket_marker(&pr.url);
+    let (title, description) = texts::pr_ticket(7, &pr.title, &bot("dependabot"), &pr.url);
+    // An agent rewrote its description without the marker line; the bridge's
+    // identity comment stays.
+    let edited: String = description.lines().skip(1).collect::<Vec<_>>().join("\n");
+    assert!(!texts::has_marker(&edited, &marker));
+    w.tracker
+        .seed("ABC-9", &title, &edited, Status::Ready, &["ticketless-pr"]);
+    w.tracker
+        .comment("ABC-9", &texts::identity_comment(&marker))
+        .unwrap();
+    w.open(pr.clone());
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(pr_ticket(&w, &pr).map(|i| i.key), Some("ABC-9".to_string()));
+    assert!(
+        !w.tracker.writes().iter().any(|l| l.starts_with("create")),
+        "{:?}",
+        w.tracker.writes()
+    );
+    assert!(texts::has_marker(
+        &w.tracker.item("ABC-9").description,
+        &marker
+    ));
+    let restored = w
+        .tracker
+        .writes()
+        .iter()
+        .filter(|l| l.as_str() == "describe ABC-9")
+        .count();
+    assert_eq!(restored, 1, "written back once: {:?}", w.tracker.writes());
+}
+
+#[test]
 fn only_the_listed_apps_skip_the_ticket_and_never_a_human_with_their_login() {
     let mut w = World::new();
     w.config.review.ticketless_authors = vec!["dependabot".into()];

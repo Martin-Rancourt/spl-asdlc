@@ -32,6 +32,7 @@ use crate::method::ticket_state::{self, Facts, OpenPr};
 use crate::method::vocabulary::{Status, TICKETLESS_LABEL};
 use crate::tracker::{Item, NewItem, RelationKind};
 
+use super::identity;
 use super::link::{self, Linked};
 use super::{Report, Tick};
 
@@ -1373,17 +1374,17 @@ fn enter_review(
             return;
         }
     };
-    // A child is found by its marker or by its exact title (REQ-REL-048):
-    // a marker an agent edited does not make the item invisible.
-    let existing = |want: &BridgeItem, title: &str| {
-        children
-            .iter()
-            .find(|c| {
+    // A child is found by its marker or by its exact title (REQ-REL-048), or
+    // by its identity comment: a marker an agent edited does not make the
+    // item invisible.
+    let existing =
+        |want: &BridgeItem, marker: &str, title: &str, log: &mut ActionLog, report: &mut Report| {
+            identity::find(t, log, report, &children, marker, |c| {
                 texts::bridge_item(&c.description, c.parent.as_deref()).as_ref() == Some(want)
                     || c.title == title
             })
-            .map(|c| c.key.clone())
-    };
+            .map(|found| found.into_iter().next().map(|c| c.key))
+        };
     // An item found by its marker whose link to the PR failed when it was
     // created is linked again.
     let linked = match t.tracker.items_linked_to_pr(&pr.url) {
@@ -1430,7 +1431,15 @@ fn enter_review(
             notes,
             &plan.reasons,
         );
-        let key = match existing(&want, &title) {
+        let marker = texts::marker("angle", &[("scope", &scope), ("angle", angle)]);
+        let found = match existing(&want, &marker, &title, log, report) {
+            Ok(f) => f,
+            Err(e) => {
+                t.unreadable(report, &object, e);
+                return;
+            }
+        };
+        let key = match found {
             Some(k) => {
                 relink(&k, &format!("{angle} review"), log, report);
                 k
@@ -1463,7 +1472,15 @@ fn enter_review(
         &format!("{} ({})", ticket.key, texts::short(&pr.head_sha)),
         texts::Consolidating::PullRequest,
     );
-    let consolidation = match existing(&want, &title) {
+    let marker = texts::marker("consolidation", &[("scope", &scope)]);
+    let found = match existing(&want, &marker, &title, log, report) {
+        Ok(f) => f,
+        Err(e) => {
+            t.unreadable(report, &object, e);
+            return;
+        }
+    };
+    let consolidation = match found {
         Some(k) => {
             relink(&k, "consolidation", log, report);
             k
@@ -1569,25 +1586,21 @@ fn create(
     assignee: Option<crate::tracker::User>,
     pr_url: &str,
 ) -> Option<String> {
-    let body = for_tracker(t, body);
-    let item = t.act(
+    let item = identity::create(
+        t,
         log,
         report,
         object,
         &format!("create \"{title}\""),
         json!({"parent": parent}),
-        || {
-            t.tracker
-                .create_item(&NewItem {
-                    title: title.to_string(),
-                    description: body.clone(),
-                    labels: Vec::new(),
-                    status: Status::Ready,
-                    priority: None,
-                    assignee: assignee.clone(),
-                    parent: Some(parent.to_string()),
-                })
-                .map_err(|e| e.to_string())
+        &NewItem {
+            title: title.to_string(),
+            description: for_tracker(t, body),
+            labels: Vec::new(),
+            status: Status::Ready,
+            priority: None,
+            assignee,
+            parent: Some(parent.to_string()),
         },
     )?;
     t.act(
@@ -1633,6 +1646,34 @@ fn open_pr_ticket(t: &Tick, log: &mut ActionLog, report: &mut Report, pr: &PullR
             return;
         }
     };
+    // None found by its description: one whose description lost the marker
+    // is found by its identity comment, among the open items of the label
+    // whose description carries no marker of the bridge's.
+    let opened = if opened.is_empty() {
+        let open: Vec<Item> = match t.tracker.list_by_label(TICKETLESS_LABEL) {
+            Ok(items) => items
+                .into_iter()
+                .filter(|i| !i.archived && !i.state.is_resolved())
+                .collect(),
+            Err(e) => {
+                t.unreadable(
+                    report,
+                    &object,
+                    format!("the items labelled {TICKETLESS_LABEL}: {e}"),
+                );
+                return;
+            }
+        };
+        match identity::find(t, log, report, &open, &marker, |_| false) {
+            Ok(found) => found,
+            Err(e) => {
+                t.unreadable(report, &object, e);
+                return;
+            }
+        }
+    } else {
+        opened
+    };
     if opened.len() > 1 {
         let keys: Vec<&str> = opened.iter().map(|i| i.key.as_str()).collect();
         t.unreadable(
@@ -1665,24 +1706,21 @@ fn open_pr_ticket(t: &Tick, log: &mut ActionLog, report: &mut Report, pr: &PullR
             }
             let author = pr.author.as_ref().map(|a| a.login.as_str()).unwrap_or("");
             let (title, description) = texts::pr_ticket(pr.number, &pr.title, author, &pr.url);
-            let created = t.act(
+            let created = identity::create(
+                t,
                 log,
                 report,
                 &object,
                 "open ticket",
                 json!({"pr": pr.url, "author": author}),
-                || {
-                    t.tracker
-                        .create_item(&NewItem {
-                            title: title.clone(),
-                            description: for_tracker(t, &description),
-                            labels: vec![TICKETLESS_LABEL.to_string()],
-                            status: Status::Ready,
-                            priority: None,
-                            assignee: None,
-                            parent: None,
-                        })
-                        .map_err(|e| e.to_string())
+                &NewItem {
+                    title,
+                    description: for_tracker(t, &description),
+                    labels: vec![TICKETLESS_LABEL.to_string()],
+                    status: Status::Ready,
+                    priority: None,
+                    assignee: None,
+                    parent: None,
                 },
             );
             match created {
