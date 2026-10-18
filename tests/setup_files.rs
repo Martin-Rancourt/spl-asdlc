@@ -203,6 +203,105 @@ fn an_unedited_business_rules_placeholder_is_read_as_a_rule_never_as_none() {
     assert!(business_rules::new_rule_statement(&text).is_some());
 }
 
+// ---- the process page and the agent file (BR-ASDLC-026..028) ----
+
+const PROCESS: &str = "docs/agents/process.md";
+const AGENTS: &str = "docs/setup/templates/AGENTS.md";
+
+#[test]
+fn the_agent_file_template_points_to_the_process_page_and_lets_it_win() {
+    let agents = read(AGENTS);
+    assert!(agents.contains("`.spl-asdlc/process.md`"), "{agents}");
+    assert!(agents.contains("never edited here"), "{agents}");
+    assert!(agents.contains("the page wins"), "{agents}");
+    assert!(
+        agents.contains("## This project"),
+        "room for the project's own instructions"
+    );
+    // The page says where it lives, that it is never edited, and that it
+    // wins over the agent file.
+    let page = read(PROCESS);
+    for said in [
+        "`.spl-asdlc/process.md`",
+        "Never edit it",
+        "`AGENTS.md`",
+        "this page wins",
+    ] {
+        assert!(page.contains(said), "{PROCESS} says {said:?}");
+    }
+    // The setup says how to install and refresh it, from the pinned ref.
+    let setup = read("docs/setup/repository.md");
+    assert!(setup.contains("**The process page**"), "repository.md");
+    assert!(
+        setup.contains("raw.githubusercontent.com/<owner>/spl-asdlc/v1/docs/agents/process.md"),
+        "repository.md gives the command"
+    );
+    assert!(setup.contains("templates/AGENTS.md"), "repository.md");
+}
+
+#[test]
+fn the_process_page_names_every_optional_step_by_its_configuration_key() {
+    let page = read(PROCESS);
+    assert!(page.contains("read `.spl-asdlc/config.toml`"), "{PROCESS}");
+    assert!(page.contains("skip the steps it leaves out"), "{PROCESS}");
+    // Each optional step of the template, by the keys that add it.
+    for key in ["[[review.angles]]", "[[release.angles]]", "angles = []"] {
+        assert!(page.contains(key), "{PROCESS} names {key}");
+    }
+    let template = read(TOML);
+    for key in ["[[review.angles]]", "[[release.angles]]"] {
+        assert!(template.contains(key), "{TOML} names {key}");
+    }
+    // The page is the method's: the bridge's items carry the other
+    // protocols, the page points to them by their section.
+    assert!(page.contains("`## Protocol`"), "{PROCESS}");
+}
+
+/// Every Markdown and YAML file under `dir`, recursively.
+fn texts_under(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+    for e in std::fs::read_dir(dir).unwrap().flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            texts_under(&p, out);
+        } else if matches!(
+            p.extension().and_then(|x| x.to_str()),
+            Some("md" | "yml" | "toml")
+        ) {
+            out.push(p);
+        }
+    }
+}
+
+#[test]
+fn no_page_of_the_method_speaks_of_flows_or_levels() {
+    // One procedure (BR-ASDLC-027): a configuration enables steps, it never
+    // picks a flow, a mode or a level.
+    let mut files = vec![root().join("README.md")];
+    for dir in ["docs", ".github/workflows"] {
+        texts_under(&root().join(dir), &mut files);
+    }
+    let mut found = Vec::new();
+    for f in &files {
+        let text = std::fs::read_to_string(f).unwrap().to_lowercase();
+        for kind in ["light", "standard", "full", "heavy"] {
+            for what in ["flow", "mode", "level"] {
+                let phrase = format!("{kind} {what}");
+                if text.contains(&phrase) {
+                    found.push(format!("{}: {phrase}", f.display()));
+                }
+            }
+            let bold = format!("**{kind}**");
+            if text.contains(&bold) {
+                found.push(format!("{}: {bold}", f.display()));
+            }
+        }
+        if text.contains("flux") {
+            found.push(format!("{}: flux", f.display()));
+        }
+    }
+    assert!(found.is_empty(), "{found:#?}");
+}
+
 // ---- this repository's own files ----
 
 #[test]

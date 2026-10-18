@@ -9,9 +9,12 @@ Agents write the code. A deterministic program, **the bridge**, keeps the tracke
 Everything the method needs in a repository lives in one folder, `.spl-asdlc/`:
 - `config.toml`, the project's configuration;
 - `business-rules/`, one file per rule;
-- `qa/`, the reports of release QA.
+- `qa/`, the reports of release QA;
+- `process.md`, the procedure every agent follows, copied from the method at the version the project's workflows pin and never edited in the project (`docs/agents/process.md`).
 
-The rest of the repository is organised as the project likes.
+The rest of the repository is organised as the project likes. Its agent file, `AGENTS.md`, points to `process.md` and adds the project's own instructions around it; on a conflict, the page wins.
+
+There is one procedure. A project's configuration says which optional steps it has (PR review, release QA), never how a step works: an agent reads the configuration and skips the steps it leaves out.
 
 ## From ticket to To Deploy
 
@@ -40,7 +43,7 @@ flowchart LR
 **In Progress.** Whoever starts the ticket, agent or person, moves it to In Progress. With Livela, the agent's verb ("implement the next ticket") does it.
 
 **In Review.** The ticket moves to In Review as soon as its PR is opened.
-- CI runs first: the project's own checks, plus the method's PR-title and guard checks, gathered in one `required-check`.
+- CI runs first: the project's own checks, plus the method's PR-title and guard checks, gathered in one `required-check`. The guards also refuse a PR whose `.spl-asdlc/process.md` is not the page of the pinned version.
 - Once CI is green, the configured reviews start, if any (below).
 - The author ticks the boxes the PR delivers.
 
@@ -127,7 +130,7 @@ Every command is in `docs/setup/manual-gestures.md`.
 
 1. Install the GitHub App on the repository and set its two secrets.
 2. Protect `main` with a ruleset that requires `required-check`, with the App allowed to bypass it.
-3. Copy the example workflow callers from `docs/setup/examples/`.
+3. Copy the example workflow callers from `docs/setup/examples/`, then copy `docs/agents/process.md` of the version they pin to `.spl-asdlc/process.md`, and the agent file template to `AGENTS.md`. Each update of the callers' version refreshes the page in the same PR.
 4. Copy the configuration template to `.spl-asdlc/config.toml` and adapt it. The installation's identities (the repository, the tracker team, the people) go in it too, or, for a repository that must carry no names (a public one), in `.spl-asdlc/config.instance.toml` on the bridge's host only: list that file in `.gitignore`, so it is never committed.
 5. Run the bridge, and check the setup with `spl-asdlc doctor`. With Livela as the tracker, Livela runs the bridge itself: there is nothing to schedule. With another tracker, run the bridge on a timer, at the interval the host chooses.
 
