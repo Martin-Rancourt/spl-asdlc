@@ -67,6 +67,7 @@ pub(super) struct RawRelease {
     pub coordinator_assignee: Option<String>,
     pub fix_assignee: Option<String>,
     pub escalation_label: Option<String>,
+    pub hold_label: Option<String>,
     pub auto_candidate: Option<bool>,
     pub cut_workflow: Option<String>,
     pub gate_workflow: Option<String>,

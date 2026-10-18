@@ -118,6 +118,8 @@ The bridge automates; it never owns a step.
 | Retract a release that deployed nothing | `spl-asdlc release retract vX.Y.Z` when the publication's verification refused it: the release and its tag are deleted, and the next candidate takes `vX.Y.Z`. The bridge does it at its next pass; the command refuses when a deploy or a merge back ran. |
 | Fix a failing candidate (code, tests, CI) | Open a PR to the release branch, merge it, then cut the next candidate (`candidate` on the release branch). The merge back brings the fix to `main`. |
 | Stop a cycle | `spl-asdlc release abandon`. |
+| Pause the bridge for a project | Set the repository variable `SPL_ASDLC_PAUSED` to `true` in GitHub. The bridge writes nothing for the repository, but one comment on the release issue of a cycle in flight; unset or `false`, it acts again. |
+| Hold a release's GO | Put the label `hold` (`release.hold_label`) on the release issue in the tracker. The bridge keeps merging PRs and moving tickets, but neither tags nor publishes the release, and `release status` says the GO is held. Remove the label to let the GO be computed again. |
 
 Every command is in `docs/setup/manual-gestures.md`.
 

@@ -50,7 +50,7 @@ pub fn cycle(t: &Tick) -> Result<Cycle, String> {
 /// What `release status` says: the cycle in flight and its GO, or that no
 /// cycle is in flight because the newest candidate's cycle closed.
 pub enum CycleStatus {
-    InFlight(Box<Cycle>, GoDecision),
+    InFlight(Box<Cycle>, Box<GoDecision>),
     /// The newest candidate's release is published and its release item
     /// closed: the cycle is over.
     Over {
@@ -67,7 +67,7 @@ pub fn release_status(t: &Tick) -> Result<CycleStatus, String> {
         return Ok(CycleStatus::Over { release_tag, item });
     }
     let (cycle, decision) = status(t)?;
-    Ok(CycleStatus::InFlight(Box::new(cycle), decision))
+    Ok(CycleStatus::InFlight(Box::new(cycle), Box::new(decision)))
 }
 
 /// The release tag and release item of the newest candidate's cycle when it

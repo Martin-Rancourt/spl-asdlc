@@ -25,6 +25,9 @@ pub trait GitHub {
     /// Under which name the bridge writes.
     fn identity(&self) -> Read<Identity>;
     fn default_branch(&self, repo: &RepoSlug) -> Read<String>;
+    /// The repository variable `name` (GitHub Actions variables);
+    /// `NotFound` when the repository has none of that name.
+    fn variable(&self, repo: &RepoSlug, name: &str) -> Read<Variable>;
 
     // ---- refs and history ----
 

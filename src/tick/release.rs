@@ -2123,6 +2123,13 @@ pub fn decide(
         // Whose approval counts is the owner's to settle (`.spl-asdlc/open-points.md` #3): never given.
         crate::config::GoPolicy::Human => Policy::Human { approved: None },
     };
+    // A person holds the GO with a label on the release item: merges and
+    // ticket moves go on, the release is neither tagged nor published.
+    let held = item
+        .labels
+        .iter()
+        .find(|l| l.eq_ignore_ascii_case(&release.hold_label))
+        .cloned();
     let facts = GoFacts {
         release: item.key.clone(),
         gate_green,
@@ -2133,6 +2140,7 @@ pub fn decide(
         fix_gaps: Vec::new(),
         tip_gaps,
         retracted,
+        held,
         policy,
     };
     Some(go::evaluate(&facts))

@@ -760,6 +760,23 @@ impl GitHub for RestGitHub {
             .ok_or_else(|| ReadError::unreadable(what, "no default branch in the answer"))
     }
 
+    fn variable(&self, repo: &RepoSlug, name: &str) -> Read<Variable> {
+        let what = format!("variable {name} of {repo}");
+        let (v, _) = self.get_json(
+            repo,
+            &what,
+            &format!("/repos/{repo}/actions/variables/{}", encode(name, false)),
+        )?;
+        let value = v["value"]
+            .as_str()
+            .ok_or_else(|| ReadError::unreadable(&what, "no value in the answer"))?;
+        Ok(Variable {
+            name: str_of(&v, "name"),
+            value: value.to_string(),
+            updated_at: opt_str(&v, "updated_at"),
+        })
+    }
+
     fn branches(&self, repo: &RepoSlug, prefix: &str) -> Read<Vec<GitRef>> {
         let what = format!("branches {prefix}* of {repo}");
         let items = self.get_pages(

@@ -53,6 +53,9 @@ pub struct GoFacts {
     /// The release tag retracted from this candidate, its publication having
     /// failed before deploying: the candidate gets no second GO.
     pub retracted: Option<String>,
+    /// The hold label a person put on the release item: the GO is held,
+    /// whatever the other facts say, until it is removed.
+    pub held: Option<String>,
     pub policy: Policy,
 }
 
@@ -79,6 +82,7 @@ pub struct GoDecision {
     pub fix_gaps: Vec<String>,
     pub tip_gaps: Vec<String>,
     pub retracted: Option<String>,
+    pub held: Option<String>,
     pub policy: Policy,
     /// One English sentence per failing condition; never empty when `go` is false.
     pub reasons: Vec<String>,
@@ -158,6 +162,12 @@ pub fn evaluate(facts: &GoFacts) -> GoDecision {
             "{tag} was retracted from this candidate, its publication having failed before deploying: the next candidate takes it"
         ));
     }
+    if let Some(label) = &facts.held {
+        reasons.push(format!(
+            "the GO is held by the label `{label}` on {}: removing it lets the GO be computed again",
+            facts.release
+        ));
+    }
     match facts.policy {
         Policy::Computed
         | Policy::Human {
@@ -181,6 +191,7 @@ pub fn evaluate(facts: &GoFacts) -> GoDecision {
         fix_gaps,
         tip_gaps,
         retracted: facts.retracted.clone(),
+        held: facts.held.clone(),
         policy: facts.policy,
         reasons,
     }
@@ -214,6 +225,7 @@ impl GoDecision {
             "fix_gaps": self.fix_gaps,
             "tip_gaps": self.tip_gaps,
             "retracted": self.retracted,
+            "held": self.held,
             "owner_approved": match self.policy {
                 Policy::Computed => Value::Null,
                 Policy::Human { approved } => json!(approved),
@@ -273,6 +285,23 @@ mod tests {
             ]
         );
         assert_eq!(d.as_json()["retracted"], "acme-v1.2.0");
+    }
+
+    #[test]
+    fn a_held_release_is_not_a_go_and_says_by_what() {
+        let d = evaluate(&GoFacts {
+            held: Some("hold".into()),
+            ..all_good()
+        });
+        assert!(!d.go);
+        assert_eq!(
+            d.reasons,
+            vec![
+                "the GO is held by the label `hold` on ABC-100: removing it lets the GO be computed again"
+            ]
+        );
+        assert_eq!(d.as_json()["held"], "hold");
+        assert!(evaluate(&all_good()).as_json()["held"].is_null());
     }
 
     #[test]

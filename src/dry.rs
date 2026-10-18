@@ -36,6 +36,9 @@ impl GitHub for DryGitHub<'_> {
     fn default_branch(&self, repo: &RepoSlug) -> Read<String> {
         self.inner.default_branch(repo)
     }
+    fn variable(&self, repo: &RepoSlug, name: &str) -> Read<github::Variable> {
+        self.inner.variable(repo, name)
+    }
     fn branches(&self, repo: &RepoSlug, prefix: &str) -> Read<Vec<github::GitRef>> {
         self.inner.branches(repo, prefix)
     }
