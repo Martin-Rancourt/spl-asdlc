@@ -238,6 +238,16 @@ pub fn parse_rule_file(name: &str, text: &str) -> Result<RuleFile, String> {
     })
 }
 
+/// The body of a rule file's `## Test` (or `## Tests`) section, fences
+/// blanked; empty when it has none.
+pub fn test_section(text: &str) -> String {
+    let lines = markdown::without_fences(text);
+    markdown::sections_of(&lines, |h| field_heading("Test", h))
+        .first()
+        .map(|s| s.body())
+        .unwrap_or_default()
+}
+
 /// The registry's files, read and checked: the rules, and every file that
 /// is not a valid rule with its path and why. The index (`README.md`) and
 /// dot files are skipped.
