@@ -194,6 +194,9 @@ fn pr_review(config: &Config) -> Check {
 enum Need {
     /// A `required_status_checks` rule naming this context.
     Check(&'static str),
+    /// A `required_status_checks` rule naming a check of this job of a
+    /// reusable workflow, `<caller job> / <job>` (or the bare job name).
+    CalledCheck(&'static str),
     /// A rule of this type, described for the report.
     Rule(&'static str, &'static str),
 }
@@ -202,6 +205,10 @@ impl Need {
     fn met_by(self, rulesets: &[&Ruleset]) -> bool {
         rulesets.iter().any(|r| match self {
             Need::Check(c) => r.required_checks.contains(c),
+            Need::CalledCheck(job) => r
+                .required_checks
+                .iter()
+                .any(|c| c == job || c.ends_with(&format!(" / {job}"))),
             Need::Rule(kind, _) => r.rules.contains(kind),
         })
     }
@@ -211,6 +218,7 @@ impl fmt::Display for Need {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Need::Check(c) => write!(f, "the status check `{c}`"),
+            Need::CalledCheck(job) => write!(f, "the status check `… / {job}`"),
             Need::Rule(_, what) => f.write_str(what),
         }
     }
@@ -241,7 +249,10 @@ fn ruleset_checks(config: &Config, default: &str, rulesets: &Read<Vec<Ruleset>>)
         target: "branch",
         refs: vec![format!("refs/heads/{default}")],
         tag_templates: Vec::new(),
-        needs: vec![Need::Check("required-check")],
+        needs: vec![
+            Need::Check("required-check"),
+            Need::CalledCheck(TITLE_CHECK),
+        ],
     }];
     {
         let release = &config.release;
@@ -255,7 +266,10 @@ fn ruleset_checks(config: &Config, default: &str, rulesets: &Read<Vec<Ruleset>>)
                 .map(|stamp| format!("refs/heads/{prefix}{stamp}"))
                 .collect(),
             tag_templates: Vec::new(),
-            needs: vec![Need::Check("required-check")],
+            needs: vec![
+                Need::Check("required-check"),
+                Need::CalledCheck(TITLE_CHECK),
+            ],
         });
         required.push(Required {
             name: "ruleset tags".to_string(),
@@ -604,6 +618,10 @@ fn files(
     out.extend(gate_callers(config, github, repo, rev));
     out
 }
+
+/// The title check's job in `asdlc-pr-title.yml`, required by the default
+/// and release branch rulesets beside `required-check` (BR-ASDLC-024).
+const TITLE_CHECK: &str = "conventional-title";
 
 /// The method checks every project runs on every PR (BR-ASDLC-024).
 const METHOD_CHECKS: [&str; 2] = ["asdlc-pr-guards.yml", "asdlc-pr-title.yml"];
@@ -1696,7 +1714,11 @@ mod tests {
             exclude: Vec::new(),
             rules: rules.iter().map(|r| r.to_string()).collect(),
             required_checks: if rules.contains(&"required_status_checks") {
-                ["required-check".to_string()].into()
+                [
+                    "required-check".to_string(),
+                    "title / conventional-title".to_string(),
+                ]
+                .into()
             } else {
                 Default::default()
             },
@@ -1765,7 +1787,7 @@ mod tests {
         }
         assert_eq!(
             lines[0].to_string(),
-            "ruleset main: ok — the status check `required-check`, enforced by `main`"
+            "ruleset main: ok — the status check `required-check` and the status check `… / conventional-title`, enforced by `main`"
         );
         assert_eq!(
             lines[2].to_string(),
@@ -1796,6 +1818,39 @@ mod tests {
     }
 
     /// The finding of the first install: a `main` ruleset alone said `ok`.
+    #[test]
+    fn a_branch_ruleset_that_does_not_require_the_title_check_is_missing() {
+        let mut r = procedure_rulesets();
+        for rs in r.iter_mut() {
+            rs.required_checks.retain(|c| c == "required-check");
+        }
+        let lines = ruleset_lines(Ok(r));
+        let main = lines.iter().find(|c| c.name == "ruleset main").unwrap();
+        assert_eq!(main.verdict, Verdict::Missing, "{main}");
+        assert!(
+            main.detail
+                .contains("lacks the status check `… / conventional-title`"),
+            "{main}"
+        );
+        // The bare job name counts too, as a check named by its job alone.
+        let mut r = procedure_rulesets();
+        for rs in r.iter_mut().filter(|rs| rs.target == "branch") {
+            rs.required_checks = [
+                "required-check".to_string(),
+                "conventional-title".to_string(),
+            ]
+            .into();
+        }
+        let lines = ruleset_lines(Ok(r));
+        assert!(
+            lines
+                .iter()
+                .filter(|c| c.name.starts_with("ruleset ") && c.name != "ruleset tags")
+                .all(|c| c.verdict == Verdict::Ok),
+            "{lines:#?}"
+        );
+    }
+
     #[test]
     fn the_default_branch_ruleset_alone_leaves_the_others_missing() {
         let mut only_main = procedure_rulesets();

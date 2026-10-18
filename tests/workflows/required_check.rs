@@ -42,12 +42,53 @@ fn the_action_reads_the_draft_state_of_the_pull_request_event() {
     );
 }
 
+/// The needs of the aggregating job. A job named `guards` that ran carries
+/// the outputs of the method's guards, as `asdlc-pr-guards.yml` gives them.
 fn needs(pairs: &[(&str, &str)]) -> String {
     let inner: Vec<String> = pairs
         .iter()
-        .map(|(n, r)| format!("\"{n}\": {{\"result\": \"{r}\", \"outputs\": {{}}}}"))
+        .map(|(n, r)| {
+            let outputs = if *n == "guards" && *r != "skipped" {
+                r#"{"code": "true", "detections": "{}", "skipped": "false"}"#
+            } else {
+                "{}"
+            };
+            format!("\"{n}\": {{\"result\": \"{r}\", \"outputs\": {outputs}}}")
+        })
         .collect();
     format!("{{{}}}", inner.join(", "))
+}
+
+/// BR-ASDLC-024: the method's guards always run. They are found by their
+/// outputs, whatever the caller names their job.
+#[test]
+fn the_methods_guards_are_a_need_and_never_skippable() {
+    // Under another job name, found by their outputs.
+    let n = r#"{"method-guards": {"result": "success", "outputs": {"code": "false", "detections": "{}"}}, "test": {"result": "skipped", "outputs": {}}}"#;
+    assert_eq!(aggregate(n, "test").code, 0);
+    // Declared skippable: refused, even though they ran.
+    let r = aggregate(n, "method-guards, test");
+    assert_eq!(r.code, 1, "{}", r.log);
+    assert!(
+        r.log
+            .contains("may-skip names 'method-guards', the method's guards"),
+        "{}",
+        r.log
+    );
+    // Not among the needs at all: refused.
+    let r = aggregate(&needs(&[("lint", "success"), ("test", "success")]), "");
+    assert_eq!(r.code, 1, "{}", r.log);
+    assert!(
+        r.log.contains("No job of needs ran the method's guards"),
+        "{}",
+        r.log
+    );
+    // Skipped, so no outputs: refused.
+    let r = aggregate(
+        &needs(&[("guards", "skipped"), ("test", "success")]),
+        "guards",
+    );
+    assert_eq!(r.code, 1, "{}", r.log);
 }
 
 #[test]
