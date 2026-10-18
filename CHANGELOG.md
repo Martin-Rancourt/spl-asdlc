@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.3.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.2.0...v1.3.0) (2026-10-18)
+
+
+### Features
+
+* **agents:** one process page, copied into each project and guarded on every PR ([#88](https://github.com/Martin-Rancourt/spl-asdlc/issues/88)) ([56f5045](https://github.com/Martin-Rancourt/spl-asdlc/commit/56f50459d5df72dcf44edc166c38e1c6d10d03a1))
+* **bridge:** angle texts follow the project's pinned spl-asdlc version, and a retired angle is reported (SID-1192) ([#89](https://github.com/Martin-Rancourt/spl-asdlc/issues/89)) ([8b0dfc0](https://github.com/Martin-Rancourt/spl-asdlc/commit/8b0dfc0dba2a6e3872951367c06db7a8661b61b0))
+* **doctor:** check that the tests a business rule cites exist ([#92](https://github.com/Martin-Rancourt/spl-asdlc/issues/92)) ([bdf3297](https://github.com/Martin-Rancourt/spl-asdlc/commit/bdf3297a16522c7e4039c308f32fd20701146f4b))
+* **doctor:** the method checks cannot be turned off, and spl-asdlc's tickets are Done at merge ([#86](https://github.com/Martin-Rancourt/spl-asdlc/issues/86)) ([e3d9a19](https://github.com/Martin-Rancourt/spl-asdlc/commit/e3d9a193545c69a86a24038fc74501cd35ccfcaa))
+
+
+### Bug Fixes
+
+* **release:** finish a closure the next cycle overtook, then leave its item alone ([#87](https://github.com/Martin-Rancourt/spl-asdlc/issues/87)) ([af92acd](https://github.com/Martin-Rancourt/spl-asdlc/commit/af92acdf863218e038d7745a2313d63f092e3782))
+* **required-check:** the method's guards are never skippable, and the rulesets require the title check ([#90](https://github.com/Martin-Rancourt/spl-asdlc/issues/90)) ([6cd7804](https://github.com/Martin-Rancourt/spl-asdlc/commit/6cd780479b9c018e36076e90aa61fdbd5d657b1c))
+
+
+### Documentation
+
+* **brand:** add the &lt;/&gt; mark and the &lt;asdlc /&gt; wordmark ([#79](https://github.com/Martin-Rancourt/spl-asdlc/issues/79)) ([6b6f3f1](https://github.com/Martin-Rancourt/spl-asdlc/commit/6b6f3f1ce81470eb9b4e299d6c251e2891f1a9e3))
+* **development:** how this repository's tickets move, and a CLAUDE.md ([#85](https://github.com/Martin-Rancourt/spl-asdlc/issues/85)) ([4129eb5](https://github.com/Martin-Rancourt/spl-asdlc/commit/4129eb52f03f949cd86627f3f1be583fcc63a206))
+* **method:** fix the spec review's gaps the owner approved ([#91](https://github.com/Martin-Rancourt/spl-asdlc/issues/91)) ([f3f9b5e](https://github.com/Martin-Rancourt/spl-asdlc/commit/f3f9b5e6408d88409516419027c30d765c8c33da))
+
+
+### Tests
+
+* **job:** give each test its own configuration directory ([#93](https://github.com/Martin-Rancourt/spl-asdlc/issues/93)) ([aabb443](https://github.com/Martin-Rancourt/spl-asdlc/commit/aabb443c80b299939451db3ed7316462d66b4000))
+
 ## [1.2.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.1.1...v1.2.0) (2026-10-18)
 
 
