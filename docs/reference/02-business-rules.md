@@ -58,7 +58,7 @@ The method has its own rules, which hold for every project that uses it. They ar
 | SR-008 | The angles of a release QA are configured per project, never a shared constant. |
 | SR-009 | A release QA has a configurable number of RC passes; when they are exhausted with blockers left, a human decides. |
 | SR-010 | Every `Enforced` rule names a test that runs in CI. |
-| SR-011 | A skipped CI step is never read as a success. |
+| SR-011 | A skipped CI step is never read as a success, except a job the caller lists in `required-check`'s `may-skip`; the method's guards may never be listed there. |
 | SR-012 | Every actor that writes to the Git host does so under its own traceable identity. |
 | SR-013 | The contract of a ticket is every checkbox of its description and of its duplicates. |
 | SR-014 | A ticket that can only move forward through a human is assigned to that human, with a hold label and a comment that says what is expected and to whom it returns. |

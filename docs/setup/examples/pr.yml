@@ -2,8 +2,10 @@ name: pr
 
 # Example caller of asdlc-pr-guards.yml and of the required-check action: copy
 # it to .github/workflows/ and replace <owner> and the `make` commands with the
-# project's own. The ruleset requires one context, `required-check`
-# (docs/setup/repository.md); the title check lives in pr-title.yml.
+# project's own. The ruleset requires two contexts, `required-check` and the
+# title check of pr-title.yml (docs/setup/repository.md). `guards` is a need
+# of `required-check` and never in `may-skip`: the action refuses a PR
+# otherwise (BR-ASDLC-024).
 #
 # No path filter: a required check that never reports can never be satisfied
 # (REQ-CI-022). The concurrency key holds the draft state, so the ready run

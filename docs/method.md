@@ -131,7 +131,7 @@ Every command is in `docs/setup/manual-gestures.md`.
 ## Setting a project up
 
 1. Install the GitHub App on the repository and set its two secrets.
-2. Protect `main` with a ruleset that requires `required-check`, with the App allowed to bypass it.
+2. Protect `main` with a ruleset that requires `required-check` and the title check, with the App allowed to bypass it.
 3. Copy the example workflow callers from `docs/setup/examples/`, then copy `docs/agents/process.md` of the version they pin to `.spl-asdlc/process.md`, and the agent file template to `AGENTS.md`. Each update of the callers' version refreshes the page in the same PR.
 4. Copy the configuration template to `.spl-asdlc/config.toml` and adapt it. The installation's identities (the repository, the tracker team, the people) go in it too, or, for a repository that must carry no names (a public one), in `.spl-asdlc/config.instance.toml` on the bridge's host only: list that file in `.gitignore`, so it is never committed.
 5. Run the bridge, and check the setup with `spl-asdlc doctor`. With Livela as the tracker, Livela runs the bridge itself: there is nothing to schedule. With another tracker, run the bridge on a timer, at the interval the host chooses.
