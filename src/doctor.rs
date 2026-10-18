@@ -485,28 +485,40 @@ fn class(p: &[char], c: char) -> Option<(bool, usize)> {
     Some((hit != negated, i + 1))
 }
 
-/// The business-rule registry at `rev`, every file read and checked: each
-/// invalid one is named by its path. Absent is fine: Git keeps no empty
-/// directory, and the first rule creates it.
-fn registry_check(github: &dyn GitHub, repo: &RepoSlug, rev: &str) -> Check {
-    const NAME: &str = "business-rules";
+/// The business-rule registry's files at `rev`, `(path, text)`: `None`
+/// when the directory is absent (Git keeps no empty directory, and the
+/// first rule creates it); an error says what could not be read.
+type RegistryRead = Result<Option<Vec<(String, String)>>, String>;
+
+fn read_registry_files(github: &dyn GitHub, repo: &RepoSlug, rev: &str) -> RegistryRead {
     let dir = business_rules::REGISTRY_DIR;
     let names = match github.dir(repo, dir, rev) {
         Ok(names) => names,
-        Err(e) if e.is_not_found() => {
-            return check(NAME, Verdict::Ok, format!("{dir}/: no rule yet at {rev}"));
-        }
-        Err(e) => return check(NAME, Verdict::Missing, format!("{dir}/: {e}")),
+        Err(e) if e.is_not_found() => return Ok(None),
+        Err(e) => return Err(format!("{dir}/: {e}")),
     };
     let mut files = Vec::new();
     for name in names {
         let path = format!("{dir}/{name}");
         match github.file(repo, &path, rev) {
             Ok(text) => files.push((path, text)),
-            Err(e) => return check(NAME, Verdict::Missing, format!("{path}: {e}")),
+            Err(e) => return Err(format!("{path}: {e}")),
         }
     }
-    let read = business_rules::parse_registry(&files);
+    Ok(Some(files))
+}
+
+/// The business-rule registry at `rev`, every file checked: each invalid
+/// one is named by its path. Absent is fine.
+fn registry_check(registry: &RegistryRead, rev: &str) -> Check {
+    const NAME: &str = "business-rules";
+    let dir = business_rules::REGISTRY_DIR;
+    let files = match registry {
+        Ok(Some(files)) => files,
+        Ok(None) => return check(NAME, Verdict::Ok, format!("{dir}/: no rule yet at {rev}")),
+        Err(e) => return check(NAME, Verdict::Missing, e.clone()),
+    };
+    let read = business_rules::parse_registry(files);
     if read.invalid.is_empty() {
         check(
             NAME,
@@ -524,6 +536,76 @@ fn registry_check(github: &dyn GitHub, repo: &RepoSlug, rev: &str) -> Check {
                 .join("; "),
         )
     }
+}
+
+/// Whether the tests each `Enforced` rule cites exist at `rev` (spec 02 §3,
+/// SR-010; `crate::method::rule_tests`): `invalid` names each cited file
+/// that is absent and each name absent from its file. A name whose file
+/// cannot be located is counted, never a failure. A rule file whose format
+/// is wrong is the `business-rules` line's.
+fn rule_tests_check(
+    registry: &RegistryRead,
+    github: &dyn GitHub,
+    repo: &RepoSlug,
+    rev: &str,
+) -> Check {
+    match registry {
+        Ok(Some(files)) => rule_tests_verdict(files, rev, |path: &str| {
+            match github.file(repo, path, rev) {
+                Ok(text) => Ok(Some(text)),
+                Err(e) if e.is_not_found() => Ok(None),
+                Err(e) => Err(format!("{path}: {e}")),
+            }
+        }),
+        Ok(None) => check(RULE_TESTS, Verdict::Ok, "no business rule"),
+        Err(e) => check(RULE_TESTS, Verdict::Missing, e.clone()),
+    }
+}
+
+const RULE_TESTS: &str = "business-rule tests";
+
+/// The `business-rule tests` line for the registry's `files`, each cited
+/// file read through `read` (`None` when absent).
+fn rule_tests_verdict(
+    files: &[(String, String)],
+    rev: &str,
+    read: impl FnMut(&str) -> Result<Option<String>, String>,
+) -> Check {
+    use crate::method::rule_tests::{Judge, Tally};
+    const NAME: &str = RULE_TESTS;
+    let mut judge = Judge::new(read);
+    let mut tally = Tally::default();
+    let (mut rules, mut enforced) = (0, 0);
+    for (path, text) in files {
+        let Ok(rule) = business_rules::parse_rule_file(path, text) else {
+            continue;
+        };
+        rules += 1;
+        if rule.status != business_rules::RuleStatus::Enforced {
+            continue;
+        }
+        enforced += 1;
+        let section = business_rules::test_section(text);
+        if let Err(e) = judge.rule(&rule.id, &section, rev, &mut tally) {
+            return check(NAME, Verdict::Missing, e);
+        }
+    }
+    if rules == 0 {
+        return check(NAME, Verdict::Ok, "no business rule");
+    }
+    if !tally.problems.is_empty() {
+        return check(NAME, Verdict::Invalid, tally.problems.join("; "));
+    }
+    check(
+        NAME,
+        Verdict::Ok,
+        format!(
+            "{enforced} enforced rule(s): {} name(s) found in {} file(s); {} not located",
+            tally.found,
+            tally.files.len(),
+            tally.not_located
+        ),
+    )
 }
 
 fn files(
@@ -565,7 +647,9 @@ fn files(
         Err(e) => check(crate::config::DEFAULT_PATH, Verdict::Missing, e.to_string()),
     });
     // The PR pass's business-rule guard reads it.
-    out.push(registry_check(github, repo, rev));
+    let registry = read_registry_files(github, repo, rev);
+    out.push(registry_check(&registry, rev));
+    out.push(rule_tests_check(&registry, github, repo, rev));
     let release = &config.release;
     out.push(check(
         "release cycle",
@@ -1479,7 +1563,7 @@ mod tests {
     fn the_registry_check_reads_every_rule_file_and_names_each_invalid_one() {
         let g = FakeGitHub::new();
         let repo = RepoSlug::parse("example-org/acme").unwrap();
-        let checked = || registry_check(&g, &repo, "main");
+        let checked = || registry_check(&read_registry_files(&g, &repo, "main"), "main");
         // No directory at a revision: no rule yet, which is fine.
         let none = checked();
         assert_eq!(none.verdict, Verdict::Ok, "{none}");
@@ -1529,6 +1613,145 @@ mod tests {
             Err(ReadError::unreadable("the listing", "HTTP 502")),
         );
         assert_eq!(checked().verdict, Verdict::Missing);
+    }
+
+    /// A rule file at `main`, its status and Test section given.
+    fn rule_file(id: &str, status: &str, test: &str) -> (String, String) {
+        (
+            format!(".spl-asdlc/business-rules/{id}.md"),
+            format!(
+                "# {id} — A rule.\n\nStatus: {status}\n\n## Rule\nIt holds.\n\n## Evidence\nWhy.\n\n## Test\n\n{test}\n"
+            ),
+        )
+    }
+
+    fn rule_tests_of(g: &FakeGitHub, repo: &RepoSlug) -> Check {
+        rule_tests_check(&read_registry_files(g, repo, "main"), g, repo, "main")
+    }
+
+    #[test]
+    fn the_tests_a_rule_cites_are_found_in_the_files_it_names() {
+        let g = FakeGitHub::new();
+        let repo = RepoSlug::parse("example-org/acme").unwrap();
+        let none = rule_tests_of(&g, &repo);
+        assert_eq!(
+            none.to_string(),
+            "business-rule tests: ok — no business rule"
+        );
+        let put = |(path, text): (String, String)| {
+            g.state
+                .borrow_mut()
+                .files
+                .insert((repo.clone(), "main".into(), path), Ok(text));
+        };
+        let file = |path: &str, text: &str| put((path.into(), text.into()));
+        // A JS project: the file, then the nested names in a list.
+        put(rule_file(
+            "BR-ACME-001",
+            "Enforced",
+            "`apps/webapp/src/app/api/process/__tests__/pdfImportWorker.test.ts`, in the\n\
+             `webapp#test` task of the `build-test` job:\n\n\
+             - `runPdfImportJob > duplicate delivery while a first attempt is still running > refuses the second delivery without calling the provider`",
+        ));
+        file(
+            "apps/webapp/src/app/api/process/__tests__/pdfImportWorker.test.ts",
+            "describe('runPdfImportJob', () => {\n  it('refuses the second delivery without calling the provider', async () => {});\n});\n",
+        );
+        // Rust: a module path, a wildcard, a file then its names, in prose.
+        put(rule_file(
+            "BR-ACME-002",
+            "Enforced",
+            "The flow holds it: `tick::release_tests::a_case`, `method::ticket_state::tests::*`;\n\
+             `tests/workflows/own.rs`: `name_a`, `name_b`, run by the `ci` job.",
+        ));
+        file("src/tick/release_tests.rs", "#[test]\nfn a_case() {}\n");
+        file("src/method/ticket_state.rs", "mod tests {}\n");
+        file("tests/workflows/own.rs", "fn name_a() {}\nfn name_b() {}\n");
+        // Enforced by review, its names nowhere to be located: counted.
+        put(rule_file(
+            "BR-ACME-003",
+            "Enforced",
+            "Enforced by review, not by code. The bridge's side is `tick::tests::a_case_elsewhere`, and `a_bare_name`.",
+        ));
+        // A Proposed rule is not judged.
+        put(rule_file("BR-ACME-004", "Proposed", "`tests/not_yet.rs`"));
+        let ok = rule_tests_of(&g, &repo);
+        assert_eq!(
+            ok.to_string(),
+            "business-rule tests: ok — 3 enforced rule(s): 5 name(s) found in 4 file(s); 2 not located",
+        );
+    }
+
+    #[test]
+    fn a_cited_test_that_is_absent_is_invalid_and_an_unreadable_file_is_missing() {
+        let g = FakeGitHub::new();
+        let repo = RepoSlug::parse("example-org/acme").unwrap();
+        let put = |(path, text): (String, String)| {
+            g.state
+                .borrow_mut()
+                .files
+                .insert((repo.clone(), "main".into(), path), Ok(text));
+        };
+        put(rule_file(
+            "BR-ACME-001",
+            "Enforced",
+            "`tests/workflows/own.rs`: `name_a`, `name_c`; `tick::release_tests::gone_case`",
+        ));
+        put(rule_file(
+            "BR-ACME-002",
+            "Enforced",
+            "`gone_case_too` (`tests/gone.rs`)",
+        ));
+        put(("tests/workflows/own.rs".into(), "fn name_a() {}\n".into()));
+        put((
+            "src/tick/release_tests.rs".into(),
+            "fn a_case() {}\n".into(),
+        ));
+        let bad = rule_tests_of(&g, &repo);
+        assert_eq!(bad.verdict, Verdict::Invalid, "{bad}");
+        assert_eq!(
+            bad.detail,
+            "BR-ACME-001: `name_c` is not in `tests/workflows/own.rs`; \
+             BR-ACME-001: `tick::release_tests::gone_case` is not in `src/tick/release_tests.rs`; \
+             BR-ACME-002: `tests/gone.rs` is absent at main"
+        );
+        // A file that cannot be read concludes nothing.
+        g.state.borrow_mut().files.insert(
+            (repo.clone(), "main".into(), "tests/gone.rs".into()),
+            Err(ReadError::unreadable("tests/gone.rs", "HTTP 502")),
+        );
+        let unread = rule_tests_of(&g, &repo);
+        assert_eq!(unread.verdict, Verdict::Missing, "{unread}");
+        assert!(unread.detail.starts_with("tests/gone.rs: "), "{unread}");
+    }
+
+    /// This repository runs no bridge (BR-ASDLC-023): its own rules are
+    /// held to the check here, read from the working tree.
+    #[test]
+    fn this_repositorys_rules_cite_tests_that_exist() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let dir = root.join(business_rules::REGISTRY_DIR);
+        let mut files: Vec<(String, String)> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .map(|p| {
+                let name = p.file_name().unwrap().to_string_lossy().to_string();
+                (
+                    format!("{}/{name}", business_rules::REGISTRY_DIR),
+                    std::fs::read_to_string(&p).unwrap(),
+                )
+            })
+            .collect();
+        files.sort();
+        let line = rule_tests_verdict(&files, "the working tree", |path: &str| {
+            match std::fs::read_to_string(root.join(path)) {
+                Ok(text) => Ok(Some(text)),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(format!("{path}: {e}")),
+            }
+        });
+        assert_eq!(line.verdict, Verdict::Ok, "{line}");
+        assert!(line.detail.ends_with("; 0 not located"), "{line}");
     }
 
     #[test]

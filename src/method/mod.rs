@@ -11,6 +11,7 @@ pub mod markdown;
 pub mod pin;
 pub mod release;
 pub mod review;
+pub mod rule_tests;
 pub mod texts;
 pub mod ticket_state;
 pub mod vocabulary;
