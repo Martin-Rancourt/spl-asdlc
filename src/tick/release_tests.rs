@@ -552,18 +552,23 @@ impl World {
     /// without a rerun, `failed` named by its evidence pack.
     fn red_settled(&self, id: u64, candidate: &str, sha: &str, failed: &str) {
         self.gate(vec![gate_run(id, candidate, sha, Some("failure"))]);
-        self.reruns(vec![rerun_run(90 + id, sha, "completed")]);
+        self.reruns(vec![rerun_run(90 + id, "completed")]);
         self.suites(&format!(r#"{{"failed":[{failed}],"suites":[]}}"#));
     }
 }
 
-/// A run of the automatic-rerun workflow, triggered by a gate run on `sha`.
-fn rerun_run(id: u64, sha: &str, status: &str) -> WorkflowRun {
+/// The default branch's head commit, which GitHub gives every run of a
+/// `workflow_run` workflow whatever the commit of the run that triggered it.
+const DEFAULT_HEAD: &str = "main-head";
+
+/// A run of the automatic-rerun workflow, triggered by a gate run: as
+/// GitHub lists it, on the default branch's head, not the candidate's.
+fn rerun_run(id: u64, status: &str) -> WorkflowRun {
     WorkflowRun {
         event: "workflow_run".into(),
         status: status.into(),
         conclusion: (status == "completed").then(|| "success".to_string()),
-        ..gate_run(id, CAND, sha, None)
+        ..gate_run(id, "main", DEFAULT_HEAD, None)
     }
 }
 
@@ -637,7 +642,7 @@ fn a_later_candidate_with_a_red_gate_waits_again() {
         gate_run(2, CAND2, "c2", Some("failure")),
         gate_run(1, CAND, "c1", Some("success")),
     ]);
-    w.reruns(vec![rerun_run(92, "c2", "completed")]);
+    w.reruns(vec![rerun_run(92, "completed")]);
     w.suites(r#"{"failed":["tests"]}"#);
     let r = w.tick();
     assert!(r.ok(), "{r:?}");
@@ -2662,12 +2667,12 @@ fn a_red_gate_whose_rerun_may_still_come_opens_nothing_until_it_settled() {
     assert!(r.ok(), "{r:?}");
     assert!(w.gate_fixes().is_empty(), "the rerun may still come");
     // It runs: the rerun it may make is not decided yet.
-    w.reruns(vec![rerun_run(91, "c1", "in_progress")]);
+    w.reruns(vec![rerun_run(91, "in_progress")]);
     let (r, writes) = w.writes_of_a_tick();
     assert!(r.ok(), "{r:?}");
     assert!(writes.is_empty(), "{writes:?}");
     // It reran the gate: the second attempt is pending.
-    w.reruns(vec![rerun_run(91, "c1", "completed")]);
+    w.reruns(vec![rerun_run(91, "completed")]);
     let mut second = gate_run(1, CAND, "c1", None);
     second.attempt = 2;
     w.gate(vec![second.clone()]);
@@ -2679,8 +2684,8 @@ fn a_red_gate_whose_rerun_may_still_come_opens_nothing_until_it_settled() {
     second.conclusion = Some("failure".into());
     w.gate(vec![second]);
     w.reruns(vec![
-        rerun_run(93, "c1", "in_progress"),
-        rerun_run(91, "c1", "completed"),
+        rerun_run(93, "in_progress"),
+        rerun_run(91, "completed"),
     ]);
     let r = w.tick();
     assert!(r.ok(), "{r:?}");
@@ -2749,7 +2754,7 @@ fn a_rerun_still_running_past_the_bound_keeps_the_wait() {
     let w = World::new();
     w.gate(vec![red_completed_at_11_45()]);
     w.suites(r#"{"failed":["tests"]}"#);
-    w.reruns(vec![rerun_run(91, "c1", "in_progress")]);
+    w.reruns(vec![rerun_run(91, "in_progress")]);
     let (r, writes) = w.writes_of_a_tick_at("2026-10-05T13:00:00Z");
     assert!(r.ok(), "{r:?}");
     assert!(
@@ -2763,12 +2768,54 @@ fn a_rerun_still_running_past_the_bound_keeps_the_wait() {
         "{writes:?}"
     );
     // It completed without rerunning: settled, and nothing says it was unseen.
-    w.reruns(vec![rerun_run(91, "c1", "completed")]);
+    w.reruns(vec![rerun_run(91, "completed")]);
     let r = w.tick_at("2026-10-05T13:05:00Z");
     assert!(r.ok(), "{r:?}");
     let fixes = w.gate_fixes();
     assert_eq!(fixes.len(), 1);
     assert!(!fixes[0].description.contains("Automatic rerun:"));
+}
+
+/// A run of the automatic-rerun workflow created `at`.
+fn rerun_run_at(id: u64, status: &str, at: &str) -> WorkflowRun {
+    WorkflowRun {
+        created_at: Timestamp::parse(at),
+        updated_at: Timestamp::parse(at),
+        ..rerun_run(id, status)
+    }
+}
+
+#[test]
+fn a_rerun_decided_on_the_default_branch_head_opens_the_ticket_at_the_next_tick() {
+    let w = World::new();
+    // The gate run completed red at 11:45 on the candidate's commit `c1`.
+    w.gate(vec![red_completed_at_11_45()]);
+    w.suites(r#"{"failed":["tests"]}"#);
+    // Only a rerun run created before it completed: another gate run's.
+    w.reruns(vec![rerun_run_at(80, "completed", "2026-10-05T11:20:00Z")]);
+    let (r, writes) = w.writes_of_a_tick_at("2026-10-05T11:47:00Z");
+    assert!(r.ok(), "{r:?}");
+    assert!(w.gate_fixes().is_empty(), "{writes:?}");
+    // Its own, on the default branch's head, is still deciding: it waits.
+    w.reruns(vec![
+        rerun_run_at(91, "in_progress", "2026-10-05T11:45:04Z"),
+        rerun_run_at(80, "completed", "2026-10-05T11:20:00Z"),
+    ]);
+    let r = w.tick_at("2026-10-05T11:48:00Z");
+    assert!(r.ok(), "{r:?}");
+    assert!(w.gate_fixes().is_empty(), "the rerun is not decided yet");
+    // It decided no rerun: the ticket at the next tick, long before the
+    // 30-minute bound, and nothing says no rerun was seen.
+    w.reruns(vec![
+        rerun_run_at(91, "completed", "2026-10-05T11:45:04Z"),
+        rerun_run_at(80, "completed", "2026-10-05T11:20:00Z"),
+    ]);
+    let r = w.tick_at("2026-10-05T11:49:00Z");
+    assert!(r.ok(), "{r:?}");
+    let fixes = w.gate_fixes();
+    assert_eq!(fixes.len(), 1, "{:?}", w.tracker.writes());
+    assert!(!fixes[0].description.contains("Automatic rerun:"));
+    assert_ne!(DEFAULT_HEAD, "c1");
 }
 
 #[test]
@@ -2812,7 +2859,7 @@ fn an_unreadable_rerun_workflow_opens_nothing_and_says_why() {
 fn a_red_gate_whose_evidence_cannot_be_read_still_opens_its_ticket() {
     let w = World::new();
     w.gate(vec![gate_run(1, CAND, "c1", Some("failure"))]);
-    w.reruns(vec![rerun_run(91, "c1", "completed")]);
+    w.reruns(vec![rerun_run(91, "completed")]);
     w.github.state.borrow_mut().artifact_files.insert(
         (repo(), 7, gate::SUITES_FILE.into()),
         Err(crate::github::ReadError::unreadable(
@@ -2845,7 +2892,7 @@ fn a_red_gate_whose_evidence_cannot_be_read_still_opens_its_ticket() {
     // A run that carries no pack is no better read.
     let w = World::new();
     w.gate(vec![gate_run(1, CAND, "c1", Some("failure"))]);
-    w.reruns(vec![rerun_run(91, "c1", "completed")]);
+    w.reruns(vec![rerun_run(91, "completed")]);
     w.github
         .state
         .borrow_mut()
@@ -2952,10 +2999,7 @@ fn a_still_red_next_gate_opens_a_new_gate_fix_ticket_for_its_candidate() {
         gate_run(2, CAND2, "c2", Some("failure")),
         gate_run(1, CAND, "c1", Some("failure")),
     ]);
-    w.reruns(vec![
-        rerun_run(91, "c1", "completed"),
-        rerun_run(92, "c2", "completed"),
-    ]);
+    w.reruns(vec![rerun_run(91, "completed"), rerun_run(92, "completed")]);
     let r = w.tick();
     assert!(r.ok(), "{r:?}");
     let fixes = w.gate_fixes();

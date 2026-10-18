@@ -1322,13 +1322,16 @@ fn gate_fix(
         }
     }
     // The rerun workflow first, the gate again after it: a rerun its
-    // completed run made is then seen on the gate run.
+    // completed run made is then seen on the gate run. Not filtered by the
+    // candidate's commit: GitHub runs a `workflow_run` workflow on the
+    // default branch's head, so `red_gate` matches its runs to the gate run
+    // by when they were created (SID-1159).
     let rerun_workflow = &release.gate_rerun_workflow;
     let reruns = match t.github.workflow_runs(
         &t.repo,
         rerun_workflow,
         None,
-        Some(&c.sha),
+        None,
         Some("workflow_run"),
     ) {
         Ok(r) => r,
