@@ -13,11 +13,11 @@
 # nothing falls back to a default shape. No secret ever goes here: a channel's
 # credentials are `env:<VARIABLE>` references resolved on the bridge's host.
 #
-# This is the light configuration: tickets, PRs, CI, the bridge and the
+# This is the configuration with no optional step: tickets, PRs, CI, the bridge and the
 # release cycle, with no PR review (a PR merges on its CI) and no release QA
 # angle (a release's GO rests on its CI). Two layers add the rest, each where
 # its section shows it, commented: adding one is an edit of this file, with
-# no migration (docs/setup/README.md, "Start light, add layers").
+# no migration (docs/setup/README.md, "Optional steps").
 #
 # 1. PR review (docs/reference/04-pr-review.md), under [review]: remove
 #    `angles = []` there, uncomment `coordinators`, and uncomment or write

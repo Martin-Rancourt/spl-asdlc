@@ -61,4 +61,4 @@ The method has its own rules, which hold for every project that uses it. They ar
 | SR-011 | A skipped CI step is never read as a success, except a job the caller lists in `required-check`'s `may-skip`; the method's guards may never be listed there. |
 | SR-012 | Every actor that writes to the Git host does so under its own traceable identity. |
 | SR-013 | The contract of a ticket is every checkbox of its description and of its duplicates. |
-| SR-014 | A ticket that can only move forward through a human is assigned to that human, with a hold label and a comment that says what is expected and to whom it returns. |
+| SR-014 | A ticket that can only move forward through a human is assigned to that human, with the escalation label (`release.escalation_label`) and a comment that says what is expected and to whom it returns. |

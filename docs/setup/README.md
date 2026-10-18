@@ -9,7 +9,7 @@ Four steps, in this order. `spl-asdlc doctor` verifies every point below and nam
 
 Once it runs, any step of the flow can be taken over by hand: `manual-gestures.md` gives each step's command or click, what the bridge does at its next tick, and the commands an AI session needs permission for to take them on the owner's go.
 
-## Start light, add layers
+## Optional steps
 
 The method has one procedure (`docs/agents/process.md`, BR-ASDLC-027). A project's configuration only says which of its optional steps are present: PR review, and QA angles in the release cycle. A step that is absent is skipped; no configuration changes how a present step works. The release cycle itself is not optional: every project has one. Each optional step is a few keys in `.spl-asdlc/config.toml`. There is no mode or flow to choose: the configuration's keys are the choice.
 

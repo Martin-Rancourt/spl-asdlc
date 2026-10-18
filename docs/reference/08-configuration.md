@@ -150,7 +150,7 @@ Fail closed: no caller of the method, callers on two refs, or texts that cannot 
 
 **Adding or retiring an angle** is a normal change of the method, a ticket and a PR on spl-asdlc (BR-ASDLC-034). A new angle is available to a project once its pin reaches the version that adds it, and active once the project names it. A retired angle's file is removed, and its key is listed in the library's `## Retired angles` with the version that retired it. A project pinned on an older version keeps the angle. Once its pin reaches that version, `spl-asdlc doctor` reports the angle `invalid` and its items say that the method retired it; the configuration stays valid, so the bridge keeps serving the project while it drops the angle or keeps it as its own, under another key with its notes.
 
-`spl-asdlc doctor` reports `method version` (the pin and where it was read; `missing` without a caller of the method, `invalid` with callers on two refs), `method texts` (whether the texts can be read at the pin with the project's token) and `angle <key>` for each angle the configuration names: the method's angle at the pin, the project's own, or retired.
+A retired angle still named is reported by `doctor`, never by `config check`, which runs offline and reads no pin. `spl-asdlc doctor` reports `method version` (the pin and where it was read; `missing` without a caller of the method, `invalid` with callers on two refs), `method texts` (whether the texts can be read at the pin with the project's token) and `angle <key>` for each angle the configuration names: the method's angle at the pin, the project's own, or retired.
 
 ## The instance overlay
 
