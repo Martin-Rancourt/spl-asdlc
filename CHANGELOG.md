@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.3.0...v1.3.1) (2026-10-20)
+
+
+### Bug Fixes
+
+* **bridge:** a PR held for an incomplete contract is said on its ticket too (SID-1222) ([#94](https://github.com/Martin-Rancourt/spl-asdlc/issues/94)) ([c42e66e](https://github.com/Martin-Rancourt/spl-asdlc/commit/c42e66ead9677868fa983f6d3de96e4a4e72fb2f))
+
 ## [1.3.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.2.0...v1.3.0) (2026-10-18)
 
 
