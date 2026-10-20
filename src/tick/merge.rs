@@ -557,6 +557,28 @@ fn one(
                 ticket.key
             ),
         );
+        // Said on the ticket too, where people and agents look: a PR held
+        // for its contract never waits unseen (SID-1222).
+        say_once_on_item(
+            t,
+            log,
+            report,
+            &ticket.key,
+            "contract-incomplete",
+            &[("pr", &pr.number.to_string()), ("missing", &digest)],
+            &format!(
+                "PR #{} is held: the contract of this ticket is incomplete \
+                 (`docs/reference/01-ticket-contract.md`):\n\n{}\n\nComplete it here; the PR goes on \
+                 at the next tick. `spl-asdlc ticket check {}` says the same.",
+                pr.number,
+                missing
+                    .iter()
+                    .map(|m| format!("- {m}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                ticket.key
+            ),
+        );
         return None;
     }
     if contract::declares_nothing(&ticket.description) {
@@ -2066,6 +2088,44 @@ pub fn say_once(
         }
         Err(e) => {
             t.unreadable(report, &object, format!("the PR's comments: {e}"));
+            false
+        }
+    }
+}
+
+/// Post `text` on the tracker item once per marker; returns whether it was
+/// posted now.
+pub fn say_once_on_item(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    key: &str,
+    kind: &str,
+    fields: &[(&str, &str)],
+    text: &str,
+) -> bool {
+    let marker = texts::marker(kind, fields);
+    match tracker_said(t, key, &marker) {
+        Ok(true) => false,
+        Ok(false) => {
+            let body = for_tracker(t, &format!("{text}\n\n{marker}"));
+            t.act(
+                log,
+                report,
+                key,
+                &format!("comment {kind}"),
+                json!({}),
+                || {
+                    t.tracker
+                        .comment(key, &body)
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
+                },
+            )
+            .is_some()
+        }
+        Err(e) => {
+            t.unreadable(report, key, format!("the item's comments: {e}"));
             false
         }
     }
