@@ -794,6 +794,61 @@ fn an_incomplete_contract_is_said_once_on_the_pr() {
     );
 }
 
+/// SID-1222: the hold is said on the ticket too, once per set of missing
+/// parts, and nothing more once the contract is complete.
+#[test]
+fn an_incomplete_contract_is_said_once_on_the_ticket_too() {
+    let w = World::new();
+    let pr = green(pull_request(7));
+    w.tracker
+        .seed("ABC-1", "A ticket", "## Goal\nx\n", Status::InProgress, &[]);
+    w.tracker.link("ABC-1", &pr.url);
+    w.open(pr);
+    let held = |w: &World| -> Vec<String> {
+        w.tracker
+            .comments("ABC-1")
+            .unwrap()
+            .into_iter()
+            .filter(|c| c.body.contains("PR #7 is held"))
+            .map(|c| c.body)
+            .collect()
+    };
+    w.tick(false);
+    w.tick(false);
+    let said = held(&w);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0].contains("the contract of this ticket is incomplete"),
+        "{}",
+        said[0]
+    );
+    assert!(
+        said[0].contains("spl-asdlc ticket check ABC-1"),
+        "{}",
+        said[0]
+    );
+    // What is missing changes: said again, once.
+    w.tracker
+        .update_description(
+            "ABC-1",
+            "## Goal\nx\n\n## Acceptance criteria\n- [x] done\n",
+        )
+        .unwrap();
+    w.tick(false);
+    w.tick(false);
+    assert_eq!(held(&w).len(), 2, "{:?}", held(&w));
+    // Complete: nothing more is said on the ticket.
+    w.tracker
+        .update_description(
+            "ABC-1",
+            "## Goal\nx\n\n## Acceptance criteria\n- [x] done\n\n## Business rules\nNone.\n",
+        )
+        .unwrap();
+    w.tick(false);
+    w.tick(false);
+    assert_eq!(held(&w).len(), 2, "{:?}", held(&w));
+}
+
 #[test]
 fn a_pr_without_a_ticket_is_told_once_and_left_alone() {
     let w = World::new();
