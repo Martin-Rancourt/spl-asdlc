@@ -69,6 +69,51 @@ fn the_owner_name_on_its_own_is_still_a_hit() {
     assert_eq!(scan(&dir, Some("Acme-Org/spl-asdlc")), 1);
 }
 
+/// The script run as a pull request from a fork sees it under GitHub Actions:
+/// no word list (no secret), a step summary file. Exit code, stdout, summary.
+fn scan_without_words(dir: &Path) -> (i32, String, String) {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/check-no-instance-names.sh");
+    let summary = dir.join("step-summary.md");
+    let out = Command::new("bash")
+        .arg(script)
+        .current_dir(dir)
+        .env_remove("SPL_ASDLC_FORBIDDEN_WORDS")
+        .env_remove("GITHUB_REPOSITORY")
+        .env("GITHUB_ACTIONS", "true")
+        .env("GITHUB_STEP_SUMMARY", &summary)
+        .output()
+        .unwrap();
+    (
+        out.status.code().unwrap(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        std::fs::read_to_string(&summary).unwrap_or_default(),
+    )
+}
+
+#[test]
+fn without_the_word_list_the_forms_pass_and_the_skip_is_annotated() {
+    let dir = repo("fork", &[("Cargo.toml", "maintained by Acme\n")], None);
+    let (code, stdout, summary) = scan_without_words(&dir);
+    assert_eq!(code, 0, "no word list: a word is not looked for");
+    assert!(
+        stdout.contains("::warning title=BR-ASDLC-001::"),
+        "{stdout}"
+    );
+    assert!(
+        summary.contains("only identifier forms were checked"),
+        "{summary}"
+    );
+}
+
+#[test]
+fn without_the_word_list_an_identifier_form_is_still_a_hit() {
+    // Built at run time: the literal home path would be a hit on this file itself.
+    let text = format!("path: /{}/someone/work\n", "home");
+    let dir = repo("fork-form", &[("notes.md", &text)], None);
+    let (code, stdout, _) = scan_without_words(&dir);
+    assert_eq!(code, 1, "{stdout}");
+}
+
 #[test]
 fn without_a_slug_or_with_another_products_nothing_is_allowed() {
     let dir = repo("none", &[("Cargo.toml", SLUG_LINE)], None);
