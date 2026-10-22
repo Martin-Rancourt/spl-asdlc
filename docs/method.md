@@ -101,7 +101,7 @@ flowchart TD
 5. **Publication.** The release starts the project's publish workflow. It checks that the release is the candidate, builds and deploys every target the product has (desktop, mobile, web…), then merges the release branch back into `main`.
 6. **Closure.** The bridge judges each ticket of the release:
    - every box ticked: **Done**;
-   - only boxes under `## Post deploy` left, which can only be verified in production: **Post Deploy**, with an urgent validation sub-task;
+   - only boxes under `## Post deploy` left, which can only be verified in production: **Post Deploy**, with an urgent validation sub-task in Post Deploy assigned to the operator;
    - anything else open: back to **In Progress**.
 
    It closes the release issue, sends the release note and archives what the cycle resolved. From then on, `spl-asdlc release status` says that no cycle is in flight and which release closed the last one.

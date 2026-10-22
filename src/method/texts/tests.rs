@@ -256,8 +256,8 @@ fn the_post_deploy_validation_sub_task_is_a_contract_marked_as_the_bridges() {
     assert!(crate::method::contract::missing_from_contract(&body).is_empty());
     assert!(has_marker(&body, &post_deploy_validation_marker("ABC-5")));
     assert!(!has_marker(&body, &post_deploy_validation_marker("ABC-50")));
-    assert!(body.contains("reassign this sub-task to the owner (`owner-handle`)"));
-    // Not an angle or a consolidation item: every guard of a ticket serves it.
+    assert!(body.contains("operator responsible for this validation (`owner-handle`)"));
+    // Not an angle or a consolidation item: it is an operator action.
     assert_eq!(bridge_item(&body, Some("ABC-5")), None);
 }
 

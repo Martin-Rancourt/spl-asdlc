@@ -39,6 +39,12 @@ fn team(t: &ScriptedTransport) {
         {"id":"s-deploy","name":"To Deploy","type":"completed"},{"id":"s-done","name":"Done","type":"completed"}]}}]}}}"#);
 }
 
+fn team_with_post_deploy(t: &ScriptedTransport) {
+    t.on_body("POST", URL, "teams(filter", 200, r#"{"data":{"teams":{"nodes":[{"id":"team-1","key":"ABC","states":{"nodes":[
+        {"id":"s-ready","name":"Ready","type":"unstarted"},{"id":"s-review","name":"In Review","type":"started"},
+        {"id":"s-deploy","name":"To Deploy","type":"completed"},{"id":"s-post-deploy","name":"Post Deploy","type":"completed"},{"id":"s-done","name":"Done","type":"completed"}]}}]}}}"#);
+}
+
 #[test]
 fn an_item_is_read_with_its_canonical_status_and_kind() {
     let (l, t) = linear();
@@ -394,6 +400,67 @@ fn new_item(parent: Option<&str>) -> NewItem {
         assignee: None,
         parent: parent.map(str::to_string),
     }
+}
+
+#[test]
+fn a_post_deploy_validation_is_created_in_post_deploy_assigned_with_no_label() {
+    let (l, t) = linear();
+    team_with_post_deploy(&t);
+    t.on_body("POST", URL, "issueLabels(filter", 200, r#"{"data":{"issueLabels":{"nodes":[{"id":"l-1","name":"release/acme-v1.2.3","team":{"id":"team-1"}}],"pageInfo":{"hasNextPage":false}}}}"#);
+    t.on_body(
+        "POST",
+        URL,
+        "issue(id: $id) { id identifier",
+        200,
+        &format!(
+            r#"{{"data":{{"issue":{}}}}}"#,
+            issue("ABC-1", "Ready", "unstarted")
+        ),
+    );
+    t.on_body(
+        "POST",
+        URL,
+        "issueCreate",
+        200,
+        &format!(
+            r#"{{"data":{{"issueCreate":{{"success":true,"issue":{}}}}}}}"#,
+            issue("ABC-5", "Post Deploy", "completed")
+        ),
+    );
+    let created = l
+        .create_item(&NewItem {
+            title: "Post-deploy validation — ABC-1: Ship".into(),
+            description: "d".into(),
+            labels: vec![],
+            status: Status::PostDeploy,
+            priority: Some(Priority::Urgent),
+            assignee: Some(User {
+                id: "u-owner".into(),
+                name: "operator".into(),
+            }),
+            parent: Some("ABC-1".into()),
+        })
+        .unwrap();
+    assert_eq!(created.key, "ABC-5");
+    let body = t
+        .bodies()
+        .into_iter()
+        .find(|b| b.contains("issueCreate"))
+        .unwrap();
+    for needle in [
+        r#""stateId":"s-post-deploy""#,
+        r#""labelIds":[]"#,
+        r#""assigneeId":"u-owner""#,
+        r#""parentId":"id-ABC-1""#,
+        r#""priority":1"#,
+    ] {
+        assert!(body.contains(needle), "{needle} in {body}");
+    }
+    assert!(
+        !body.contains("projectId"),
+        "without tracker.project, the team alone: {body}"
+    );
+    assert!(!t.bodies().iter().any(|b| b.contains("projects(")));
 }
 
 #[test]

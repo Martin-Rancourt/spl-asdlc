@@ -1,9 +1,9 @@
 //! Post-deploy validation (`docs/reference/05-release-cycle.md` §11,
 //! BR-ASDLC-002/003). When the closure (or, for a ticket with nothing to
 //! deploy, the merge) moves a ticket to Post Deploy it labels it `post-deploy-validation` and creates one validation sub-task,
-//! unassigned in Ready and urgent (BR-ASDLC-017: production is waiting on
-//! it), that an agent takes: verify the ticket's `## Post deploy` boxes in
-//! production and check them, or hand the sub-task to the owner. At each tick the bridge reads the labelled tickets and moves
+//! assigned to the operator in Post Deploy and urgent (BR-ASDLC-017:
+//! production is waiting on it). The operator verifies the ticket's `## Post
+//! deploy` boxes in production and checks them. At each tick the bridge reads the labelled tickets and moves
 //! to Done each one whose boxes are all checked. No verb: the boxes are the
 //! gesture. The ticket itself is never served: Post Deploy stays a
 //! validation state.
@@ -155,12 +155,27 @@ fn unwatch(t: &Tick, log: &mut ActionLog, report: &mut Report, item: &Item) {
 }
 
 /// The validation sub-task of a ticket in Post Deploy, created once
-/// (BR-ASDLC-003): unassigned, in Ready, urgent (BR-ASDLC-017), under the
+/// (BR-ASDLC-003): assigned to the operator, in Post Deploy, urgent
+/// (BR-ASDLC-017), under the
 /// ticket. One the ticket
 /// already has, in any state, is never created again: a sub-task closed while
 /// boxes remain leaves the ticket waiting in Post Deploy for a human.
 pub fn ensure_sub_task(t: &Tick, log: &mut ActionLog, report: &mut Report, parent: &Item) {
     let marker = texts::post_deploy_validation_marker(&parent.key);
+    let assignee = match t.tracker.user(&t.config.owner.tracker_user) {
+        Ok(user) => user,
+        Err(e) => {
+            t.unreadable(
+                report,
+                &parent.key,
+                format!(
+                    "the post-deploy operator {}: {e}",
+                    t.config.owner.tracker_user
+                ),
+            );
+            return;
+        }
+    };
     let children = match t.tracker.children(&parent.key) {
         Ok(c) => c,
         Err(e) => {
@@ -171,7 +186,12 @@ pub fn ensure_sub_task(t: &Tick, log: &mut ActionLog, report: &mut Report, paren
     match identity::find(t, log, report, &children, &marker, |c| {
         texts::has_marker(&c.description, &marker)
     }) {
-        Ok(found) if !found.is_empty() => return,
+        Ok(found) if !found.is_empty() => {
+            for child in found {
+                reconcile_sub_task(t, log, report, &child, &assignee);
+            }
+            return;
+        }
         Ok(_) => {}
         Err(e) => {
             t.unreadable(report, &parent.key, e);
@@ -195,11 +215,54 @@ pub fn ensure_sub_task(t: &Tick, log: &mut ActionLog, report: &mut Report, paren
             title,
             description: for_tracker(t, &body),
             labels: Vec::new(),
-            status: Status::Ready,
+            status: Status::PostDeploy,
             // Production is waiting on it (BR-ASDLC-017).
             priority: Some(Priority::Urgent),
-            assignee: None,
+            assignee: Some(assignee),
             parent: Some(parent.key.clone()),
         },
     );
+}
+
+/// Bring an open validation sub-task created before SR-015 to its current
+/// shape: in Post Deploy, assigned to the operator. A resolved one is left
+/// alone. The migration is part of the normal pass, so it reaches every open
+/// indexed parent at the next tick and writes nothing afterwards.
+fn reconcile_sub_task(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    child: &Item,
+    operator: &crate::tracker::User,
+) {
+    if child.state.is_resolved() {
+        return;
+    }
+    if child.state.status != Some(Status::PostDeploy) {
+        t.act(
+            log,
+            report,
+            &child.key,
+            "move the validation to Post Deploy, assigned to the operator",
+            json!({}),
+            || {
+                t.tracker
+                    .set_status(&child.key, Status::PostDeploy, Some(Some(operator)))
+                    .map_err(|e| e.to_string())
+            },
+        );
+    } else if child.assignee.as_ref() != Some(operator) {
+        t.act(
+            log,
+            report,
+            &child.key,
+            "assign the validation to the operator",
+            json!({}),
+            || {
+                t.tracker
+                    .assign(&child.key, Some(operator))
+                    .map_err(|e| e.to_string())
+            },
+        );
+    }
 }

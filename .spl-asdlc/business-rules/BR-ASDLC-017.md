@@ -1,10 +1,10 @@
-# BR-ASDLC-017 — A post-deploy validation sub-task is urgent: production is waiting on it.
+# BR-ASDLC-017 — A post-deploy validation is an urgent operator action, not a PM decision.
 
 Status: Enforced
 
 ## Rule
 
-The validation sub-task the bridge creates under a ticket in Post Deploy (BR-ASDLC-003) is created with the canonical priority urgent, which each tracker adapter maps to its own scale (Linear and Livela: 1); a replay that finds it creates nothing (`docs/reference/05-release-cycle.md` §11, `docs/reference/03-vocabulary.md`).
+The validation sub-task the bridge creates under a ticket in Post Deploy (BR-ASDLC-003) is created in Post Deploy, assigned to the operator, with the canonical priority urgent, which each tracker adapter maps to its own scale (Linear and Livela: 1). It has no escalation label: a validation is an action, not a PM decision. A replay that finds it creates nothing (`docs/reference/05-release-cycle.md` §11, `docs/reference/03-vocabulary.md`).
 
 ## Evidence
 
