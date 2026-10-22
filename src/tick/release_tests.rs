@@ -2261,7 +2261,7 @@ fn labelled(w: &World, key: &str) -> bool {
 }
 
 #[test]
-fn the_closure_moves_a_ticket_to_post_deploy_with_one_unassigned_validation_sub_task() {
+fn the_closure_moves_a_ticket_to_post_deploy_with_one_operator_validation_sub_task() {
     let w = closed_with_post_deploy();
     let ticket = w.tracker.item("ABC-5");
     assert_eq!(ticket.state.status, Some(Status::PostDeploy));
@@ -2345,8 +2345,9 @@ fn a_post_deploy_ticket_moves_to_done_at_the_tick_that_finds_every_box_checked()
 }
 
 #[test]
-fn a_lost_creation_answer_is_found_and_the_sub_task_never_created_twice() {
+fn an_open_legacy_validation_is_moved_to_post_deploy_assigned_to_the_operator_and_unblocked() {
     let w = World::new();
+    w.owner_known();
     w.tick();
     w.tracker.seed(
         "ABC-9",
@@ -2368,9 +2369,24 @@ fn a_lost_creation_answer_is_found_and_the_sub_task_never_created_twice() {
         &title,
         &texts::visible_markers(&body),
         Status::Ready,
-        &[],
+        &["blocked-by-PM-decision"],
     );
     w.tracker.state.borrow_mut().set_parent("ABC-10", "ABC-9");
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let task = w.tracker.item("ABC-10");
+    assert_eq!(task.state.status, Some(Status::PostDeploy));
+    assert_eq!(
+        task.assignee.as_ref().map(|u| u.name.as_str()),
+        Some("owner-handle")
+    );
+    assert!(
+        !task
+            .labels
+            .iter()
+            .any(|label| label == "blocked-by-PM-decision"),
+        "a migration removes the escalation label"
+    );
     let before = w.tracker.writes().len();
     let r = w.tick();
     assert!(r.ok(), "{r:?}");

@@ -339,7 +339,7 @@ fn an_item_is_created_with_its_state_labels_parent_and_priority() {
             labels: vec![],
             status: Status::PostDeploy,
             priority: Some(Priority::Urgent),
-            assignee: Some(User { id: "u-owner".into(), name: "Martin".into() }),
+            assignee: Some(User { id: "u-owner".into(), name: "operator".into() }),
             parent: Some("ABC-1".into()),
         })
         .unwrap();

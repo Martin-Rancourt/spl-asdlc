@@ -162,23 +162,6 @@ fn unwatch(t: &Tick, log: &mut ActionLog, report: &mut Report, item: &Item) {
 /// boxes remain leaves the ticket waiting in Post Deploy for a human.
 pub fn ensure_sub_task(t: &Tick, log: &mut ActionLog, report: &mut Report, parent: &Item) {
     let marker = texts::post_deploy_validation_marker(&parent.key);
-    let children = match t.tracker.children(&parent.key) {
-        Ok(c) => c,
-        Err(e) => {
-            t.unreadable(report, &parent.key, format!("its sub-items: {e}"));
-            return;
-        }
-    };
-    match identity::find(t, log, report, &children, &marker, |c| {
-        texts::has_marker(&c.description, &marker)
-    }) {
-        Ok(found) if !found.is_empty() => return,
-        Ok(_) => {}
-        Err(e) => {
-            t.unreadable(report, &parent.key, e);
-            return;
-        }
-    }
     let assignee = match t.tracker.user(&t.config.owner.tracker_user) {
         Ok(user) => user,
         Err(e) => {
@@ -193,6 +176,28 @@ pub fn ensure_sub_task(t: &Tick, log: &mut ActionLog, report: &mut Report, paren
             return;
         }
     };
+    let children = match t.tracker.children(&parent.key) {
+        Ok(c) => c,
+        Err(e) => {
+            t.unreadable(report, &parent.key, format!("its sub-items: {e}"));
+            return;
+        }
+    };
+    match identity::find(t, log, report, &children, &marker, |c| {
+        texts::has_marker(&c.description, &marker)
+    }) {
+        Ok(found) if !found.is_empty() => {
+            for child in found {
+                reconcile_sub_task(t, log, report, &child, &assignee);
+            }
+            return;
+        }
+        Ok(_) => {}
+        Err(e) => {
+            t.unreadable(report, &parent.key, e);
+            return;
+        }
+    }
     let (title, body) = texts::post_deploy_validation_item(
         &parent.key,
         &parent.title,
@@ -217,4 +222,65 @@ pub fn ensure_sub_task(t: &Tick, log: &mut ActionLog, report: &mut Report, paren
             parent: Some(parent.key.clone()),
         },
     );
+}
+
+/// Bring validation sub-tasks created before SR-015 to their current shape.
+/// The migration is deliberately part of the normal pass: it reaches every
+/// open indexed parent on the next tick and remains idempotent afterwards.
+fn reconcile_sub_task(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    child: &Item,
+    operator: &crate::tracker::User,
+) {
+    let reconciled = if child.state.status != Some(Status::PostDeploy) {
+        t.act(
+            log,
+            report,
+            &child.key,
+            "move legacy post-deploy validation to Post Deploy and assign operator",
+            json!({}),
+            || {
+                t.tracker
+                    .set_status(&child.key, Status::PostDeploy, Some(Some(operator)))
+                    .map_err(|e| e.to_string())
+            },
+        )
+        .is_some()
+    } else if child.assignee.as_ref() != Some(operator) {
+        t.act(
+            log,
+            report,
+            &child.key,
+            "assign post-deploy validation to operator",
+            json!({}),
+            || {
+                t.tracker
+                    .assign(&child.key, Some(operator))
+                    .map_err(|e| e.to_string())
+            },
+        )
+        .is_some()
+    } else {
+        true
+    };
+    if reconciled
+        && child.labels
+        .iter()
+        .any(|label| label.eq_ignore_ascii_case("blocked-by-PM-decision"))
+    {
+        t.act(
+            log,
+            report,
+            &child.key,
+            "remove PM-decision label from post-deploy validation",
+            json!({}),
+            || {
+                t.tracker
+                    .remove_label(&child.key, "blocked-by-PM-decision")
+                    .map_err(|e| e.to_string())
+            },
+        );
+    }
 }
