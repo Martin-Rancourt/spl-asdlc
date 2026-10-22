@@ -2271,13 +2271,20 @@ fn the_closure_moves_a_ticket_to_post_deploy_with_one_operator_validation_sub_ta
     assert_eq!(tasks.len(), 1, "{:?}", w.tracker.writes());
     let task = &tasks[0];
     assert_eq!(task.state.status, Some(Status::PostDeploy));
-    assert_eq!(task.assignee.as_ref().map(|u| u.name.as_str()), Some("owner-handle"));
+    assert_eq!(
+        task.assignee.as_ref().map(|u| u.name.as_str()),
+        Some("owner-handle")
+    );
     assert!(
-        !task.labels.iter().any(|label| label == "blocked-by-PM-decision"),
-        "a validation is an action, not a PM decision"
+        task.labels.is_empty(),
+        "a validation is an action, not a PM decision: {:?}",
+        task.labels
     );
     assert!(crate::method::contract::has_contract(&task.description));
-    assert!(task.description.contains("operator responsible for this validation (`owner-handle`)"));
+    assert!(
+        task.description
+            .contains("operator responsible for this validation (`owner-handle`)")
+    );
     let release = w.release_item();
     let closure = w
         .tracker
@@ -2345,7 +2352,7 @@ fn a_post_deploy_ticket_moves_to_done_at_the_tick_that_finds_every_box_checked()
 }
 
 #[test]
-fn an_open_legacy_validation_is_moved_to_post_deploy_assigned_to_the_operator_and_unblocked() {
+fn an_open_legacy_validation_is_moved_to_post_deploy_and_assigned_to_the_operator_once() {
     let w = World::new();
     w.owner_known();
     w.tick();
@@ -2369,7 +2376,7 @@ fn an_open_legacy_validation_is_moved_to_post_deploy_assigned_to_the_operator_an
         &title,
         &texts::visible_markers(&body),
         Status::Ready,
-        &["blocked-by-PM-decision"],
+        &[],
     );
     w.tracker.state.borrow_mut().set_parent("ABC-10", "ABC-9");
     let r = w.tick();
@@ -2380,19 +2387,55 @@ fn an_open_legacy_validation_is_moved_to_post_deploy_assigned_to_the_operator_an
         task.assignee.as_ref().map(|u| u.name.as_str()),
         Some("owner-handle")
     );
-    assert!(
-        !task
-            .labels
-            .iter()
-            .any(|label| label == "blocked-by-PM-decision"),
-        "a migration removes the escalation label"
-    );
     let before = w.tracker.writes().len();
     let r = w.tick();
     assert!(r.ok(), "{r:?}");
     assert_eq!(
         w.tracker.writes().len(),
         before,
+        "{:?}",
+        &w.tracker.writes()[before..]
+    );
+    assert_eq!(validation_tasks(&w, "ABC-9").len(), 1);
+}
+
+/// A validation sub-task already closed is never reopened by the migration.
+#[test]
+fn a_closed_legacy_validation_is_left_alone() {
+    let w = World::new();
+    w.owner_known();
+    w.tick();
+    w.tracker.seed(
+        "ABC-9",
+        "Waiting",
+        POST,
+        Status::PostDeploy,
+        &[POST_DEPLOY_LABEL],
+    );
+    let (title, body) = texts::post_deploy_validation_item(
+        "ABC-9",
+        "Waiting",
+        "https://tracker.test/ABC-9",
+        "owner-handle",
+    );
+    w.tracker.seed(
+        "ABC-10",
+        &title,
+        &texts::visible_markers(&body),
+        Status::Done,
+        &[],
+    );
+    w.tracker.state.borrow_mut().set_parent("ABC-10", "ABC-9");
+    let before = w.tracker.writes().len();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let task = w.tracker.item("ABC-10");
+    assert_eq!(task.state.status, Some(Status::Done));
+    assert_eq!(task.assignee, None);
+    assert!(
+        w.tracker.writes()[before..]
+            .iter()
+            .all(|l| !l.contains("ABC-10")),
         "{:?}",
         &w.tracker.writes()[before..]
     );

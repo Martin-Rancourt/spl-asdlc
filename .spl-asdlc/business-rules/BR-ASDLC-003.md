@@ -12,4 +12,4 @@ The owner's decision of 2026-10-07: post-release verification needs someone to d
 
 ## Test
 
-`tick::release_tests::the_closure_moves_a_ticket_to_post_deploy_with_one_operator_validation_sub_task`, `tick::release_tests::an_open_legacy_validation_is_moved_to_post_deploy_assigned_to_the_operator_and_unblocked`, `tick::release_tests::a_refused_validation_sub_task_is_created_at_a_later_tick_once`, `method::texts::tests::the_post_deploy_validation_sub_task_is_a_contract_marked_as_the_bridges`, `method::vocabulary::tests::post_deploy_stays_outside_the_in_progress_group`
+`tick::release_tests::the_closure_moves_a_ticket_to_post_deploy_with_one_operator_validation_sub_task`, `tick::release_tests::an_open_legacy_validation_is_moved_to_post_deploy_and_assigned_to_the_operator_once`, `tick::release_tests::a_closed_legacy_validation_is_left_alone`, `tick::release_tests::a_refused_validation_sub_task_is_created_at_a_later_tick_once`, `method::texts::tests::the_post_deploy_validation_sub_task_is_a_contract_marked_as_the_bridges`, `method::vocabulary::tests::post_deploy_stays_outside_the_in_progress_group`

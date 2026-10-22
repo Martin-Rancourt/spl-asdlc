@@ -379,7 +379,7 @@ fn the_validation_statuses_are_open_on_livela() {
 }
 
 #[test]
-fn a_post_deploy_validation_is_created_assigned_without_a_pm_label() {
+fn a_post_deploy_validation_is_created_in_post_deploy_assigned_with_no_label() {
     let t = Livela::new(MemStore::default(), StatusTable::identity());
     let owner = t.identity().unwrap();
     let item = NewItem {
@@ -394,7 +394,7 @@ fn a_post_deploy_validation_is_created_assigned_without_a_pm_label() {
     let created = t.create_item(&item).unwrap();
     assert_eq!(created.state.status, Some(Status::PostDeploy));
     assert_eq!(created.assignee, Some(owner));
-    assert!(!created.labels.iter().any(|l| l == "blocked-by-PM-decision"));
+    assert!(created.labels.is_empty(), "{:?}", created.labels);
 }
 
 #[test]

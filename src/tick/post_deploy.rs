@@ -18,7 +18,7 @@ use serde_json::json;
 
 use crate::action_log::ActionLog;
 use crate::method::texts;
-use crate::method::vocabulary::{post_deploy_label, Status};
+use crate::method::vocabulary::{Status, post_deploy_label};
 use crate::tracker::{Item, NewItem, Priority};
 
 use super::closure::contract_gate;
@@ -224,9 +224,10 @@ pub fn ensure_sub_task(t: &Tick, log: &mut ActionLog, report: &mut Report, paren
     );
 }
 
-/// Bring validation sub-tasks created before SR-015 to their current shape.
-/// The migration is deliberately part of the normal pass: it reaches every
-/// open indexed parent on the next tick and remains idempotent afterwards.
+/// Bring an open validation sub-task created before SR-015 to its current
+/// shape: in Post Deploy, assigned to the operator. A resolved one is left
+/// alone. The migration is part of the normal pass, so it reaches every open
+/// indexed parent at the next tick and writes nothing afterwards.
 fn reconcile_sub_task(
     t: &Tick,
     log: &mut ActionLog,
@@ -234,51 +235,32 @@ fn reconcile_sub_task(
     child: &Item,
     operator: &crate::tracker::User,
 ) {
-    let reconciled = if child.state.status != Some(Status::PostDeploy) {
+    if child.state.is_resolved() {
+        return;
+    }
+    if child.state.status != Some(Status::PostDeploy) {
         t.act(
             log,
             report,
             &child.key,
-            "move legacy post-deploy validation to Post Deploy and assign operator",
+            "move the validation to Post Deploy, assigned to the operator",
             json!({}),
             || {
                 t.tracker
                     .set_status(&child.key, Status::PostDeploy, Some(Some(operator)))
                     .map_err(|e| e.to_string())
             },
-        )
-        .is_some()
+        );
     } else if child.assignee.as_ref() != Some(operator) {
         t.act(
             log,
             report,
             &child.key,
-            "assign post-deploy validation to operator",
+            "assign the validation to the operator",
             json!({}),
             || {
                 t.tracker
                     .assign(&child.key, Some(operator))
-                    .map_err(|e| e.to_string())
-            },
-        )
-        .is_some()
-    } else {
-        true
-    };
-    if reconciled
-        && child.labels
-        .iter()
-        .any(|label| label.eq_ignore_ascii_case("blocked-by-PM-decision"))
-    {
-        t.act(
-            log,
-            report,
-            &child.key,
-            "remove PM-decision label from post-deploy validation",
-            json!({}),
-            || {
-                t.tracker
-                    .remove_label(&child.key, "blocked-by-PM-decision")
                     .map_err(|e| e.to_string())
             },
         );
