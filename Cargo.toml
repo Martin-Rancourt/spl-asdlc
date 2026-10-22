@@ -9,7 +9,6 @@ readme = "README.md"
 repository = "https://github.com/Martin-Rancourt/spl-asdlc"
 keywords = ["sdlc", "release", "github", "linear", "agents"]
 categories = ["command-line-utilities", "development-tools"]
-publish = false
 
 [lib]
 name = "spl_asdlc"
