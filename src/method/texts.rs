@@ -576,10 +576,9 @@ pub fn post_deploy_validation_marker(parent: &str) -> String {
 }
 
 /// The validation sub-task of a ticket the closure moved to Post Deploy
-/// (BR-ASDLC-003): served to an agent like any ticket, with a complete
+/// (BR-ASDLC-003): assigned to the operator in Post Deploy, with a complete
 /// contract, it asks for the parent's `## Post deploy` boxes to be verified
-/// in production and checked, and hands to the owner what an agent cannot
-/// verify.
+/// in production and checked.
 pub fn post_deploy_validation_item(
     parent: &str,
     parent_title: &str,
@@ -589,15 +588,13 @@ pub fn post_deploy_validation_item(
     let title = format!("Post-deploy validation — {parent}: {}", inert(parent_title));
     let body = format!(
         "{marker}\n\n## Goal\nValidate in production the `## Post deploy` boxes of {parent} ({parent_url}), now that its \
-         release is deployed: check on {parent} each box you can verify yourself, then close this sub-task. If a check \
-         needs a human or is beyond you, name it in a comment here and reassign this sub-task to the owner (`{owner}`), \
-         so a human finishes. The bridge moves {parent} to `Done` at the tick that finds every one of its `## Post deploy` \
+         release is deployed: check on {parent} each box you verify in production, then close this sub-task. You are the \
+         operator responsible for this validation (`{owner}`). The bridge moves {parent} to `Done` at the tick that finds every one of its `## Post deploy` \
          boxes checked.\n\n\
          ## Non-goals\n- Changing the code, or any box of {parent} outside its `## Post deploy` section.\n\
          - Checking a box whose check was not verified in production.\n\n\
          ## Acceptance criteria\n\
-         - [ ] Every `## Post deploy` box of {parent} is either checked, once its check was verified in production, or \
-         named in a comment here as a check you could not verify, with this sub-task reassigned to the owner (`{owner}`).\n\n\
+         - [ ] Every `## Post deploy` box of {parent} is checked once its check was verified in production.\n\n\
          ## Business rules\n{absence}\n\n\
          ## Context\n- Parent: {parent}\n- The owner: `{owner}`\n- {keep}",
         marker = post_deploy_validation_marker(parent),

@@ -1,9 +1,9 @@
 //! Post-deploy validation (`docs/reference/05-release-cycle.md` §11,
 //! BR-ASDLC-002/003). When the closure (or, for a ticket with nothing to
 //! deploy, the merge) moves a ticket to Post Deploy it labels it `post-deploy-validation` and creates one validation sub-task,
-//! unassigned in Ready and urgent (BR-ASDLC-017: production is waiting on
-//! it), that an agent takes: verify the ticket's `## Post deploy` boxes in
-//! production and check them, or hand the sub-task to the owner. At each tick the bridge reads the labelled tickets and moves
+//! assigned to the operator in Post Deploy and urgent (BR-ASDLC-017:
+//! production is waiting on it). The operator verifies the ticket's `## Post
+//! deploy` boxes in production and checks them. At each tick the bridge reads the labelled tickets and moves
 //! to Done each one whose boxes are all checked. No verb: the boxes are the
 //! gesture. The ticket itself is never served: Post Deploy stays a
 //! validation state.
@@ -18,7 +18,7 @@ use serde_json::json;
 
 use crate::action_log::ActionLog;
 use crate::method::texts;
-use crate::method::vocabulary::{Status, post_deploy_label};
+use crate::method::vocabulary::{post_deploy_label, Status};
 use crate::tracker::{Item, NewItem, Priority};
 
 use super::closure::contract_gate;
@@ -155,7 +155,8 @@ fn unwatch(t: &Tick, log: &mut ActionLog, report: &mut Report, item: &Item) {
 }
 
 /// The validation sub-task of a ticket in Post Deploy, created once
-/// (BR-ASDLC-003): unassigned, in Ready, urgent (BR-ASDLC-017), under the
+/// (BR-ASDLC-003): assigned to the operator, in Post Deploy, urgent
+/// (BR-ASDLC-017), under the
 /// ticket. One the ticket
 /// already has, in any state, is never created again: a sub-task closed while
 /// boxes remain leaves the ticket waiting in Post Deploy for a human.
@@ -178,6 +179,20 @@ pub fn ensure_sub_task(t: &Tick, log: &mut ActionLog, report: &mut Report, paren
             return;
         }
     }
+    let assignee = match t.tracker.user(&t.config.owner.tracker_user) {
+        Ok(user) => user,
+        Err(e) => {
+            t.unreadable(
+                report,
+                &parent.key,
+                format!(
+                    "the post-deploy operator {}: {e}",
+                    t.config.owner.tracker_user
+                ),
+            );
+            return;
+        }
+    };
     let (title, body) = texts::post_deploy_validation_item(
         &parent.key,
         &parent.title,
@@ -195,10 +210,10 @@ pub fn ensure_sub_task(t: &Tick, log: &mut ActionLog, report: &mut Report, paren
             title,
             description: for_tracker(t, &body),
             labels: Vec::new(),
-            status: Status::Ready,
+            status: Status::PostDeploy,
             // Production is waiting on it (BR-ASDLC-017).
             priority: Some(Priority::Urgent),
-            assignee: None,
+            assignee: Some(assignee),
             parent: Some(parent.key.clone()),
         },
     );

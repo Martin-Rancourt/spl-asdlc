@@ -28,7 +28,7 @@ The bridge is a deterministic program that reads GitHub and moves the tickets. Y
 | In Review | The bridge | When its PR is opened (not a draft). |
 | To Deploy | The bridge | At the merge, once every box is ticked and no other PR of the ticket is open: the code is on the base branch and waits for the next release. |
 | Done | The bridge | At the closure of the release that ships it. A ticket with nothing to deploy (the no-deploy label) is Done at its merge. |
-| Post Deploy | The bridge | At the closure, when only the boxes under `## Post deploy` remain; an urgent validation sub-task asks to verify them in production. |
+| Post Deploy | The bridge | At the closure, when only the boxes under `## Post deploy` remain; an urgent validation sub-task in Post Deploy is assigned to the operator to verify them in production. |
 
 **Who closes a ticket**: the bridge, at the closure of the release that ships it (at its merge when it has nothing to deploy). Never close a ticket yourself, never move it to In Review, To Deploy or Done, and never move a ticket to Ready.
 

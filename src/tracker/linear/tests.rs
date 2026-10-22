@@ -39,6 +39,12 @@ fn team(t: &ScriptedTransport) {
         {"id":"s-deploy","name":"To Deploy","type":"completed"},{"id":"s-done","name":"Done","type":"completed"}]}}]}}}"#);
 }
 
+fn team_with_post_deploy(t: &ScriptedTransport) {
+    t.on_body("POST", URL, "teams(filter", 200, r#"{"data":{"teams":{"nodes":[{"id":"team-1","key":"ABC","states":{"nodes":[
+        {"id":"s-ready","name":"Ready","type":"unstarted"},{"id":"s-review","name":"In Review","type":"started"},
+        {"id":"s-deploy","name":"To Deploy","type":"completed"},{"id":"s-post-deploy","name":"Post Deploy","type":"completed"},{"id":"s-done","name":"Done","type":"completed"}]}}]}}}"#);
+}
+
 #[test]
 fn an_item_is_read_with_its_canonical_status_and_kind() {
     let (l, t) = linear();
@@ -304,7 +310,7 @@ fn items_are_found_by_the_url_of_their_pr() {
 #[test]
 fn an_item_is_created_with_its_state_labels_parent_and_priority() {
     let (l, t) = linear();
-    team(&t);
+    team_with_post_deploy(&t);
     t.on_body("POST", URL, "issueLabels(filter", 200, r#"{"data":{"issueLabels":{"nodes":[{"id":"l-1","name":"release/acme-v1.2.3","team":{"id":"team-1"}}],"pageInfo":{"hasNextPage":false}}}}"#);
     t.on_body(
         "POST",
@@ -323,17 +329,17 @@ fn an_item_is_created_with_its_state_labels_parent_and_priority() {
         200,
         &format!(
             r#"{{"data":{{"issueCreate":{{"success":true,"issue":{}}}}}}}"#,
-            issue("ABC-5", "Ready", "unstarted")
+            issue("ABC-5", "Post Deploy", "completed")
         ),
     );
     let created = l
         .create_item(&NewItem {
-            title: "Security review — acme v1.2.3 (rc.1)".into(),
+            title: "Post-deploy validation — ABC-1: Ship".into(),
             description: "d".into(),
-            labels: vec!["release/acme-v1.2.3".into()],
-            status: Status::Ready,
+            labels: vec![],
+            status: Status::PostDeploy,
             priority: Some(Priority::Urgent),
-            assignee: None,
+            assignee: Some(User { id: "u-owner".into(), name: "Martin".into() }),
             parent: Some("ABC-1".into()),
         })
         .unwrap();
@@ -344,13 +350,15 @@ fn an_item_is_created_with_its_state_labels_parent_and_priority() {
         .find(|b| b.contains("issueCreate"))
         .unwrap();
     for needle in [
-        r#""stateId":"s-ready""#,
-        r#""labelIds":["l-1"]"#,
+        r#""stateId":"s-post-deploy""#,
+        r#""labelIds":[]"#,
+        r#""assigneeId":"u-owner""#,
         r#""parentId":"id-ABC-1""#,
         r#""priority":1"#,
     ] {
         assert!(body.contains(needle), "{needle} in {body}");
     }
+    assert!(!body.contains("blocked-by-PM-decision"));
     assert!(
         !body.contains("projectId"),
         "without tracker.project, the team alone: {body}"

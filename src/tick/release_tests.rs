@@ -2232,6 +2232,7 @@ fn validation_tasks(w: &World, parent: &str) -> Vec<crate::tracker::Item> {
 /// `## Post deploy` ones.
 fn closed_with_post_deploy() -> World {
     let w = World::new();
+    w.owner_known();
     w.tracker
         .seed("ABC-5", "Shipped", POST, Status::ToDeploy, &[]);
     w.tracker.link("ABC-5", PR5);
@@ -2269,10 +2270,14 @@ fn the_closure_moves_a_ticket_to_post_deploy_with_one_unassigned_validation_sub_
     let tasks = validation_tasks(&w, "ABC-5");
     assert_eq!(tasks.len(), 1, "{:?}", w.tracker.writes());
     let task = &tasks[0];
-    assert_eq!(task.state.status, Some(Status::Ready), "a followed status");
-    assert_eq!(task.assignee, None);
+    assert_eq!(task.state.status, Some(Status::PostDeploy));
+    assert_eq!(task.assignee.as_ref().map(|u| u.name.as_str()), Some("owner-handle"));
+    assert!(
+        !task.labels.iter().any(|label| label == "blocked-by-PM-decision"),
+        "a validation is an action, not a PM decision"
+    );
     assert!(crate::method::contract::has_contract(&task.description));
-    assert!(task.description.contains("the owner (`owner-handle`)"));
+    assert!(task.description.contains("operator responsible for this validation (`owner-handle`)"));
     let release = w.release_item();
     let closure = w
         .tracker
@@ -2323,10 +2328,10 @@ fn a_post_deploy_ticket_moves_to_done_at_the_tick_that_finds_every_box_checked()
     assert!(r.ok(), "{r:?}");
     assert_eq!(w.tracker.item("ABC-5").state.status, Some(Status::Done));
     assert!(!labelled(&w, "ABC-5"), "the index keeps only what waits");
-    // The sub-task is the agent's or the owner's to close.
+    // The operator's validation task remains available for them to close.
     assert_eq!(
         validation_tasks(&w, "ABC-5")[0].state.status,
-        Some(Status::Ready)
+        Some(Status::PostDeploy)
     );
     let before = w.tracker.writes().len();
     let r = w.tick();
@@ -2381,6 +2386,7 @@ fn a_lost_creation_answer_is_found_and_the_sub_task_never_created_twice() {
 #[test]
 fn a_refused_validation_sub_task_is_created_at_a_later_tick_once() {
     let w = World::new();
+    w.owner_known();
     w.tracker
         .seed("ABC-5", "Shipped", POST, Status::ToDeploy, &[]);
     w.tracker.link("ABC-5", PR5);
@@ -3342,6 +3348,7 @@ fn the_validation_sub_task_is_created_urgent_and_a_dry_run_says_so() {
     );
 
     let w = World::new();
+    w.owner_known();
     w.tick();
     w.tracker.seed(
         "ABC-9",
@@ -3368,7 +3375,7 @@ fn the_validation_sub_task_is_created_urgent_and_a_dry_run_says_so() {
     assert_eq!(
         intents.lines(),
         vec![
-            "tracker: create \"Post-deploy validation — ABC-9: Waiting\" [Ready] priority urgent under ABC-9"
+            "tracker: create \"Post-deploy validation — ABC-9: Waiting\" [Post Deploy] priority urgent under ABC-9, assigned to owner-handle"
                 .to_string(),
             format!(
                 "tracker: comment on (new: Post-deploy validation — ABC-9: Waiting): {}",
@@ -3441,6 +3448,7 @@ fn archives(w: &World) -> Vec<String> {
 /// `gate_fix`; the nits ticket (`ABC-41`) in `nits`.
 fn every_kind(gate_fix: Status, nits: Status) -> World {
     let w = World::new();
+    w.owner_known();
     w.tick();
     let release = w.release_item();
     review_round(&w, "ABC-5", ["ABC-21", "ABC-22"], Status::Done);

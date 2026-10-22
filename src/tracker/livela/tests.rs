@@ -379,6 +379,25 @@ fn the_validation_statuses_are_open_on_livela() {
 }
 
 #[test]
+fn a_post_deploy_validation_is_created_assigned_without_a_pm_label() {
+    let t = Livela::new(MemStore::default(), StatusTable::identity());
+    let owner = t.identity().unwrap();
+    let item = NewItem {
+        title: "Post-deploy validation".into(),
+        description: "d".into(),
+        labels: vec![],
+        status: Status::PostDeploy,
+        priority: Some(Priority::Urgent),
+        assignee: Some(owner.clone()),
+        parent: None,
+    };
+    let created = t.create_item(&item).unwrap();
+    assert_eq!(created.state.status, Some(Status::PostDeploy));
+    assert_eq!(created.assignee, Some(owner));
+    assert!(!created.labels.iter().any(|l| l == "blocked-by-PM-decision"));
+}
+
+#[test]
 fn a_key_resolves_by_its_code_and_never_by_a_shorter_one() {
     let t = Livela::new(MemStore::default(), StatusTable::identity());
     let a = t.create_item(&new_item("a", Status::Ready)).unwrap();

@@ -224,7 +224,7 @@ mod tests {
     fn post_deploy_stays_outside_the_in_progress_group() {
         // BR-ASDLC-003: an implementer is served the unstarted and started
         // kinds (Ready, In Progress); Post Deploy is neither, its
-        // verification is served through the validation sub-task, in Ready.
+        // verification is handled by the operator's validation sub-task.
         let kind = StateKind::of(Status::PostDeploy);
         assert!(!matches!(kind, StateKind::Unstarted | StateKind::Started));
         assert_eq!(StateKind::of(Status::Ready), StateKind::Unstarted);
