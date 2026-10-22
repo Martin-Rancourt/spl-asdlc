@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.3.2](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.3.1...v1.3.2) (2026-10-22)
+
+
+### Bug Fixes
+
+* **ci:** say so when rule zero runs without its word list (SID-910) ([#96](https://github.com/Martin-Rancourt/spl-asdlc/issues/96)) ([c035f83](https://github.com/Martin-Rancourt/spl-asdlc/commit/c035f831219cd52177b98aa81848862848c1189d))
+
+
+### Build
+
+* **crate:** allow publishing spl-asdlc on crates.io (SID-910) ([#97](https://github.com/Martin-Rancourt/spl-asdlc/issues/97)) ([f284491](https://github.com/Martin-Rancourt/spl-asdlc/commit/f284491fb15a229d9657ad87276c122fe67ca0a5))
+
 ## [1.3.1](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.3.0...v1.3.1) (2026-10-20)
 
 
