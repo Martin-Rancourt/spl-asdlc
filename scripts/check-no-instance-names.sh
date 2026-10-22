@@ -15,6 +15,10 @@
 # allowed; the owner name on its own is still a hit. No slug found, nothing is
 # removed.
 #
+# Without SPL_ASDLC_FORBIDDEN_WORDS (a pull request from a fork gets no secret),
+# only the forms are checked, and the skip is reported: a warning on stderr and,
+# under GitHub Actions, a warning annotation and a line in the step summary.
+#
 # Exit 0 when nothing is found, 1 otherwise. No baseline, no exemption list.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -66,7 +70,16 @@ if [ -n "${SPL_ASDLC_FORBIDDEN_WORDS:-}" ]; then
     [ -n "$hits" ] && report "$hits"
   done
 else
-  printf 'warning: SPL_ASDLC_FORBIDDEN_WORDS is not set; only identifier forms were checked\n' >&2
+  # A pull request from a fork gets no secret, so no word list: the forms above
+  # were still checked and the scan passes on them, but the skip must be seen.
+  msg='SPL_ASDLC_FORBIDDEN_WORDS is not set (a pull request from a fork gets no secret): only identifier forms were checked, not the forbidden words'
+  printf 'warning: %s\n' "$msg" >&2
+  if [ "${GITHUB_ACTIONS:-}" = true ]; then
+    printf '::warning title=BR-ASDLC-001::%s\n' "$msg"
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+      printf '> [!WARNING]\n> BR-ASDLC-001: %s.\n' "$msg" >> "$GITHUB_STEP_SUMMARY"
+    fi
+  fi
 fi
 
 if [ "$status" -ne 0 ]; then
