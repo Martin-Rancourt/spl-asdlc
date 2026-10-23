@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.3.3](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.3.2...v1.3.3) (2026-10-22)
+
+
+### Bug Fixes
+
+* **post-deploy:** assign validation tickets to operator (SID-1243) ([#101](https://github.com/Martin-Rancourt/spl-asdlc/issues/101)) ([ab803db](https://github.com/Martin-Rancourt/spl-asdlc/commit/ab803dbdcef8a56e5f5f67d7e50fd9a83145ba4d))
+
+
+### Documentation
+
+* **livela:** the crate is public and on crates.io (SID-910) ([#99](https://github.com/Martin-Rancourt/spl-asdlc/issues/99)) ([ff40b5d](https://github.com/Martin-Rancourt/spl-asdlc/commit/ff40b5d76abfd703286903199a6a89b671eeaaf7))
+
 ## [1.3.2](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.3.1...v1.3.2) (2026-10-22)
 
 
