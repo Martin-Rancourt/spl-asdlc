@@ -843,13 +843,17 @@ fn embedded_check(pin: &Pin, version: &str) -> Check {
         check(
             EMBEDDED,
             Verdict::Ok,
-            format!("the callers name {rev}, of {line}, the minor line of the embedded spl-asdlc {version}; {line} would bring the line's fixes"),
+            format!(
+                "the callers name {rev}, of {line}, the minor line of the embedded spl-asdlc {version}; {line} would bring the line's fixes"
+            ),
         )
     } else {
         check(
             EMBEDDED,
             Verdict::Invalid,
-            format!("the callers name {pin}, but the host embeds spl-asdlc {version}: the workflows and texts the project runs are not those of the bridge that serves it"),
+            format!(
+                "the callers name {pin}, but the host embeds spl-asdlc {version}: the workflows and texts the project runs are not those of the bridge that serves it"
+            ),
         )
     }
 }
@@ -1618,7 +1622,9 @@ mod tests {
         }
         g.pin_method(&repo, "v1");
         assert!(
-            embedded(&g).detail.contains("the host embeds spl-asdlc 1.4.2"),
+            embedded(&g)
+                .detail
+                .contains("the host embeds spl-asdlc 1.4.2"),
             "{}",
             embedded(&g)
         );

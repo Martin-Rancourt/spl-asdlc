@@ -876,4 +876,17 @@ mod tests {
             "the severities are gone"
         );
     }
+
+    #[test]
+    fn doctor_takes_json() {
+        for (args, want) in [
+            (vec!["spl-asdlc", "doctor"], false),
+            (vec!["spl-asdlc", "doctor", "--json"], true),
+        ] {
+            match Cli::try_parse_from(args).unwrap().command {
+                Command::Doctor { json, .. } => assert_eq!(json, want),
+                other => panic!("{other:?}"),
+            }
+        }
+    }
 }

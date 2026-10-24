@@ -20,13 +20,14 @@ Consequences for the bridge and the coordinator:
 - The canonical names "To Deploy" and "Post Deploy" map to `to_deploy` and `post_deploy`; `set_status` accepts the id or the English name.
 - There is no `post_release` status.
 - Refined is not a status: a refined ticket stays in Backlog, and Livela marks it with a `refined` field computed from the description (a goal, at least one acceptance criterion and a release note). No agent writes it, and the bridge does not read it.
+- Ready and In Progress are as the method says them (`docs/method.md`): a person moves a refined ticket to Ready when agents may take it, implementing agents take work from Ready only, and the agent's verb ("implement the next ticket") moves the ticket it takes to In Progress. The bridge moves neither.
 - The method reads every tracker the same way: only Done and Canceled are resolved (`ItemState::is_resolved`). A tracker that files To Deploy as a completed state, as a Linear team may, changes nothing.
 
 ## 2. No heartbeat in the data
 
 - A daemon job that passes and does nothing **writes nothing**.
 - A pass that works leaves only its writes on the items (transitions, comments, links), signed by the participant `spl-asdlc`: that is its report, in each item's activity.
-- Only a **failed** pass (error, or time budget exceeded) leaves an entry, in the activity of the entity `job:<name>` (readable with `list_activity("job:spl-asdlc")`). The runner writes it (`run_jobs`), not the bridge.
+- Only a **failed** pass (error, or time budget exceeded) leaves an entry, in the activity of the entity `job:<name>` (readable with `list_activity("job:spl-asdlc:<prefix>")` for the bridge of one project). The runner writes it (`run_jobs`), not the bridge.
 - Agent heartbeats belong to the agent runtime, not to Livela. In Livela an agent that starts a piece of work takes a lock on the item, which appears in the activity; its actions, an error, or nothing if the lock expires, follow.
 - The bridge **never rewrites an unchanged value**: no useless fact at every pass.
 
@@ -51,7 +52,7 @@ pub struct JobOutcome { pub ok: bool, pub message: String }  // JobOutcome::ok(.
 How the daemon runs the job:
 - `livela-runner daemon` passes every N seconds (300 by default) and calls each job after the code tasks.
 - The budget is `LIVELA_JOB_BUDGET_SECONDS` (60 s by default); exceeding it is a failure.
-- `LIVELA_SPL_ASDLC_CONFIG` holds the path of the configuration, `.spl-asdlc/config.toml` in the repository's checkout; the bridge merges the instance overlay beside it, `config.instance.toml`, when there is one (spec 08).
+- The job reads no configuration path: the bridge reads the repository's `.spl-asdlc/config.toml` at its default branch, and the runner passes the instance overlay as a value ("A host with several projects" below). `LIVELA_SPL_ASDLC_CONFIG` is no longer needed.
 - Secrets are read by the job itself, never stored in the facts.
 - `livela-runner jobs` runs one pass by hand.
 - The job may call `store.set_author(id_spl_asdlc)`; the previous author is restored afterwards.
@@ -59,8 +60,17 @@ How the daemon runs the job:
 **Decided by the owner (2026-10-07): the dependency arrow goes from Livela to ASDLC** (BR-ASDLC-010).
 - `spl-asdlc` does not depend on `livela-core`. It names no private account, puts nothing of Livela in its `Cargo.lock`, and carries no second copy of the `DaemonJob` trait.
 - The runner depends on the public `spl-asdlc` crate by version, from crates.io, and writes the wrapper on its side. `BridgeJob: livela_core::DaemonJob` lives in the runner's code, next to its other jobs, registered in one line in `registered()` of `crates/livela-runner/src/jobs.rs`. So does the store glue (`LivelaStore` for its `Store`), and later `GithubSyncJob` (point 5).
-- What `spl-asdlc` offers the wrapper: the pass (`spl_asdlc::job::pass`), the adapter (`spl_asdlc::tracker::livela::Livela`) and the slice of the store the adapter needs (`LivelaStore`). `docs/setup/tracker-livela.md` says what the wrapper does, so that another runtime can write its own.
+- What `spl-asdlc` offers the wrapper: the pass (`spl_asdlc::job::pass_from_repository`, and `spl_asdlc::job::pass` for a configuration on disk), the adapter (`spl_asdlc::tracker::livela::Livela`), the slice of the store the adapter needs (`LivelaStore`), `doctor` and the gestures (`spl_asdlc::embed::Project`), and the files of a project's setup PR (`spl_asdlc::setup::files`). `docs/setup/tracker-livela.md` says what the wrapper does, so that another runtime can write its own.
 - Why not a dependency on the core: the Livela repository is private and the crate's license is `UNLICENSED`; a Git dependency would name an account in `Cargo.lock` (BR-ASDLC-001); and it would give the runner two copies of the crate, so that `BridgeJob` would implement a trait the runner does not know.
+
+### A host with several projects
+
+A Livela workspace holds several projects; each that runs the method has its own repository, its own configuration and its own bridge.
+- **One bridge job per project**, named `spl-asdlc:<prefix>` after the project's prefix, so that a failed pass is recorded per project, under `job:spl-asdlc:<prefix>`. Each job builds the adapter for its project (`Livela::new(store, prefix, ..)`, point 4), so its items land in that project and its searches see only them.
+- **The configuration is read from the repository**: `.spl-asdlc/config.toml` at the default branch, through the App (`spl_asdlc::embed::read_config`), at each pass. A file that is missing, unreadable or invalid fails the pass, which writes nothing.
+- **The identities are values**: the runner keeps each project's instance overlay (spec 08, "The instance overlay") in the project's settings and passes its text. The merge follows the rules of the files on disk: a key set in both is an error naming both, an instance key in the repository's file is refused. Nothing is read from the runner's disk.
+- **`doctor` is callable by the runner** with its adapter (`spl_asdlc::embed::Project::doctor`): each check carries its state, its explanation and the gesture that fixes it, serialisable, and `embedded version` says whether the project's workflow callers name the minor line the runner embeds (`v1.N` for a crate pinned `~1.N`).
+- **The gestures are functions** (`Project::release_status`, `cut`, `requalify`, `abandon`, `retract`): the CLI calls the same ones.
 
 ## 4. The core API the adapter uses (delivered)
 

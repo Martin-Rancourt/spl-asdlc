@@ -55,7 +55,10 @@ impl std::fmt::Display for ReadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ReadError::Repository { repository, error } => {
-                write!(f, "{repository}: the default branch could not be read: {error}")
+                write!(
+                    f,
+                    "{repository}: the default branch could not be read: {error}"
+                )
             }
             ReadError::Missing { source } => write!(f, "{source}: no such file"),
             ReadError::Unreadable { source, error } => {

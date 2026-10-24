@@ -108,14 +108,19 @@ pub fn files(answers: &Answers) -> Result<SetupPr, String> {
         ));
     }
     if RepoSlug::parse(&a.repository).is_none() {
-        return Err(format!("repository \"{}\" is not <owner>/<repo>", a.repository));
+        return Err(format!(
+            "repository \"{}\" is not <owner>/<repo>",
+            a.repository
+        ));
     }
     let method = a
         .method_repository
         .clone()
         .unwrap_or_else(method_repository);
     if RepoSlug::parse(&method).is_none() {
-        return Err(format!("method repository \"{method}\" is not <owner>/<repo>"));
+        return Err(format!(
+            "method repository \"{method}\" is not <owner>/<repo>"
+        ));
     }
     for key in a
         .review_angles
@@ -158,7 +163,11 @@ pub fn files(answers: &Answers) -> Result<SetupPr, String> {
     });
     files.push(SetupFile {
         path: "AGENTS.md".to_string(),
-        content: AGENTS.replacen("# Working on acme", &format!("# Working on {}", a.product), 1),
+        content: AGENTS.replacen(
+            "# Working on acme",
+            &format!("# Working on {}", a.product),
+            1,
+        ),
     });
     let layers = match (a.review_angles.is_empty(), a.release_angles.is_empty()) {
         (true, true) => "the light configuration: no PR review, no release QA angle".to_string(),
@@ -216,7 +225,9 @@ fn config(a: &Answers) -> String {
     }
     out.push_str("\n[review]\nrequire_up_to_date = false\n");
     if a.review_angles.is_empty() {
-        out.push_str("angles = []                            # no PR review: a PR merges on its CI\n");
+        out.push_str(
+            "angles = []                            # no PR review: a PR merges on its CI\n",
+        );
     }
     for angle in &a.review_angles {
         out.push_str(&format!("\n[[review.angles]]\nkey = \"{}\"\n", angle.key));
@@ -260,8 +271,24 @@ fn edit(text: &mut String, from: &str, to: &str) {
 /// An example caller made the project's: the method's repository and the
 /// minor line, the product's tag patterns, the test command, and the
 /// layers chosen.
-fn caller(name: &str, example: &str, a: &Answers, method: &str, line: &str, command: &str) -> String {
-    let mut text = example.to_string();
+fn caller(
+    name: &str,
+    example: &str,
+    a: &Answers,
+    method: &str,
+    line: &str,
+    command: &str,
+) -> String {
+    // The example's header says how to copy it: the generated file's own
+    // line replaces it.
+    let (head, rest) = example.split_once("\n\n").expect("the example's name line");
+    let body = match rest.find("\n\n") {
+        Some(i) if rest.starts_with('#') => &rest[i + 2..],
+        _ => rest,
+    };
+    let mut text = format!(
+        "{head}\n\n# Set up by spl-asdlc {VERSION} from docs/setup/examples/{name}, pinned at {line}.\n\n{body}"
+    );
     edit(&mut text, "<owner>/spl-asdlc", method);
     edit(&mut text, ".yml@v1\n", &format!(".yml@{line}\n"));
     match name {
@@ -301,10 +328,9 @@ fn caller(name: &str, example: &str, a: &Answers, method: &str, line: &str, comm
                 "      upstream-result: ${{ needs.preflight.result }}\n",
                 "",
             );
-            let run = serde_json::to_string(&format!(
-                "{command} 2>&1 | tee \"$EVIDENCE_DIR/tests.log\""
-            ))
-            .expect("a string serialises");
+            let run =
+                serde_json::to_string(&format!("{command} 2>&1 | tee \"$EVIDENCE_DIR/tests.log\""))
+                    .expect("a string serialises");
             edit(
                 &mut text,
                 "[{\"id\": \"tests\", \"run\": \"make test 2>&1 | tee \\\"$EVIDENCE_DIR/tests.log\\\"\",",
@@ -334,14 +360,12 @@ fn caller(name: &str, example: &str, a: &Answers, method: &str, line: &str, comm
             edit(
                 &mut text,
                 "      - name: Publish\n        run: make publish\n      - name: Deploy\n        run: make deploy\n",
-                "      - name: Publish\n        run: echo \"Nothing is published yet: this job is the project's publication and deployment.\"\n",
+                "      - name: Publish\n        run: |\n          echo \"Nothing is published yet: this job is the project's publication and deployment.\"\n",
             );
         }
         _ => {}
     }
-    format!(
-        "# Set up by spl-asdlc {VERSION} from docs/setup/examples/{name}, pinned at {line}.\n{text}"
-    )
+    text
 }
 
 #[cfg(test)]

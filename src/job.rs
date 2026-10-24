@@ -524,7 +524,8 @@ mod tests {
         let out = pass_from_repository(&host, &other);
         assert!(!out.ok);
         assert!(
-            out.message.contains("not the repository the file was read from"),
+            out.message
+                .contains("not the repository the file was read from"),
             "{}",
             out.message
         );

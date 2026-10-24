@@ -59,7 +59,10 @@ fn the_configuration_is_read_at_the_default_branch_and_merged() {
 fn a_gesture_returns_what_it_did_or_why_it_was_refused() {
     let g = github();
     let repo = RepoSlug::parse("example-org/acme").unwrap();
-    g.state.borrow_mut().branches.insert(repo.clone(), Vec::new());
+    g.state
+        .borrow_mut()
+        .branches
+        .insert(repo.clone(), Vec::new());
     let read = read_config(&g, &repo, Some(&overlay())).unwrap();
     let tracker = FakeTracker::default();
     let dir = std::env::temp_dir().join(format!("spl-asdlc-embed-{}", std::process::id()));
@@ -77,7 +80,10 @@ fn a_gesture_returns_what_it_did_or_why_it_was_refused() {
     assert!(done.done, "{done:?}");
     assert!(done.message.contains("action open"), "{done:?}");
     let line = std::fs::read_to_string(&log).unwrap();
-    assert!(line.contains("release cut") && line.contains("a person"), "{line}");
+    assert!(
+        line.contains("release cut") && line.contains("a person"),
+        "{line}"
+    );
     let json = serde_json::to_value(&done).unwrap();
     assert_eq!(json["done"], true);
 }

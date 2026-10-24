@@ -368,6 +368,76 @@ fn no_example_expands_an_expression_inside_a_script() {
     }
 }
 
+/// The callers of a project's setup PR (`spl_asdlc::setup::files`),
+/// written to a directory of their own: each passes the checks of an
+/// example, its method's repository and the embedded minor line in place
+/// of `<owner>/spl-asdlc` and `@v1`.
+fn generated() -> Vec<PathBuf> {
+    use spl_asdlc::config::TrackerKind;
+    use spl_asdlc::setup::{Answers, ReviewAngle, files};
+    let pr = files(&Answers {
+        product: "acme".into(),
+        repository: "example-org/acme".into(),
+        tracker: TrackerKind::Livela,
+        review_angles: vec![ReviewAngle {
+            key: "security".into(),
+            paths: vec![],
+        }],
+        release_angles: vec!["security".into()],
+        test_command: "cargo test --locked".into(),
+        app_slug: "example-app".into(),
+        method_repository: Some("example-org/spl-asdlc".into()),
+    })
+    .unwrap();
+    let dir = std::env::temp_dir().join(format!("spl-asdlc-setup-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let line = format!(
+        "@{}",
+        spl_asdlc::embed::minor_line(spl_asdlc::embed::VERSION)
+    );
+    let mut out = Vec::new();
+    for f in pr
+        .files
+        .iter()
+        .filter(|f| f.path.starts_with(".github/workflows/"))
+    {
+        let mut text = String::new();
+        for l in f.content.lines() {
+            let l = if l.contains("example-org/spl-asdlc/") {
+                assert!(l.ends_with(&line), "{}: {l}", f.path);
+                format!("{}@v1", &l[..l.len() - line.len()])
+            } else {
+                l.to_string()
+            };
+            text.push_str(&l.replace("example-org/spl-asdlc", "<owner>/spl-asdlc"));
+            text.push('\n');
+        }
+        let path = dir.join(f.path.trim_start_matches(".github/workflows/"));
+        std::fs::write(&path, text).unwrap();
+        out.push(path);
+    }
+    assert_eq!(out.len(), 6);
+    out
+}
+
+#[test]
+fn the_generated_setup_callers_pass_the_checks_of_an_example() {
+    let all = generated();
+    for f in &all {
+        let doc = load(f);
+        assert!(!crate::harness::is_reusable(&doc), "{}", relative(f));
+        for (job, s) in steps(&doc) {
+            if !s["run"].is_badvalue() {
+                assert!(!run_body(&s).contains("${{"), "{} ({job})", relative(f));
+            }
+        }
+    }
+    check_called_workflows(&all, local);
+    check_called_actions(&all, |u| u.starts_with(PREFIX), local);
+    check_permissions(&all, local);
+    check_pins(&all, |u| u.starts_with(PREFIX));
+}
+
 // ---- per caller ----
 
 #[test]

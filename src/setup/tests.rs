@@ -58,7 +58,14 @@ fn the_light_configuration_by_default_with_no_identity() {
     assert_eq!(c.tracker.link_fallback, LinkFallback::None);
     let text = file(&pr, DEFAULT_PATH);
     for line in text.lines().filter(|l| !l.starts_with('#')) {
-        for key in ["repository", "team", "service_identity", "project", "coordinators", "[owner]"] {
+        for key in [
+            "repository",
+            "team",
+            "service_identity",
+            "project",
+            "coordinators",
+            "[owner]",
+        ] {
             assert!(!line.starts_with(key), "{line}");
         }
     }
@@ -132,7 +139,10 @@ fn the_callers_name_the_embedded_minor_line_and_the_cut_runs_its_binary() {
         );
     }
     let cut = file(&pr, ".github/workflows/release-cut.yml");
-    assert!(cut.contains(&format!("spl-asdlc-version: {line}\n")), "{cut}");
+    assert!(
+        cut.contains(&format!("spl-asdlc-version: {line}\n")),
+        "{cut}"
+    );
     assert!(cut.contains("spl-asdlc-repository: example-org/spl-asdlc\n"));
     let gate = file(&pr, ".github/workflows/release-gate.yml");
     assert!(!gate.contains("preflight"), "{gate}");

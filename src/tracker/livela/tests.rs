@@ -791,3 +791,62 @@ fn livela_has_no_open_item_limit_and_archives_nothing() {
     assert_eq!(t.store.borrow().facts.len(), before, "no fact recorded");
     assert!(!t.get(&a.key).unwrap().archived);
 }
+
+/// A host calls `doctor` with its Livela adapter: the project is reported
+/// found, or unknown and invalid with its fix.
+#[test]
+fn doctor_runs_on_the_livela_adapter_and_names_its_project() {
+    use crate::doctor::{self, Verdict};
+    use crate::github::RepoSlug;
+    use crate::github::fake::FakeGitHub;
+    let mut config = crate::config::spec_example::config();
+    config.tracker.kind = crate::config::TrackerKind::Livela;
+    let github = FakeGitHub::new();
+    github.state.borrow_mut().default_branch.insert(
+        RepoSlug::parse(&config.product.repository).unwrap(),
+        "main".into(),
+    );
+    let project = |config: &crate::config::Config, reference: &str| {
+        let t = Livela::new(MemStore::default(), reference, StatusTable::identity());
+        doctor::run_embedded(config, None, &github, &t, "a host", Some("1.4.0"))
+            .into_iter()
+            .find(|c| c.name == "tracker.project")
+            .expect("the project's check")
+    };
+    config.tracker.project = Some("TD".into());
+    let found = project(&config, "TD");
+    assert_eq!(found.verdict, Verdict::Ok, "{found}");
+    config.tracker.project = Some("NOPE".into());
+    let unknown = project(&config, "NOPE");
+    assert_eq!(unknown.verdict, Verdict::Invalid, "{unknown}");
+    let fix = unknown.fix.expect("its fix");
+    assert_eq!(fix.page, "docs/setup/tracker-livela.md");
+}
+
+/// A host's gesture with its Livela adapter: the same function the CLI
+/// calls.
+#[test]
+fn a_gesture_runs_on_the_livela_adapter() {
+    use crate::github::fake::FakeGitHub;
+    use crate::github::{Identity, RepoSlug};
+    let mut config = crate::config::spec_example::config();
+    config.tracker.kind = crate::config::TrackerKind::Livela;
+    let github = FakeGitHub::new();
+    let repo = RepoSlug::parse(&config.product.repository).unwrap();
+    {
+        let mut s = github.state.borrow_mut();
+        s.identity = Some(Identity::App {
+            slug: "spl-asdlc".into(),
+            app_id: "1".into(),
+        });
+        s.default_branch.insert(repo.clone(), "main".into());
+        s.branches.insert(repo.clone(), Vec::new());
+        s.tags.insert(repo, Vec::new());
+    }
+    let t = td(MemStore::default());
+    let p = crate::embed::Project::new(&config, &github, &t, None, &|_| None).unwrap();
+    let out = p.cut(true, "a person");
+    assert!(out.done, "{out:?}");
+    let status = p.release_status().unwrap_err();
+    assert!(status.contains("no release candidate"), "{status}");
+}
