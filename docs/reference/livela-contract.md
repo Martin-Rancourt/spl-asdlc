@@ -38,7 +38,7 @@ Consequences for the bridge and the coordinator:
 
 ## 3. Hosting: the bridge is a `DaemonJob`
 
-The `spl-asdlc` repository is public and its crate is published on crates.io from the version tags `v<X.Y.Z>` (from 1.3.2): the Livela runner depends on the crate by version, from crates.io. No separate binary, no private dependency. The job contract is in the Livela core (`livela_core`, no platform dependency):
+The `spl-asdlc` repository is public and its crate is published on crates.io from the version tags `v<X.Y.Z>`, by the publication workflow from 1.4.1 (`.spl-asdlc/development.md`, "Releases"; 1.3.2 was published by hand, 1.3.3 and 1.4.0 are not on crates.io): the Livela runner depends on the crate by version, from crates.io. No separate binary, no private dependency. The job contract is in the Livela core (`livela_core`, no platform dependency):
 
 ```rust
 pub trait DaemonJob {

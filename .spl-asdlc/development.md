@@ -8,7 +8,14 @@ GitHub Flow: every change is a pull request to `main`, checked by `pr.yml` (form
 
 ## Releases
 
-release-please's normal mode on `main` (`release-please.yml`): it keeps a release PR open, and merging it tags `v<X.Y.Z>` and publishes the GitHub release. `publish.yml` then builds the binaries (`binaries.yml`), attaches them with their `SHA256SUMS`, and moves the minor tag `v<X.Y>` to the release. The reusable `asdlc-*` workflows are released with the bridge under the same version; callers pin a major tag (`@v1`), moved by the owner, or a minor line (`@v<X.Y>`), moved by `publish.yml`.
+release-please's normal mode on `main` (`release-please.yml`): it keeps a release PR open, and merging it tags `v<X.Y.Z>` and publishes the GitHub release. `publish.yml` then builds the binaries (`binaries.yml`), attaches them with their `SHA256SUMS`, moves the minor tag `v<X.Y>` to the release, and publishes the crate on crates.io (the `crates-io` job). The reusable `asdlc-*` workflows are released with the bridge under the same version; callers pin a major tag (`@v1`), moved by the owner, or a minor line (`@v<X.Y>`), moved by `publish.yml`.
+
+
+**The crate on crates.io**: the `crates-io` job of `publish.yml` runs `cargo publish --locked` from the release's tag, once the binaries are built and tested, and publishes nothing for a version crates.io already holds or a tag that is not `v<X.Y.Z>`. It reads its token from the GitHub environment `crates-io`, set up once by the owner:
+- on crates.io (Account settings → API Tokens), a token scoped to the crate `spl-asdlc` with the `publish-update` scope only, and an expiry the owner chooses;
+- in the repository (Settings → Environments), the environment `crates-io`, its deployment rule limited to the tags `v*.*.*` ("Selected branches and tags", a tag rule), and in it the environment secret `CARGO_REGISTRY_TOKEN` holding that token.
+
+Without the secret the job fails and says so; the rest of the publication is done. A version that missed crates.io is published by rerunning the `crates-io` job of its `publish` run, once the secret is set. 1.3.2 was published by hand; 1.3.3 and 1.4.0 are not on crates.io.
 
 The process page, `docs/agents/process.md`, is copied into every project and checked there by `asdlc-pr-guards.yml` against the git blob id the workflow carries (`PINNED_BLOB`). A PR that changes the page writes the new id in the same PR (`tests/workflows/pr_guards.rs` names it), and its release note tells the projects to refresh their copy: once `v1` moves to that release, a project's PRs are refused until it does.
 

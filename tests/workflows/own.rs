@@ -373,9 +373,42 @@ fn the_publication_builds_the_binaries_of_the_published_release_then_moves_its_m
         all.iter()
             .map(|(id, _)| id.clone())
             .collect::<BTreeSet<_>>(),
-        BTreeSet::from(["binaries".to_string(), "minor-tag".to_string()]),
+        BTreeSet::from([
+            "binaries".to_string(),
+            "minor-tag".to_string(),
+            "crates-io".to_string()
+        ]),
         "no verify, no merge-back, no closing-guard"
     );
+    // The crate is published once the binaries are built and tested, from
+    // the environment that holds the token, which only its publish step
+    // sees; the job writes nothing on GitHub.
+    let crate_job = &publish["jobs"]["crates-io"];
+    assert_eq!(needs(crate_job), BTreeSet::from(["binaries".to_string()]));
+    assert_eq!(crate_job["environment"].as_str(), Some("crates-io"));
+    assert_eq!(
+        keys(&crate_job["permissions"]),
+        BTreeSet::from(["contents".to_string()])
+    );
+    assert_eq!(crate_job["permissions"]["contents"].as_str(), Some("read"));
+    assert_eq!(
+        crate_job["env"]["TAG"].as_str(),
+        Some("${{ github.event.release.tag_name }}")
+    );
+    let text =
+        std::fs::read_to_string(crate::harness::root().join(".github/workflows/publish.yml"))
+            .unwrap();
+    assert_eq!(text.matches("secrets.CARGO_REGISTRY_TOKEN").count(), 1);
+    let publish_step = crate::harness::step(&publish, "crates-io", "Publish");
+    assert_eq!(
+        publish_step["env"]["CARGO_REGISTRY_TOKEN"].as_str(),
+        Some("${{ secrets.CARGO_REGISTRY_TOKEN }}")
+    );
+    assert_eq!(
+        publish_step["if"].as_str(),
+        Some("steps.version.outputs.publish == 'true'")
+    );
+    assert!(crate::harness::run_body(&publish_step).contains("cargo publish --locked"));
     // The minor tag moves once the binaries are attached, with the
     // workflow's own token and the one write it needs.
     let tag = &publish["jobs"]["minor-tag"];
@@ -669,4 +702,104 @@ fn staging_rebuilds_the_rolling_prerelease_on_every_push_to_main() {
     // The archive says which commit it was built from, and the sums cover it.
     assert!(text.contains("COMMIT"));
     assert!(text.contains("sha256sum"));
+}
+
+/// The crate's version step, run as shipped with `curl` stubbed.
+#[cfg(unix)]
+mod crates_io {
+    use std::path::Path;
+
+    use crate::harness::{Ran, Scratch, calls, path_with, run_body, run_owned, step, stub};
+
+    /// A `curl` that answers `status` for any URL, or fails.
+    fn curl(stubs: &Path, status: Option<&str>) {
+        let body = match status {
+            Some(s) => format!("printf '%s' {s}"),
+            None => "exit 7".to_string(),
+        };
+        stub(stubs, "curl", &body);
+    }
+
+    fn version(stubs: &Path, tag: &str, prerelease: bool, cargo_version: &str) -> Ran {
+        let script = run_body(&step(
+            &crate::harness::workflow(".github/workflows/publish.yml"),
+            "crates-io",
+            "The version to publish",
+        ));
+        let dir = Scratch::new("crates-io");
+        std::fs::write(
+            dir.0.join("Cargo.toml"),
+            format!("[package]\nname = \"spl-asdlc\"\nversion = \"{cargo_version}\"\n"),
+        )
+        .unwrap();
+        run_owned(
+            &script,
+            &[
+                ("PATH", path_with(stubs)),
+                ("TAG", tag.to_string()),
+                ("PRERELEASE", prerelease.to_string()),
+                ("GITHUB_REPOSITORY", "example-org/spl-asdlc".into()),
+            ],
+            &dir.0,
+        )
+    }
+
+    #[test]
+    fn a_release_crates_io_lacks_is_published() {
+        let stubs = Scratch::new("stubs");
+        curl(&stubs.0, Some("404"));
+        let r = version(&stubs.0, "v1.4.1", false, "1.4.1");
+        assert_eq!(r.code, 0, "{}", r.log);
+        assert!(r.outputs.contains("publish=true"), "{}", r.outputs);
+        let seen = calls(&stubs.0, "curl");
+        assert_eq!(seen.len(), 1);
+        assert!(
+            seen[0].ends_with("https://crates.io/api/v1/crates/spl-asdlc/1.4.1"),
+            "{seen:?}"
+        );
+    }
+
+    #[test]
+    fn a_version_crates_io_holds_is_not_published_again() {
+        let stubs = Scratch::new("stubs");
+        curl(&stubs.0, Some("200"));
+        let r = version(&stubs.0, "v1.4.1", false, "1.4.1");
+        assert_eq!(r.code, 0, "{}", r.log);
+        assert!(r.outputs.contains("publish=false"), "{}", r.outputs);
+        assert!(r.log.contains("already on crates.io"), "{}", r.log);
+    }
+
+    #[test]
+    fn a_tag_that_is_not_a_release_publishes_nothing_and_reads_nothing() {
+        for (tag, prerelease) in [
+            ("v1.4", false),
+            ("staging", false),
+            ("v1.4.0-rc.1", false),
+            ("v1.4.1", true),
+        ] {
+            let stubs = Scratch::new("stubs");
+            curl(&stubs.0, Some("404"));
+            let r = version(&stubs.0, tag, prerelease, "1.4.1");
+            assert_eq!(r.code, 0, "{tag}: {}", r.log);
+            assert!(r.outputs.contains("publish=false"), "{tag}: {}", r.outputs);
+            assert!(calls(&stubs.0, "curl").is_empty(), "{tag}");
+        }
+    }
+
+    #[test]
+    fn a_tag_that_is_not_the_crates_version_or_an_unreadable_registry_fails() {
+        let stubs = Scratch::new("stubs");
+        curl(&stubs.0, Some("404"));
+        let r = version(&stubs.0, "v1.4.2", false, "1.4.1");
+        assert_ne!(r.code, 0);
+        assert!(r.log.contains("Cargo.toml says 1.4.1"), "{}", r.log);
+        assert!(!r.outputs.contains("publish=true"));
+        for status in [None, Some("500")] {
+            let stubs = Scratch::new("stubs");
+            curl(&stubs.0, status);
+            let r = version(&stubs.0, "v1.4.1", false, "1.4.1");
+            assert_ne!(r.code, 0, "{status:?}: {}", r.log);
+            assert!(!r.outputs.contains("publish=true"), "{status:?}");
+        }
+    }
 }

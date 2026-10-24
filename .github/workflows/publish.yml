@@ -3,13 +3,15 @@ name: publish
 # The publication of a spl-asdlc release: once release-please (running as the
 # App, release-please.yml) has published the GitHub release of a tag
 # `v<X.Y.Z>`, binaries.yml builds and tests the binary on every target from
-# that tag and attaches the archives and their sums to the release, then the
-# minor tag `v<X.Y>` is moved to the release's commit. Nothing else: this
-# repository does not run the SPL-ASDLC release cycle on itself.
+# that tag and attaches the archives and their sums to the release; then the
+# minor tag `v<X.Y>` is moved to the release's commit and the crate is
+# published on crates.io. Nothing else: this repository does not run the
+# SPL-ASDLC release cycle on itself.
 #
-# Two writes, each in its job: binaries.yml's, which attaches the archives
+# Three writes, each in its job: binaries.yml's, which attaches the archives
 # to the release (this caller grants `contents: write`, and binaries.yml
-# keeps it to that one job), and the minor tag's. The major tag `v<X>` is
+# keeps it to that one job), the minor tag's, and the crate's, with the
+# crates.io token of the `crates-io` environment. The major tag `v<X>` is
 # never moved here: it stays the owner's gesture
 # (docs/setup/repository.md, "The workflows' tag").
 
@@ -89,3 +91,80 @@ jobs:
               -f ref="refs/tags/$line" -f sha="$sha" > /dev/null
           fi
           echo "Moved $line to $TAG ($sha)."
+
+  # The crate on crates.io, from the release's own tag, once its binaries
+  # are built and tested on every target: a host application embeds
+  # spl-asdlc by version (docs/reference/livela-contract.md §3). The token
+  # is the secret CARGO_REGISTRY_TOKEN of the environment `crates-io`, whose
+  # deployment rule admits the release tags `v<X.Y.Z>` only, and it reaches
+  # the publish step only. A version crates.io already holds (a rerun, a
+  # version published by hand) publishes nothing.
+  crates-io:
+    name: crates-io
+    needs: binaries
+    runs-on: ${{ fromJSON(vars.SPL_ASDLC_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 15
+    environment: crates-io
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ github.event.release.tag_name }}
+      PRERELEASE: ${{ github.event.release.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: stable
+      - name: The version to publish
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${GITHUB_OUTPUT:-/dev/stdout}"
+          # Only a release `v<X.Y.Z>` is a crate version.
+          release_re='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          if [ "$PRERELEASE" = true ] || ! [[ "$TAG" =~ $release_re ]]; then
+            echo "$TAG is not a published release v<X.Y.Z>: nothing is published."
+            echo "publish=false" >> "$out"
+            exit 0
+          fi
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error title=Crate not published::Cargo.toml says $version, the tag is $TAG."
+            exit 1
+          fi
+          # crates.io answers 200 for a version it holds, 404 for one it does not.
+          if ! status="$(curl -sS -o /dev/null -w '%{http_code}' \
+              -A "spl-asdlc publish (github.com/$GITHUB_REPOSITORY)" \
+              "https://crates.io/api/v1/crates/spl-asdlc/$version")"; then
+            echo "::error title=Crate not published::crates.io could not be read."
+            exit 1
+          fi
+          case "$status" in
+            200)
+              echo "spl-asdlc $version is already on crates.io: nothing is published."
+              echo "publish=false" >> "$out"
+              ;;
+            404)
+              echo "publish=true" >> "$out"
+              ;;
+            *)
+              echo "::error title=Crate not published::crates.io answered $status for spl-asdlc $version."
+              exit 1
+              ;;
+          esac
+      - name: Publish
+        if: steps.version.outputs.publish == 'true'
+        shell: bash
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
+            echo "::error title=Crate not published::The environment crates-io has no secret CARGO_REGISTRY_TOKEN (.spl-asdlc/development.md, Releases)."
+            exit 1
+          fi
+          cargo publish --locked
