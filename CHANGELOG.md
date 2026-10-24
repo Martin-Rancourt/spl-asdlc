@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.4](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.3.3...v1.3.4) (2026-10-24)
+
+
+### Bug Fixes
+
+* **release:** a gate-fix ticket's box is met by the fix's PR (SID-1203) ([#102](https://github.com/Martin-Rancourt/spl-asdlc/issues/102)) ([62f127f](https://github.com/Martin-Rancourt/spl-asdlc/commit/62f127fd6e3e1a284d46188ea627105f39c54788))
+
 ## [1.3.3](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.3.2...v1.3.3) (2026-10-22)
 
 
