@@ -203,7 +203,17 @@ impl FakeTracker {
 }
 
 impl Tracker for FakeTracker {
+    /// Unreadable when `make_unreadable("identity")` (an outage).
     fn identity(&self) -> TResult<User> {
+        if self
+            .state
+            .borrow()
+            .unreadable
+            .iter()
+            .any(|k| k == "identity")
+        {
+            return Err(TrackerError::unreadable("identity", "injected outage"));
+        }
         Ok(self.bridge.clone())
     }
 

@@ -17,6 +17,7 @@ pub mod method;
 pub mod notify;
 pub mod prepare;
 pub mod setup;
+pub mod sync;
 pub mod tick;
 pub mod tracker;
 pub mod verbs;

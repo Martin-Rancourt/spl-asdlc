@@ -725,7 +725,11 @@ impl<S: LivelaStore> Tracker for Livela<S> {
     fn record_pr_status(&self, key: &str, pr_url: &str, status: &PrStatus) -> TResult<()> {
         let raw = self.raw(key)?;
         let code = status.code();
-        if !self.store.borrow().find_by_web_link(pr_url).contains(&raw.id)
+        if !self
+            .store
+            .borrow()
+            .find_by_web_link(pr_url)
+            .contains(&raw.id)
             || raw
                 .pr_statuses
                 .iter()

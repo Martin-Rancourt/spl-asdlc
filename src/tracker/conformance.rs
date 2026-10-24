@@ -249,7 +249,10 @@ fn suite(
             "read the status of an unlinked PR",
             tracker.pr_status(&children[0].key, &unlinked),
         )?;
-        check(back.is_none(), &format!("an unlinked PR has status {back:?}"))?;
+        check(
+            back.is_none(),
+            &format!("an unlinked PR has status {back:?}"),
+        )?;
     } else {
         r.not_offered.push("PR status".to_string());
     }

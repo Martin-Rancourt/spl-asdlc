@@ -860,3 +860,73 @@ fn a_gesture_runs_on_the_livela_adapter() {
     let status = p.release_status().unwrap_err();
     assert!(status.contains("no release candidate"), "{status}");
 }
+
+/// The GitHub sync on the Livela adapter: a PR that names its item by its
+/// address is linked, its status recorded, each write signed by the bridge,
+/// and a second pass records nothing.
+#[test]
+fn the_github_sync_links_and_records_on_livela_signed_by_the_bridge() {
+    use crate::github::fake::{FakeGitHub, pull_request};
+    use crate::github::{Identity, RepoSlug};
+    let mut config = crate::config::spec_example::config();
+    config.tracker.kind = crate::config::TrackerKind::Livela;
+    config.tracker.team_keys.clear();
+    let t = td(MemStore::default());
+    let a = t.create_item(&new_item("a", Status::InProgress)).unwrap();
+    let b = t.create_item(&new_item("b", Status::InProgress)).unwrap();
+    let github = FakeGitHub::new();
+    let repo = RepoSlug::parse(&config.product.repository).unwrap();
+    let by_address = crate::github::PullRequest {
+        body: format!("livela://item/{}", a.key),
+        ..pull_request(1)
+    };
+    let by_title = crate::github::PullRequest {
+        title: format!("feat: x ({})", b.key),
+        draft: true,
+        ..pull_request(2)
+    };
+    {
+        let mut s = github.state.borrow_mut();
+        s.identity = Some(Identity::App {
+            slug: "spl-asdlc".into(),
+            app_id: "1".into(),
+        });
+        s.open_pulls
+            .insert(repo.clone(), Ok(vec![by_address.clone(), by_title.clone()]));
+        s.merged_pulls.insert(repo.clone(), Ok(Vec::new()));
+        s.closed_pulls.insert(repo, Ok(Vec::new()));
+    }
+    let dir = std::env::temp_dir().join(format!("spl-asdlc-livela-sync-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let host = crate::job::Host {
+        config_path: std::path::Path::new(crate::config::DEFAULT_PATH),
+        tracker: &t,
+        budget: None,
+        log_path: Some(dir.join("acme.jsonl")),
+        env: &|_| None,
+    };
+    let before = t.store.borrow().facts.len();
+    let out = crate::sync::pass_with(&host, &config, &github);
+    assert!(out.ok, "{out:?}");
+    assert_eq!(
+        t.pr_status(&a.key, &by_address.url).unwrap(),
+        Some(PrStatus::Open(Checks::None))
+    );
+    assert_eq!(
+        t.pr_status(&b.key, &by_title.url).unwrap(),
+        Some(PrStatus::Draft)
+    );
+    let after = t.store.borrow().facts.len();
+    assert_eq!(after - before, 4, "two links, two statuses");
+    let again = crate::sync::pass_with(&host, &config, &github);
+    assert!(again.ok, "{again:?}");
+    assert_eq!(t.store.borrow().facts.len(), after, "no heartbeat");
+    let me = t.identity().unwrap().id;
+    let store = t.into_store();
+    assert_eq!(store.author, "runner", "the previous author is restored");
+    assert!(
+        store.facts[before..].iter().all(|(by, _)| *by == me),
+        "{:?}",
+        &store.facts[before..]
+    );
+}

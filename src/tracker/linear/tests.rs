@@ -948,7 +948,13 @@ fn a_prs_status_is_its_attachments_subtitle_written_only_when_it_changes() {
         )
     };
     let (l, t) = linear();
-    t.on_body("POST", URL, "attachmentsForURL", 200, &attachment("Open, checks passing"));
+    t.on_body(
+        "POST",
+        URL,
+        "attachmentsForURL",
+        200,
+        &attachment("Open, checks passing"),
+    );
     assert_eq!(
         l.pr_status("ABC-7", pr).unwrap(),
         Some(PrStatus::Open(Checks::Passing))

@@ -40,6 +40,11 @@ The adapter is built for one project (`[tracker] project`). For it, the slice ha
 
 The store-wide `prefix()` is gone: the team key is the project's prefix.
 
+For the GitHub sync ("The GitHub sync job" below), the slice has:
+
+- `LivelaItem::pr_statuses`: the status recorded for each PR the item links, `(url, code)`, the code of `PrStatus::code` (`draft`, `open:passing`, `merged`, `released:<tag>`, …);
+- `set_pr_status(id, url, code)`: record it, on the web link of that PR (the core field SID-1253 adds; the glue writes it as one fact).
+
 This glue was run against `livela-core` on 2026-10-05 and passed the conformance suite (`spl_asdlc::tracker::conformance::run_with`, 60 steps), with a journal that counts facts:
 
 - every step passed except the comment edit, which the core does not offer;
@@ -82,6 +87,7 @@ fn convert(i: livela_core::Item) -> LivelaItem {
         related_to: i.relations.related_to,
         duplicate_of: i.relations.duplicate_of,
         comments: i.comments.into_iter().map(|c| (c.id, c.author, c.text)).collect(),
+        pr_statuses: i.web_links.iter().filter_map(|w| Some((w.url.clone(), w.pr_status.clone()?))).collect(),
         web_links: i.web_links.into_iter().map(|w| w.url).collect(),
         deleted: i.deleted,
         projects: i.projects,
@@ -236,6 +242,10 @@ impl LivelaStore for Glue<'_> {
     fn add_web_link(&mut self, id: &str, url: &str, title: &str) -> Result<(), String> {
         self.0.add_web_link(id, url, Some(title)).map(|_| ()).map_err(|e| e.to_string())
     }
+    // The PR status field of a web link is the core's (SID-1253): a sketch.
+    fn set_pr_status(&mut self, id: &str, url: &str, code: &str) -> Result<(), String> {
+        self.0.set_web_link_pr_status(id, url, code).map_err(|e| e.to_string())
+    }
 }
 ```
 
@@ -312,3 +322,20 @@ The single-project job of 1.3, which read `LIVELA_SPL_ASDLC_CONFIG` with `spl_as
 A pass that works leaves only its writes on the items; a pass with nothing to do leaves nothing. The tick stops taking decisions at 80% of `LIVELA_JOB_BUDGET_SECONDS`, because the runner fails a pass that overruns its budget.
 
 The runner takes the `spl-asdlc` crate by version, from crates.io; the arrow never points the other way (BR-ASDLC-010).
+
+### The GitHub sync job
+
+A second `DaemonJob` per project, beside the bridge's, also in the runner's code (BR-ASDLC-010): `GithubSyncJob`, named `spl-asdlc-sync:<prefix>`, so that its failed passes are recorded under `job:spl-asdlc-sync:<prefix>`. The method does not require it: a project runs SPL-ASDLC without it. It is the bridge's job with another pass:
+
+- it takes the same inputs: the repository, the project's adapter, the instance overlay as a value, the App's client, 80% of the budget, and a `log_path` under the runner's state directory;
+- it runs `spl_asdlc::sync::pass_from_repository`, whose memory (the last pass, the links it laid, the PRs it follows) is the file `<log stem>.sync.json` beside that path, with its own lock.
+
+What a pass writes, through the adapter only, each write signed by `spl-asdlc` with the store's author restored:
+
+- the link of a PR that names a ticket of the project, by Livela's rules (`pr_names_item`, SID-1219): the ticket's id in the branch or the title, or in the body on purpose only (a line `Refs`, `Closes`, `Fixes`, `Resolves`, or `livela://item/<id>`); a draft is linked like any PR; a link already there is not written again, and a link a person removed is never laid again;
+- the status of each PR linked to an open ticket (`set_pr_status`): draft, open with its checks (passing, failing, pending), merged, released in `<tag>`, or closed; a status already recorded is never written again, so a pass with nothing new writes nothing.
+
+What it never writes: a status, an assignee, a label, a description, a comment, anything on GitHub. Those stay the bridge's, which moves the tickets from the facts as before.
+
+What it reads: the open PRs, the PRs merged or closed since its last pass (the first pass reads 14 days back), and the PRs linked to tickets still open, by their number; the release tags, to tell a released PR. No search API, no person's token.
+
