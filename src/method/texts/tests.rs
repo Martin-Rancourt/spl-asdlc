@@ -159,14 +159,20 @@ fn the_gate_fix_criterion_is_an_ordinary_box_the_implementer_ticks() {
     for (suites, criterion) in [
         (
             Ok(vec!["tests".to_string()]),
-            "- [ ] Each failing suite passes on `release/x`: `tests`.",
+            "- [ ] The cause of each failing suite is fixed in a PR whose base is `release/x`: `tests`.",
         ),
         (
             Err("HTTP 502".to_string()),
-            "- [ ] The suites that failed in the gate run https://github.com/example-org/acme/actions/runs/1 (unknown here: the evidence pack could not be read) pass on `release/x`.",
+            "- [ ] The cause of the suites that failed in the gate run https://github.com/example-org/acme/actions/runs/1 (unknown here: the evidence pack could not be read) is fixed in a PR whose base is `release/x`.",
         ),
     ] {
         let (_, body) = red_gate(suites);
+        // SID-1203: the box is met by the fix's PR, so it is ticked before
+        // the merge; the next gate checks the suites.
+        assert!(
+            body.contains("Tick the box once the fix's PR is ready, before its merge"),
+            "{body}"
+        );
         // One box, the failing suites on the release branch, and no marker
         // that would set it apart: the completeness rule reads it as any box.
         assert_eq!(
