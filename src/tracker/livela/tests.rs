@@ -930,3 +930,40 @@ fn the_github_sync_links_and_records_on_livela_signed_by_the_bridge() {
         &store.facts[before..]
     );
 }
+
+/// Livela tickets have no Triage since triage became an item type of its
+/// own: the canonical Triage is their Backlog, on two projects of one store.
+#[test]
+fn a_ticket_type_without_triage_takes_it_as_backlog_and_passes_the_suite() {
+    let shared: Shared = Rc::new(RefCell::new(MemStore {
+        lacks: Some("Triage"),
+        ..MemStore::default()
+    }));
+    let facts = || shared.borrow().facts.len() as u64;
+    for prefix in ["TD", "QA"] {
+        let t = Livela::new(shared.clone(), prefix, StatusTable::identity());
+        assert!(t.status_names().unwrap().contains(&"Triage".to_string()));
+        conformance::run_with(&t, &StatusTable::identity(), "1", Some(&facts)).unwrap();
+    }
+    let t = Livela::new(shared.clone(), "TD", StatusTable::identity());
+    // A non-blocking finding is created in Triage, a requalified one moved
+    // there: both land in Backlog, and read as Backlog.
+    let finding = t.create_item(&new_item("finding", Status::Triage)).unwrap();
+    assert_eq!(finding.state.status, Some(Status::Backlog));
+    let fix = t.create_item(&new_item("fix", Status::Ready)).unwrap();
+    t.set_status(&fix.key, Status::Triage, Some(None)).unwrap();
+    assert_eq!(t.get(&fix.key).unwrap().state.status, Some(Status::Backlog));
+    let before = shared.borrow().facts.len();
+    t.set_status(&fix.key, Status::Triage, Some(None)).unwrap();
+    assert_eq!(shared.borrow().facts.len(), before, "unchanged: no fact");
+}
+
+/// A ticket type that still has a Triage status keeps it.
+#[test]
+fn a_ticket_type_with_triage_keeps_it() {
+    let t = td(MemStore::default());
+    let a = t.create_item(&new_item("a", Status::Triage)).unwrap();
+    assert_eq!(a.state.status, Some(Status::Triage));
+    let names = t.status_names().unwrap();
+    assert_eq!(names.iter().filter(|n| *n == "Triage").count(), 1);
+}

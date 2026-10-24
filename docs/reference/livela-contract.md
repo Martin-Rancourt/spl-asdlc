@@ -8,7 +8,7 @@ Groups are `preparation`, `active`, `validation`, `closed`. Statuses of `ticket`
 
 | Group | Statuses |
 |---|---|
-| `preparation` | `triage`, `backlog` |
+| `preparation` | `backlog` (no `triage` since 2026-10-08, below) |
 | `active` | `ready`, `in_progress` |
 | `validation` | `in_review`, `to_deploy`, `post_deploy` |
 | `closed` | `done`, `cancel` |
@@ -19,6 +19,7 @@ Consequences for the bridge and the coordinator:
 - They are the ones who move an item through `in_review → to_deploy → post_deploy → done`; no implementing agent will ever receive it.
 - The canonical names "To Deploy" and "Post Deploy" map to `to_deploy` and `post_deploy`; `set_status` accepts the id or the English name.
 - There is no `post_release` status.
+- There is no `triage` status on a ticket since triage became an item type of its own (2026-10-08). The canonical Triage, which the bridge writes for a non-blocking finding and a finding requalified as non-blocking, is the ticket's `backlog` on Livela. The adapter names Triage among its statuses, writes it as Backlog and reads Backlog as Backlog. A ticket type that still has a `triage` status keeps it.
 - Refined is not a status: a refined ticket stays in Backlog, and Livela marks it with a `refined` field computed from the description (a goal, at least one acceptance criterion and a release note). No agent writes it, and the bridge does not read it.
 - Ready and In Progress are as the method says them (`docs/method.md`): a person moves a refined ticket to Ready when agents may take it, implementing agents take work from Ready only, and the agent's verb ("implement the next ticket") moves the ticket it takes to In Progress. The bridge moves neither.
 - The method reads every tracker the same way: only Done and Canceled are resolved (`ItemState::is_resolved`). A tracker that files To Deploy as a completed state, as a Linear team may, changes nothing.
