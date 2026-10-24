@@ -1515,7 +1515,7 @@ fn release_cut_dispatches_the_next_candidate_or_refuses_a_second_cycle() {
     let w = World::new();
     let t = w.tick_ctx();
     let mut log = ActionLog::in_memory();
-    let line = crate::verbs::cut(&t, &mut log, false).unwrap();
+    let line = crate::verbs::cut(&t, &mut log, false, "me").unwrap();
     assert!(line.contains("action candidate"), "{line}");
     assert!(
         w.github
@@ -1523,7 +1523,7 @@ fn release_cut_dispatches_the_next_candidate_or_refuses_a_second_cycle() {
             .iter()
             .any(|l| l.contains("release-cut.yml") && l.contains(BRANCH))
     );
-    let refused = crate::verbs::cut(&t, &mut log, true).unwrap_err();
+    let refused = crate::verbs::cut(&t, &mut log, true, "me").unwrap_err();
     assert!(refused.contains("a cycle is in flight"), "{refused}");
 }
 

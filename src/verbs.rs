@@ -171,9 +171,10 @@ pub fn status(t: &Tick) -> Result<(Cycle, GoDecision), String> {
     Ok((cy, decision))
 }
 
-/// `release cut [--open]`: dispatch the cut workflow, for a new cycle from
-/// the default branch or for the next candidate on the release branch.
-pub fn cut(t: &Tick, log: &mut ActionLog, open: bool) -> Result<String, String> {
+/// `release cut [--open]` by `who`: dispatch the cut workflow, for a new
+/// cycle from the default branch or for the next candidate on the release
+/// branch.
+pub fn cut(t: &Tick, log: &mut ActionLog, open: bool, who: &str) -> Result<String, String> {
     let cfg = release_cycle(t);
     let shape = Shape::of(&t.config.product.name, cfg);
     let branches: Vec<String> = t
@@ -210,7 +211,7 @@ pub fn cut(t: &Tick, log: &mut ActionLog, open: bool) -> Result<String, String> 
         &mut report,
         "release cut",
         &format!("dispatch {workflow} ({action})"),
-        json!({"ref": git_ref}),
+        json!({"ref": git_ref, "by": who}),
         || {
             t.github
                 .dispatch_workflow(
