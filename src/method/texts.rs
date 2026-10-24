@@ -478,7 +478,7 @@ pub fn gate_fix_ticket(f: &RedGateFacts) -> (String, String) {
     let (criterion, found) = match &f.suites {
         Ok(suites) if suites.is_empty() => (
             format!(
-                "- [ ] The step that failed outside the suites (every suite passed: see the gate run {}) is fixed on `{}`.",
+                "- [ ] The step that failed outside the suites (every suite passed: see the gate run {}) is fixed in a PR whose base is `{}`.",
                 f.run_url, f.branch
             ),
             "none: every suite passed, a step outside the suites failed".to_string(),
@@ -495,7 +495,7 @@ pub fn gate_fix_ticket(f: &RedGateFacts) -> (String, String) {
             let names = names.join(", ");
             (
                 format!(
-                    "- [ ] Each failing suite passes on `{}`: {names}.",
+                    "- [ ] The cause of each failing suite is fixed in a PR whose base is `{}`: {names}.",
                     f.branch
                 ),
                 names,
@@ -503,7 +503,7 @@ pub fn gate_fix_ticket(f: &RedGateFacts) -> (String, String) {
         }
         Err(why) => (
             format!(
-                "- [ ] The suites that failed in the gate run {} (unknown here: the evidence pack could not be read) pass on `{}`.",
+                "- [ ] The cause of the suites that failed in the gate run {} (unknown here: the evidence pack could not be read) is fixed in a PR whose base is `{}`.",
                 f.run_url, f.branch
             ),
             format!(
@@ -524,6 +524,8 @@ pub fn gate_fix_ticket(f: &RedGateFacts) -> (String, String) {
          ## Business rules\n{absence}\n\n\
          ## Context\n- Release: {release}\n- Candidate: `{candidate}` at `{sha12}`\n- Gate run: {run_url}\n\
          - Failing suites (`{suites_file}` of the evidence pack `{pack}`): {found}\n{unseen}\
+         - Tick the box once the fix's PR is ready, before its merge: the bridge merges a PR only once its ticket \
+         ticks a box, and the suites passing is the next gate's verification, not this box's (SID-1203).\n\
          - This ticket follows the flow of any ticket: To Deploy at its fix's merge, Done at the release's \
          closure. The gate of the next candidate is the verification: when it is green and no PR of this ticket \
          was merged yet, the bridge closes it (Done, with a comment naming that candidate); when it is red, the \

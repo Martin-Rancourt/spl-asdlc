@@ -2769,7 +2769,7 @@ fn a_red_gate_opens_one_urgent_gate_fix_ticket_once_its_rerun_settled() {
     );
     assert!(
         fix.description.contains(&format!(
-            "- [ ] Each failing suite passes on `{BRANCH}`: `tests`, `lint`."
+            "- [ ] The cause of each failing suite is fixed in a PR whose base is `{BRANCH}`: `tests`, `lint`."
         )),
         "{}",
         fix.description
@@ -3056,7 +3056,7 @@ fn a_red_gate_whose_evidence_cannot_be_read_still_opens_its_ticket() {
     assert!(d.contains("HTTP 502"), "{d}");
     assert!(
         d.contains(&format!(
-            "- [ ] The suites that failed in the gate run {RUN1} (unknown here"
+            "- [ ] The cause of the suites that failed in the gate run {RUN1} (unknown here"
         )),
         "{d}"
     );
