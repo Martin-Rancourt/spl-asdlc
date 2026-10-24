@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.1](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.4.0...v1.4.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* **livela:** the canonical Triage is a Livela ticket's Backlog (SID-1297) ([#106](https://github.com/Martin-Rancourt/spl-asdlc/issues/106)) ([1ce29a8](https://github.com/Martin-Rancourt/spl-asdlc/commit/1ce29a838d323f3f267a2f1a1780fb0b6ad1534d))
+
+
+### Continuous Integration
+
+* **publish:** publish the crate on crates.io at each release (SID-1298) ([#108](https://github.com/Martin-Rancourt/spl-asdlc/issues/108)) ([38ac1a4](https://github.com/Martin-Rancourt/spl-asdlc/commit/38ac1a4e6576cff01c7b4ff65ba5831ec597461c))
+
 ## [1.4.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.3.3...v1.4.0) (2026-10-24)
 
 
