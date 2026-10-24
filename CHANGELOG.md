@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.4.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.3.3...v1.4.0) (2026-10-24)
+
+
+### Features
+
+* **host:** spl-asdlc embeddable in a host application (SID-1251) ([#104](https://github.com/Martin-Rancourt/spl-asdlc/issues/104)) ([c101ef4](https://github.com/Martin-Rancourt/spl-asdlc/commit/c101ef423c0c632293c247338788e531fb4b0114))
+* **sync:** GitHub to item sync job, hosted by the runner (SID-1252) ([#105](https://github.com/Martin-Rancourt/spl-asdlc/issues/105)) ([cb422ac](https://github.com/Martin-Rancourt/spl-asdlc/commit/cb422ac65061d385092234ff24f2c7dfff2f37fb))
+
+
+### Bug Fixes
+
+* **release:** a gate-fix ticket's box is met by the fix's PR (SID-1203) ([#102](https://github.com/Martin-Rancourt/spl-asdlc/issues/102)) ([62f127f](https://github.com/Martin-Rancourt/spl-asdlc/commit/62f127fd6e3e1a284d46188ea627105f39c54788))
+
 ## [1.3.3](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.3.2...v1.3.3) (2026-10-22)
 
 
