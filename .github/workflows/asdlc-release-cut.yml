@@ -14,10 +14,10 @@ name: asdlc-release-cut
 # wait for the gate, no merge. The tag push starts the gate.
 #
 # `open` runs the published `spl-asdlc` binary of the channel the caller
-# names (`spl-asdlc-version`: `latest`, a release tag `v<X.Y.Z>`, or
-# `staging`), downloaded from the releases of `spl-asdlc-repository` with
-# the App's token and checked against the release's SHA256SUMS before it
-# runs. `release prepare` reads the caller's `.spl-asdlc/config.toml` (its
+# names (`spl-asdlc-version`: `latest`, a minor line `v<X.Y>` (its newest
+# published release `v<X.Y.Z>`), a release tag `v<X.Y.Z>`, or `staging`),
+# downloaded from the releases of `spl-asdlc-repository` with the App's
+# token and checked against the release's SHA256SUMS before it runs. `release prepare` reads the caller's `.spl-asdlc/config.toml` (its
 # release tag pattern, version files and CHANGELOG sections), never an
 # instance overlay. The release class reads the same file at the candidate:
 # the paths its review angles carry (`[[review.angles]] paths`) are the
@@ -81,7 +81,7 @@ on:
         type: string
         required: true
       spl-asdlc-version:
-        description: 'The channel of that binary: `latest` (the latest release), a release tag `v<X.Y.Z>`, or `staging` (the method''s sandbox only).'
+        description: 'The channel of that binary: `latest` (the latest release), a minor line `v<X.Y>` (the newest published release `v<X.Y.Z>` of that line), a release tag `v<X.Y.Z>`, or `staging` (the method''s sandbox only).'
         type: string
         default: latest
       config-file:
@@ -263,9 +263,9 @@ jobs:
             refuse "spl-asdlc-repository '$SPL_REPOSITORY' is not <owner>/<repo>."
           fi
           # A channel, never a branch: only a published binary runs.
-          channel_re='^(latest|staging|v[0-9]+\.[0-9]+\.[0-9]+)$'
+          channel_re='^(latest|staging|v[0-9]+\.[0-9]+(\.[0-9]+)?)$'
           if ! [[ "$SPL_VERSION" =~ $channel_re ]]; then
-            refuse "spl-asdlc-version '$SPL_VERSION' is not a channel. Expected 'latest', 'staging' or a release tag v<X.Y.Z>."
+            refuse "spl-asdlc-version '$SPL_VERSION' is not a channel. Expected 'latest', 'staging', a minor line v<X.Y> or a release tag v<X.Y.Z>."
           fi
           if [ -z "$CONFIG_FILE" ] || [[ "$CONFIG_FILE" == /* ]] || [[ "/$CONFIG_FILE/" == */../* ]]; then
             refuse "'$CONFIG_FILE' must be a path inside the repository."
@@ -465,14 +465,35 @@ jobs:
             Darwin/x86_64) target=x86_64-apple-darwin ;;
             *) refuse "No spl-asdlc binary is published for this runner ($(uname -s)/$(uname -m)): run the cut on a Linux x86_64 runner (runs-on)." ;;
           esac
-          case "$SPL_VERSION" in
-            latest)
-              if ! tag="$(gh release view --repo "$SPL_REPOSITORY" --json tagName --jq .tagName)" || [ -z "$tag" ]; then
-                refuse "Could not read the latest release of $SPL_REPOSITORY. Check that the App's token reads it: gh release view --repo $SPL_REPOSITORY"
-              fi
-              ;;
-            *) tag="$SPL_VERSION" ;;
-          esac
+          line_re='^v[0-9]+\.[0-9]+$'
+          if [ "$SPL_VERSION" = latest ]; then
+            if ! tag="$(gh release view --repo "$SPL_REPOSITORY" --json tagName --jq .tagName)" || [ -z "$tag" ]; then
+              refuse "Could not read the latest release of $SPL_REPOSITORY. Check that the App's token reads it: gh release view --repo $SPL_REPOSITORY"
+            fi
+          elif [[ "$SPL_VERSION" =~ $line_re ]]; then
+            # A minor line is its newest published release (no draft, no
+            # prerelease) `v<X.Y.Z>`, ranked by Z, never by date: a fix to
+            # an older line may be published after a newer line. A host that
+            # embeds spl-asdlc at `~X.Y` names its line, so the cut never
+            # runs a version outside it.
+            listed="$(mktemp)"
+            if ! gh api --paginate "repos/$SPL_REPOSITORY/releases?per_page=100" > "$listed"; then
+              refuse "Could not list the releases of $SPL_REPOSITORY. Check that the App's token reads them: gh api repos/$SPL_REPOSITORY/releases"
+            fi
+            if ! patches="$(jq -r --arg line "$SPL_VERSION." '.[]
+                | select((.draft | not) and (.prerelease | not))
+                | .tag_name | select(startswith($line)) | ltrimstr($line)
+                | select(test("^(0|[1-9][0-9]*)$"))' "$listed")"; then
+              refuse "The releases of $SPL_REPOSITORY could not be read as JSON."
+            fi
+            patch="$(sort -n <<< "$patches" | tail -n 1)"
+            if [ -z "$patch" ]; then
+              refuse "$SPL_REPOSITORY has no published release of the line $SPL_VERSION (no $SPL_VERSION.<Z> that is neither a draft nor a prerelease)."
+            fi
+            tag="$SPL_VERSION.$patch"
+          else
+            tag="$SPL_VERSION"
+          fi
           if [ "$tag" = staging ]; then
             if [ "$target" != x86_64-unknown-linux-gnu ]; then
               refuse "The staging channel builds $target for no runner but Linux x86_64."
