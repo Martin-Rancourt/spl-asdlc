@@ -2,7 +2,8 @@
 //! (`docs/reference/livela-contract.md`, Conformance): create a release item with two
 //! angle children, link a PR URL and find the item back by it, move a child
 //! through In Review → To Deploy → Post Deploy → Done, lay a `blocks`
-//! relation and read it back from both ends (and only there), comment twice
+//! relation and read it back from both ends (and only there), record the
+//! linked PR's status where the tracker holds one, comment twice
 //! as the service identity and read the thread oldest first, edit a comment
 //! where the tracker can, describe, label, unlabel, assign and unassign with
 //! a read-back after each write, repeat every write and check that the
@@ -217,6 +218,44 @@ fn suite(
         none.is_empty(),
         &format!("found {none:?} by an unlinked URL"),
     )?;
+    // The status of the linked PR (the GitHub sync), read back; none on a
+    // PR the item does not link.
+    let released = PrStatus::Released(format!("conformance-v{run_id}"));
+    let holds = tracker.holds_pr_status();
+    if holds {
+        for status in [PrStatus::Open(Checks::Pending), released.clone()] {
+            step(
+                r,
+                &format!("record PR status {}", status.code()),
+                tracker.record_pr_status(&children[0].key, &pr_url, &status),
+            )?;
+            let back = step(
+                r,
+                "read PR status",
+                tracker.pr_status(&children[0].key, &pr_url),
+            )?;
+            check(
+                back.as_ref() == Some(&status),
+                &format!("PR status read back as {back:?}"),
+            )?;
+        }
+        step(
+            r,
+            "record the status of an unlinked PR",
+            tracker.record_pr_status(&children[0].key, &unlinked, &PrStatus::Merged),
+        )?;
+        let back = step(
+            r,
+            "read the status of an unlinked PR",
+            tracker.pr_status(&children[0].key, &unlinked),
+        )?;
+        check(
+            back.is_none(),
+            &format!("an unlinked PR has status {back:?}"),
+        )?;
+    } else {
+        r.not_offered.push("PR status".to_string());
+    }
 
     // Through the validation statuses to Done.
     for status in [
@@ -402,6 +441,13 @@ fn suite(
         "repeat: link PR",
         tracker.link_pr(&children[0].key, &pr_url, "conformance PR"),
     )?;
+    if holds {
+        step(
+            r,
+            "repeat: record PR status",
+            tracker.record_pr_status(&children[0].key, &pr_url, &released),
+        )?;
+    }
     if let (Some(count), Some(before)) = (changes, before) {
         let after = count();
         check(

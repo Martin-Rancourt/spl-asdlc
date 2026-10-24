@@ -59,7 +59,7 @@ How the daemon runs the job:
 
 **Decided by the owner (2026-10-07): the dependency arrow goes from Livela to ASDLC** (BR-ASDLC-010).
 - `spl-asdlc` does not depend on `livela-core`. It names no private account, puts nothing of Livela in its `Cargo.lock`, and carries no second copy of the `DaemonJob` trait.
-- The runner depends on the public `spl-asdlc` crate by version, from crates.io, and writes the wrapper on its side. `BridgeJob: livela_core::DaemonJob` lives in the runner's code, next to its other jobs, registered in one line in `registered()` of `crates/livela-runner/src/jobs.rs`. So does the store glue (`LivelaStore` for its `Store`), and later `GithubSyncJob` (point 5).
+- The runner depends on the public `spl-asdlc` crate by version, from crates.io, and writes the wrapper on its side. `BridgeJob: livela_core::DaemonJob` lives in the runner's code, next to its other jobs, registered in one line in `registered()` of `crates/livela-runner/src/jobs.rs`. So does the store glue (`LivelaStore` for its `Store`), and `GithubSyncJob` ("GitHub → item sync" below).
 - What `spl-asdlc` offers the wrapper: the pass (`spl_asdlc::job::pass_from_repository`, and `spl_asdlc::job::pass` for a configuration on disk), the adapter (`spl_asdlc::tracker::livela::Livela`), the slice of the store the adapter needs (`LivelaStore`), `doctor` and the gestures (`spl_asdlc::embed::Project`), and the files of a project's setup PR (`spl_asdlc::setup::files`). `docs/setup/tracker-livela.md` says what the wrapper does, so that another runtime can write its own.
 - Why not a dependency on the core: the Livela repository is private and the crate's license is `UNLICENSED`; a Git dependency would name an account in `Cargo.lock` (BR-ASDLC-001); and it would give the runner two copies of the crate, so that `BridgeJob` would implement a trait the runner does not know.
 
@@ -97,7 +97,15 @@ A Livela workspace holds several projects; each that runs the method has its own
   - the adapter declares it (`can_edit_comments` is false);
   - the bridge writes no rewritten row on Livela;
   - informational facts stay in its action log, and messages that ask someone to act are comments, as everywhere.
-- **GitHub → item sync** (PR status and review comments mirrored on the item). This is a Livela feature built on the `github` module of this crate: a second `DaemonJob`, `GithubSyncJob`. The method does not require it.
+
+## GitHub → item sync
+
+A ticket shows where each of its PRs stands, kept current by the runner even when no surface is open and no device is connected to GitHub. The pass is in this crate, `spl_asdlc::sync::pass_from_repository`, so that it serves any tracker; the runner hosts it as a second `DaemonJob` per project, `GithubSyncJob`, in its own code (BR-ASDLC-010; `docs/setup/tracker-livela.md`, "The GitHub sync job"). The method does not require it.
+- **What it writes**, through the `Tracker` trait only: the link of a PR that names a ticket of the project (SID-1219's rules: the id in the branch or the title, or on purpose in the body; a link a person removed is never laid again), and the status of each PR linked to an open ticket (`Tracker::record_pr_status`: draft, open with its checks, merged, released in `<tag>`, closed). On Livela the status goes through `LivelaStore::set_pr_status`, on the web link of the PR; on Linear it is the subtitle of the PR's attachment.
+- **What it never writes**: a status, an assignee, a label, a description, a comment, a review comment; nothing on GitHub.
+- **No heartbeat**: a value already recorded is never written again, and each write is signed by `spl-asdlc`, the store's author restored (point 2). The conformance suite checks it with its fact counter.
+- **What it reads**: through the App's installation token, the open PRs, the PRs merged or closed since its last pass, and the PRs linked to tickets still open; no person's token and no search API.
+- Each surface still asks GitHub when an item is opened (SID-1219, SID-1218): the recorded status is what it shows first.
 
 ## 6. Locks and agent sessions (for the coordinator)
 
