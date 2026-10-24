@@ -69,6 +69,10 @@ How the daemon runs the job:
 - `Store::add_web_link(id, url, title)` then `Store::find_by_web_link(url)` → ids, oldest first. A trailing slash and the case of the scheme and host are ignored.
 - `Store::set_status(id, "to_deploy")` or `set_status(id, "To Deploy")`: canonical name (id or English name). An `InvalidStatus` error (code `invalid_status`) when the type has no such status.
 - `Filter { tag: Some(..) }` and `Filter { parent: Some(..) }` with `list_items_filtered`: by tag, and the children of an item.
+- One project (`[tracker] project`). The adapter is built for one item of type `project`, named by its `prefix`, its title or its id (`LivelaStore::project`); ambiguous is an error, never a guess.
+  - It creates every item in that project (`BaseFields { projects }`), a sub-item too, and lists with `Filter { project: Some(..) }`.
+  - It keeps only that project's items from the store-wide searches (`find_by_web_link`, the duplicates), and a key whose item is in another project is not found.
+  - The team key is the project's `prefix`, which its items' short ids carry.
 - `Store::add_relation(b, RelationKind::BlockedBy, a)` → `a.relations.blocks` contains b.
 - `Store::comment(id, author, text)`; `Store::list_activity(id)`: every fact carries its author.
 - `Store::set_author` and `Store::current_author`.

@@ -1,11 +1,13 @@
 //! The Livela adapter on an in-memory store that keeps the contract's
-//! rules: ticket statuses by canonical name, relations held by one side,
-//! web links, participants, and a fact signed by the current author for
-//! every write, as the core's log does. The glue for the real store is
-//! verified against the Livela core (`docs/setup/tracker-livela.md`).
+//! rules: projects whose prefix their items' short ids carry, ticket statuses
+//! by canonical name, relations held by one side, web links, participants,
+//! and a fact signed by the current author for every write, as the core's
+//! log does. The glue for the real store is verified against the Livela core
+//! (`docs/setup/tracker-livela.md`).
 
 use super::*;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 const STATUSES: [&str; 9] = [
     "Triage",
@@ -20,6 +22,8 @@ const STATUSES: [&str; 9] = [
 ];
 
 struct MemStore {
+    /// `TD` and `QA`, two projects of one store.
+    projects: Vec<LivelaProject>,
     items: BTreeMap<String, LivelaItem>,
     participants: BTreeMap<String, String>,
     next: u64,
@@ -34,7 +38,13 @@ struct MemStore {
 
 impl Default for MemStore {
     fn default() -> Self {
+        let project = |prefix: &str, name: &str| LivelaProject {
+            id: format!("project-{}", prefix.to_lowercase()),
+            prefix: prefix.into(),
+            name: name.into(),
+        };
         MemStore {
+            projects: vec![project("TD", "Delivery"), project("QA", "Quality")],
             items: BTreeMap::new(),
             participants: BTreeMap::new(),
             next: 0,
@@ -86,6 +96,20 @@ impl LivelaStore for MemStore {
     fn participant_name(&self, id: &str) -> Option<String> {
         self.participants.get(id).cloned()
     }
+    fn project(&self, reference: &str) -> Result<Option<LivelaProject>, String> {
+        let found: Vec<&LivelaProject> = self
+            .projects
+            .iter()
+            .filter(|p| {
+                p.id == reference || p.prefix.eq_ignore_ascii_case(reference) || p.name == reference
+            })
+            .collect();
+        match found.as_slice() {
+            [] => Ok(None),
+            [p] => Ok(Some((*p).clone())),
+            _ => Err(format!("{} projects answer to {reference}", found.len())),
+        }
+    }
     fn resolve(&self, short_id: &str) -> Result<Option<String>, String> {
         Ok(self
             .items
@@ -103,9 +127,10 @@ impl LivelaStore for MemStore {
             .collect();
         Ok(item)
     }
-    fn items(&self, tag: Option<&str>, parent: Option<&str>) -> Vec<LivelaItem> {
+    fn items(&self, project: &str, tag: Option<&str>, parent: Option<&str>) -> Vec<LivelaItem> {
         self.items
             .values()
+            .filter(|i| i.projects.iter().any(|p| p == project))
             .filter(|i| tag.is_none_or(|t| i.tags.iter().any(|x| x == t)))
             .filter(|i| parent.is_none_or(|p| i.parent.as_deref() == Some(p)))
             .cloned()
@@ -117,9 +142,6 @@ impl LivelaStore for MemStore {
             .filter(|i| i.duplicate_of.as_deref() == Some(id))
             .map(|i| i.id.clone())
             .collect()
-    }
-    fn prefix(&self) -> String {
-        "TD".into()
     }
     fn ticket_statuses(&self) -> Vec<String> {
         STATUSES
@@ -137,6 +159,7 @@ impl LivelaStore for MemStore {
     }
     fn create_ticket(
         &mut self,
+        project: &str,
         title: &str,
         description: &str,
         tags: &[String],
@@ -148,18 +171,25 @@ impl LivelaStore for MemStore {
         if !STATUSES.contains(&status) {
             return Err(format!("ticket has no status {status}"));
         }
+        let prefix = self
+            .projects
+            .iter()
+            .find(|p| p.id == project)
+            .map(|p| p.prefix.clone())
+            .ok_or(format!("no project {project}"))?;
         let id = self.id();
         self.fact(format!("create {id}"));
         self.priorities.insert(id.clone(), priority);
         let item = LivelaItem {
             id: id.clone(),
-            short_id: format!("TD-{}", &id[4..]),
+            short_id: format!("{prefix}-{}", &id[4..]),
             title: title.into(),
             description: description.into(),
             status: status.into(),
             tags: tags.to_vec(),
             assignee: assignee.map(str::to_string),
             parent: parent.map(str::to_string),
+            projects: vec![project.into()],
             ..LivelaItem::default()
         };
         self.items.insert(id.clone(), item);
@@ -250,6 +280,107 @@ impl LivelaStore for MemStore {
     }
 }
 
+/// One store shared by the adapters of its two projects.
+type Shared = Rc<RefCell<MemStore>>;
+
+impl LivelaStore for Shared {
+    fn bridge_participant(&mut self) -> Result<String, String> {
+        self.borrow_mut().bridge_participant()
+    }
+    fn existing_bridge_participant(&self) -> Option<String> {
+        self.borrow().existing_bridge_participant()
+    }
+    fn swap_author(&mut self, participant: &str) -> String {
+        self.borrow_mut().swap_author(participant)
+    }
+    fn participants_named(&self, name: &str) -> Vec<(String, String)> {
+        self.borrow().participants_named(name)
+    }
+    fn participant_name(&self, id: &str) -> Option<String> {
+        self.borrow().participant_name(id)
+    }
+    fn project(&self, reference: &str) -> Result<Option<LivelaProject>, String> {
+        self.borrow().project(reference)
+    }
+    fn resolve(&self, short_id: &str) -> Result<Option<String>, String> {
+        self.borrow().resolve(short_id)
+    }
+    fn item(&self, id: &str) -> Result<LivelaItem, String> {
+        self.borrow().item(id)
+    }
+    fn items(&self, project: &str, tag: Option<&str>, parent: Option<&str>) -> Vec<LivelaItem> {
+        self.borrow().items(project, tag, parent)
+    }
+    fn duplicates_of(&self, id: &str) -> Vec<String> {
+        self.borrow().duplicates_of(id)
+    }
+    fn ticket_statuses(&self) -> Vec<String> {
+        self.borrow().ticket_statuses()
+    }
+    fn find_by_web_link(&self, url: &str) -> Vec<String> {
+        self.borrow().find_by_web_link(url)
+    }
+    fn create_ticket(
+        &mut self,
+        project: &str,
+        title: &str,
+        description: &str,
+        tags: &[String],
+        assignee: Option<&str>,
+        parent: Option<&str>,
+        priority: Option<u8>,
+        status: &str,
+    ) -> Result<String, String> {
+        self.borrow_mut().create_ticket(
+            project,
+            title,
+            description,
+            tags,
+            assignee,
+            parent,
+            priority,
+            status,
+        )
+    }
+    fn set_status(&mut self, id: &str, status: &str) -> Result<(), String> {
+        LivelaStore::set_status(&mut *self.borrow_mut(), id, status)
+    }
+    fn set_description(&mut self, id: &str, text: &str) -> Result<(), String> {
+        self.borrow_mut().set_description(id, text)
+    }
+    fn add_tag(&mut self, id: &str, tag: &str) -> Result<(), String> {
+        self.borrow_mut().add_tag(id, tag)
+    }
+    fn remove_tag(&mut self, id: &str, tag: &str) -> Result<(), String> {
+        self.borrow_mut().remove_tag(id, tag)
+    }
+    fn assign(&mut self, id: &str, participant: Option<&str>) -> Result<(), String> {
+        LivelaStore::assign(&mut *self.borrow_mut(), id, participant)
+    }
+    fn comment(&mut self, id: &str, author: &str, text: &str) -> Result<String, String> {
+        LivelaStore::comment(&mut *self.borrow_mut(), id, author, text)
+    }
+    fn add_relation(&mut self, id: &str, kind: LivelaRelation, target: &str) -> Result<(), String> {
+        self.borrow_mut().add_relation(id, kind, target)
+    }
+    fn remove_relation(
+        &mut self,
+        id: &str,
+        kind: LivelaRelation,
+        target: &str,
+    ) -> Result<(), String> {
+        self.borrow_mut().remove_relation(id, kind, target)
+    }
+    fn add_web_link(&mut self, id: &str, url: &str, title: &str) -> Result<(), String> {
+        self.borrow_mut().add_web_link(id, url, title)
+    }
+}
+
+/// The adapter of the `TD` project on its own store.
+fn td(store: MemStore) -> Livela<MemStore> {
+    Livela::new(store, "TD", StatusTable::identity())
+}
+
 fn new_item(title: &str, status: Status) -> NewItem {
     NewItem {
         title: title.into(),
@@ -263,33 +394,193 @@ fn new_item(title: &str, status: Status) -> NewItem {
 }
 
 #[test]
-fn the_livela_adapter_passes_the_conformance_suite_without_comment_edits() {
-    let t = Livela::new(MemStore::default(), StatusTable::identity());
-    let facts = || t.store.borrow().facts.len() as u64;
-    let report = conformance::run_with(&t, &StatusTable::identity(), "1", Some(&facts)).unwrap();
-    assert_eq!(
-        report.not_offered,
-        vec!["comment edit"],
-        "the one missing point of the contract"
-    );
-    assert!(
-        report
-            .passed
-            .contains(&"unchanged writes record nothing".to_string())
-    );
+fn the_livela_adapter_passes_the_conformance_suite_on_two_projects_of_one_store() {
+    let shared: Shared = Rc::new(RefCell::new(MemStore::default()));
+    let facts = || shared.borrow().facts.len() as u64;
+    // The same run id in both: the same label and PR URL, so that the second
+    // run's counts (three items by label, one by the PR URL) prove it sees
+    // none of the first run's items.
+    for prefix in ["TD", "QA"] {
+        let t = Livela::new(shared.clone(), prefix, StatusTable::identity());
+        let report =
+            conformance::run_with(&t, &StatusTable::identity(), "1", Some(&facts)).unwrap();
+        assert_eq!(
+            report.not_offered,
+            vec!["comment edit"],
+            "the one missing point of the contract"
+        );
+        assert!(
+            report
+                .passed
+                .contains(&"unchanged writes record nothing".to_string())
+        );
+        assert!(
+            report.created.iter().all(|k| k.starts_with(prefix)),
+            "{prefix}: {:?}",
+            report.created
+        );
+    }
 }
 
 #[test]
-fn a_tracker_project_is_ignored_and_items_are_created_as_without_it() {
-    // Its project scoping is the work of the Livela milestone: `doctor`
-    // says the key is ignored.
-    let t = Livela::new(MemStore::default(), StatusTable::identity());
-    assert_eq!(t.project("acme").unwrap(), None);
+fn neither_project_sees_the_others_items() {
+    let shared: Shared = Rc::new(RefCell::new(MemStore::default()));
+    let td = Livela::new(shared.clone(), "TD", StatusTable::identity());
+    let qa = Livela::new(shared.clone(), "QA", StatusTable::identity());
+    let labelled = |title: &str| NewItem {
+        labels: vec!["l".into()],
+        ..new_item(title, Status::Ready)
+    };
+    let a = td.create_item(&labelled("a")).unwrap();
+    let child = td
+        .create_item(&NewItem {
+            parent: Some(a.key.clone()),
+            ..labelled("child")
+        })
+        .unwrap();
+    let b = qa.create_item(&labelled("b")).unwrap();
+    assert!(a.key.starts_with("TD-") && child.key.starts_with("TD-"));
+    assert!(b.key.starts_with("QA-"));
+    let url = "https://github.com/o/r/pull/1";
+    td.link_pr(&a.key, url, "PR").unwrap();
+    qa.link_pr(&b.key, url, "PR").unwrap();
+
+    let keys = |items: Vec<Item>| items.into_iter().map(|i| i.key).collect::<Vec<_>>();
+    assert_eq!(
+        keys(td.list_by_label("l").unwrap()),
+        [a.key.clone(), child.key.clone()]
+    );
+    assert_eq!(keys(qa.list_by_label("l").unwrap()), vec![b.key.clone()]);
+    assert_eq!(
+        qa.find_labelled_containing("l", "").unwrap().len(),
+        1,
+        "the default search goes through list_by_label"
+    );
+    assert_eq!(td.items_linked_to_pr(url).unwrap(), vec![a.key.clone()]);
+    assert_eq!(qa.items_linked_to_pr(url).unwrap(), vec![b.key.clone()]);
+    assert!(qa.get(&a.key).unwrap_err().is_not_found());
+    assert!(td.get(&b.key).unwrap_err().is_not_found());
+    assert!(qa.children(&a.key).unwrap_err().is_not_found());
+    assert_eq!(keys(td.children(&a.key).unwrap()), vec![child.key.clone()]);
+
+    // A duplicate laid in the store across projects is not seen from the
+    // other one.
+    let (a_id, b_id) = (a.id.clone(), b.id.clone());
+    shared
+        .borrow_mut()
+        .add_relation(&b_id, LivelaRelation::DuplicateOf, &a_id)
+        .unwrap();
+    assert!(td.relations(&a.key).unwrap().duplicates.is_empty());
+
+    // No write reaches the other project's items, and none is recorded.
+    let before = shared.borrow().facts.len();
+    assert!(
+        qa.relate(&b.key, &a.key, RelationKind::Blocks)
+            .unwrap_err()
+            .is_not_found()
+    );
+    assert!(qa.comment(&a.key, "x").unwrap_err().is_not_found());
+    assert!(
+        qa.set_status(&a.key, Status::Done, None)
+            .unwrap_err()
+            .is_not_found()
+    );
+    assert!(
+        qa.create_item(&NewItem {
+            parent: Some(a.key.clone()),
+            ..new_item("orphan", Status::Ready)
+        })
+        .unwrap_err()
+        .is_not_found()
+    );
+    let relation = format!("blocked_by:{a_id}:{b_id}");
+    shared
+        .borrow_mut()
+        .add_relation(&a_id, LivelaRelation::BlockedBy, &b_id)
+        .unwrap();
+    let before_unrelate = shared.borrow().facts.len();
+    assert!(qa.unrelate(&relation).unwrap_err().is_not_found());
+    assert_eq!(shared.borrow().facts.len(), before_unrelate);
+    assert_eq!(before + 1, before_unrelate, "only the store's own relation");
+}
+
+#[test]
+fn the_team_key_is_the_projects_prefix_and_its_items_land_in_it() {
+    let t = Livela::new(MemStore::default(), "Quality", StatusTable::identity());
+    assert_eq!(t.team_key().unwrap(), "QA");
+    let a = t.create_item(&new_item("a", Status::Ready)).unwrap();
+    let child = t
+        .create_item(&NewItem {
+            parent: Some(a.key.clone()),
+            ..new_item("child", Status::Ready)
+        })
+        .unwrap();
+    let store = t.into_store();
+    for id in [&a.id, &child.id] {
+        assert_eq!(store.items[id].projects, ["project-qa"]);
+    }
+}
+
+#[test]
+fn a_tracker_project_is_found_by_its_prefix_name_or_id() {
+    let t = td(MemStore::default());
+    for reference in ["TD", "td", "Delivery", "project-td"] {
+        assert_eq!(
+            t.project(reference).unwrap().as_deref(),
+            Some("Delivery"),
+            "{reference}"
+        );
+    }
+    assert!(t.project("ZZ").unwrap_err().is_not_found());
+}
+
+#[test]
+fn a_project_several_answer_to_is_unreadable() {
+    let mut store = MemStore::default();
+    store.projects.push(LivelaProject {
+        id: "project-x".into(),
+        prefix: "XX".into(),
+        name: "TD".into(),
+    });
+    let t = td(store);
+    assert!(matches!(
+        t.project("TD").unwrap_err(),
+        TrackerError::Unreadable { .. }
+    ));
+    assert!(matches!(
+        t.team_key().unwrap_err(),
+        TrackerError::Unreadable { .. }
+    ));
+}
+
+#[test]
+fn an_adapter_of_an_unknown_project_is_built_and_writes_nothing() {
+    let t = Livela::new(MemStore::default(), "ZZ", StatusTable::identity());
+    assert!(t.project("ZZ").unwrap_err().is_not_found());
+    let errs = [
+        t.identity().map(|_| ()),
+        t.team_key().map(|_| ()),
+        t.status_names().map(|_| ()),
+        t.get("TD-0001").map(|_| ()),
+        t.list_by_label("l").map(|_| ()),
+        t.items_linked_to_pr("https://github.com/o/r/pull/1")
+            .map(|_| ()),
+        t.create_item(&new_item("a", Status::Ready)).map(|_| ()),
+    ];
+    for err in errs {
+        let err = err.unwrap_err();
+        assert!(matches!(err, TrackerError::Unreadable { .. }), "{err}");
+        assert!(err.to_string().contains("Livela project ZZ"), "{err}");
+    }
+    let store = t.into_store();
+    assert!(store.items.is_empty());
+    assert!(store.participants.is_empty());
+    assert!(store.facts.is_empty());
 }
 
 #[test]
 fn every_write_is_signed_by_the_bridge_and_the_runner_keeps_its_author() {
-    let t = Livela::new(MemStore::default(), StatusTable::identity());
+    let t = td(MemStore::default());
     let a = t.create_item(&new_item("a", Status::Ready)).unwrap();
     let b = t.create_item(&new_item("b", Status::Ready)).unwrap();
     t.set_status(&a.key, Status::InReview, None).unwrap();
@@ -312,7 +603,7 @@ fn every_write_is_signed_by_the_bridge_and_the_runner_keeps_its_author() {
 
 #[test]
 fn an_urgent_item_is_created_at_the_stores_priority_one() {
-    let t = Livela::new(MemStore::default(), StatusTable::identity());
+    let t = td(MemStore::default());
     let urgent = NewItem {
         priority: Some(Priority::Urgent),
         ..new_item("a", Status::Ready)
@@ -326,7 +617,7 @@ fn an_urgent_item_is_created_at_the_stores_priority_one() {
 
 #[test]
 fn reads_and_unchanged_writes_leave_no_fact() {
-    let t = Livela::new(MemStore::default(), StatusTable::identity());
+    let t = td(MemStore::default());
     let a = t.create_item(&new_item("a", Status::ToDeploy)).unwrap();
     let before = t.store.borrow().facts.len();
     t.get(&a.key).unwrap();
@@ -341,7 +632,7 @@ fn reads_and_unchanged_writes_leave_no_fact() {
 
 #[test]
 fn a_status_write_can_unassign_and_a_replay_leaves_no_fact() {
-    let t = Livela::new(MemStore::default(), StatusTable::identity());
+    let t = td(MemStore::default());
     let me = t.identity().unwrap();
     let mut item = new_item("a", Status::ToDeploy);
     item.assignee = Some(me);
@@ -363,7 +654,7 @@ fn a_creation_in_an_unknown_status_writes_nothing() {
         lacks: Some("Ready"),
         ..MemStore::default()
     };
-    let t = Livela::new(store, StatusTable::identity());
+    let t = td(store);
     let err = t.create_item(&new_item("a", Status::Ready)).unwrap_err();
     assert!(matches!(err, TrackerError::Refused { .. }), "{err}");
     assert!(t.store.borrow().items.is_empty());
@@ -372,7 +663,7 @@ fn a_creation_in_an_unknown_status_writes_nothing() {
 
 #[test]
 fn the_validation_statuses_are_open_on_livela() {
-    let t = Livela::new(MemStore::default(), StatusTable::identity());
+    let t = td(MemStore::default());
     let a = t.create_item(&new_item("a", Status::PostDeploy)).unwrap();
     assert_eq!(a.state.status, Some(Status::PostDeploy));
     assert!(!a.state.is_resolved());
@@ -380,7 +671,7 @@ fn the_validation_statuses_are_open_on_livela() {
 
 #[test]
 fn a_post_deploy_validation_is_created_in_post_deploy_assigned_with_no_label() {
-    let t = Livela::new(MemStore::default(), StatusTable::identity());
+    let t = td(MemStore::default());
     let owner = t.identity().unwrap();
     let item = NewItem {
         title: "Post-deploy validation".into(),
@@ -399,7 +690,7 @@ fn a_post_deploy_validation_is_created_in_post_deploy_assigned_with_no_label() {
 
 #[test]
 fn a_key_resolves_by_its_code_and_never_by_a_shorter_one() {
-    let t = Livela::new(MemStore::default(), StatusTable::identity());
+    let t = td(MemStore::default());
     let a = t.create_item(&new_item("a", Status::Ready)).unwrap();
     assert!(t.get(&a.key).is_ok());
     let code = a.key.split_once('-').unwrap().1;
@@ -417,7 +708,7 @@ fn a_key_resolves_by_its_code_and_never_by_a_shorter_one() {
 
 #[test]
 fn a_second_duplicate_target_is_refused_not_overwritten() {
-    let t = Livela::new(MemStore::default(), StatusTable::identity());
+    let t = td(MemStore::default());
     let a = t.create_item(&new_item("a", Status::Triage)).unwrap();
     let b = t.create_item(&new_item("b", Status::Triage)).unwrap();
     let c = t.create_item(&new_item("c", Status::Triage)).unwrap();
@@ -431,7 +722,7 @@ fn a_second_duplicate_target_is_refused_not_overwritten() {
 
 #[test]
 fn a_blocks_relation_reads_from_both_ends_and_unrelates_by_its_id() {
-    let t = Livela::new(MemStore::default(), StatusTable::identity());
+    let t = td(MemStore::default());
     let mk = |title: &str| {
         t.create_item(&NewItem {
             title: title.into(),
@@ -461,7 +752,7 @@ fn a_blocks_relation_reads_from_both_ends_and_unrelates_by_its_id() {
 
 #[test]
 fn duplicates_are_read_in_both_directions() {
-    let t = Livela::new(MemStore::default(), StatusTable::identity());
+    let t = td(MemStore::default());
     let mk = |title: &str| {
         t.create_item(&NewItem {
             title: title.into(),
@@ -482,7 +773,7 @@ fn duplicates_are_read_in_both_directions() {
 
 #[test]
 fn an_unknown_short_id_is_not_found_and_a_comment_edit_is_refused() {
-    let t = Livela::new(MemStore::default(), StatusTable::identity());
+    let t = td(MemStore::default());
     assert!(t.get("TD-NOPE").unwrap_err().is_not_found());
     assert!(matches!(
         t.update_comment("c-1", "x").unwrap_err(),
@@ -492,7 +783,7 @@ fn an_unknown_short_id_is_not_found_and_a_comment_edit_is_refused() {
 
 #[test]
 fn livela_has_no_open_item_limit_and_archives_nothing() {
-    let t = Livela::new(MemStore::default(), StatusTable::identity());
+    let t = td(MemStore::default());
     let a = t.create_item(&new_item("a", Status::Done)).unwrap();
     let before = t.store.borrow().facts.len();
     assert!(!t.archives(), "the bridge asks Livela for no archive");

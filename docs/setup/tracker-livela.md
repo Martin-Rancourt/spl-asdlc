@@ -12,7 +12,10 @@
   - The runner depends on the `spl-asdlc` crate by version, from crates.io; `spl-asdlc` depends on nothing of Livela (contract, point 3; BR-ASDLC-010).
 - **Locks**: the bridge writes its transitions whoever holds the item's lock; a lock protects an agent's work on the content, not the status (contract, point 6; BR-ASDLC-011).
 - **Links**: the bridge adds the PR URL as a web link on the item and finds items by that URL (contract, point 4).
-- **Project**: `[tracker] project` is accepted and ignored for now: the bridge creates its items in the workspace, and `doctor` reports the key as ignored.
+- **Project**: `[tracker] project` names the Livela project, by its prefix (`TD`), its name or its id; the Livela host always has one.
+  - The items the bridge creates land in it, sub-items included, and their short ids carry its prefix, which is the team key.
+  - The bridge's searches see only its items: by tag, by PR URL, the children and the duplicates of an item. A key of another project's item is not found.
+  - `doctor` reports the project found or unknown. While no project answers to the key, every read and write of the adapter fails, naming the project, before any write.
 
 **Verify**: `spl-asdlc doctor` run from the runner's environment reports `tracker: ok` and `bridge-host: livela-runner`.
 
@@ -24,6 +27,15 @@ The operator copies nothing: the glue and the daemon job live in the runner's co
 
 The adapter (`spl_asdlc::tracker::livela::Livela`) is written against `LivelaStore`, the slice of the core's `Store` the contract promises. The runner implements it for its `Store`.
 
+The adapter is built for one project (`[tracker] project`). For it, the slice has:
+
+- `project(reference)`: the project a prefix, name or id names (`LivelaProject { id, prefix, name }`), `None` when none does, an error when several do;
+- `items(project, tag, parent)`: the items of that project only;
+- `create_ticket(project, ..)`: the new ticket lands in that project;
+- `LivelaItem::projects`: the projects an item belongs to, which the adapter checks on every item it reads, so that a key, a PR link or a duplicate of another project is never its own.
+
+The store-wide `prefix()` is gone: the team key is the project's prefix.
+
 This glue was run against `livela-core` on 2026-10-05 and passed the conformance suite (`spl_asdlc::tracker::conformance::run_with`, 60 steps), with a journal that counts facts:
 
 - every step passed except the comment edit, which the core does not offer;
@@ -31,11 +43,13 @@ This glue was run against `livela-core` on 2026-10-05 and passed the conformance
 - every fact on the items was signed by `spl-asdlc`;
 - the runner's own author was restored after each write.
 
+The project parts (`project`, the `project` of `items` and `create_ticket`, `projects` in `convert`) came after that run and are a sketch, not yet run against the core. In this crate, the suite runs on two projects of one in-memory store, and neither sees the other's items.
+
 ```rust
 use livela_core::{
     BaseFields, Filter, ItemType, ParticipantType, Priority, RelationKind, ShortIdLookup, Sort, Store,
 };
-use spl_asdlc::tracker::livela::{LivelaItem, LivelaRelation, LivelaStore, PARTICIPANT};
+use spl_asdlc::tracker::livela::{LivelaItem, LivelaProject, LivelaRelation, LivelaStore, PARTICIPANT};
 
 /// The runner's store, as the `spl-asdlc` adapter sees it.
 pub struct Glue<'a>(pub &'a mut Store);
@@ -66,6 +80,7 @@ fn convert(i: livela_core::Item) -> LivelaItem {
         comments: i.comments.into_iter().map(|c| (c.id, c.author, c.text)).collect(),
         web_links: i.web_links.into_iter().map(|w| w.url).collect(),
         deleted: i.deleted,
+        projects: i.projects,
     }
 }
 
@@ -111,6 +126,22 @@ impl LivelaStore for Glue<'_> {
     fn participant_name(&self, id: &str) -> Option<String> {
         self.0.get_participant(id).ok().map(|p| p.name)
     }
+    fn project(&self, reference: &str) -> Result<Option<LivelaProject>, String> {
+        // The items of type `project`, by their prefix, their title or their id.
+        let projects = Filter { item_type: Some(ItemType::Project), ..Filter::default() };
+        let mut found: Vec<LivelaProject> = self
+            .0
+            .list_items_filtered(&projects, Sort::default())
+            .into_iter()
+            .filter(|p| !p.deleted)
+            .map(|p| LivelaProject { prefix: p.prefix.unwrap_or_default(), id: p.id, name: p.title })
+            .filter(|p| p.id == reference || p.name == reference || p.prefix.eq_ignore_ascii_case(reference))
+            .collect();
+        match found.len() {
+            0 | 1 => Ok(found.pop()),
+            n => Err(format!("{n} projects answer to {reference}")),
+        }
+    }
     fn resolve(&self, short_id: &str) -> Result<Option<String>, String> {
         match self.0.find_by_short_id(short_id) {
             ShortIdLookup::Found { id } => Ok(Some(id)),
@@ -121,14 +152,19 @@ impl LivelaStore for Glue<'_> {
     fn item(&self, id: &str) -> Result<LivelaItem, String> {
         self.0.get_item(id).map(convert).map_err(|e| e.to_string())
     }
-    fn items(&self, tag: Option<&str>, parent: Option<&str>) -> Vec<LivelaItem> {
-        all(&self.0, Filter { tag: tag.map(str::to_string), parent: parent.map(str::to_string), ..Filter::default() })
+    fn items(&self, project: &str, tag: Option<&str>, parent: Option<&str>) -> Vec<LivelaItem> {
+        all(
+            &self.0,
+            Filter {
+                project: Some(project.to_string()),
+                tag: tag.map(str::to_string),
+                parent: parent.map(str::to_string),
+                ..Filter::default()
+            },
+        )
     }
     fn duplicates_of(&self, id: &str) -> Vec<String> {
         all(&self.0, Filter::default()).into_iter().filter(|i| i.duplicate_of.as_deref() == Some(id)).map(|i| i.id).collect()
-    }
-    fn prefix(&self) -> String {
-        livela_core::short_id::DEFAULT_PREFIX.to_string()
     }
     fn ticket_statuses(&self) -> Vec<String> {
         ItemType::Ticket.statuses().iter().map(|s| s.label.to_string()).collect()
@@ -138,6 +174,7 @@ impl LivelaStore for Glue<'_> {
     }
     fn create_ticket(
         &mut self,
+        project: &str,
         title: &str,
         description: &str,
         tags: &[String],
@@ -156,6 +193,7 @@ impl LivelaStore for Glue<'_> {
                     tags: tags.to_vec(),
                     assignee: assignee.map(str::to_string),
                     parent: parent.map(str::to_string),
+                    projects: vec![project.to_string()],
                     priority: priority(priority_),
                     ..BaseFields::default()
                 },
@@ -197,7 +235,7 @@ impl LivelaStore for Glue<'_> {
 }
 ```
 
-Wire it as `Livela::new(Glue(&mut store), StatusTable::identity())`.
+Wire it as `Livela::new(Glue(&mut store), project, StatusTable::identity())`, `project` being the configuration's `[tracker] project`. The project is resolved on first need, so the adapter is built even when no project answers yet.
 
 The adapter reads before every write and skips a write that changes nothing. It signs each write as `spl-asdlc` through `swap_author` and gives the store back its previous author.
 

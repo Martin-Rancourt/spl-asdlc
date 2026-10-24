@@ -10,6 +10,14 @@
 //! writes as the `spl-asdlc` agent participant; a relation has no id of its
 //! own, so its id is `<kind>:<item>:<target>`.
 //!
+//! One project (`[tracker] project`): the adapter is built for the Livela
+//! project a reference names (its prefix, name or id), resolved on first
+//! need. The team key is its prefix, the items the bridge creates land in it,
+//! its searches see only its items, and a key of another project's item is
+//! not found. While no project answers to the reference, every read and
+//! write is unreadable, before any write; [`Tracker::project`] says it is
+//! not found.
+//!
 //! No useless facts (contract, "No heartbeat"): every write first reads the
 //! value it would change and writes nothing when the value is already there.
 //! Every write is signed by the `spl-asdlc` participant: the adapter sets the
@@ -47,6 +55,17 @@ pub struct LivelaItem {
     pub comments: Vec<(String, String, String)>,
     pub web_links: Vec<String>,
     pub deleted: bool,
+    /// The ids of the projects it belongs to.
+    pub projects: Vec<String>,
+}
+
+/// A Livela project: an item of type `project`, whose prefix its items'
+/// short ids carry.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LivelaProject {
+    pub id: String,
+    pub prefix: String,
+    pub name: String,
 }
 
 /// The relation kinds the Livela core stores (from the item that holds them).
@@ -69,24 +88,27 @@ pub trait LivelaStore {
     /// Participants answering to a name: `(id, name)`.
     fn participants_named(&self, name: &str) -> Vec<(String, String)>;
     fn participant_name(&self, id: &str) -> Option<String>;
+    /// The project a reference names (its prefix, name or id); `Ok(None)`
+    /// when none does, an error when several do.
+    fn project(&self, reference: &str) -> Result<Option<LivelaProject>, String>;
     /// The internal id of a short id; `Ok(None)` when no item has it, an
     /// error when several do.
     fn resolve(&self, short_id: &str) -> Result<Option<String>, String>;
     fn item(&self, id: &str) -> Result<LivelaItem, String>;
-    /// Items with this tag, or children of this parent.
-    fn items(&self, tag: Option<&str>, parent: Option<&str>) -> Vec<LivelaItem>;
+    /// Items of this project (its id) with this tag, or children of this
+    /// parent.
+    fn items(&self, project: &str, tag: Option<&str>, parent: Option<&str>) -> Vec<LivelaItem>;
     /// Items whose `duplicate_of` is this one.
     fn duplicates_of(&self, id: &str) -> Vec<String>;
-    /// The human prefix of the short ids.
-    fn prefix(&self) -> String;
     /// Status labels of the `ticket` type, in order.
     fn ticket_statuses(&self) -> Vec<String>;
     fn find_by_web_link(&self, url: &str) -> Vec<String>;
-    /// A new `ticket` in `status` (a label of [`Self::ticket_statuses`]);
-    /// `priority` 1 urgent … 4 low. Returns its id.
+    /// A new `ticket` of `project` (its id) in `status` (a label of
+    /// [`Self::ticket_statuses`]); `priority` 1 urgent … 4 low. Returns its id.
     #[allow(clippy::too_many_arguments)]
     fn create_ticket(
         &mut self,
+        project: &str,
         title: &str,
         description: &str,
         tags: &[String],
@@ -114,6 +136,10 @@ pub trait LivelaStore {
 
 pub struct Livela<S: LivelaStore> {
     store: RefCell<S>,
+    /// The reference of the project (`[tracker] project`).
+    project: String,
+    /// The project, once resolved.
+    scope: RefCell<Option<LivelaProject>>,
     statuses: StatusTable,
 }
 
@@ -126,10 +152,18 @@ fn code_of(key: &str) -> &str {
 /// The core's shortest code.
 const MIN_CODE: usize = 4;
 
+fn in_project(item: &LivelaItem, project: &LivelaProject) -> bool {
+    item.projects.contains(&project.id)
+}
+
 impl<S: LivelaStore> Livela<S> {
-    pub fn new(store: S, statuses: StatusTable) -> Livela<S> {
+    /// The adapter for the project `project` names (its prefix, name or
+    /// id), resolved on first need: built even when no project answers yet.
+    pub fn new(store: S, project: &str, statuses: StatusTable) -> Livela<S> {
         Livela {
             store: RefCell::new(store),
+            project: project.to_string(),
+            scope: RefCell::new(None),
             statuses,
         }
     }
@@ -156,27 +190,78 @@ impl<S: LivelaStore> Livela<S> {
         r.map_err(|e| TrackerError::refused(what, e))
     }
 
-    /// The internal id of a key, resolved by its code as the core does; a
-    /// code shorter than the core's shortest is no key (it would match by
-    /// prefix). A code several items share is unreadable, never a guess.
-    fn id_of(&self, key: &str) -> TResult<String> {
-        if code_of(key).chars().count() < MIN_CODE {
-            return Err(TrackerError::NotFound {
-                what: key.to_string(),
-            });
+    /// The project, resolved on first need. While no project answers to the
+    /// reference, it is unreadable: never "not found", which a caller would
+    /// read as the absence of an item.
+    fn scope(&self) -> TResult<LivelaProject> {
+        if let Some(p) = self.scope.borrow().as_ref() {
+            return Ok(p.clone());
         }
-        match self.store.borrow().resolve(key) {
-            Ok(Some(id)) => Ok(id),
-            Ok(None) => Err(TrackerError::NotFound {
-                what: key.to_string(),
-            }),
-            Err(e) => Err(TrackerError::unreadable(key, e)),
+        let what = format!("Livela project {}", self.project);
+        match self.store.borrow().project(&self.project) {
+            Ok(Some(p)) => {
+                *self.scope.borrow_mut() = Some(p.clone());
+                Ok(p)
+            }
+            Ok(None) => Err(TrackerError::unreadable(
+                what,
+                "no project has this prefix, name or id",
+            )),
+            Err(e) => Err(TrackerError::unreadable(what, e)),
         }
     }
 
+    /// The item of a key, resolved by its code as the core does; a code
+    /// shorter than the core's shortest is no key (it would match by prefix).
+    /// A code several items share is unreadable, never a guess. An item of
+    /// another project is not found.
     fn raw(&self, key: &str) -> TResult<LivelaItem> {
-        let id = self.id_of(key)?;
-        self.raw_id(key, &id)
+        let project = self.scope()?;
+        let not_found = || TrackerError::NotFound {
+            what: key.to_string(),
+        };
+        if code_of(key).chars().count() < MIN_CODE {
+            return Err(not_found());
+        }
+        let id = match self.store.borrow().resolve(key) {
+            Ok(Some(id)) => id,
+            Ok(None) => return Err(not_found()),
+            Err(e) => return Err(TrackerError::unreadable(key, e)),
+        };
+        let item = self.raw_id(key, &id)?;
+        if !in_project(&item, &project) {
+            return Err(not_found());
+        }
+        Ok(item)
+    }
+
+    fn id_of(&self, key: &str) -> TResult<String> {
+        self.raw(key).map(|i| i.id)
+    }
+
+    /// The project's items with this tag, or children of this parent.
+    fn listed(&self, tag: Option<&str>, parent: Option<&str>) -> TResult<Vec<Item>> {
+        let project = self.scope()?;
+        let items = self.store.borrow().items(&project.id, tag, parent);
+        items
+            .iter()
+            .filter(|i| in_project(i, &project))
+            .map(|i| self.item_of(i))
+            .collect()
+    }
+
+    /// These items, the project's only (a search the store makes in the
+    /// whole store).
+    fn in_scope(&self, ids: &[String]) -> TResult<Vec<LivelaItem>> {
+        let project = self.scope()?;
+        let mut out = Vec::new();
+        for id in ids {
+            let item = self.raw_id(id, id)?;
+            if in_project(&item, &project) {
+                out.push(item);
+            }
+        }
+        Ok(out)
     }
 
     fn raw_id(&self, what: &str, id: &str) -> TResult<LivelaItem> {
@@ -244,6 +329,7 @@ impl<S: LivelaStore> Livela<S> {
 impl<S: LivelaStore> Tracker for Livela<S> {
     /// The participant is created on first need, once.
     fn identity(&self) -> TResult<User> {
+        self.scope()?;
         let existing = self.store.borrow().existing_bridge_participant();
         let id = match existing {
             Some(id) => id,
@@ -256,15 +342,30 @@ impl<S: LivelaStore> Tracker for Livela<S> {
         Ok(self.user_of(&id))
     }
 
+    /// The project's prefix.
     fn team_key(&self) -> TResult<String> {
-        Ok(self.store.borrow().prefix())
+        Ok(self.scope()?.prefix)
     }
 
     fn status_names(&self) -> TResult<Vec<String>> {
+        self.scope()?;
         Ok(self.store.borrow().ticket_statuses())
     }
 
+    /// Found: its name. Unknown: not found. Several answer: unreadable.
+    fn project(&self, reference: &str) -> TResult<Option<String>> {
+        let what = format!("Livela project {reference}");
+        match self.store.borrow().project(reference) {
+            Ok(Some(p)) => Ok(Some(p.name)),
+            Ok(None) => Err(TrackerError::NotFound {
+                what: format!("{what}: no project has this prefix, name or id"),
+            }),
+            Err(e) => Err(TrackerError::unreadable(what, e)),
+        }
+    }
+
     fn user(&self, reference: &str) -> TResult<User> {
+        self.scope()?;
         if let Some(name) = self.store.borrow().participant_name(reference) {
             return Ok(User {
                 id: reference.to_string(),
@@ -315,8 +416,11 @@ impl<S: LivelaStore> Tracker for Livela<S> {
             out.duplicates.push(rel("duplicate_of", &raw.id, d, d)?);
         }
         let dups = self.store.borrow().duplicates_of(&raw.id);
-        for d in dups {
-            out.duplicates.push(rel("duplicate_of", &d, &raw.id, &d)?);
+        for d in self.in_scope(&dups)? {
+            out.duplicates.push(Relation {
+                id: format!("duplicate_of:{}:{}", d.id, raw.id),
+                other: d.short_id,
+            });
         }
         Ok(out)
     }
@@ -338,32 +442,38 @@ impl<S: LivelaStore> Tracker for Livela<S> {
 
     fn children(&self, key: &str) -> TResult<Vec<Item>> {
         let id = self.id_of(key)?;
-        let items = self.store.borrow().items(None, Some(&id));
-        items.iter().map(|i| self.item_of(i)).collect()
+        self.listed(None, Some(&id))
     }
 
     fn list_by_label(&self, label: &str) -> TResult<Vec<Item>> {
-        let items = self.store.borrow().items(Some(label), None);
-        items.iter().map(|i| self.item_of(i)).collect()
+        self.listed(Some(label), None)
     }
 
     fn items_linked_to_pr(&self, pr_url: &str) -> TResult<Vec<String>> {
         let ids = self.store.borrow().find_by_web_link(pr_url);
-        ids.iter().map(|id| self.short_of(id)).collect()
+        Ok(self
+            .in_scope(&ids)?
+            .into_iter()
+            .map(|i| i.short_id)
+            .collect())
     }
 
     fn label_exists(&self, _name: &str) -> TResult<bool> {
         // Tags exist by being used: any can be added.
+        self.scope()?;
         Ok(true)
     }
 
     fn ensure_label(&self, _name: &str) -> TResult<()> {
         // Tags exist by being used.
+        self.scope()?;
         Ok(())
     }
 
+    /// In the project, a sub-item too.
     fn create_item(&self, new: &NewItem) -> TResult<Item> {
         // Every check before the first write: a refused creation leaves nothing.
+        let project = self.scope()?;
         let status = self.tracker_status(new.status)?;
         let parent = match &new.parent {
             Some(p) => Some(self.id_of(p)?),
@@ -371,6 +481,7 @@ impl<S: LivelaStore> Tracker for Livela<S> {
         };
         let id = self.as_bridge(format!("creation of \"{}\"", new.title), |s, _| {
             s.create_ticket(
+                &project.id,
                 &new.title,
                 &new.description,
                 &new.labels,
@@ -514,10 +625,14 @@ impl<S: LivelaStore> Tracker for Livela<S> {
                 format!("\"{relation_id}\" is not a relation id"),
             ));
         };
+        let project = self.scope()?;
         let not_found = || TrackerError::NotFound {
             what: format!("relation {relation_id}"),
         };
         let item = self.store.borrow().item(holder).map_err(|_| not_found())?;
+        if !in_project(&item, &project) {
+            return Err(not_found());
+        }
         let (kind, present) = match kind {
             "blocked_by" => (
                 LivelaRelation::BlockedBy,
@@ -553,6 +668,7 @@ impl<S: LivelaStore> Tracker for Livela<S> {
     }
 
     fn archive(&self, _key: &str) -> TResult<()> {
+        self.scope()?;
         Ok(())
     }
 
