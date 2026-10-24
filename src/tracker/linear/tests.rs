@@ -930,3 +930,63 @@ fn an_archive_whose_answer_is_lost_is_read_back() {
         TrackerError::Refused { .. }
     ));
 }
+
+#[test]
+fn a_prs_status_is_its_attachments_subtitle_written_only_when_it_changes() {
+    let pr = "https://github.com/example-org/acme/pull/9";
+    let bodies = |t: &ScriptedTransport| -> Vec<String> {
+        t.log
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| String::from_utf8_lossy(r.body.as_deref().unwrap_or_default()).into_owned())
+            .collect()
+    };
+    let attachment = |subtitle: &str| {
+        format!(
+            r#"{{"data":{{"attachmentsForURL":{{"nodes":[{{"id":"a-1","title":"feat: x (ABC-7)","subtitle":"{subtitle}","issue":{{"identifier":"ABC-7"}}}}],"pageInfo":{{"hasNextPage":false}}}}}}}}"#
+        )
+    };
+    let (l, t) = linear();
+    t.on_body("POST", URL, "attachmentsForURL", 200, &attachment("Open, checks passing"));
+    assert_eq!(
+        l.pr_status("ABC-7", pr).unwrap(),
+        Some(PrStatus::Open(Checks::Passing))
+    );
+    l.record_pr_status("ABC-7", pr, &PrStatus::Open(Checks::Passing))
+        .unwrap();
+    assert!(
+        !bodies(&t).iter().any(|b| b.contains("attachmentUpdate")),
+        "an unchanged status writes nothing"
+    );
+
+    let (l, t) = linear();
+    t.on_body("POST", URL, "attachmentsForURL", 200, &attachment(""));
+    t.on_body(
+        "POST",
+        URL,
+        "attachmentUpdate",
+        200,
+        r#"{"data":{"attachmentUpdate":{"success":true}}}"#,
+    );
+    l.record_pr_status("ABC-7", pr, &PrStatus::Released("acme-v1.2.0".into()))
+        .unwrap();
+    let update = bodies(&t)
+        .into_iter()
+        .find(|b| b.contains("attachmentUpdate"))
+        .expect("the subtitle written");
+    assert!(update.contains("Released in acme-v1.2.0"), "{update}");
+    assert!(update.contains("feat: x (ABC-7)"), "the title kept");
+
+    // A PR not linked to the item: nothing to write on.
+    let (l, t) = linear();
+    t.on_body(
+        "POST",
+        URL,
+        "attachmentsForURL",
+        200,
+        r#"{"data":{"attachmentsForURL":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}"#,
+    );
+    l.record_pr_status("ABC-7", pr, &PrStatus::Merged).unwrap();
+    assert!(!bodies(&t).iter().any(|b| b.contains("attachmentUpdate")));
+}

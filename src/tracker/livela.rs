@@ -54,6 +54,9 @@ pub struct LivelaItem {
     /// `(comment id, author participant id, text)`, oldest first.
     pub comments: Vec<(String, String, String)>,
     pub web_links: Vec<String>,
+    /// The status the GitHub sync recorded for a linked PR: `(url, code)`,
+    /// the code of [`PrStatus::code`].
+    pub pr_statuses: Vec<(String, String)>,
     pub deleted: bool,
     /// The ids of the projects it belongs to.
     pub projects: Vec<String>,
@@ -132,6 +135,9 @@ pub trait LivelaStore {
         target: &str,
     ) -> Result<(), String>;
     fn add_web_link(&mut self, id: &str, url: &str, title: &str) -> Result<(), String>;
+    /// Record the status of the PR an item's web link names: `code` is
+    /// [`PrStatus::code`] (the GitHub sync, `crate::sync`).
+    fn set_pr_status(&mut self, id: &str, url: &str, code: &str) -> Result<(), String>;
 }
 
 pub struct Livela<S: LivelaStore> {
@@ -700,6 +706,35 @@ impl<S: LivelaStore> Tracker for Livela<S> {
         }
         self.as_bridge(format!("link of {pr_url} on {key}"), |s, _| {
             s.add_web_link(&id, pr_url, title)
+        })
+    }
+
+    fn holds_pr_status(&self) -> bool {
+        true
+    }
+
+    fn pr_status(&self, key: &str, pr_url: &str) -> TResult<Option<PrStatus>> {
+        let raw = self.raw(key)?;
+        Ok(raw
+            .pr_statuses
+            .iter()
+            .find(|(url, _)| url == pr_url)
+            .and_then(|(_, code)| PrStatus::parse(code)))
+    }
+
+    fn record_pr_status(&self, key: &str, pr_url: &str, status: &PrStatus) -> TResult<()> {
+        let raw = self.raw(key)?;
+        let code = status.code();
+        if !self.store.borrow().find_by_web_link(pr_url).contains(&raw.id)
+            || raw
+                .pr_statuses
+                .iter()
+                .any(|(url, c)| url == pr_url && *c == code)
+        {
+            return Ok(());
+        }
+        self.as_bridge(format!("status of {pr_url} on {key}"), |s, _| {
+            s.set_pr_status(&raw.id, pr_url, &code)
         })
     }
 }

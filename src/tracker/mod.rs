@@ -158,6 +158,104 @@ impl fmt::Display for Priority {
     }
 }
 
+/// Where a PR linked to an item stands, as the GitHub sync records it on
+/// the item (`crate::sync`): the bridge itself never reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrStatus {
+    Draft,
+    /// Open and ready, with the rollup of its head's checks.
+    Open(Checks),
+    /// Merged, in no release tag yet.
+    Merged,
+    /// Merged, and its merge commit is in this release tag.
+    Released(String),
+    /// Closed without merge.
+    Closed,
+}
+
+/// The rollup of a PR head's checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Checks {
+    /// No check reported.
+    None,
+    Pending,
+    Failing,
+    Passing,
+}
+
+impl PrStatus {
+    /// The value a tracker stores: `draft`, `open`, `open:pending`,
+    /// `open:failing`, `open:passing`, `merged`, `released:<tag>`, `closed`.
+    pub fn code(&self) -> String {
+        match self {
+            PrStatus::Draft => "draft".into(),
+            PrStatus::Open(Checks::None) => "open".into(),
+            PrStatus::Open(Checks::Pending) => "open:pending".into(),
+            PrStatus::Open(Checks::Failing) => "open:failing".into(),
+            PrStatus::Open(Checks::Passing) => "open:passing".into(),
+            PrStatus::Merged => "merged".into(),
+            PrStatus::Released(tag) => format!("released:{tag}"),
+            PrStatus::Closed => "closed".into(),
+        }
+    }
+
+    /// The status of a stored value; `None` for a value of no known shape.
+    pub fn parse(code: &str) -> Option<PrStatus> {
+        Some(match code {
+            "draft" => PrStatus::Draft,
+            "open" => PrStatus::Open(Checks::None),
+            "open:pending" => PrStatus::Open(Checks::Pending),
+            "open:failing" => PrStatus::Open(Checks::Failing),
+            "open:passing" => PrStatus::Open(Checks::Passing),
+            "merged" => PrStatus::Merged,
+            "closed" => PrStatus::Closed,
+            other => PrStatus::Released(
+                other
+                    .strip_prefix("released:")
+                    .filter(|t| !t.is_empty())?
+                    .to_string(),
+            ),
+        })
+    }
+}
+
+impl PrStatus {
+    /// The status a sentence of [`PrStatus`]'s `Display` names; `None` for
+    /// any other text (a subtitle another tool wrote).
+    pub fn from_sentence(text: &str) -> Option<PrStatus> {
+        if let Some(tag) = text.strip_prefix("Released in ").filter(|t| !t.is_empty()) {
+            return Some(PrStatus::Released(tag.to_string()));
+        }
+        [
+            PrStatus::Draft,
+            PrStatus::Open(Checks::None),
+            PrStatus::Open(Checks::Pending),
+            PrStatus::Open(Checks::Failing),
+            PrStatus::Open(Checks::Passing),
+            PrStatus::Merged,
+            PrStatus::Closed,
+        ]
+        .into_iter()
+        .find(|s| s.to_string() == text)
+    }
+}
+
+impl fmt::Display for PrStatus {
+    /// The sentence a person reads (a Linear attachment's subtitle).
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PrStatus::Draft => f.write_str("Draft"),
+            PrStatus::Open(Checks::None) => f.write_str("Open"),
+            PrStatus::Open(Checks::Pending) => f.write_str("Open, checks pending"),
+            PrStatus::Open(Checks::Failing) => f.write_str("Open, checks failing"),
+            PrStatus::Open(Checks::Passing) => f.write_str("Open, checks passing"),
+            PrStatus::Merged => f.write_str("Merged, not released"),
+            PrStatus::Released(tag) => write!(f, "Released in {tag}"),
+            PrStatus::Closed => f.write_str("Closed without merge"),
+        }
+    }
+}
+
 /// What the bridge creates: a release item, an angle sub-item, a
 /// consolidation item, a finding ticket, the nits ticket, a gate-fix
 /// ticket, a validation sub-task.
@@ -241,6 +339,23 @@ pub trait Tracker {
     /// Attach the PR to the item; a link already there is a no-op. `key` is
     /// the item's key as the tracker reads it back ([`Item::key`]).
     fn link_pr(&self, key: &str, pr_url: &str, title: &str) -> TResult<()>;
+
+    /// Whether the tracker holds the status of a linked PR on the item
+    /// ([`Tracker::record_pr_status`]).
+    fn holds_pr_status(&self) -> bool {
+        false
+    }
+    /// The status of a linked PR recorded on the item; `None` when none is,
+    /// or the tracker holds none.
+    fn pr_status(&self, _key: &str, _pr_url: &str) -> TResult<Option<PrStatus>> {
+        Ok(None)
+    }
+    /// Record on the item the status of a PR linked to it (the GitHub sync,
+    /// `crate::sync`). A value already there records nothing; a PR not
+    /// linked to the item, or a tracker that holds no status, writes nothing.
+    fn record_pr_status(&self, _key: &str, _pr_url: &str, _status: &PrStatus) -> TResult<()> {
+        Ok(())
+    }
 
     /// Whether the tracker archives items: one that counts its open items
     /// against a limit (Linear's free plan) archives what a closed cycle

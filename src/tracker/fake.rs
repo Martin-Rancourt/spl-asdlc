@@ -14,6 +14,8 @@ struct Stored {
     item: Item,
     comments: Vec<Comment>,
     links: Vec<String>,
+    /// The status recorded for each linked PR, by its URL.
+    pr_statuses: BTreeMap<String, PrStatus>,
     /// The priority it was created with.
     priority: Option<Priority>,
 }
@@ -94,6 +96,7 @@ impl FakeTracker {
                 item,
                 comments: Vec::new(),
                 links: Vec::new(),
+                pr_statuses: BTreeMap::new(),
                 priority: None,
             },
         );
@@ -154,6 +157,13 @@ impl FakeTracker {
     pub fn link(&self, key: &str, url: &str) {
         if let Some(st) = self.state.borrow_mut().items.get_mut(key) {
             st.links.push(url.to_string());
+        }
+    }
+
+    /// A person removes the link of a PR from an item.
+    pub fn unlink(&self, key: &str, url: &str) {
+        if let Some(st) = self.state.borrow_mut().items.get_mut(key) {
+            st.links.retain(|l| l != url);
         }
     }
 
@@ -511,6 +521,25 @@ impl Tracker for FakeTracker {
             if !st.links.iter().any(|l| l == pr_url) {
                 st.links.push(pr_url.to_string());
             }
+        })
+    }
+
+    fn holds_pr_status(&self) -> bool {
+        true
+    }
+
+    fn pr_status(&self, key: &str, pr_url: &str) -> TResult<Option<PrStatus>> {
+        Ok(self.read(key)?.pr_statuses.get(pr_url).cloned())
+    }
+
+    fn record_pr_status(&self, key: &str, pr_url: &str, status: &PrStatus) -> TResult<()> {
+        let st = self.read(key)?;
+        if !st.links.iter().any(|l| l == pr_url) || st.pr_statuses.get(pr_url) == Some(status) {
+            return Ok(());
+        }
+        self.record(format!("pr status {key} {pr_url} {}", status.code()))?;
+        self.with(key, |st| {
+            st.pr_statuses.insert(pr_url.to_string(), status.clone());
         })
     }
 }

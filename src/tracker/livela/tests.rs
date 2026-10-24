@@ -278,6 +278,13 @@ impl LivelaStore for MemStore {
             .push(url.into());
         Ok(())
     }
+    fn set_pr_status(&mut self, id: &str, url: &str, code: &str) -> Result<(), String> {
+        self.fact(format!("pr status {id} {url} {code}"));
+        let item = self.items.get_mut(id).ok_or("no item")?;
+        item.pr_statuses.retain(|(u, _)| u != url);
+        item.pr_statuses.push((url.into(), code.into()));
+        Ok(())
+    }
 }
 
 /// One store shared by the adapters of its two projects.
@@ -373,6 +380,9 @@ impl LivelaStore for Shared {
     }
     fn add_web_link(&mut self, id: &str, url: &str, title: &str) -> Result<(), String> {
         self.borrow_mut().add_web_link(id, url, title)
+    }
+    fn set_pr_status(&mut self, id: &str, url: &str, code: &str) -> Result<(), String> {
+        self.borrow_mut().set_pr_status(id, url, code)
     }
 }
 

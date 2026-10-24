@@ -235,6 +235,29 @@ impl Linear {
         Ok(result)
     }
 
+    /// The attachment of `pr_url` on `key`: `(id, title, subtitle)`; `None`
+    /// when the item has none.
+    fn pr_attachment(&self, key: &str, pr_url: &str) -> TResult<Option<(String, String, String)>> {
+        let data = self.read(
+            &format!("attachment of {pr_url} on {key}"),
+            "query($url: String!) { attachmentsForURL(url: $url) { nodes { id title subtitle issue { identifier } } pageInfo { hasNextPage } } }",
+            json!({"url": pr_url}),
+        )?;
+        let conn = &data["attachmentsForURL"];
+        if conn["pageInfo"]["hasNextPage"].as_bool() != Some(false) {
+            return Err(TrackerError::unreadable(
+                pr_url,
+                "the attachment list is cut or missing",
+            ));
+        }
+        Ok(conn["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|a| s(&a["issue"], "identifier").eq_ignore_ascii_case(key))
+            .map(|a| (s(a, "id"), s(a, "title"), s(a, "subtitle"))))
+    }
+
     fn team(&self) -> TResult<(String, BTreeMap<String, String>)> {
         if let Some(t) = &self.cache.borrow().team {
             return Ok(t.clone());
@@ -969,6 +992,35 @@ impl Tracker for Linear {
         keys.sort();
         keys.dedup();
         keys
+    }
+
+    fn holds_pr_status(&self) -> bool {
+        true
+    }
+
+    /// The subtitle of the PR's attachment on the item.
+    fn pr_status(&self, key: &str, pr_url: &str) -> TResult<Option<PrStatus>> {
+        Ok(self
+            .pr_attachment(key, pr_url)?
+            .and_then(|a| PrStatus::from_sentence(&a.2)))
+    }
+
+    /// The PR's attachment's subtitle, the sentence of the status.
+    fn record_pr_status(&self, key: &str, pr_url: &str, status: &PrStatus) -> TResult<()> {
+        let Some((id, title, subtitle)) = self.pr_attachment(key, pr_url)? else {
+            return Ok(());
+        };
+        let sentence = status.to_string();
+        if subtitle == sentence {
+            return Ok(());
+        }
+        self.write(
+            &format!("status of {pr_url} on {key}"),
+            "mutation($id: String!, $t: String!, $s: String) { attachmentUpdate(id: $id, input: {title: $t, subtitle: $s}) { success } }",
+            json!({"id": id, "t": title, "s": sentence}),
+            "attachmentUpdate",
+        )
+        .map(|_| ())
     }
 
     fn link_pr(&self, key: &str, pr_url: &str, title: &str) -> TResult<()> {
