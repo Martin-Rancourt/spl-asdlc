@@ -2,7 +2,10 @@
 //! invariant 1): the Livela runner's daemon job, a timer, a shell. The host
 //! gives the configuration file, the tracker and a time budget; the pass
 //! reads its secrets from the environment, runs one tick, appends the action
-//! log, and answers ok or failed with one line for the host's job log.
+//! log, and answers ok or failed with one line for the host's job log. A
+//! host that embeds the crate gives the repository instead of a file: the
+//! configuration is read at its default branch, merged with the instance
+//! overlay the host passes as a value ([`pass_from_repository`]).
 //!
 //! A pass that does nothing writes nothing: no fact, no log line, no file
 //! (invariant 7) but the empty lock file beside the action log, which keeps
@@ -14,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::action_log::ActionLog;
-use crate::config::Config;
+use crate::config::{Config, Source};
 use crate::github::{GitHub, RepoSlug, Timestamp};
 use crate::lock::TickLock;
 use crate::notify::{Channels, Signal};
@@ -48,6 +51,45 @@ pub struct Host<'a> {
     pub env: &'a dyn Fn(&str) -> Option<String>,
 }
 
+/// What a host that embeds the crate hands the bridge for a pass of one of
+/// its projects: the repository, whose `.spl-asdlc/config.toml` is read at
+/// the default branch, and the instance overlay as a value. Nothing is read
+/// from the host's disk.
+pub struct RepositoryHost<'a> {
+    pub repository: RepoSlug,
+    /// The instance overlay's text; `None` when the repository's file
+    /// carries every key.
+    pub instance: Option<Source>,
+    pub tracker: &'a dyn Tracker,
+    /// The pass stops taking decisions once this is spent; `None` for none.
+    pub budget: Option<Duration>,
+    /// Where the action log and its lock go; `None` for the default place.
+    pub log_path: Option<PathBuf>,
+    pub env: &'a dyn Fn(&str) -> Option<String>,
+}
+
+/// One pass of a host's project, with the GitHub client the host built
+/// (`crate::host::app_github`). A configuration that cannot be read at the
+/// default branch (missing, unreadable, invalid) fails the pass, which then
+/// writes nothing.
+pub fn pass_from_repository(host: &RepositoryHost, github: &dyn GitHub) -> PassOutcome {
+    let read = match crate::embed::read_config(github, &host.repository, host.instance.as_ref()) {
+        Ok(r) => r,
+        Err(e) => return PassOutcome::failed(e.to_string()),
+    };
+    pass_with(
+        &Host {
+            config_path: Path::new(crate::config::DEFAULT_PATH),
+            tracker: host.tracker,
+            budget: host.budget,
+            log_path: host.log_path.clone(),
+            env: host.env,
+        },
+        &read.config,
+        github,
+    )
+}
+
 /// One pass with the real GitHub client the configuration asks for.
 pub fn pass(host: &Host) -> PassOutcome {
     let config = match Config::load(host.config_path) {
@@ -73,7 +115,7 @@ pub fn pass(host: &Host) -> PassOutcome {
 }
 
 /// One pass with a given GitHub client (tests, and hosts that build their
-/// own).
+/// own). `host.config_path` is not read: `config` is the configuration.
 pub fn pass_with(host: &Host, config: &Config, github: &dyn GitHub) -> PassOutcome {
     let started = Instant::now();
     let Some(repo) = RepoSlug::parse(&config.product.repository) else {
@@ -232,6 +274,7 @@ mod tests {
             slug: "spl-asdlc".into(),
             app_id: "1".into(),
         });
+        s.default_branch.insert(repo.clone(), "main".into());
         s.tags.insert(repo.clone(), Vec::new());
         s.open_pulls.insert(repo.clone(), Ok(Vec::new()));
         s.merged_pulls.insert(repo, Ok(Vec::new()));
@@ -353,5 +396,138 @@ mod tests {
         let out = pass_with(&host, &config, &quiet_github());
         assert!(!out.ok);
         assert!(out.message.contains("time budget"), "{}", out.message);
+    }
+
+    fn repository_host(tracker: &FakeTracker) -> RepositoryHost<'_> {
+        RepositoryHost {
+            repository: RepoSlug::parse("example-org/acme").unwrap(),
+            instance: Some(Source {
+                label: "the host's instance values".into(),
+                text: crate::config::spec_example::instance().into(),
+            }),
+            tracker,
+            budget: Some(Duration::from_secs(60)),
+            log_path: None,
+            env: &|_| None,
+        }
+    }
+
+    fn with_file(github: &FakeGitHub, text: &str) {
+        github.state.borrow_mut().files.insert(
+            (
+                RepoSlug::parse("example-org/acme").unwrap(),
+                "main".into(),
+                crate::config::DEFAULT_PATH.into(),
+            ),
+            Ok(text.into()),
+        );
+    }
+
+    /// The configuration read at the default branch through the App,
+    /// merged with the overlay the host passes: nothing on the host's disk.
+    #[test]
+    fn a_host_runs_a_pass_from_the_repositorys_file_and_an_overlay_value() {
+        let github = quiet_github();
+        with_file(&github, crate::config::spec_example::repository());
+        let tracker = FakeTracker::default();
+        let out = pass_from_repository(&repository_host(&tracker), &github);
+        assert!(out.ok, "{out:?}");
+        assert!(tracker.writes().is_empty());
+        assert!(github.writes().is_empty());
+    }
+
+    #[test]
+    fn a_missing_unreadable_or_invalid_file_fails_the_pass_and_writes_nothing() {
+        let tracker = FakeTracker::default();
+        let missing = quiet_github();
+        let out = pass_from_repository(&repository_host(&tracker), &missing);
+        assert!(!out.ok);
+        assert!(
+            out.message
+                .contains("example-org/acme:.spl-asdlc/config.toml@main: no such file"),
+            "{}",
+            out.message
+        );
+
+        let unreadable = quiet_github();
+        unreadable.state.borrow_mut().files.insert(
+            (
+                RepoSlug::parse("example-org/acme").unwrap(),
+                "main".into(),
+                crate::config::DEFAULT_PATH.into(),
+            ),
+            Err(crate::github::ReadError::Unreadable {
+                what: "the file".into(),
+                status: Some(502),
+                detail: "bad gateway".into(),
+            }),
+        );
+        let out = pass_from_repository(&repository_host(&tracker), &unreadable);
+        assert!(!out.ok);
+        assert!(out.message.contains("could not be read"), "{}", out.message);
+
+        let invalid = quiet_github();
+        with_file(&invalid, "schema = 1\n");
+        let out = pass_from_repository(&repository_host(&tracker), &invalid);
+        assert!(!out.ok);
+        assert!(
+            out.message.contains("invalid configuration"),
+            "{}",
+            out.message
+        );
+        for g in [&missing, &unreadable, &invalid] {
+            assert!(g.writes().is_empty());
+        }
+        assert!(tracker.writes().is_empty());
+    }
+
+    /// The merge of the files on disk: a key in both is an error naming
+    /// both sources, an instance key in the repository's file is refused.
+    #[test]
+    fn the_merge_follows_the_rules_of_the_files_on_disk() {
+        let tracker = FakeTracker::default();
+        let both = quiet_github();
+        let repository = crate::config::spec_example::repository().replacen(
+            "[product]\n",
+            "[product]\nrepository = \"example-org/acme\"\n",
+            1,
+        );
+        with_file(&both, &repository);
+        let out = pass_from_repository(&repository_host(&tracker), &both);
+        assert!(!out.ok);
+        assert!(
+            out.message.contains("product.repository")
+                && out.message.contains("the host's instance values"),
+            "{}",
+            out.message
+        );
+
+        // Without an overlay the same file is read alone, its instance keys
+        // its own; another repository's file is refused.
+        let mut host = repository_host(&tracker);
+        host.instance = None;
+        host.repository = RepoSlug::parse("example-org/other").unwrap();
+        let other = quiet_github();
+        other
+            .state
+            .borrow_mut()
+            .default_branch
+            .insert(host.repository.clone(), "main".into());
+        other.state.borrow_mut().files.insert(
+            (
+                host.repository.clone(),
+                "main".into(),
+                crate::config::DEFAULT_PATH.into(),
+            ),
+            Ok(include_str!("../docs/setup/templates/config.toml").into()),
+        );
+        let out = pass_from_repository(&host, &other);
+        assert!(!out.ok);
+        assert!(
+            out.message
+                .contains("not the repository the file was read from"),
+            "{}",
+            out.message
+        );
     }
 }

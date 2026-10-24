@@ -100,7 +100,16 @@ fn preflight_accepts_both_gestures_and_an_empty_or_named_class() {
         ("RELEASE_TAG", "v{version}"),
         ("BRANCH_PREFIX", "rel/cycles/"),
     ]));
-    for channel in ["latest", "staging", "v0.4.0", "v10.20.30"] {
+    // A minor line `v<X.Y>` is a channel too: its newest published patch.
+    for channel in [
+        "latest",
+        "staging",
+        "v0.4.0",
+        "v10.20.30",
+        "v1.2",
+        "v0.4",
+        "v10.20",
+    ] {
         ok(&preflight(&[("SPL_VERSION", channel)]));
     }
     ok(&preflight(&[("FORCE_VERSION", "2.0.0")]));
@@ -154,7 +163,11 @@ fn preflight_refuses_what_it_cannot_cut_before_touching_anything() {
             "spl-asdlc-version 'main' is not a channel",
         ),
         (&[("SPL_VERSION", "0.4.0")], "is not a channel"),
-        (&[("SPL_VERSION", "v1.2")], "is not a channel"),
+        (&[("SPL_VERSION", "v1")], "is not a channel"),
+        (&[("SPL_VERSION", "1.2")], "is not a channel"),
+        (&[("SPL_VERSION", "v1.2.x")], "is not a channel"),
+        (&[("SPL_VERSION", "v1.2.")], "is not a channel"),
+        (&[("SPL_VERSION", "v1.x")], "is not a channel"),
         (&[("SPL_VERSION", "")], "is not a channel"),
         (&[("CONFIG_FILE", "../x.toml")], "inside the repository"),
         (&[("CONFIG_FILE", "/etc/x")], "inside the repository"),
@@ -374,8 +387,9 @@ fn published(serve: &Path, tag: &str, tamper: bool) -> String {
     name
 }
 
-/// A `gh` that names `latest` the latest release and serves `serve/<tag>/`
-/// for `release download`.
+/// A `gh` that names `latest` the latest release, lists `serve/releases.json`
+/// for the releases API (failing when there is none), and serves
+/// `serve/<tag>/` for `release download`.
 fn gh_releases(stubs: &Path, serve: &Path, latest: &str) {
     stub(
         stubs,
@@ -383,6 +397,7 @@ fn gh_releases(stubs: &Path, serve: &Path, latest: &str) {
         &format!(
             r#"case "$1 $2" in
   "release view") echo "{latest}" ;;
+  "api --paginate") cat "{serve}/releases.json" ;;
   "release download")
     tag="$3"; dir=''; patterns=()
     shift 3
@@ -463,6 +478,81 @@ fn open_runs_the_published_binary_of_its_channel_checked_against_its_sums() {
         gh_releases(&stubs.0, &serve.0, "v9.9.9");
         refused(&binary(&stubs.0, "staging"), "The staging channel builds");
     }
+}
+
+/// One release as the releases API lists it.
+fn release(tag: &str, draft: bool, prerelease: bool) -> String {
+    format!(r#"{{"tag_name":"{tag}","draft":{draft},"prerelease":{prerelease}}}"#)
+}
+
+#[test]
+fn a_minor_line_runs_its_newest_published_patch() {
+    if target().is_none() {
+        return;
+    }
+    let serve = Scratch::new("serve");
+    // Two pages, newest first by date: the line's newest patch by version
+    // is v1.2.10, published before v1.2.3 and ranked above v1.2.9; the
+    // draft, the prerelease, the candidate and the other lines are ignored.
+    let first = [
+        release("v1.2.3", false, false),
+        release("v1.2.12", true, false),
+        release("v1.2.11", false, true),
+        release("v1.3.0", false, false),
+        release("v1.20.1", false, false),
+    ];
+    let second = [
+        release("v1.2.10", false, false),
+        release("v1.2.9-rc.1", false, false),
+        release("v1.2.9", false, false),
+        release("v11.2.99", false, false),
+        release("staging", false, true),
+    ];
+    std::fs::write(
+        serve.0.join("releases.json"),
+        format!("[{}]\n[{}]\n", first.join(","), second.join(",")),
+    )
+    .unwrap();
+    let name = published(&serve.0, "v1.2.10", false);
+    let stubs = Scratch::new("stubs");
+    gh_releases(&stubs.0, &serve.0, "v1.3.0");
+    let r = binary(&stubs.0, "v1.2");
+    ok(&r);
+    assert!(r.output("bin").unwrap().contains(&name), "{}", r.log);
+    assert!(r.log.contains("from the release v1.2.10 of"), "{}", r.log);
+    let seen = calls(&stubs.0, "gh");
+    assert_eq!(
+        seen[0],
+        "api --paginate repos/example-org/spl-asdlc/releases?per_page=100"
+    );
+    assert!(
+        seen[1].starts_with(&format!(
+            "release download v1.2.10 --repo example-org/spl-asdlc --pattern {name}.tar.gz "
+        )),
+        "{seen:?}"
+    );
+    assert_eq!(seen.len(), 2, "one list, one download: {seen:?}");
+    // A line with no published release: only a draft and a prerelease.
+    std::fs::write(
+        serve.0.join("releases.json"),
+        format!(
+            "[{},{},{}]",
+            release("v1.4.0", true, false),
+            release("v1.4.0-rc.1", false, true),
+            release("v1.3.0", false, false)
+        ),
+    )
+    .unwrap();
+    let stubs = Scratch::new("stubs");
+    gh_releases(&stubs.0, &serve.0, "v1.3.0");
+    let r = binary(&stubs.0, "v1.4");
+    refused(&r, "has no published release of the line v1.4");
+    assert!(r.output("bin").is_none());
+    assert_eq!(calls(&stubs.0, "gh").len(), 1, "nothing is downloaded");
+    // Releases that cannot be listed.
+    let stubs = Scratch::new("stubs");
+    gh_releases(&stubs.0, &Scratch::new("empty").0, "v1.3.0");
+    refused(&binary(&stubs.0, "v1.2"), "Could not list the releases");
 }
 
 #[test]

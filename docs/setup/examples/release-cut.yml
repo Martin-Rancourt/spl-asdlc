@@ -15,7 +15,8 @@ name: release-cut
 # CHANGELOG, from the commits since the last release), commits
 # `chore(release): v<X.Y.Z>` and pushes the branch with its first candidate,
 # rc.1. It waits for no other workflow. `latest` follows the published
-# releases; pin a release tag (`v<X.Y.Z>`) to choose when to move.
+# releases; a minor line (`v<X.Y>`) follows its newest patch; pin a release
+# tag (`v<X.Y.Z>`) to choose when to move.
 
 on:
   workflow_dispatch:

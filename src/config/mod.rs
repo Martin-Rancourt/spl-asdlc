@@ -1414,7 +1414,7 @@ impl Validator {
     }
 }
 
-fn is_product_name(s: &str) -> bool {
+pub(crate) fn is_product_name(s: &str) -> bool {
     let mut chars = s.chars();
     matches!(chars.next(), Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit())
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
@@ -1426,7 +1426,7 @@ fn angle_possible(angles: bool, diff_size_extra_angle: u32) -> bool {
     angles || diff_size_extra_angle > 0
 }
 
-fn is_angle_key(s: &str) -> bool {
+pub(crate) fn is_angle_key(s: &str) -> bool {
     is_product_name(s)
 }
 

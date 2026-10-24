@@ -361,7 +361,7 @@ fn release_please_runs_on_main_as_the_app_with_this_repositorys_files() {
 }
 
 #[test]
-fn the_publication_builds_the_binaries_of_the_published_release_and_nothing_else() {
+fn the_publication_builds_the_binaries_of_the_published_release_then_moves_its_minor_tag() {
     let publish = own("publish.yml");
     assert_eq!(
         keys(&publish["on"]),
@@ -370,10 +370,30 @@ fn the_publication_builds_the_binaries_of_the_published_release_and_nothing_else
     assert_eq!(strings(&publish["on"]["release"]["types"]), ["published"]);
     let all = jobs(&publish);
     assert_eq!(
-        all.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
-        ["binaries"],
+        all.iter()
+            .map(|(id, _)| id.clone())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["binaries".to_string(), "minor-tag".to_string()]),
         "no verify, no merge-back, no closing-guard"
     );
+    // The minor tag moves once the binaries are attached, with the
+    // workflow's own token and the one write it needs.
+    let tag = &publish["jobs"]["minor-tag"];
+    assert_eq!(needs(tag), BTreeSet::from(["binaries".to_string()]));
+    assert_eq!(
+        keys(&tag["permissions"]),
+        BTreeSet::from(["contents".to_string()])
+    );
+    assert_eq!(tag["permissions"]["contents"].as_str(), Some("write"));
+    assert_eq!(
+        tag["env"]["TAG"].as_str(),
+        Some("${{ github.event.release.tag_name }}")
+    );
+    assert_eq!(
+        tag["env"]["PRERELEASE"].as_str(),
+        Some("${{ github.event.release.prerelease }}")
+    );
+    assert_eq!(tag["env"]["GH_TOKEN"].as_str(), Some("${{ github.token }}"));
     let call = &publish["jobs"]["binaries"];
     assert_eq!(
         call["uses"].as_str(),
@@ -391,6 +411,172 @@ fn the_publication_builds_the_binaries_of_the_published_release_and_nothing_else
     // The release tags release-please makes: `v<X.Y.Z>`, no component.
     let config = file_json("release-please-config.json");
     assert_eq!(config["packages"]["."]["include-component-in-tag"], false);
+}
+
+/// The minor tag's step, run as shipped with `gh` stubbed.
+#[cfg(unix)]
+mod minor_tag {
+    use std::path::Path;
+
+    use crate::harness::{Ran, Scratch, calls, path_with, run_body, run_owned, step, stub};
+
+    const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    /// A `gh` that lists `releases`, names `SHA` the commit of any tag, and
+    /// fails the PATCH of a tag that does not exist yet (`missing`).
+    fn gh(stubs: &Path, releases: &[&str], missing: bool) {
+        let listed: Vec<String> = releases
+            .iter()
+            .map(|r| {
+                let (tag, kind) = r.split_once(':').unwrap_or((r, ""));
+                format!(
+                    r#"{{"tag_name":"{tag}","draft":{},"prerelease":{}}}"#,
+                    kind == "draft",
+                    kind == "pre"
+                )
+            })
+            .collect();
+        std::fs::write(
+            stubs.join("releases.json"),
+            format!("[{}]", listed.join(",")),
+        )
+        .unwrap();
+        stub(
+            stubs,
+            "gh",
+            &format!(
+                r#"case "$1 $2" in
+  "api --paginate") cat "{dir}/releases.json" ;;
+  "api -X") if [ "$3" = PATCH ] && [ {missing} = true ]; then exit 1; fi ;;
+  "api repos/"*) echo {SHA} ;;
+  *) echo "unexpected gh $*" >&2; exit 1 ;;
+esac"#,
+                dir = stubs.display()
+            ),
+        );
+    }
+
+    fn move_tag(stubs: &Path, tag: &str, prerelease: bool) -> Ran {
+        let script = run_body(&step(
+            &crate::harness::workflow(".github/workflows/publish.yml"),
+            "minor-tag",
+            "Move the minor tag",
+        ));
+        let dir = Scratch::new("minor-tag");
+        run_owned(
+            &script,
+            &[
+                ("PATH", path_with(stubs)),
+                ("TAG", tag.to_string()),
+                ("PRERELEASE", prerelease.to_string()),
+                ("GH_TOKEN", "a-token".into()),
+                ("GITHUB_REPOSITORY", "example-org/spl-asdlc".into()),
+            ],
+            &dir.0,
+        )
+    }
+
+    /// No call ever names the major tag `v<X>`: it stays the owner's.
+    fn never_the_major(seen: &[String]) {
+        for c in seen {
+            assert!(
+                !c.contains("refs/tags/v1 ") && !c.ends_with("refs/tags/v1"),
+                "{c}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_release_moves_its_minor_line_to_its_commit() {
+        let stubs = Scratch::new("stubs");
+        gh(
+            &stubs.0,
+            &["v1.5.0", "v1.4.2", "v1.4.10:draft", "v1.4.11:pre", "v1.4.1"],
+            false,
+        );
+        let r = move_tag(&stubs.0, "v1.4.2", false);
+        assert_eq!(r.code, 0, "{}", r.log);
+        assert!(r.log.contains(&format!("Moved v1.4 to v1.4.2 ({SHA})")));
+        let seen = calls(&stubs.0, "gh");
+        assert_eq!(
+            seen,
+            [
+                "api --paginate repos/example-org/spl-asdlc/releases?per_page=100".to_string(),
+                "api repos/example-org/spl-asdlc/commits/v1.4.2 --jq .sha".to_string(),
+                format!(
+                    "api -X PATCH repos/example-org/spl-asdlc/git/refs/tags/v1.4 -f sha={SHA} -F force=true"
+                ),
+            ]
+        );
+        never_the_major(&seen);
+    }
+
+    #[test]
+    fn the_first_release_of_a_line_creates_its_tag() {
+        let stubs = Scratch::new("stubs");
+        gh(&stubs.0, &["v2.0.0", "v1.9.3"], true);
+        let r = move_tag(&stubs.0, "v2.0.0", false);
+        assert_eq!(r.code, 0, "{}", r.log);
+        let seen = calls(&stubs.0, "gh");
+        assert_eq!(
+            seen.last().unwrap(),
+            &format!(
+                "api -X POST repos/example-org/spl-asdlc/git/refs -f ref=refs/tags/v2.0 -f sha={SHA}"
+            )
+        );
+        assert!(seen.iter().all(|c| !c.contains("refs/tags/v2 ")));
+    }
+
+    #[test]
+    fn an_older_patch_never_moves_the_line_backwards() {
+        let stubs = Scratch::new("stubs");
+        gh(&stubs.0, &["v1.4.1", "v1.4.10", "v1.4.9"], false);
+        let r = move_tag(&stubs.0, "v1.4.9", false);
+        assert_eq!(r.code, 0, "{}", r.log);
+        assert!(r.log.contains("v1.4 stays on v1.4.10"), "{}", r.log);
+        assert!(
+            calls(&stubs.0, "gh").iter().all(|c| !c.contains("-X")),
+            "no tag written"
+        );
+    }
+
+    #[test]
+    fn a_tag_that_is_not_a_release_moves_nothing() {
+        for tag in [
+            "v1",
+            "v1.4",
+            "staging",
+            "v1.4.0-rc.1",
+            "acme-v1.4.0",
+            "v01.4.0",
+            "v1.4.0.1",
+            "",
+        ] {
+            let stubs = Scratch::new("stubs");
+            gh(&stubs.0, &["v1.4.0"], false);
+            let r = move_tag(&stubs.0, tag, false);
+            assert_eq!(r.code, 0, "{tag}: {}", r.log);
+            assert!(r.log.contains("no tag moves"), "{tag}: {}", r.log);
+            assert!(calls(&stubs.0, "gh").is_empty(), "{tag}");
+        }
+        // A prerelease, whatever its tag.
+        let stubs = Scratch::new("stubs");
+        gh(&stubs.0, &["v1.4.0"], false);
+        let r = move_tag(&stubs.0, "v1.4.0", true);
+        assert!(r.log.contains("no tag moves"), "{}", r.log);
+        assert!(calls(&stubs.0, "gh").is_empty());
+    }
+
+    #[test]
+    fn releases_that_cannot_be_listed_move_nothing_and_fail() {
+        let stubs = Scratch::new("stubs");
+        gh(&stubs.0, &[], false);
+        std::fs::remove_file(stubs.0.join("releases.json")).unwrap();
+        let r = move_tag(&stubs.0, "v1.4.0", false);
+        assert_eq!(r.code, 1, "{}", r.log);
+        assert!(r.log.contains("Could not list the releases"), "{}", r.log);
+        assert!(calls(&stubs.0, "gh").iter().all(|c| !c.contains("-X")));
+    }
 }
 
 // ---- binaries.yml ----

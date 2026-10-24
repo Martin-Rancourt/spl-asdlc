@@ -3,12 +3,15 @@ name: publish
 # The publication of a spl-asdlc release: once release-please (running as the
 # App, release-please.yml) has published the GitHub release of a tag
 # `v<X.Y.Z>`, binaries.yml builds and tests the binary on every target from
-# that tag and attaches the archives and their sums to the release. Nothing
-# else: this repository does not run the SPL-ASDLC release cycle on itself.
+# that tag and attaches the archives and their sums to the release, then the
+# minor tag `v<X.Y>` is moved to the release's commit. Nothing else: this
+# repository does not run the SPL-ASDLC release cycle on itself.
 #
-# The one write is binaries.yml's, which attaches the archives to the
-# release: this caller grants `contents: write`, and binaries.yml keeps it to
-# that one job.
+# Two writes, each in its job: binaries.yml's, which attaches the archives
+# to the release (this caller grants `contents: write`, and binaries.yml
+# keeps it to that one job), and the minor tag's. The major tag `v<X>` is
+# never moved here: it stays the owner's gesture
+# (docs/setup/repository.md, "The workflows' tag").
 
 on:
   release:
@@ -24,3 +27,65 @@ jobs:
     uses: ./.github/workflows/binaries.yml
     with:
       tag: ${{ github.event.release.tag_name }}
+
+  # A caller on `@v<X.Y>` gets every patch of that line. The tag moves only
+  # once the binaries are attached: a release whose build or tests failed on
+  # a target leaves the line on the previous patch, whose workflows and
+  # binaries go together. GITHUB_TOKEN is enough, as for staging.yml's tag:
+  # the tag ruleset protects the release tags `v<X.Y.Z>` and leaves
+  # `v<X.Y>` movable, and no workflow starts on that tag.
+  minor-tag:
+    name: minor-tag
+    needs: binaries
+    runs-on: ${{ fromJSON(vars.SPL_ASDLC_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.event.release.tag_name }}
+      PRERELEASE: ${{ github.event.release.prerelease }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Move the minor tag
+        run: |
+          set -euo pipefail
+          # Only a release `v<X.Y.Z>` has a minor line: a prerelease or a tag
+          # of any other shape moves nothing.
+          release_re='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          if [ "$PRERELEASE" = true ] || ! [[ "$TAG" =~ $release_re ]]; then
+            echo "$TAG is not a published release v<X.Y.Z>: no tag moves."
+            exit 0
+          fi
+          line="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+          patch="${BASH_REMATCH[3]}"
+          # Never backwards: a patch of the line published after a newer one
+          # (a re-published release) leaves the tag on the newest.
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          if ! gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$work/releases"; then
+            echo "::error title=Minor tag not moved::Could not list the releases of $GITHUB_REPOSITORY."
+            exit 1
+          fi
+          if ! newest="$(jq -r --arg line "$line." '.[]
+              | select((.draft | not) and (.prerelease | not))
+              | .tag_name | select(startswith($line)) | ltrimstr($line)
+              | select(test("^(0|[1-9][0-9]*)$"))' "$work/releases" | sort -n | tail -n 1)"; then
+            echo "::error title=Minor tag not moved::The releases of $GITHUB_REPOSITORY could not be read as JSON."
+            exit 1
+          fi
+          if [ -n "$newest" ] && [ "$newest" -gt "$patch" ]; then
+            echo "$line stays on $line.$newest, newer than $TAG."
+            exit 0
+          fi
+          if ! sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha)" || ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error title=Minor tag not moved::Could not read the commit of $TAG."
+            exit 1
+          fi
+          # A lightweight tag moved through the API, as staging.yml moves
+          # `staging`; created on the line's first release.
+          if ! gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$line" \
+              -f sha="$sha" -F force=true > /dev/null 2>&1; then
+            gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/tags/$line" -f sha="$sha" > /dev/null
+          fi
+          echo "Moved $line to $TAG ($sha)."

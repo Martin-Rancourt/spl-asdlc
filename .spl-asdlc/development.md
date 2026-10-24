@@ -8,7 +8,7 @@ GitHub Flow: every change is a pull request to `main`, checked by `pr.yml` (form
 
 ## Releases
 
-release-please's normal mode on `main` (`release-please.yml`): it keeps a release PR open, and merging it tags `v<X.Y.Z>` and publishes the GitHub release. `publish.yml` then builds the binaries (`binaries.yml`) and attaches them with their `SHA256SUMS`. The reusable `asdlc-*` workflows are released with the bridge under the same version; callers pin a major tag (`@v1`).
+release-please's normal mode on `main` (`release-please.yml`): it keeps a release PR open, and merging it tags `v<X.Y.Z>` and publishes the GitHub release. `publish.yml` then builds the binaries (`binaries.yml`), attaches them with their `SHA256SUMS`, and moves the minor tag `v<X.Y>` to the release. The reusable `asdlc-*` workflows are released with the bridge under the same version; callers pin a major tag (`@v1`), moved by the owner, or a minor line (`@v<X.Y>`), moved by `publish.yml`.
 
 The process page, `docs/agents/process.md`, is copied into every project and checked there by `asdlc-pr-guards.yml` against the git blob id the workflow carries (`PINNED_BLOB`). A PR that changes the page writes the new id in the same PR (`tests/workflows/pr_guards.rs` names it), and its release note tells the projects to refresh their copy: once `v1` moves to that release, a project's PRs are refused until it does.
 

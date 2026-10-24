@@ -23,6 +23,12 @@ pub fn github(config: &Config, env: &dyn Fn(&str) -> Option<String>) -> Result<R
     Ok(RestGitHub::new(credentials))
 }
 
+/// The App's client, its credentials read from `env`, for a host that
+/// reads a project's configuration through it before it has one.
+pub fn app_github(env: &dyn Fn(&str) -> Option<String>) -> Result<RestGitHub, String> {
+    Ok(RestGitHub::new(Credentials::app_from_env(env)?))
+}
+
 /// The tracker client of a configuration, for the trackers reached over
 /// the network. Livela is reached in process, from its runner's store
 /// (`docs/setup/tracker-livela.md`): the binary alone cannot open it.

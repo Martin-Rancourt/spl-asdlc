@@ -1,8 +1,11 @@
 //! `spl-asdlc doctor`: each point of the setup procedure (`docs/setup/`)
 //! checked through the bridge's own identities, reported `ok`, `missing` or
-//! `invalid`. It reads; it never writes.
+//! `invalid`, each check not `ok` with the gesture that fixes it and the
+//! page of `docs/setup/` that describes it. It reads; it never writes.
 
 use std::fmt;
+
+use serde::Serialize;
 
 use crate::config::{Config, Source};
 use crate::github::{GitHub, Read, RepoSlug, Ruleset};
@@ -13,7 +16,8 @@ use crate::method::texts::protocol::{Job, angle_path, retired_in};
 use crate::method::workflow_callers::reusable_callers;
 use crate::tracker::{StatusTable, Tracker};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Verdict {
     Ok,
     Missing,
@@ -30,11 +34,23 @@ impl fmt::Display for Verdict {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Check {
     pub name: String,
+    #[serde(rename = "state")]
     pub verdict: Verdict,
+    /// What was found, and why it is not ok when it is not.
     pub detail: String,
+    /// The gesture that fixes a check that is not `ok`; `None` when it is.
+    pub fix: Option<Fix>,
+}
+
+/// How a check that is not `ok` is fixed: a sentence, and the page of
+/// `docs/setup/` that describes the step.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Fix {
+    pub gesture: String,
+    pub page: String,
 }
 
 impl fmt::Display for Check {
@@ -48,6 +64,7 @@ fn check(name: &str, verdict: Verdict, detail: impl Into<String>) -> Check {
         name: name.to_string(),
         verdict,
         detail: detail.into(),
+        fix: None,
     }
 }
 
@@ -60,6 +77,38 @@ pub fn run(
     github: &dyn GitHub,
     tracker: &dyn Tracker,
     host: &str,
+) -> Vec<Check> {
+    run_embedded(config, instance, github, tracker, host, None)
+}
+
+/// [`run`] for a host that embeds this crate at `embedded` (a version
+/// `X.Y.Z`): `embedded version` also says whether the workflow callers
+/// name its minor line `vX.Y`, so that the method's texts and workflows a
+/// project runs are those of the bridge the host runs.
+pub fn run_embedded(
+    config: &Config,
+    instance: Option<&Source>,
+    github: &dyn GitHub,
+    tracker: &dyn Tracker,
+    host: &str,
+    embedded: Option<&str>,
+) -> Vec<Check> {
+    let mut out = checks(config, instance, github, tracker, host, embedded);
+    for c in &mut out {
+        if c.verdict != Verdict::Ok {
+            c.fix = Some(fix_of(&c.name, config));
+        }
+    }
+    out
+}
+
+fn checks(
+    config: &Config,
+    instance: Option<&Source>,
+    github: &dyn GitHub,
+    tracker: &dyn Tracker,
+    host: &str,
+    embedded: Option<&str>,
 ) -> Vec<Check> {
     let mut out = vec![
         check("bridge-host", Verdict::Ok, host),
@@ -103,7 +152,7 @@ pub fn run(
     out.push(pause_check(github, &repo));
     out.extend(files(config, instance, github, &repo, &default));
     out.push(method_checks(github, &repo, &default));
-    out.extend(method_version(config, github, &repo, &default));
+    out.extend(method_version(config, github, &repo, &default, embedded));
     out.extend(ruleset_checks(config, &default, &github.rulesets(&repo)));
     out.extend(tracker_checks(config, tracker));
     out
@@ -753,7 +802,69 @@ fn method_checks(github: &dyn GitHub, repo: &RepoSlug, rev: &str) -> Check {
 /// whether its texts can be read with the project's token, and each angle
 /// the configuration names against that version (BR-ASDLC-034): the
 /// method's, the project's own, or one the method retired.
-fn method_version(config: &Config, github: &dyn GitHub, repo: &RepoSlug, rev: &str) -> Vec<Check> {
+fn method_version(
+    config: &Config,
+    github: &dyn GitHub,
+    repo: &RepoSlug,
+    rev: &str,
+    embedded: Option<&str>,
+) -> Vec<Check> {
+    let mut out = pinned(config, github, repo, rev, embedded);
+    if let (Some(version), false) = (embedded, out.iter().any(|c| c.name == EMBEDDED)) {
+        out.push(check(
+            EMBEDDED,
+            Verdict::Missing,
+            format!(
+                "the workflow callers' ref cannot be read, so it cannot be told whether they name {}, the minor line of the embedded spl-asdlc {version}",
+                crate::embed::minor_line(version)
+            ),
+        ));
+    }
+    out
+}
+
+const EMBEDDED: &str = "embedded version";
+
+/// Whether the ref the callers name is the minor line of the version the
+/// host embeds: `vX.Y`, or an exact `vX.Y.Z` of that line.
+fn embedded_check(pin: &Pin, version: &str) -> Check {
+    let line = crate::embed::minor_line(version);
+    let rev = pin.rev.as_str();
+    if rev == line {
+        check(
+            EMBEDDED,
+            Verdict::Ok,
+            format!("the callers name {line}, the minor line of the embedded spl-asdlc {version}"),
+        )
+    } else if rev.strip_prefix(line.as_str()).is_some_and(|rest| {
+        rest.strip_prefix('.')
+            .is_some_and(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+    }) {
+        check(
+            EMBEDDED,
+            Verdict::Ok,
+            format!(
+                "the callers name {rev}, of {line}, the minor line of the embedded spl-asdlc {version}; {line} would bring the line's fixes"
+            ),
+        )
+    } else {
+        check(
+            EMBEDDED,
+            Verdict::Invalid,
+            format!(
+                "the callers name {pin}, but the host embeds spl-asdlc {version}: the workflows and texts the project runs are not those of the bridge that serves it"
+            ),
+        )
+    }
+}
+
+fn pinned(
+    config: &Config,
+    github: &dyn GitHub,
+    repo: &RepoSlug,
+    rev: &str,
+    embedded: Option<&str>,
+) -> Vec<Check> {
     const NAME: &str = "method version";
     let mut files = Vec::new();
     match github.dir(repo, WORKFLOWS, rev) {
@@ -783,6 +894,9 @@ fn method_version(config: &Config, github: &dyn GitHub, repo: &RepoSlug, rev: &s
             "{pin}, from the workflow callers at {rev}: the agents' review texts are read there"
         ),
     )];
+    if let Some(version) = embedded {
+        out.push(embedded_check(&pin, version));
+    }
     let texts = "method texts";
     match github.file_from(repo, &pin.repo, Job::PrAngle.path(), &pin.rev) {
         Ok(_) => out.push(check(
@@ -1128,6 +1242,108 @@ fn participants(config: &Config) -> Vec<(String, &str)> {
     out
 }
 
+/// The gesture that fixes a check that is not `ok`, by the check's name.
+fn fix_of(name: &str, config: &Config) -> Fix {
+    let tracker = match config.tracker.kind {
+        crate::config::TrackerKind::Linear => "docs/setup/tracker-linear.md",
+        crate::config::TrackerKind::Livela => "docs/setup/tracker-livela.md",
+    };
+    const APP: &str = "docs/setup/github-app.md";
+    const REPOSITORY: &str = "docs/setup/repository.md";
+    let (gesture, page) = match name {
+        "repository" => (
+            "Set product.repository to <owner>/<repo> and install the GitHub App on that repository.",
+            APP,
+        ),
+        "github-app" => (
+            "Give the bridge's host the App's id and private key (SPL_ASDLC_APP_ID, SPL_ASDLC_APP_PRIVATE_KEY), or the token of the fallback identity.",
+            APP,
+        ),
+        "pause" => (
+            "Set the repository variable SPL_ASDLC_PAUSED to `true` or unset it, and give the App Variables: read.",
+            "docs/setup/manual-gestures.md",
+        ),
+        crate::config::DEFAULT_PATH => (
+            "Commit a valid .spl-asdlc/config.toml on the default branch; `spl-asdlc config check` says what is wrong.",
+            REPOSITORY,
+        ),
+        "business-rules" | RULE_TESTS => (
+            "Fix the business-rule registry under .spl-asdlc/business-rules/ and the tests each rule cites.",
+            REPOSITORY,
+        ),
+        "method checks" => (
+            "Call asdlc-pr-guards.yml and asdlc-pr-title.yml from the project's workflows, as docs/setup/examples/pr.yml and pr-title.yml do.",
+            REPOSITORY,
+        ),
+        "method version" => (
+            "Make every workflow caller of the method name the same <owner>/spl-asdlc@<ref>.",
+            REPOSITORY,
+        ),
+        "method texts" => (
+            "Pin a ref the method's repository has, or include that repository in the App's installation while it is private.",
+            APP,
+        ),
+        EMBEDDED => (
+            "Move every workflow caller of the method to the minor line the host embeds (@vX.Y), in a PR of the project.",
+            REPOSITORY,
+        ),
+        "tracker" => (
+            "Give the bridge the tracker identity tracker.service_identity names.",
+            tracker,
+        ),
+        "statuses" => (
+            "Give the tracker every canonical status, named exactly so.",
+            tracker,
+        ),
+        "tracker.project" => (
+            "Name in [tracker] project a project the tracker knows, by its id when two share a name.",
+            tracker,
+        ),
+        "owner" => (
+            "Set owner.tracker_user to a person the tracker knows.",
+            tracker,
+        ),
+        "release.escalation_label" => (
+            "Let the bridge's identity read the tracker's labels.",
+            tracker,
+        ),
+        n if n.ends_with(".assignee")
+            || n.ends_with(".coordinator_assignee")
+            || n == "release.fix_assignee" =>
+        {
+            ("Name a participant the tracker knows.", tracker)
+        }
+        n if n.starts_with("angle ") => (
+            "Drop the angle the method retired, or keep it as the project's own under another key with its notes.",
+            REPOSITORY,
+        ),
+        n if n.starts_with("ruleset ") => (
+            "Create or fix the ruleset as the page describes.",
+            REPOSITORY,
+        ),
+        n if n.starts_with("workflow ") => (
+            "Add the workflow caller from docs/setup/examples/ under the name the configuration gives.",
+            REPOSITORY,
+        ),
+        n if n.starts_with("caller ") || n == "gate-workflow callers" => (
+            "Drop the caller's gate-workflow input: the workflow reads release.gate_workflow.",
+            REPOSITORY,
+        ),
+        n if n.starts_with("version file ") => (
+            "Add the file, or fix its entry in release.version_files.",
+            REPOSITORY,
+        ),
+        _ => (
+            "Follow the setup step the check names.",
+            "docs/setup/README.md",
+        ),
+    };
+    Fix {
+        gesture: gesture.to_string(),
+        page: page.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1326,7 +1542,7 @@ mod tests {
         let g = FakeGitHub::new();
         let repo = RepoSlug::parse("example-org/acme").unwrap();
         let lines = |g: &FakeGitHub| -> Vec<String> {
-            method_version(&c, g, &repo, "main")
+            method_version(&c, g, &repo, "main", None)
                 .iter()
                 .map(ToString::to_string)
                 .collect()
@@ -1373,6 +1589,92 @@ mod tests {
         assert!(
             several[0].starts_with("method version: invalid — the workflow callers pin the method on more than one version"),
             "{several:?}"
+        );
+    }
+
+    /// A host that embeds the crate: the callers' ref is judged against the
+    /// minor line of the version it embeds.
+    #[test]
+    fn the_callers_ref_is_judged_against_the_embedded_minor_line() {
+        let c = config();
+        let g = FakeGitHub::new();
+        let repo = RepoSlug::parse("example-org/acme").unwrap();
+        let embedded = |g: &FakeGitHub| -> Check {
+            method_version(&c, g, &repo, "main", Some("1.4.2"))
+                .into_iter()
+                .find(|c| c.name == EMBEDDED)
+                .expect("an embedded version check")
+        };
+        assert_eq!(embedded(&g).verdict, Verdict::Missing, "no caller");
+        for (rev, verdict) in [
+            ("v1.4", Verdict::Ok),
+            ("v1.4.0", Verdict::Ok),
+            ("v1.4.9", Verdict::Ok),
+            ("v1", Verdict::Invalid),
+            ("v1.3", Verdict::Invalid),
+            ("v1.40", Verdict::Invalid),
+            ("v1.4.x", Verdict::Invalid),
+            ("main", Verdict::Invalid),
+        ] {
+            g.pin_method(&repo, rev);
+            let check = embedded(&g);
+            assert_eq!(check.verdict, verdict, "{rev}: {check}");
+        }
+        g.pin_method(&repo, "v1");
+        assert!(
+            embedded(&g)
+                .detail
+                .contains("the host embeds spl-asdlc 1.4.2"),
+            "{}",
+            embedded(&g)
+        );
+        // The binary at the command line embeds nothing: no such check.
+        assert!(
+            method_version(&c, &g, &repo, "main", None)
+                .iter()
+                .all(|c| c.name != EMBEDDED)
+        );
+    }
+
+    /// Every check not ok says how it is fixed and where; the result
+    /// serialises with each check's state.
+    #[test]
+    fn a_check_not_ok_carries_its_fix_and_the_report_serialises() {
+        let c = config();
+        let g = FakeGitHub::new();
+        let tracker = FakeTracker::default();
+        let checks = run(&c, None, &g, &tracker, "test");
+        let not_ok: Vec<_> = checks.iter().filter(|c| c.verdict != Verdict::Ok).collect();
+        assert!(!not_ok.is_empty());
+        for check in &checks {
+            match &check.fix {
+                Some(f) => {
+                    assert!(check.verdict != Verdict::Ok, "{check}");
+                    assert!(f.page.starts_with("docs/setup/"), "{f:?}");
+                    let page = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(&f.page);
+                    assert!(page.exists(), "{}", f.page);
+                    assert!(f.gesture.ends_with('.'), "{f:?}");
+                }
+                None => assert_eq!(check.verdict, Verdict::Ok, "{check}"),
+            }
+        }
+        let json = serde_json::to_value(&checks).unwrap();
+        let first_missing = json
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["state"] != "ok")
+            .unwrap();
+        assert!(first_missing["fix"]["gesture"].is_string());
+        assert_eq!(json[0]["state"], "ok");
+        assert!(json[0]["fix"].is_null());
+        // Each name of the fix table is a check doctor emits or a family.
+        let tracker_page = fix_of("statuses", &c).page;
+        assert_eq!(tracker_page, "docs/setup/tracker-linear.md");
+        assert_eq!(fix_of("ruleset main", &c).page, "docs/setup/repository.md");
+        assert_eq!(
+            fix_of("release.angles.security.assignee", &c).page,
+            tracker_page
         );
     }
 

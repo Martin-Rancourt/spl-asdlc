@@ -68,6 +68,10 @@ enum Command {
         /// The instance overlay (default: `config.instance.toml` beside the file, when present).
         #[arg(long)]
         instance: Option<PathBuf>,
+        /// Print the checks as a JSON array: each one's name, state, detail
+        /// and the gesture that fixes it.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -228,9 +232,11 @@ where
             &mut out,
             &mut err,
         ),
-        Command::Doctor { file, instance } => {
-            doctor(&file, instance.as_deref(), &mut out, &mut err)
-        }
+        Command::Doctor {
+            file,
+            instance,
+            json,
+        } => doctor(&file, instance.as_deref(), json, &mut out, &mut err),
     }
 }
 
@@ -490,84 +496,81 @@ fn release(
         return ExitCode::from(2);
     }
     let env = crate::host::process_env;
-    let signal = crate::job::channels(&c.config, &env);
-    let t = crate::tick::Tick {
-        config: &c.config,
-        repo: c.repo.clone(),
-        github: &c.github,
-        tracker: &c.tracker,
-        signal: signal.as_ref(),
-        github_login: c.login.clone(),
-        now: crate::github::Timestamp::now(),
-        deadline: None,
-        dry_run: false,
-        method_texts: Default::default(),
+    let project = match crate::embed::Project::new(&c.config, &c.github, &c.tracker, None, &env) {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = writeln!(err, "{e}");
+            return ExitCode::from(2);
+        }
     };
-    let mut log = match crate::action_log::ActionLog::default_path(&c.repo, &env) {
-        Some(p) => crate::action_log::ActionLog::at(p),
-        None => crate::action_log::ActionLog::in_memory(),
-    };
-    let result = match command {
-        ReleaseCommand::Status { json } => match crate::verbs::release_status(&t) {
-            Ok(crate::verbs::CycleStatus::Over { release_tag, item }) => {
-                if json {
-                    let _ = writeln!(
-                        out,
-                        "{}",
-                        serde_json::json!({"in_flight": false, "closed_with": release_tag, "release_item": item})
-                    );
-                } else {
+    let outcome = match command {
+        ReleaseCommand::Status { json } => {
+            use crate::embed::ReleaseStatus;
+            return match project.release_status() {
+                Ok(status) if json => {
+                    let _ = writeln!(out, "{}", status.as_json());
+                    status_code(&status)
+                }
+                Ok(ReleaseStatus::Over { release_tag, item }) => {
                     let _ = writeln!(
                         out,
                         "no cycle in flight: the last cycle closed with {release_tag} ({item})"
                     );
+                    ExitCode::SUCCESS
                 }
-                return ExitCode::SUCCESS;
-            }
-            Ok(crate::verbs::CycleStatus::InFlight(cycle, d)) => {
-                if json {
-                    let _ = writeln!(out, "{}", d.as_json());
-                } else {
+                Ok(ReleaseStatus::InFlight {
+                    item,
+                    candidate,
+                    go,
+                    reasons,
+                    blockers_carried,
+                    ..
+                }) => {
                     let _ = writeln!(
                         out,
-                        "{} {}: {}",
-                        cycle.item.key,
-                        cycle.candidate.tag,
-                        if d.go { "GO" } else { "no GO" }
+                        "{item} {candidate}: {}",
+                        if go { "GO" } else { "no GO" }
                     );
-                    for r in &d.reasons {
+                    for r in reasons {
                         let _ = writeln!(out, "  - {r}");
                     }
-                    let _ = writeln!(out, "  Blockers-Carried: {}", d.blockers_carried());
+                    let _ = writeln!(out, "  Blockers-Carried: {blockers_carried}");
+                    if go {
+                        ExitCode::SUCCESS
+                    } else {
+                        ExitCode::from(1)
+                    }
                 }
-                return if d.go {
-                    ExitCode::SUCCESS
-                } else {
+                Err(e) => {
+                    let _ = writeln!(err, "{e}");
                     ExitCode::from(1)
-                };
-            }
-            Err(e) => Err(e),
-        },
-        ReleaseCommand::Cut { open } => crate::verbs::cut(&t, &mut log, open),
+                }
+            };
+        }
+        ReleaseCommand::Cut { open } => project.cut(open, &who()),
         ReleaseCommand::Prepare { .. } => unreachable!("prepared above, with no connection"),
         ReleaseCommand::Requalify {
             ticket,
             blocking,
             reason,
-        } => crate::verbs::requalify(&t, &mut log, &ticket, blocking, &reason, &who()),
-        ReleaseCommand::Abandon => crate::verbs::abandon(&t, &mut log, &who()),
-        ReleaseCommand::Retract { tag } => crate::verbs::retract(&t, &mut log, &tag, &who()),
+        } => project.requalify(&ticket, blocking, &reason, &who()),
+        ReleaseCommand::Abandon => project.abandon(&who()),
+        ReleaseCommand::Retract { tag } => project.retract(&tag, &who()),
     };
-    let _ = log.flush();
-    match result {
-        Ok(line) => {
-            let _ = writeln!(out, "{line}");
-            ExitCode::SUCCESS
-        }
-        Err(e) => {
-            let _ = writeln!(err, "{e}");
-            ExitCode::from(1)
-        }
+    if outcome.done {
+        let _ = writeln!(out, "{}", outcome.message);
+        ExitCode::SUCCESS
+    } else {
+        let _ = writeln!(err, "{}", outcome.message);
+        ExitCode::from(1)
+    }
+}
+
+/// `release status`'s exit code: 1 when a cycle in flight has no GO.
+fn status_code(status: &crate::embed::ReleaseStatus) -> ExitCode {
+    match status {
+        crate::embed::ReleaseStatus::InFlight { go: false, .. } => ExitCode::from(1),
+        _ => ExitCode::SUCCESS,
     }
 }
 
@@ -655,6 +658,7 @@ fn prepare(
 fn doctor(
     file: &std::path::Path,
     instance: Option<&std::path::Path>,
+    json: bool,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> ExitCode {
@@ -672,8 +676,16 @@ fn doctor(
         &c.tracker,
         "spl-asdlc binary",
     );
-    for check in &checks {
-        let _ = writeln!(out, "{check}");
+    if json {
+        let _ = writeln!(
+            out,
+            "{}",
+            serde_json::to_string_pretty(&checks).expect("checks serialise")
+        );
+    } else {
+        for check in &checks {
+            let _ = writeln!(out, "{check}");
+        }
     }
     if checks
         .iter()
@@ -863,5 +875,18 @@ mod tests {
             requalify(&["ABC-7", "--severity", "nit", "--reason", "r"]).is_err(),
             "the severities are gone"
         );
+    }
+
+    #[test]
+    fn doctor_takes_json() {
+        for (args, want) in [
+            (vec!["spl-asdlc", "doctor"], false),
+            (vec!["spl-asdlc", "doctor", "--json"], true),
+        ] {
+            match Cli::try_parse_from(args).unwrap().command {
+                Command::Doctor { json, .. } => assert_eq!(json, want),
+                other => panic!("{other:?}"),
+            }
+        }
     }
 }

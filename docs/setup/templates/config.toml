@@ -40,7 +40,7 @@ tracker_user = "owner-handle"          # the owner as the tracker knows them
 
 [tracker]
 kind = "linear"                        # "linear" | "livela"
-team = "ABC"                           # team key (Linear) or workspace id (Livela)
+team = "ABC"                           # team key (Linear) or project prefix (Livela)
 service_identity = "spl-asdlc"         # the service account the bridge writes as
 team_keys = ["ABC"]                    # identifier prefixes of the team's items; [] asks the tracker
 # project = "acme"                     # the tracker project (name or id) every item the bridge creates lands in; absent: the team alone

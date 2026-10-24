@@ -3,18 +3,25 @@
 - **Service participant**: an `agent` participant named `spl-asdlc` (`docs/reference/livela-contract.md`, point 4).
 - **Statuses**: `in_review`, `to_deploy` and `post_deploy` are the `validation` group: open, still blocking, never served by "what's next" (contract, point 1). `set_status` accepts the English names, so the canonical names are the tracker's (the configuration maps no status).
 - **Refined, Ready, In Progress**: a refined ticket stays in Backlog, marked by a `refined` field Livela computes from the description (a goal, at least one acceptance criterion and a release note), which nobody writes; a person moves it to Ready when agents may take it. An implementing agent takes work from Ready only, and its verb ("implement the next ticket") moves the ticket it takes to In Progress.
-- **Hosting**: the bridge is a `DaemonJob` of the Livela runner (contract, point 3).
-  - The daemon calls it every pass with `LIVELA_SPL_ASDLC_CONFIG` (the path of `.spl-asdlc/config.toml`; its instance overlay is the `config.instance.toml` beside it, when there is one) and `LIVELA_JOB_BUDGET_SECONDS` (60 by default).
-  - The App's key and the tracker identity come from the environment the runner starts with.
+- **Hosting**: the bridge is a `DaemonJob` of the Livela runner (contract, point 3), one job per project that runs the method.
+  - Each job is named after its project, `spl-asdlc:<prefix>`: a failed pass is recorded under `job:spl-asdlc:<prefix>`, so a project's failure never hides another's.
+  - The configuration is the repository's `.spl-asdlc/config.toml`, read at its default branch through the App at each pass (`spl_asdlc::job::pass_from_repository`), merged with the project's instance overlay, which the runner passes as a value from the project's settings. Nothing is read from the runner's disk: no checkout, no `LIVELA_SPL_ASDLC_CONFIG`.
+  - `LIVELA_JOB_BUDGET_SECONDS` (60 by default) is the budget of each pass.
+  - The App's key and the tracker identity come from the environment the runner starts with, or as values from its settings (`env`).
   - It writes directly in the local store, and the facts propagate through Livela's own sync.
-  - A pass that changes nothing writes nothing; only a failed pass is recorded, under `job:spl-asdlc`.
+  - A pass that changes nothing writes nothing; only a failed pass is recorded.
   - `livela-runner jobs` runs one pass by hand.
-  - The runner depends on the `spl-asdlc` crate by version, from crates.io; `spl-asdlc` depends on nothing of Livela (contract, point 3; BR-ASDLC-010).
+  - The runner depends on the `spl-asdlc` crate by version, from crates.io, pinned on a minor line (`~1.N`), and the project's workflow callers name the same line (`@v1.N`); `spl-asdlc` depends on nothing of Livela (contract, point 3; BR-ASDLC-010).
+- **Doctor and gestures**: the runner calls them in process, with its adapter and the configuration read as above (`spl_asdlc::embed::Project`): `doctor` returns each check with its state, its explanation and the gesture that fixes it, and `embedded version` says whether the callers name the embedded minor line; `release status`, `cut`, `requalify`, `abandon` and `retract` return what they did or why they were refused, with the name of the person who acts, and write the action log as the CLI does. The `spl-asdlc` binary cannot open a Livela store.
+- **Setup PR**: `spl_asdlc::setup::files` gives the files of a project's setup PR (the configuration's shape, the callers at the embedded minor line, the process page, `AGENTS.md`) and its branch, title and body; the runner opens it with the person's GitHub identity, since the workflow files need "Workflows: write" and the App keeps its narrow permissions.
 - **Locks**: the bridge writes its transitions whoever holds the item's lock; a lock protects an agent's work on the content, not the status (contract, point 6; BR-ASDLC-011).
 - **Links**: the bridge adds the PR URL as a web link on the item and finds items by that URL (contract, point 4).
-- **Project**: `[tracker] project` is accepted and ignored for now: the bridge creates its items in the workspace, and `doctor` reports the key as ignored.
+- **Project**: `[tracker] project` names the Livela project, by its prefix (`TD`), its name or its id; the Livela host always has one.
+  - The items the bridge creates land in it, sub-items included, and their short ids carry its prefix, which is the team key.
+  - The bridge's searches see only its items: by tag, by PR URL, the children and the duplicates of an item. A key of another project's item is not found.
+  - `doctor` reports the project found or unknown. While no project answers to the key, every read and write of the adapter fails, naming the project, before any write.
 
-**Verify**: `spl-asdlc doctor` run from the runner's environment reports `tracker: ok` and `bridge-host: livela-runner`.
+**Verify**: the runner's `doctor` for the project (`Project::doctor`) reports `tracker: ok`, `tracker.project: ok` and `embedded version: ok`.
 
 ## What the runner writes on its side
 
@@ -24,6 +31,15 @@ The operator copies nothing: the glue and the daemon job live in the runner's co
 
 The adapter (`spl_asdlc::tracker::livela::Livela`) is written against `LivelaStore`, the slice of the core's `Store` the contract promises. The runner implements it for its `Store`.
 
+The adapter is built for one project (`[tracker] project`). For it, the slice has:
+
+- `project(reference)`: the project a prefix, name or id names (`LivelaProject { id, prefix, name }`), `None` when none does, an error when several do;
+- `items(project, tag, parent)`: the items of that project only;
+- `create_ticket(project, ..)`: the new ticket lands in that project;
+- `LivelaItem::projects`: the projects an item belongs to, which the adapter checks on every item it reads, so that a key, a PR link or a duplicate of another project is never its own.
+
+The store-wide `prefix()` is gone: the team key is the project's prefix.
+
 This glue was run against `livela-core` on 2026-10-05 and passed the conformance suite (`spl_asdlc::tracker::conformance::run_with`, 60 steps), with a journal that counts facts:
 
 - every step passed except the comment edit, which the core does not offer;
@@ -31,11 +47,13 @@ This glue was run against `livela-core` on 2026-10-05 and passed the conformance
 - every fact on the items was signed by `spl-asdlc`;
 - the runner's own author was restored after each write.
 
+The project parts (`project`, the `project` of `items` and `create_ticket`, `projects` in `convert`) came after that run and are a sketch, not yet run against the core. In this crate, the suite runs on two projects of one in-memory store, and neither sees the other's items.
+
 ```rust
 use livela_core::{
     BaseFields, Filter, ItemType, ParticipantType, Priority, RelationKind, ShortIdLookup, Sort, Store,
 };
-use spl_asdlc::tracker::livela::{LivelaItem, LivelaRelation, LivelaStore, PARTICIPANT};
+use spl_asdlc::tracker::livela::{LivelaItem, LivelaProject, LivelaRelation, LivelaStore, PARTICIPANT};
 
 /// The runner's store, as the `spl-asdlc` adapter sees it.
 pub struct Glue<'a>(pub &'a mut Store);
@@ -66,6 +84,7 @@ fn convert(i: livela_core::Item) -> LivelaItem {
         comments: i.comments.into_iter().map(|c| (c.id, c.author, c.text)).collect(),
         web_links: i.web_links.into_iter().map(|w| w.url).collect(),
         deleted: i.deleted,
+        projects: i.projects,
     }
 }
 
@@ -111,6 +130,22 @@ impl LivelaStore for Glue<'_> {
     fn participant_name(&self, id: &str) -> Option<String> {
         self.0.get_participant(id).ok().map(|p| p.name)
     }
+    fn project(&self, reference: &str) -> Result<Option<LivelaProject>, String> {
+        // The items of type `project`, by their prefix, their title or their id.
+        let projects = Filter { item_type: Some(ItemType::Project), ..Filter::default() };
+        let mut found: Vec<LivelaProject> = self
+            .0
+            .list_items_filtered(&projects, Sort::default())
+            .into_iter()
+            .filter(|p| !p.deleted)
+            .map(|p| LivelaProject { prefix: p.prefix.unwrap_or_default(), id: p.id, name: p.title })
+            .filter(|p| p.id == reference || p.name == reference || p.prefix.eq_ignore_ascii_case(reference))
+            .collect();
+        match found.len() {
+            0 | 1 => Ok(found.pop()),
+            n => Err(format!("{n} projects answer to {reference}")),
+        }
+    }
     fn resolve(&self, short_id: &str) -> Result<Option<String>, String> {
         match self.0.find_by_short_id(short_id) {
             ShortIdLookup::Found { id } => Ok(Some(id)),
@@ -121,14 +156,19 @@ impl LivelaStore for Glue<'_> {
     fn item(&self, id: &str) -> Result<LivelaItem, String> {
         self.0.get_item(id).map(convert).map_err(|e| e.to_string())
     }
-    fn items(&self, tag: Option<&str>, parent: Option<&str>) -> Vec<LivelaItem> {
-        all(&self.0, Filter { tag: tag.map(str::to_string), parent: parent.map(str::to_string), ..Filter::default() })
+    fn items(&self, project: &str, tag: Option<&str>, parent: Option<&str>) -> Vec<LivelaItem> {
+        all(
+            &self.0,
+            Filter {
+                project: Some(project.to_string()),
+                tag: tag.map(str::to_string),
+                parent: parent.map(str::to_string),
+                ..Filter::default()
+            },
+        )
     }
     fn duplicates_of(&self, id: &str) -> Vec<String> {
         all(&self.0, Filter::default()).into_iter().filter(|i| i.duplicate_of.as_deref() == Some(id)).map(|i| i.id).collect()
-    }
-    fn prefix(&self) -> String {
-        livela_core::short_id::DEFAULT_PREFIX.to_string()
     }
     fn ticket_statuses(&self) -> Vec<String> {
         ItemType::Ticket.statuses().iter().map(|s| s.label.to_string()).collect()
@@ -138,6 +178,7 @@ impl LivelaStore for Glue<'_> {
     }
     fn create_ticket(
         &mut self,
+        project: &str,
         title: &str,
         description: &str,
         tags: &[String],
@@ -156,6 +197,7 @@ impl LivelaStore for Glue<'_> {
                     tags: tags.to_vec(),
                     assignee: assignee.map(str::to_string),
                     parent: parent.map(str::to_string),
+                    projects: vec![project.to_string()],
                     priority: priority(priority_),
                     ..BaseFields::default()
                 },
@@ -197,59 +239,75 @@ impl LivelaStore for Glue<'_> {
 }
 ```
 
-Wire it as `Livela::new(Glue(&mut store), StatusTable::identity())`.
+Wire it as `Livela::new(Glue(&mut store), project, StatusTable::identity())`, `project` being the configuration's `[tracker] project`. The project is resolved on first need, so the adapter is built even when no project answers yet.
 
 The adapter reads before every write and skips a write that changes nothing. It signs each write as `spl-asdlc` through `swap_author` and gives the store back its previous author.
 
 ### The daemon job
 
-The runner's `BridgeJob` (`docs/reference/livela-contract.md` §3) is a wrapper of about twenty lines, registered in one line in `registered()` of `crates/livela-runner/src/jobs.rs`. What it does:
+The runner's `BridgeJob` (`docs/reference/livela-contract.md` §3) is a wrapper of about thirty lines, one instance per project that runs the method, registered with the runner's jobs in `crates/livela-runner/src/jobs.rs`. What it does:
 
-- its name is `spl-asdlc`, so a failed pass is recorded under `job:spl-asdlc`;
-- it fails, saying why, when `LIVELA_SPL_ASDLC_CONFIG` is not set or the configuration does not load;
-- it builds the adapter on the runner's store, with the status table of the configuration;
-- it runs one pass (`spl_asdlc::job::pass`) with 80% of the job's budget, and turns the pass's outcome into the runner's `JobOutcome`.
+- its name is `spl-asdlc:<prefix>`, so a failed pass is recorded under `job:spl-asdlc:<prefix>`;
+- it holds what the project's settings give: the repository, the project's prefix and the instance overlay's text;
+- it builds the App's client and the adapter on the runner's store for that project;
+- it runs one pass (`spl_asdlc::job::pass_from_repository`) with 80% of the job's budget, and turns the pass's outcome into the runner's `JobOutcome`; a configuration that cannot be read at the default branch fails the pass, which then writes nothing;
+- the action log and its lock go under the runner's state directory, one file per project.
 
 A sketch:
 
 ```rust
-use std::path::Path;
+use std::path::PathBuf;
 
 use livela_core::{DaemonJob, JobContext, JobOutcome, Store};
+use spl_asdlc::config::Source;
+use spl_asdlc::github::RepoSlug;
+use spl_asdlc::job::{RepositoryHost, pass_from_repository};
 use spl_asdlc::tracker::StatusTable;
 use spl_asdlc::tracker::livela::Livela;
 
-/// The bridge as a job of the runner's daemon (`docs/reference/livela-contract.md` §3).
-pub struct BridgeJob;
+/// The bridge of one project, as a job of the runner's daemon (`docs/reference/livela-contract.md` §3).
+pub struct BridgeJob {
+    pub name: String,           // `spl-asdlc:<prefix>`
+    pub repository: RepoSlug,   // the project's repository
+    pub prefix: String,         // the project's prefix: `[tracker] project`
+    pub instance: String,       // the instance overlay, from the project's settings
+    pub log: PathBuf,           // under the runner's state directory
+}
 
 impl DaemonJob for BridgeJob {
     fn name(&self) -> &str {
-        "spl-asdlc"
+        &self.name
     }
 
     fn run(&mut self, store: &mut Store, ctx: &JobContext) -> JobOutcome {
-        let Some(path) = ctx.config.as_deref() else {
-            return JobOutcome::failed("LIVELA_SPL_ASDLC_CONFIG is not set");
+        let env = |k: &str| std::env::var(k).ok();
+        let github = match spl_asdlc::host::app_github(&env) {
+            Ok(g) => g,
+            Err(e) => return JobOutcome::failed(e),
         };
-        let tracker = Livela::new(Glue(store), StatusTable::identity());
-        let out = spl_asdlc::job::pass(&spl_asdlc::job::Host {
-            config_path: Path::new(path),
-            tracker: &tracker,
-            // Stop taking decisions with a margin: the runner fails a pass over its budget.
-            budget: Some(ctx.budget.mul_f32(0.8)),
-            log_path: None,
-            env: &|k| std::env::var(k).ok(),
-        });
+        let tracker = Livela::new(Glue(store), &self.prefix, StatusTable::identity());
+        let out = pass_from_repository(
+            &RepositoryHost {
+                repository: self.repository.clone(),
+                instance: Some(Source { label: format!("{} settings", self.name), text: self.instance.clone() }),
+                tracker: &tracker,
+                // Stop taking decisions with a margin: the runner fails a pass over its budget.
+                budget: Some(ctx.budget.mul_f32(0.8)),
+                log_path: Some(self.log.clone()),
+                env: &env,
+            },
+            &github,
+        );
         if out.ok { JobOutcome::ok(out.message) } else { JobOutcome::failed(out.message) }
     }
 }
 ```
 
-Checked against `livela-core` with `run_jobs`:
+The single-project job of 1.3, which read `LIVELA_SPL_ASDLC_CONFIG` with `spl_asdlc::job::pass`, was checked against `livela-core` with `run_jobs`:
 
 - Without GitHub credentials, the pass fails and says why (`SPL_ASDLC_APP_ID is not set`).
 - It writes no item.
-- The runner records the failure, and only it, under `job:spl-asdlc`.
+- The runner records the failure, and only it, under the job's entity.
 
 A pass that works leaves only its writes on the items; a pass with nothing to do leaves nothing. The tick stops taking decisions at 80% of `LIVELA_JOB_BUDGET_SECONDS`, because the runner fails a pass that overruns its budget.
 
