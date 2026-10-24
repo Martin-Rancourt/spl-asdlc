@@ -316,13 +316,25 @@ impl<S: LivelaStore> Livela<S> {
         })
     }
 
+    /// The ticket type's status for a canonical one. Livela tickets have no
+    /// Triage since triage became an item type of its own: a ticket type
+    /// without one takes Triage as its Backlog
+    /// (`docs/reference/livela-contract.md` §1).
     fn tracker_status(&self, status: Status) -> TResult<String> {
         let name = self.statuses.tracker_name(status);
-        self.store
-            .borrow()
-            .ticket_statuses()
-            .into_iter()
-            .find(|s| s.eq_ignore_ascii_case(name))
+        let statuses = self.store.borrow().ticket_statuses();
+        let find = |name: &str| {
+            statuses
+                .iter()
+                .find(|s| s.eq_ignore_ascii_case(name))
+                .cloned()
+        };
+        find(name)
+            .or_else(|| {
+                (status == Status::Triage)
+                    .then(|| find(self.statuses.tracker_name(Status::Backlog)))
+                    .flatten()
+            })
             .ok_or_else(|| {
                 TrackerError::refused(
                     format!("status {status}"),
@@ -353,9 +365,18 @@ impl<S: LivelaStore> Tracker for Livela<S> {
         Ok(self.scope()?.prefix)
     }
 
+    /// The ticket type's statuses, and Triage, which a type without one
+    /// writes as Backlog.
     fn status_names(&self) -> TResult<Vec<String>> {
         self.scope()?;
-        Ok(self.store.borrow().ticket_statuses())
+        let mut names = self.store.borrow().ticket_statuses();
+        let triage = self.statuses.tracker_name(Status::Triage);
+        if !names.iter().any(|n| n.eq_ignore_ascii_case(triage))
+            && self.tracker_status(Status::Triage).is_ok()
+        {
+            names.insert(0, triage.to_string());
+        }
+        Ok(names)
     }
 
     /// Found: its name. Unknown: not found. Several answer: unreadable.

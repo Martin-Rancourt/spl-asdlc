@@ -6,7 +6,7 @@ Canonical names. A tracker names its statuses exactly so; the configuration maps
 
 | Canonical | Meaning | Who writes it |
 |---|---|---|
-| **Triage** | New; nobody has judged it yet. | The author |
+| **Triage** | New; nobody has judged it yet. On Livela, whose tickets have no Triage (triage is an item type of its own there), a ticket the bridge writes in Triage lands in Backlog and reads as Backlog (`livela-contract.md` §1). | The author |
 | **Backlog** | Judged worth keeping; refined or not. Refinement leaves a refined ticket in Backlog and marks it refined: a label in Linear, a `refined` field Livela computes from the description (a goal, at least one acceptance criterion and a release note), which nobody writes in Livela (`docs/agents/process.md`, "Refine a ticket"). The bridge neither writes nor reads that marker. | The owner; refinement marks it refined |
 | **Ready** | Refined, and released to agents: implementing agents take work from Ready only. | A person; `ticket check` only judges and writes nothing |
 | **In Progress** | Taken: work in progress, its PR not opened yet or in draft. | Whoever starts the ticket, agent or person (with Livela, the agent's verb that serves it), never the bridge as a backup: a branch or a draft PR on a ticket still Ready writes nothing, and a PR opened puts it In Review; the bridge when a coordinator requests changes on its PR at the head, or when a PR resolves and a box remains open with no PR in review (`04-pr-review.md` §10); for a release angle sub-item, when its angle PR is opened or a coordinator requests changes on it at its head; a draft PR is out of the flow and moves nothing (`05-release-cycle.md` §4) |
