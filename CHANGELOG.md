@@ -9,6 +9,10 @@
 * **sync:** GitHub to item sync job, hosted by the runner (SID-1252) ([#105](https://github.com/Martin-Rancourt/spl-asdlc/issues/105)) ([cb422ac](https://github.com/Martin-Rancourt/spl-asdlc/commit/cb422ac65061d385092234ff24f2c7dfff2f37fb))
 
 
+### Rust API changes (host embedding)
+
+* `Livela::new` takes the project; `LivelaStore` gains `project`, `set_pr_status` and `LivelaItem::{projects, pr_statuses}`; `items` and `create_ticket` take the project; `prefix()` is removed; `verbs::cut` takes `who`. Only hosts that embed the crate are concerned; the CLI and the workflows are unchanged.
+
 ### Bug Fixes
 
 * **release:** a gate-fix ticket's box is met by the fix's PR (SID-1203) ([#102](https://github.com/Martin-Rancourt/spl-asdlc/issues/102)) ([62f127f](https://github.com/Martin-Rancourt/spl-asdlc/commit/62f127fd6e3e1a284d46188ea627105f39c54788))
