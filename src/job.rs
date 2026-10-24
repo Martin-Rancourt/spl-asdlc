@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::action_log::ActionLog;
-use crate::config::Config;
+use crate::config::{Config, Source};
 use crate::github::{GitHub, RepoSlug, Timestamp};
 use crate::lock::TickLock;
 use crate::notify::{Channels, Signal};
@@ -46,6 +46,83 @@ pub struct Host<'a> {
     /// Where the action log goes; `None` for the default place.
     pub log_path: Option<PathBuf>,
     pub env: &'a dyn Fn(&str) -> Option<String>,
+}
+
+/// What an embedding host hands the bridge when the configuration belongs to
+/// the repository rather than its own filesystem. The instance overlay stays
+/// a value owned by the host, so it is never fetched from the repository.
+pub struct RepositoryHost<'a> {
+    /// The repository whose default branch carries `.spl-asdlc/config.toml`.
+    pub repository: RepoSlug,
+    /// Host-only instance keys, merged with the repository configuration.
+    pub instance: Option<Source>,
+    pub tracker: &'a dyn Tracker,
+    pub budget: Option<Duration>,
+    pub log_path: Option<PathBuf>,
+    pub env: &'a dyn Fn(&str) -> Option<String>,
+}
+
+/// Read a repository configuration through the host's GitHub client, merge
+/// the supplied instance overlay, and run one pass. This performs no writes
+/// when the default branch or configuration cannot be read or parsed.
+pub fn pass_from_repository(host: &RepositoryHost, github: &dyn GitHub) -> PassOutcome {
+    const CONFIG_PATH: &str = ".spl-asdlc/config.toml";
+
+    let default = match github.default_branch(&host.repository) {
+        Ok(branch) => branch,
+        Err(error) => {
+            return PassOutcome::failed(format!(
+                "{}: the default branch could not be read: {error}",
+                host.repository
+            ));
+        }
+    };
+    let source = match github.file(&host.repository, CONFIG_PATH, &default) {
+        Ok(text) => Source {
+            label: format!("{}:{CONFIG_PATH}@{default}", host.repository),
+            text,
+        },
+        Err(error) => {
+            return PassOutcome::failed(format!(
+                "{}: {CONFIG_PATH} at {default} could not be read: {error}",
+                host.repository
+            ));
+        }
+    };
+    let config = match Config::parse_with(&source, host.instance.as_ref()) {
+        Ok(config) => config,
+        Err(errors) => {
+            return PassOutcome::failed(format!(
+                "{}: invalid configuration: {}",
+                source.label,
+                errors
+                    .0
+                    .iter()
+                    .map(|error| error.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ));
+        }
+    };
+    if config.product.repository != host.repository.to_string() {
+        return PassOutcome::failed(format!(
+            "{}: product.repository is {}, not the repository whose configuration was read",
+            source.label, config.product.repository
+        ));
+    }
+    pass_with(
+        &Host {
+            // Kept only for the unchanged path-based API; pass_with does not
+            // read it after the configuration has been provided.
+            config_path: Path::new(CONFIG_PATH),
+            tracker: host.tracker,
+            budget: host.budget,
+            log_path: host.log_path.clone(),
+            env: host.env,
+        },
+        &config,
+        github,
+    )
 }
 
 /// One pass with the real GitHub client the configuration asks for.
@@ -232,6 +309,7 @@ mod tests {
             slug: "spl-asdlc".into(),
             app_id: "1".into(),
         });
+        s.default_branch.insert(repo.clone(), "main".into());
         s.tags.insert(repo.clone(), Vec::new());
         s.open_pulls.insert(repo.clone(), Ok(Vec::new()));
         s.merged_pulls.insert(repo, Ok(Vec::new()));
@@ -353,5 +431,66 @@ mod tests {
         let out = pass_with(&host, &config, &quiet_github());
         assert!(!out.ok);
         assert!(out.message.contains("time budget"), "{}", out.message);
+    }
+
+    fn repository_host<'a>(tracker: &'a FakeTracker) -> RepositoryHost<'a> {
+        RepositoryHost {
+            repository: RepoSlug::parse("example-org/acme").unwrap(),
+            instance: Some(Source {
+                label: "host instance values".into(),
+                text: crate::config::spec_example::instance().into(),
+            }),
+            tracker,
+            budget: Some(Duration::from_secs(60)),
+            log_path: None,
+            env: &|_| None,
+        }
+    }
+
+    #[test]
+    fn a_host_can_run_a_repository_configuration_with_value_overlay() {
+        let github = quiet_github();
+        let repo = RepoSlug::parse("example-org/acme").unwrap();
+        github.state.borrow_mut().files.insert(
+            (repo, "main".into(), ".spl-asdlc/config.toml".into()),
+            Ok(crate::config::spec_example::repository().into()),
+        );
+        let tracker = FakeTracker::default();
+
+        let out = pass_from_repository(&repository_host(&tracker), &github);
+
+        assert!(out.ok, "{out:?}");
+        assert!(tracker.writes().is_empty());
+    }
+
+    #[test]
+    fn unreadable_repository_configuration_writes_nothing() {
+        let github = quiet_github();
+        let tracker = FakeTracker::default();
+
+        let out = pass_from_repository(&repository_host(&tracker), &github);
+
+        assert!(!out.ok);
+        assert!(out.message.contains(".spl-asdlc/config.toml"));
+        assert!(tracker.writes().is_empty());
+        assert!(github.writes().is_empty());
+    }
+
+    #[test]
+    fn invalid_repository_configuration_writes_nothing() {
+        let github = quiet_github();
+        let repo = RepoSlug::parse("example-org/acme").unwrap();
+        github.state.borrow_mut().files.insert(
+            (repo, "main".into(), ".spl-asdlc/config.toml".into()),
+            Ok("schema = 1\n".into()),
+        );
+        let tracker = FakeTracker::default();
+
+        let out = pass_from_repository(&repository_host(&tracker), &github);
+
+        assert!(!out.ok);
+        assert!(out.message.contains("invalid configuration"));
+        assert!(tracker.writes().is_empty());
+        assert!(github.writes().is_empty());
     }
 }
