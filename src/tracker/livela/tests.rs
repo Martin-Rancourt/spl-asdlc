@@ -878,11 +878,13 @@ fn the_github_sync_links_and_records_on_livela_signed_by_the_bridge() {
     let repo = RepoSlug::parse(&config.product.repository).unwrap();
     let by_address = crate::github::PullRequest {
         body: format!("livela://item/{}", a.key),
+        updated_at: crate::github::Timestamp::parse("2026-10-25T10:00:00Z"),
         ..pull_request(1)
     };
     let by_title = crate::github::PullRequest {
         title: format!("feat: x ({})", b.key),
         draft: true,
+        updated_at: crate::github::Timestamp::parse("2026-10-25T10:01:00Z"),
         ..pull_request(2)
     };
     {
@@ -892,6 +894,8 @@ fn the_github_sync_links_and_records_on_livela_signed_by_the_bridge() {
             app_id: "1".into(),
         });
         s.open_pulls
+            .insert(repo.clone(), Ok(vec![by_address.clone(), by_title.clone()]));
+        s.updated_pulls
             .insert(repo.clone(), Ok(vec![by_address.clone(), by_title.clone()]));
         s.merged_pulls.insert(repo.clone(), Ok(Vec::new()));
         s.closed_pulls.insert(repo, Ok(Vec::new()));

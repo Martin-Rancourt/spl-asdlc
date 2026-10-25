@@ -42,6 +42,7 @@ pub struct FakeState {
     pub merged_pulls: BTreeMap<RepoSlug, Read<Vec<PullRequest>>>,
     /// Closed without merge; none when not scripted.
     pub closed_pulls: BTreeMap<RepoSlug, Read<Vec<PullRequest>>>,
+    pub updated_pulls: BTreeMap<RepoSlug, Read<Vec<PullRequest>>>,
     pub pull_files: HashMap<(RepoSlug, u64), Read<Vec<String>>>,
     pub commit_pulls: HashMap<(RepoSlug, String), Read<Vec<CommitPull>>>,
     pub required_checks: HashMap<(RepoSlug, String), Read<RequiredChecks>>,
@@ -356,6 +357,28 @@ impl GitHub for FakeGitHub {
         Err(ReadError::NotFound {
             what: format!("PR #{number}"),
         })
+    }
+
+    fn updated_pulls(
+        &self,
+        repo: &RepoSlug,
+        since: Option<Timestamp>,
+        handled_at_since: &[u64],
+        limit: usize,
+    ) -> Read<Vec<PullRequest>> {
+        match self.state.borrow().updated_pulls.get(repo) {
+            Some(v) => v.clone().map(|mut pulls| {
+                pulls.sort_by_key(|p| (p.updated_at, p.number));
+                pulls.retain(|p| match (since, p.updated_at) {
+                    (Some(s), Some(u)) if u < s => false,
+                    (Some(s), Some(u)) if u == s => !handled_at_since.contains(&p.number),
+                    _ => true,
+                });
+                pulls.truncate(limit);
+                pulls
+            }),
+            None => not_scripted(format!("updated PRs of {repo}")),
+        }
     }
 
     fn merged_pulls(

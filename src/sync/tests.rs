@@ -21,17 +21,22 @@ fn github() -> FakeGitHub {
         s.open_pulls.insert(repo(), Ok(Vec::new()));
         s.merged_pulls.insert(repo(), Ok(Vec::new()));
         s.closed_pulls.insert(repo(), Ok(Vec::new()));
+        s.updated_pulls.insert(repo(), Ok(Vec::new()));
         s.tags.insert(repo(), Vec::new());
     }
     g
 }
 
 fn open(g: &FakeGitHub, prs: Vec<PullRequest>) {
-    g.state.borrow_mut().open_pulls.insert(repo(), Ok(prs));
+    let mut s = g.state.borrow_mut();
+    s.open_pulls.insert(repo(), Ok(prs.clone()));
+    s.updated_pulls.insert(repo(), Ok(prs));
 }
 
 fn merged(g: &FakeGitHub, prs: Vec<PullRequest>) {
-    g.state.borrow_mut().merged_pulls.insert(repo(), Ok(prs));
+    let mut s = g.state.borrow_mut();
+    s.merged_pulls.insert(repo(), Ok(prs.clone()));
+    s.updated_pulls.insert(repo(), Ok(prs));
 }
 
 /// A directory of its own per test: the memory is a file.
@@ -69,6 +74,7 @@ fn sync_within(
 fn named(number: u64, title: &str) -> PullRequest {
     PullRequest {
         title: title.into(),
+        updated_at: Timestamp::parse(&format!("2026-10-25T00:{number:02}:00Z")),
         ..pull_request(number)
     }
 }
@@ -145,6 +151,7 @@ fn a_pr_naming_a_ticket_is_linked_its_status_recorded_and_a_second_pass_writes_n
     assert!(g.writes().is_empty(), "the sync never writes on GitHub");
     // Its checks turn red: one write, the new status.
     pr.checks = vec![check("FAILURE")];
+    pr.updated_at = Timestamp::parse("2026-10-25T01:00:00Z");
     open(&g, vec![pr.clone()]);
     sync(&t, &g, &log);
     assert_eq!(
@@ -229,6 +236,14 @@ fn a_merged_pr_is_released_in_the_oldest_tag_that_holds_its_commit() {
         .borrow_mut()
         .closed_pulls
         .insert(repo(), Ok(vec![closed.clone()]));
+    g.state
+        .borrow_mut()
+        .updated_pulls
+        .get_mut(&repo())
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .push(closed.clone());
     {
         let mut s = g.state.borrow_mut();
         let tag = |name: &str| GitRef {
@@ -334,6 +349,44 @@ fn a_spent_budget_stops_the_pass_says_so_and_the_next_resumes() {
     let out = sync(&t, &g, &log);
     assert!(out.ok, "{out:?}");
     assert_eq!(t.writes().len(), 2);
+}
+
+#[test]
+fn a_failure_checkpoints_each_prior_pr_and_the_next_pass_resumes_after_it() {
+    let t = FakeTracker::default();
+    t.seed("ABC-12", "T", "", Status::InProgress, &[]);
+    t.fail_writes_starting_with("link ABC-12");
+    let g = github();
+    let first = named(1, "chore: unrelated");
+    let second = named(2, "feat: thing (ABC-12)");
+    open(&g, vec![second.clone(), first.clone()]);
+    let log = log("checkpoint-each");
+    let out = sync(&t, &g, &log);
+    assert!(!out.ok, "{out:?}");
+    let memory = load(&memory_path(&log)).unwrap();
+    assert_eq!(memory.since, first.updated_at.map(|t| t.to_string()));
+    assert_eq!(memory.handled_at_since, BTreeSet::from([1]));
+
+    t.clear_failing_writes();
+    let out = sync(&t, &g, &log);
+    assert!(out.ok, "{out:?}");
+    assert_eq!(out.message.matches("PR(s) read").count(), 1);
+    assert_eq!(
+        load(&memory_path(&log)).unwrap().handled_at_since,
+        BTreeSet::from([2])
+    );
+}
+
+#[test]
+fn an_old_pr_on_a_closed_ticket_only_lays_a_missing_link() {
+    let t = FakeTracker::default();
+    t.seed("ABC-12", "T", "", Status::Done, &[]);
+    let g = github();
+    let pr = named(7, "fix: history (ABC-12)");
+    open(&g, vec![pr.clone()]);
+    let out = sync(&t, &g, &log("closed-ticket"));
+    assert!(out.ok, "{out:?}");
+    assert_eq!(t.writes(), [format!("link ABC-12 {}", pr.url)]);
 }
 
 #[test]

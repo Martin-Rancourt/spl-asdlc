@@ -65,6 +65,17 @@ pub trait GitHub {
     /// Every open PR, optionally on one base; a list GitHub cut is unreadable.
     fn open_pulls(&self, repo: &RepoSlug, base: Option<&str>) -> Read<Vec<PullRequest>>;
     fn pull(&self, repo: &RepoSlug, number: u64) -> Read<PullRequest>;
+    /// Up to `limit` PRs updated at or after `since`, oldest update first.
+    /// `handled_at_since` disambiguates PRs sharing the checkpoint's second. The real
+    /// client lists issues in pages of 100 and hydrates a whole page in one
+    /// GraphQL query, never with one request per PR.
+    fn updated_pulls(
+        &self,
+        repo: &RepoSlug,
+        since: Option<Timestamp>,
+        handled_at_since: &[u64],
+        limit: usize,
+    ) -> Read<Vec<PullRequest>>;
     /// PRs merged since `since`, optionally on one base, newest first; more
     /// than `limit` of them is unreadable (a partial list is not the list).
     fn merged_pulls(

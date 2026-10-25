@@ -36,13 +36,8 @@ use crate::method::checks::{self, CheckState};
 use crate::method::release::shape::Shape;
 use crate::tracker::{Checks, PrStatus, Tracker};
 
-/// How far back the first pass reads merged and closed PRs.
-const FIRST_WINDOW: time::Duration = time::Duration::days(14);
-/// The overlap of two passes' windows: a PR updated while a pass ran is
-/// read again by the next.
-const OVERLAP: time::Duration = time::Duration::minutes(10);
-/// More merged or closed PRs than this in a window is unreadable.
-const LIMIT: usize = 500;
+/// One page per pass. GitHub's issue list has a maximum page size of 100.
+const PAGE: usize = 100;
 
 /// One pass for a host that embeds the crate: the configuration read at
 /// the repository's default branch with the instance overlay as a value
@@ -98,8 +93,11 @@ pub fn pass_with(host: &Host, config: &Config, github: &dyn GitHub) -> PassOutco
 /// The memory of the sync between its passes.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct Memory {
-    /// The start of the last pass that read every PR, less the overlap.
+    /// The last PR handled, ordered by `(updated_at, number)`. `since` is
+    /// absent in a new repository: its first pass starts at history's start.
     since: Option<String>,
+    #[serde(default)]
+    handled_at_since: BTreeSet<u64>,
     /// `(PR URL, ticket)`: the links this sync laid. One the tracker no
     /// longer has, a person removed: it is never laid again.
     laid: BTreeSet<(String, String)>,
@@ -202,34 +200,19 @@ fn run(
         None => Memory::default(),
     };
     let before = memory.clone();
-    let now = Timestamp::now();
-    let since = memory
-        .since
-        .as_deref()
-        .and_then(Timestamp::parse)
-        .unwrap_or(Timestamp(now.0 - FIRST_WINDOW));
+    let since = memory.since.as_deref().and_then(Timestamp::parse);
     let prefixes = match prefixes(config, tracker) {
         Ok(p) => p,
         Err(e) => return PassOutcome::failed(format!("{repo}: the tracker: {e}")),
     };
 
-    let mut prs: BTreeMap<String, PullRequest> = BTreeMap::new();
-    let lists = github
-        .open_pulls(&repo, None)
-        .and_then(|open| {
-            let merged = github.merged_pulls(&repo, None, Some(since), LIMIT)?;
-            let closed = github.closed_pulls(&repo, since, LIMIT)?;
-            Ok(open.into_iter().chain(merged).chain(closed))
-        })
-        .map_err(|e| format!("{repo}: the PRs since {since}: {e}"));
-    match lists {
-        Ok(all) => {
-            for pr in all {
-                prs.insert(pr.url.clone(), pr);
-            }
-        }
-        Err(e) => return PassOutcome::failed(e),
-    }
+    let handled: Vec<_> = memory.handled_at_since.iter().copied().collect();
+    let listed = match github.updated_pulls(&repo, since, &handled, PAGE) {
+        Ok(p) => p,
+        Err(e) => return PassOutcome::failed(format!("{repo}: the PRs after the checkpoint: {e}")),
+    };
+    let mut prs: BTreeMap<String, PullRequest> =
+        listed.iter().cloned().map(|p| (p.url.clone(), p)).collect();
     let mut tally = Tally::default();
     for (url, number) in memory.followed.clone() {
         if prs.contains_key(&url) {
@@ -248,7 +231,11 @@ fn run(
 
     let mut releases = Releases::new(config, &repo, github);
     let mut spent = false;
-    for pr in prs.values() {
+    for pr in listed.iter().chain(
+        prs.values()
+            .filter(|p| !listed.iter().any(|l| l.url == p.url)),
+    ) {
+        let checkpointed = listed.iter().any(|p| p.url == pr.url);
         if deadline.is_some_and(|d| Instant::now() >= d) {
             spent = true;
             break;
@@ -256,16 +243,41 @@ fn run(
         tally.read += 1;
         if let Err(e) = link(tracker, &prefixes, pr, &mut memory, &mut tally) {
             tally.failures.push(format!("PR #{}: {e}", pr.number));
+            if checkpointed {
+                break;
+            }
             continue;
         }
         if let Err(e) = record(tracker, &mut releases, pr, &mut memory, &mut tally) {
             tally.failures.push(format!("PR #{}: {e}", pr.number));
+            if checkpointed {
+                break;
+            }
+            continue;
         }
-    }
-    // A pass cut short reads the same window again; one whose reads failed
-    // too, so that nothing is skipped.
-    if !spent && tally.failures.is_empty() {
-        memory.since = Some(Timestamp(now.0 - OVERLAP).to_string());
+        if checkpointed {
+            let Some(updated) = pr.updated_at else {
+                tally.failures.push(format!(
+                    "PR #{}: no updated_at for the checkpoint",
+                    pr.number
+                ));
+                continue;
+            };
+            if memory.since.as_deref() != Some(&updated.to_string()) {
+                memory.since = Some(updated.to_string());
+                memory.handled_at_since.clear();
+            }
+            memory.handled_at_since.insert(pr.number);
+            if let Some(p) = &path {
+                if let Err(e) = save(p, &memory) {
+                    tally.failures.push(format!(
+                        "checkpoint after PR #{} could not be written: {e}",
+                        pr.number
+                    ));
+                    break;
+                }
+            }
+        }
     }
     let mut message = format!(
         "{repo}: GitHub sync: {} PR(s) read, {} link(s) laid, {} status(es) recorded",

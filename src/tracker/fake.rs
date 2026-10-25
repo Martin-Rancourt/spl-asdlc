@@ -131,6 +131,10 @@ impl FakeTracker {
             .push(prefix.to_string());
     }
 
+    pub fn clear_failing_writes(&self) {
+        self.state.borrow_mut().failing_writes.clear();
+    }
+
     /// Reads of this key (or lists of this label) answer `Unreadable`.
     pub fn make_unreadable(&self, key: &str) {
         self.state.borrow_mut().unreadable.push(key.to_string());
