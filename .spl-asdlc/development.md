@@ -21,7 +21,7 @@ The process page, `docs/agents/process.md`, is copied into every project and che
 
 ## Tickets
 
-This repository is the one project outside its own method (BR-ASDLC-023): no bridge moves its tickets, and it has no release cycle for them to follow. Its tickets live in the tracker's ASDLC project; the session that does a step moves the ticket.
+This repository is the one project outside its own method (BR-ASDLC-023): no bridge moves its tickets, and it has no release cycle for them to follow. Its tickets live in Livela, in the SPL-ASDLC project (prefix `ASDLC`); the session that does a step moves the ticket. Until 2026-10-24 they lived in Linear's ASDLC project, now read-only: each of its tickets links to its Livela copy.
 - **In Progress** when the work starts, **In Review** when its PR is opened.
 - **Done** when its PR is merged into `main`, every box the PR delivers ticked in the ticket itself. To Deploy is not used here. A ticket whose work landed through another ticket's PR is closed with it, the PR linked.
 - Publishing a release (merging the release-please PR, moving the major tag) moves no ticket. It is a gesture of the owner's: a session does it only on the owner's explicit go for that release.
