@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.4](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.4.3...v1.4.4) (2026-10-26)
+
+
+### Bug Fixes
+
+* **sync:** read updated PRs without the Issues permission (ASDLC-47PN) ([#115](https://github.com/Martin-Rancourt/spl-asdlc/issues/115)) ([d8282ec](https://github.com/Martin-Rancourt/spl-asdlc/commit/d8282ec85d14f6b42568edaad952eb81837bc82a))
+
 ## [1.4.3](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.4.2...v1.4.3) (2026-10-26)
 
 
