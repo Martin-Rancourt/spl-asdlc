@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.3](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.4.2...v1.4.3) (2026-10-26)
+
+
+### Bug Fixes
+
+* **github:** stop running out of the App's hourly quota (ASDLC-5DDN) ([#113](https://github.com/Martin-Rancourt/spl-asdlc/issues/113)) ([2d62d2d](https://github.com/Martin-Rancourt/spl-asdlc/commit/2d62d2d2eb50151e4b3b55d0c8e80a4740832e6a))
+
 ## [1.4.2](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.4.1...v1.4.2) (2026-10-26)
 
 
