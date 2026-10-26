@@ -105,7 +105,7 @@ A ticket shows where each of its PRs stands, kept current by the runner even whe
 - **What it writes**, through the `Tracker` trait only: the link of a PR that names a ticket of the project (SID-1219's rules: the id in the branch or the title, or on purpose in the body; a link a person removed is never laid again), and the status of each PR linked to an open ticket (`Tracker::record_pr_status`: draft, open with its checks, merged, released in `<tag>`, closed). On Livela the status goes through `LivelaStore::set_pr_status`, on the web link of the PR; on Linear it is the subtitle of the PR's attachment.
 - **What it never writes**: a status, an assignee, a label, a description, a comment, a review comment; nothing on GitHub.
 - **No heartbeat**: a value already recorded is never written again, and each write is signed by `spl-asdlc`, the store's author restored (point 2). The conformance suite checks it with its fact counter.
-- **What it reads**: through the App's installation token, the open PRs, the PRs merged or closed since its last pass, and the PRs linked to tickets still open; no person's token and no search API.
+- **What it reads**: through the App's installation token, the PRs updated after its checkpoint (a bounded number per pass, oldest first) and the PRs linked to tickets still open, in small batches; no person's token and no search API.
 - Each surface still asks GitHub when an item is opened (SID-1219, SID-1218): the recorded status is what it shows first.
 
 ## 6. Locks and agent sessions (for the coordinator)

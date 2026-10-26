@@ -232,6 +232,30 @@ impl RestGitHub {
     }
 
     fn graphql(&self, repo: &RepoSlug, what: &str, query: &str, variables: Value) -> Read<Value> {
+        self.graphql_with(repo, what, query, variables, false)
+    }
+
+    /// [`Self::graphql`], where a query of several aliases keeps the data
+    /// of the others when some name nothing (`NOT_FOUND` errors, null
+    /// aliases): only every error being `NOT_FOUND` is tolerated.
+    fn graphql_allowing_missing(
+        &self,
+        repo: &RepoSlug,
+        what: &str,
+        query: &str,
+        variables: Value,
+    ) -> Read<Value> {
+        self.graphql_with(repo, what, query, variables, true)
+    }
+
+    fn graphql_with(
+        &self,
+        repo: &RepoSlug,
+        what: &str,
+        query: &str,
+        variables: Value,
+        allow_missing: bool,
+    ) -> Read<Value> {
         let response = self
             .call(
                 repo,
@@ -256,6 +280,10 @@ impl RestGitHub {
                     .filter_map(|e| e.get("message").and_then(Value::as_str))
                     .collect::<Vec<_>>()
                     .join("; ");
+                let data = value.get("data").filter(|d| !d.is_null());
+                if let (true, true, Some(data)) = (allow_missing, not_found, data) {
+                    return Ok(data.clone());
+                }
                 return Err(if not_found {
                     ReadError::NotFound {
                         what: what.to_string(),
@@ -383,6 +411,32 @@ const PULL_FRAGMENT: &str = "fragment Pull on PullRequest {
   mergeCommit { oid }
   reviews(first: 100) { pageInfo { hasNextPage } nodes { databaseId author { __typename login } state body commit { oid } submittedAt } }
   reviewThreads(first: 100) { pageInfo { hasNextPage } nodes { isResolved isOutdated path } }
+  commits(last: 1) { nodes { commit { oid statusCheckRollup { contexts(first: 100) {
+    pageInfo { hasNextPage }
+    nodes {
+      __typename
+      ... on CheckRun { name status conclusion startedAt detailsUrl checkSuite { workflowRun { workflow { name } } } }
+      ... on StatusContext { context state targetUrl createdAt }
+    }
+  } } } } }
+}";
+
+/// What the GitHub sync reads of a PR (`GitHub::sync_pulls`): what names a
+/// ticket and where the PR stands. No label, review or thread: their lists
+/// are asked for none (`first: 0`, which the parser reads as empty) and the
+/// client marks them cut. A batch of 25 is one point and a few seconds,
+/// where 100 PRs with the full fragment ran into GitHub's timeout (a 504,
+/// or an answer cut mid-string).
+const SYNC_FRAGMENT: &str = "fragment SyncPull on PullRequest {
+  number url title body state isDraft
+  author { __typename login }
+  baseRefName headRefName headRefOid isCrossRepository
+  additions deletions createdAt updatedAt mergedAt
+  mergedBy { __typename login }
+  mergeCommit { oid }
+  labels(first: 0) { pageInfo { hasNextPage } nodes { name } }
+  reviews(first: 0) { pageInfo { hasNextPage } nodes { state } }
+  reviewThreads(first: 0) { pageInfo { hasNextPage } nodes { isResolved } }
   commits(last: 1) { nodes { commit { oid statusCheckRollup { contexts(first: 100) {
     pageInfo { hasNextPage }
     nodes {
@@ -1132,13 +1186,13 @@ impl GitHub for RestGitHub {
         pull_from_gql(node).map_err(|e| ReadError::unreadable(what, e))
     }
 
-    fn updated_pulls(
+    fn updated_pull_rows(
         &self,
         repo: &RepoSlug,
         since: Option<Timestamp>,
         handled_at_since: &[u64],
         limit: usize,
-    ) -> Read<Vec<PullRequest>> {
+    ) -> Read<Vec<PullRow>> {
         // The pull list, not the issue list: `/issues` needs the App's
         // Issues permission, which the App does not have (Pull requests read
         // is enough here). The pull list has no `since`, so with a checkpoint
@@ -1150,7 +1204,7 @@ impl GitHub for RestGitHub {
         // read and so after the checkpoint this pass leaves.
         let what = format!("PRs updated since the sync checkpoint of {repo}");
         let direction = if since.is_some() { "desc" } else { "asc" };
-        let mut rows: Vec<(Option<Timestamp>, u64, String)> = Vec::new();
+        let mut rows: Vec<PullRow> = Vec::new();
         let mut seen = BTreeSet::new();
         for page in 1..=MAX_PAGES {
             let (value, _) = self.get_json(
@@ -1163,7 +1217,9 @@ impl GitHub for RestGitHub {
                 .ok_or_else(|| ReadError::unreadable(&what, "the PR list is not an array"))?;
             let mut past_checkpoint = false;
             for row in list {
-                let number = row["number"].as_u64().unwrap_or(0);
+                let Some(number) = row["number"].as_u64() else {
+                    continue;
+                };
                 let updated = time_of(row, "updated_at");
                 if let (Some(s), Some(u)) = (since, updated) {
                     if u < s {
@@ -1174,11 +1230,11 @@ impl GitHub for RestGitHub {
                         continue;
                     }
                 }
-                let Some(id) = row["node_id"].as_str() else {
-                    continue;
-                };
                 if seen.insert(number) {
-                    rows.push((updated, number, id.to_string()));
+                    rows.push(PullRow {
+                        number,
+                        updated_at: updated,
+                    });
                 }
             }
             // Without a checkpoint the walk is oldest first: the first
@@ -1194,23 +1250,52 @@ impl GitHub for RestGitHub {
                 ));
             }
         }
-        rows.sort_by_key(|(updated, number, _)| (*updated, *number));
+        rows.sort_by_key(|r| (r.updated_at, r.number));
         rows.truncate(limit);
-        if rows.is_empty() {
+        Ok(rows)
+    }
+
+    fn sync_pulls(&self, repo: &RepoSlug, numbers: &[u64]) -> Read<Vec<PullRequest>> {
+        if numbers.is_empty() {
             return Ok(Vec::new());
         }
-        let ids: Vec<String> = rows.into_iter().map(|(_, _, id)| id).collect();
-        let query =
-            format!("query($ids: [ID!]!) {{ nodes(ids: $ids) {{ ...Pull }} }}\n{PULL_FRAGMENT}");
-        let data = self.graphql(repo, &what, &query, json!({"ids": ids}))?;
-        let mut pulls = data["nodes"]
-            .as_array()
-            .ok_or_else(|| ReadError::unreadable(&what, "the PR node list is not an array"))?
+        let what = format!(
+            "PRs {} of {repo}",
+            numbers
+                .iter()
+                .map(|n| format!("#{n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        // One alias per PR, by number: the same query serves the PRs after
+        // the checkpoint and the PRs followed, with no node id to keep.
+        let aliases: String = numbers
             .iter()
-            .map(|n| pull_from_gql(n).map_err(|e| ReadError::unreadable(&what, e)))
-            .collect::<Read<Vec<_>>>()?;
-        pulls.sort_by_key(|p| (p.updated_at, p.number));
-        Ok(pulls)
+            .enumerate()
+            .map(|(i, n)| format!("    p{i}: pullRequest(number: {n}) {{ ...SyncPull }}\n"))
+            .collect();
+        let query = format!(
+            "query($owner: String!, $name: String!) {{\n  repository(owner: $owner, name: $name) {{\n{aliases}  }}\n}}\n{SYNC_FRAGMENT}"
+        );
+        let data = self.graphql_allowing_missing(
+            repo,
+            &what,
+            &query,
+            json!({"owner": repo.owner, "name": repo.name}),
+        )?;
+        let mut out = Vec::new();
+        for i in 0..numbers.len() {
+            let node = &data["repository"][format!("p{i}")];
+            if node.is_null() {
+                continue;
+            }
+            let mut pull = pull_from_gql(node).map_err(|e| ReadError::unreadable(&what, e))?;
+            // Not asked: never read as "none".
+            pull.truncated
+                .extend(["labels", "reviews", "reviewThreads"].map(String::from));
+            out.push(pull);
+        }
+        Ok(out)
     }
 
     fn merged_pulls(

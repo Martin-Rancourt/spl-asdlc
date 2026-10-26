@@ -15,11 +15,12 @@
 //! to GitHub through the App, and needs no person's token. The method does
 //! not require it.
 //!
-//! It reads the open PRs, the PRs merged or closed since its last pass, and
-//! the PRs linked to tickets still open; its memory (the last pass, the links
-//! it laid, the PRs it follows) is a file beside the action log, kept by the
-//! host. A value already on the item is never written again, so a pass with
-//! nothing new writes nothing in the tracker (contract §2).
+//! It reads the PRs updated after its checkpoint, oldest first and a bounded
+//! number per pass, then the PRs linked to tickets still open, in small
+//! batches; its memory (the checkpoint, the links it laid, the PRs it
+//! follows) is a file beside the action log, kept by the host. A value
+//! already on the item is never written again, so a pass with nothing new
+//! writes nothing in the tracker (contract §2).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -37,8 +38,14 @@ use crate::method::release::shape::Shape;
 use crate::quota::Pace;
 use crate::tracker::{Checks, PrStatus, Tracker};
 
-/// One page per pass. GitHub's issue list has a maximum page size of 100.
-const PAGE: usize = 100;
+/// The PRs after the checkpoint one pass handles at most, oldest first: a
+/// catch-up spreads over passes instead of failing each one.
+const PER_PASS: usize = 50;
+/// The followed PRs one pass reads at most, in turn from where the last
+/// one stopped.
+const FOLLOWED_PER_PASS: usize = 100;
+/// The PRs read in one request: GitHub times out on large ones.
+const BATCH: usize = 25;
 
 /// One pass for a host that embeds the crate: the configuration read at
 /// the repository's default branch with the instance overlay as a value
@@ -102,9 +109,14 @@ struct Memory {
     /// `(PR URL, ticket)`: the links this sync laid. One the tracker no
     /// longer has, a person removed: it is never laid again.
     laid: BTreeSet<(String, String)>,
-    /// The PRs linked to a ticket still open, by URL: read at each pass
-    /// until every ticket they are linked to is resolved.
+    /// The PRs linked to a ticket still open, by URL, and the PRs whose
+    /// last handling failed: read again until every ticket they are linked
+    /// to is resolved, or until they go through.
     followed: BTreeMap<String, u64>,
+    /// The followed PR the last pass stopped after, when it could not read
+    /// them all: the next one goes on from there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    followed_after: Option<String>,
 }
 
 /// The file of the sync's memory beside the action log
@@ -220,59 +232,67 @@ fn run(
     };
 
     let handled: Vec<_> = memory.handled_at_since.iter().copied().collect();
-    let listed = match github.updated_pulls(&repo, since, &handled, PAGE) {
-        Ok(p) => p,
+    let rows = match github.updated_pull_rows(&repo, since, &handled, PER_PASS) {
+        Ok(r) => r,
         Err(e) => return PassOutcome::failed(format!("{repo}: the PRs after the checkpoint: {e}")),
     };
-    let mut prs: BTreeMap<String, PullRequest> =
-        listed.iter().cloned().map(|p| (p.url.clone(), p)).collect();
+    let over = || deadline.is_some_and(|d| Instant::now() >= d);
     let mut tally = Tally::default();
-    for (url, number) in memory.followed.clone() {
-        if prs.contains_key(&url) {
-            continue;
-        }
-        match github.pull(&repo, number) {
-            Ok(pr) => {
-                prs.insert(url, pr);
-            }
-            Err(e) if e.is_not_found() => {
-                memory.followed.remove(&url);
-            }
-            Err(e) => tally.failures.push(format!("PR #{number}: {e}")),
-        }
-    }
-
     let mut releases = Releases::new(config, &repo, github);
-    let mut spent = false;
-    for pr in listed.iter().chain(
-        prs.values()
-            .filter(|p| !listed.iter().any(|l| l.url == p.url)),
-    ) {
-        let checkpointed = listed.iter().any(|p| p.url == pr.url);
-        if deadline.is_some_and(|d| Instant::now() >= d) {
-            spent = true;
+    let mut stop = None;
+    let mut checkpointed = 0;
+    // The PRs handled in this pass, by URL: a followed one is not read twice.
+    let mut done = BTreeSet::new();
+
+    // The PRs after the checkpoint, oldest first, read a small batch at a
+    // time; the checkpoint moves (and is written) after each one, so a pass
+    // stopped by its budget or by GitHub keeps what it did.
+    'rows: for batch in rows.chunks(BATCH) {
+        if over() {
+            stop = Some(Stop::Budget);
             break;
         }
-        tally.read += 1;
-        if let Err(e) = link(tracker, &prefixes, pr, &mut memory, &mut tally) {
-            tally.failures.push(format!("PR #{}: {e}", pr.number));
-            if checkpointed {
+        let numbers: Vec<u64> = batch.iter().map(|r| r.number).collect();
+        let pulls = match github.sync_pulls(&repo, &numbers) {
+            Ok(p) => p,
+            Err(e) => {
+                tally
+                    .failures
+                    .push(format!("the PRs after the checkpoint: {e}"));
+                stop = Some(Stop::Unreadable);
                 break;
             }
-            continue;
-        }
-        if let Err(e) = record(tracker, &mut releases, pr, &mut memory, &mut tally) {
-            tally.failures.push(format!("PR #{}: {e}", pr.number));
-            if checkpointed {
-                break;
+        };
+        for row in batch {
+            if over() {
+                stop = Some(Stop::Budget);
+                break 'rows;
             }
-            continue;
-        }
-        if checkpointed {
-            let Some(updated) = pr.updated_at else {
+            // A PR GitHub no longer knows has nothing left to sync.
+            if let Some(pr) = pulls.iter().find(|p| p.number == row.number) {
+                tally.read += 1;
+                done.insert(pr.url.clone());
+                if let Err(e) = handle(
+                    tracker,
+                    &prefixes,
+                    &mut releases,
+                    pr,
+                    &mut memory,
+                    &mut tally,
+                ) {
+                    // Read again with the followed PRs until it goes
+                    // through: one PR that fails never holds back the rest.
+                    tally.failures.push(format!("PR #{}: {e}", pr.number));
+                    memory.followed.insert(pr.url.clone(), pr.number);
+                }
+            }
+            // The list's update time, not the PR's: a PR updated since the
+            // list was read is listed again by the next pass, and the
+            // checkpoint never jumps past a row this pass did not handle.
+            let Some(updated) = row.updated_at else {
                 tally.failures.push(format!(
-                    "PR #{}: no updated_at for the checkpoint",
-                    pr.number
+                    "PR #{}: the list gives no update time for the checkpoint",
+                    row.number
                 ));
                 continue;
             };
@@ -280,18 +300,88 @@ fn run(
                 memory.since = Some(updated.to_string());
                 memory.handled_at_since.clear();
             }
-            memory.handled_at_since.insert(pr.number);
+            memory.handled_at_since.insert(row.number);
+            checkpointed += 1;
             if let Some(p) = &path {
                 if let Err(e) = save(p, &memory) {
                     tally.failures.push(format!(
-                        "checkpoint after PR #{} could not be written: {e}",
-                        pr.number
+                        "the checkpoint after PR #{} could not be written: {e}",
+                        row.number
                     ));
-                    break;
+                    stop = Some(Stop::Unreadable);
+                    break 'rows;
                 }
             }
         }
     }
+
+    // The PRs followed, from where the last pass stopped and around, a
+    // bounded number per pass: each is read in turn however many there are.
+    let mut followed_read = 0;
+    if stop.is_none() {
+        let all: Vec<(String, u64)> = memory
+            .followed
+            .iter()
+            .filter(|(url, _)| !done.contains(*url))
+            .map(|(u, n)| (u.clone(), *n))
+            .collect();
+        let from = memory
+            .followed_after
+            .as_ref()
+            .map_or(0, |after| all.partition_point(|(u, _)| u <= after));
+        let mut turn: Vec<(String, u64)> =
+            all[from..].iter().chain(&all[..from]).cloned().collect();
+        let whole = turn.len() <= FOLLOWED_PER_PASS;
+        turn.truncate(FOLLOWED_PER_PASS);
+        let mut last = None;
+        'followed: for batch in turn.chunks(BATCH) {
+            if over() {
+                stop = Some(Stop::Budget);
+                break;
+            }
+            let numbers: Vec<u64> = batch.iter().map(|(_, n)| *n).collect();
+            let pulls = match github.sync_pulls(&repo, &numbers) {
+                Ok(p) => p,
+                Err(e) => {
+                    tally.failures.push(format!("the PRs followed: {e}"));
+                    stop = Some(Stop::Unreadable);
+                    break;
+                }
+            };
+            for (url, number) in batch {
+                if over() {
+                    stop = Some(Stop::Budget);
+                    break 'followed;
+                }
+                match pulls.iter().find(|p| p.number == *number) {
+                    None => {
+                        memory.followed.remove(url);
+                    }
+                    Some(pr) => {
+                        tally.read += 1;
+                        followed_read += 1;
+                        if let Err(e) = handle(
+                            tracker,
+                            &prefixes,
+                            &mut releases,
+                            pr,
+                            &mut memory,
+                            &mut tally,
+                        ) {
+                            tally.failures.push(format!("PR #{number}: {e}"));
+                        }
+                    }
+                }
+                last = Some(url.clone());
+            }
+        }
+        memory.followed_after = if stop.is_none() && whole {
+            None
+        } else {
+            last.or(memory.followed_after.take())
+        };
+    }
+
     let mut message = format!(
         "{repo}: GitHub sync: {} PR(s) read, {} link(s) laid, {} status(es) recorded",
         tally.read, tally.links, tally.statuses
@@ -306,19 +396,79 @@ fn run(
             saved = false;
         }
     }
-    if spent {
-        message.push_str("; the time budget is spent: the next pass resumes");
+    let at = memory
+        .since
+        .as_deref()
+        .map(|s| format!("after the checkpoint {s}"))
+        .unwrap_or_else(|| "at the start of the history".into());
+    match stop {
+        Some(Stop::Budget) => message.push_str(&format!(
+            "; the time budget is spent: the next pass resumes {at}"
+        )),
+        Some(Stop::Unreadable) => {
+            message.push_str(&format!("; stopped: the next pass resumes {at}"))
+        }
+        None if rows.len() == PER_PASS => message.push_str(&format!(
+            "; {PER_PASS} PR(s) after the checkpoint per pass: the next pass goes on {at}"
+        )),
+        None => {}
+    }
+    if followed_read > 0 || !memory.followed.is_empty() {
+        message.push_str(&format!(
+            "; {followed_read} of {} PR(s) followed read",
+            memory.followed.len()
+        ));
     }
     if let Some(line) = quota.line() {
         message.push_str(&format!("; {line}"));
     }
-    for f in &tally.failures {
-        message.push_str(&format!("\n{repo}: {f}"));
+    // On the job's line: a host keeps one line per pass.
+    if !tally.failures.is_empty() {
+        const SHOWN: usize = 10;
+        message.push_str(&format!(
+            "; {} failure(s): {}",
+            tally.failures.len(),
+            tally
+                .failures
+                .iter()
+                .take(SHOWN)
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+        if tally.failures.len() > SHOWN {
+            message.push_str(&format!("; and {} more", tally.failures.len() - SHOWN));
+        }
     }
+    // A pass the budget stopped after some work is a step of a catch-up;
+    // one that could do nothing within it is a failure.
+    let stuck = stop == Some(Stop::Budget) && checkpointed == 0 && tally.read == 0;
     PassOutcome {
-        ok: !spent && saved && tally.failures.is_empty(),
+        ok: !stuck && saved && tally.failures.is_empty(),
         message,
     }
+}
+
+/// Why a pass stopped before the end of its work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stop {
+    /// Its time budget is spent.
+    Budget,
+    /// GitHub could not be read, or the checkpoint written (in the failures).
+    Unreadable,
+}
+
+/// Link `pr` to the tickets it names, then record its status on them.
+fn handle(
+    tracker: &dyn Tracker,
+    prefixes: &[String],
+    releases: &mut Releases,
+    pr: &PullRequest,
+    memory: &mut Memory,
+    tally: &mut Tally,
+) -> Result<(), String> {
+    link(tracker, prefixes, pr, memory, tally)?;
+    record(tracker, releases, pr, memory, tally)
 }
 
 /// The prefixes of the project's tickets: `tracker.team_keys`, or the
@@ -483,17 +633,22 @@ impl<'a> Releases<'a> {
                 .map(|c| matches!(c.status, CompareStatus::Ahead | CompareStatus::Identical))
                 .map_err(|e| e.to_string())
         };
-        // Not in the newest release: in none.
+        // Not in the newest release: in none. A release holds what the
+        // ones before it hold, so the oldest that holds it is found by
+        // halves: a few compares, not one per release (hundreds of tags
+        // made one PR take most of a pass's budget).
         let found = match tags.last() {
             Some(newest) if holds(newest)? => {
-                let mut first = newest.clone();
-                for tag in tags {
-                    if holds(tag)? {
-                        first = tag.clone();
-                        break;
+                let (mut lo, mut hi) = (0, tags.len() - 1);
+                while lo < hi {
+                    let mid = lo + (hi - lo) / 2;
+                    if holds(&tags[mid])? {
+                        hi = mid;
+                    } else {
+                        lo = mid + 1;
                     }
                 }
-                Some(first)
+                Some(tags[lo].clone())
             }
             _ => None,
         };

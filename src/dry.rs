@@ -76,15 +76,18 @@ impl GitHub for DryGitHub<'_> {
         self.inner.pull(repo, number)
     }
 
-    fn updated_pulls(
+    fn updated_pull_rows(
         &self,
         repo: &RepoSlug,
         since: Option<github::Timestamp>,
         handled_at_since: &[u64],
         limit: usize,
-    ) -> Read<Vec<github::PullRequest>> {
+    ) -> Read<Vec<github::PullRow>> {
         self.inner
-            .updated_pulls(repo, since, handled_at_since, limit)
+            .updated_pull_rows(repo, since, handled_at_since, limit)
+    }
+    fn sync_pulls(&self, repo: &RepoSlug, numbers: &[u64]) -> Read<Vec<github::PullRequest>> {
+        self.inner.sync_pulls(repo, numbers)
     }
     fn merged_pulls(
         &self,

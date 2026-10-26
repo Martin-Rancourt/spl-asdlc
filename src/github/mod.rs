@@ -69,18 +69,25 @@ pub trait GitHub {
     /// Every open PR, optionally on one base; a list GitHub cut is unreadable.
     fn open_pulls(&self, repo: &RepoSlug, base: Option<&str>) -> Read<Vec<PullRequest>>;
     fn pull(&self, repo: &RepoSlug, number: u64) -> Read<PullRequest>;
-    /// Up to `limit` PRs updated at or after `since`, oldest update first.
-    /// `handled_at_since` disambiguates PRs sharing the checkpoint's second. The real
-    /// client lists PRs (`/pulls`, never `/issues`: the App has no Issues
-    /// permission) in pages of 100 and hydrates the rows kept in one GraphQL
-    /// query, never with one request per PR.
-    fn updated_pulls(
+    /// The rows of up to `limit` PRs updated at or after `since`, oldest
+    /// update first, with the update time the list gives. `handled_at_since`
+    /// disambiguates PRs sharing the checkpoint's second. The real client
+    /// lists PRs (`/pulls`, never `/issues`: the App has no Issues
+    /// permission) in pages of 100; the PRs themselves are read with
+    /// [`GitHub::sync_pulls`].
+    fn updated_pull_rows(
         &self,
         repo: &RepoSlug,
         since: Option<Timestamp>,
         handled_at_since: &[u64],
         limit: usize,
-    ) -> Read<Vec<PullRequest>>;
+    ) -> Read<Vec<PullRow>>;
+    /// These PRs, as the GitHub sync reads them, in one request: what names
+    /// a ticket and where the PR stands (state, merge commit, checks), not
+    /// its labels, reviews or threads (marked as cut in `truncated`). A
+    /// number GitHub does not know is left out. The caller keeps the batch
+    /// small: a large one is what GitHub times out on.
+    fn sync_pulls(&self, repo: &RepoSlug, numbers: &[u64]) -> Read<Vec<PullRequest>>;
     /// PRs merged since `since`, optionally on one base, newest first; more
     /// than `limit` of them is unreadable (a partial list is not the list).
     fn merged_pulls(

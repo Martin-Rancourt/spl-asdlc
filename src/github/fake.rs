@@ -27,6 +27,8 @@ pub struct FakeState {
     pub tag_objects: HashMap<(RepoSlug, String), AnnotatedTag>,
     pub commits: HashMap<(RepoSlug, String), Read<Commit>>,
     pub compares: HashMap<(RepoSlug, String, String), Read<Comparison>>,
+    /// How many compares were read.
+    pub compares_read: usize,
     /// `(repo, head)`: `head`'s whole history (`since_root`).
     pub histories: HashMap<(RepoSlug, String), Read<Comparison>>,
     /// `(repo, rev, path)`; a missing entry is `NotFound`.
@@ -44,7 +46,20 @@ pub struct FakeState {
     pub merged_pulls: BTreeMap<RepoSlug, Read<Vec<PullRequest>>>,
     /// Closed without merge; none when not scripted.
     pub closed_pulls: BTreeMap<RepoSlug, Read<Vec<PullRequest>>>,
+    /// The PR list the GitHub sync walks (`updated_pull_rows`); the PRs
+    /// themselves are read from it, the open and the merged lists
+    /// (`sync_pulls`).
     pub updated_pulls: BTreeMap<RepoSlug, Read<Vec<PullRequest>>>,
+    /// `(repo, number)`: the update time the list gives, when it differs
+    /// from the PR's own (a PR updated between the list and its read).
+    pub listed_at: HashMap<(RepoSlug, u64), Timestamp>,
+    /// Every `sync_pulls` batch, as the numbers asked.
+    pub sync_reads: Vec<Vec<u64>>,
+    /// A `sync_pulls` batch asking for one of these numbers fails so.
+    pub failing_sync_reads: BTreeMap<u64, ReadError>,
+    /// A `sync_pulls` batch asking for one of these numbers takes this long
+    /// (a slow GitHub, for a pass's time budget).
+    pub slow_sync_reads: BTreeMap<u64, std::time::Duration>,
     pub pull_files: HashMap<(RepoSlug, u64), Read<Vec<String>>>,
     pub commit_pulls: HashMap<(RepoSlug, String), Read<Vec<CommitPull>>>,
     pub required_checks: HashMap<(RepoSlug, String), Read<RequiredChecks>>,
@@ -246,6 +261,7 @@ impl GitHub for FakeGitHub {
     }
 
     fn compare(&self, repo: &RepoSlug, base: &str, head: &str) -> Read<Comparison> {
+        self.state.borrow_mut().compares_read += 1;
         match self
             .state
             .borrow()
@@ -365,26 +381,74 @@ impl GitHub for FakeGitHub {
         })
     }
 
-    fn updated_pulls(
+    fn updated_pull_rows(
         &self,
         repo: &RepoSlug,
         since: Option<Timestamp>,
         handled_at_since: &[u64],
         limit: usize,
-    ) -> Read<Vec<PullRequest>> {
-        match self.state.borrow().updated_pulls.get(repo) {
-            Some(v) => v.clone().map(|mut pulls| {
-                pulls.sort_by_key(|p| (p.updated_at, p.number));
-                pulls.retain(|p| match (since, p.updated_at) {
+    ) -> Read<Vec<PullRow>> {
+        let s = self.state.borrow();
+        match s.updated_pulls.get(repo) {
+            Some(v) => v.clone().map(|pulls| {
+                let mut rows: Vec<PullRow> = pulls
+                    .iter()
+                    .map(|p| PullRow {
+                        number: p.number,
+                        updated_at: s
+                            .listed_at
+                            .get(&(repo.clone(), p.number))
+                            .copied()
+                            .or(p.updated_at),
+                    })
+                    .collect();
+                rows.sort_by_key(|r| (r.updated_at, r.number));
+                rows.retain(|r| match (since, r.updated_at) {
                     (Some(s), Some(u)) if u < s => false,
-                    (Some(s), Some(u)) if u == s => !handled_at_since.contains(&p.number),
+                    (Some(s), Some(u)) if u == s => !handled_at_since.contains(&r.number),
                     _ => true,
                 });
-                pulls.truncate(limit);
-                pulls
+                rows.truncate(limit);
+                rows
             }),
             None => not_scripted(format!("updated PRs of {repo}")),
         }
+    }
+
+    fn sync_pulls(&self, repo: &RepoSlug, numbers: &[u64]) -> Read<Vec<PullRequest>> {
+        let mut s = self.state.borrow_mut();
+        s.sync_reads.push(numbers.to_vec());
+        if let Some(d) = numbers.iter().find_map(|n| s.slow_sync_reads.get(n)) {
+            std::thread::sleep(*d);
+        }
+        if let Some(e) = numbers.iter().find_map(|n| s.failing_sync_reads.get(n)) {
+            return Err(e.clone());
+        }
+        let lists = [
+            s.updated_pulls.get(repo),
+            s.open_pulls.get(repo),
+            s.merged_pulls.get(repo),
+        ];
+        if lists.iter().all(Option::is_none) {
+            return not_scripted(format!("PRs of {repo}"));
+        }
+        let mut out = Vec::new();
+        for n in numbers {
+            let mut found = None;
+            for list in lists.iter().flatten() {
+                match list {
+                    Ok(list) => {
+                        if let Some(p) = list.iter().find(|p| p.number == *n) {
+                            found = Some(p.clone());
+                            break;
+                        }
+                    }
+                    Err(e) => return Err(e.clone()),
+                }
+            }
+            out.extend(found);
+        }
+        Ok(out)
     }
 
     fn merged_pulls(

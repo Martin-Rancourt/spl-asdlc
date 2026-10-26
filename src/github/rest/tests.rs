@@ -583,19 +583,12 @@ fn issues_forbidden(t: &ScriptedTransport) {
     );
 }
 
-fn hydrate(t: &ScriptedTransport, numbers: &[u64]) {
-    let nodes: Vec<String> = numbers.iter().map(|n| pull_node(*n)).collect();
-    t.on_body(
-        "POST",
-        &url("/graphql"),
-        "nodes(ids: $ids)",
-        200,
-        &format!(r#"{{"data":{{"nodes":[{}]}}}}"#, nodes.join(",")),
-    );
+fn numbers(rows: &[PullRow]) -> Vec<u64> {
+    rows.iter().map(|r| r.number).collect()
 }
 
 #[test]
-fn updated_pulls_are_a_page_of_100_hydrated_in_one_batch() {
+fn updated_pull_rows_are_one_list_call_with_the_lists_update_times() {
     let (gh, t) = client();
     issues_forbidden(&t);
     let since = Timestamp::parse("2026-10-05T10:59:00Z").unwrap();
@@ -610,17 +603,26 @@ fn updated_pulls_are_a_page_of_100_hydrated_in_one_batch() {
             pull_row(9, "2026-10-05T10:58:00Z")
         ),
     );
-    hydrate(&t, &[11, 12]);
-    let pulls = gh.updated_pulls(&repo(), Some(since), &[], 100).unwrap();
-    assert_eq!(pulls.iter().map(|p| p.number).collect::<Vec<_>>(), [11, 12]);
-    assert_eq!(t.calls().len(), 2, "one list call and one batch hydration");
+    let rows = gh
+        .updated_pull_rows(&repo(), Some(since), &[], 100)
+        .unwrap();
+    assert_eq!(numbers(&rows), [11, 12]);
+    assert_eq!(
+        rows[0].updated_at,
+        Timestamp::parse("2026-10-05T11:00:00Z"),
+        "the list's update time"
+    );
+    assert_eq!(
+        t.calls().len(),
+        1,
+        "one list call, no PR read: {:?}",
+        t.calls()
+    );
     assert!(t.calls()[0].contains("/pulls?") && t.calls()[0].contains("per_page=100"));
-    let body = &t.bodies()[1];
-    assert!(body.contains(r#""ids":["PR_11","PR_12"]"#), "{body}");
 }
 
 #[test]
-fn updated_pulls_never_read_the_issue_list_the_app_may_not_read() {
+fn updated_pull_rows_never_read_the_issue_list_the_app_may_not_read() {
     // ASDLC-47PN: 1.4.2 listed `/issues`, which needs the Issues permission
     // the App lacks: every sync pass failed with a 403.
     let (gh, t) = client();
@@ -631,10 +633,11 @@ fn updated_pulls_never_read_the_issue_list_the_app_may_not_read() {
         200,
         &format!("[{}]", pull_row(5, "2026-10-05T11:00:00Z")),
     );
-    hydrate(&t, &[5]);
     let since = Timestamp::parse("2026-10-05T10:00:00Z").unwrap();
-    let pulls = gh.updated_pulls(&repo(), Some(since), &[], 100).unwrap();
-    assert_eq!(pulls.len(), 1);
+    let rows = gh
+        .updated_pull_rows(&repo(), Some(since), &[], 100)
+        .unwrap();
+    assert_eq!(rows.len(), 1);
     assert!(
         !t.calls().iter().any(|c| c.contains("/issues")),
         "{:?}",
@@ -645,7 +648,7 @@ fn updated_pulls_never_read_the_issue_list_the_app_may_not_read() {
     issues_forbidden(&t);
     t.on("GET", &url(&format!("{PULLS_ASC}1")), 200, "[]");
     assert!(
-        gh.updated_pulls(&repo(), None, &[], 100)
+        gh.updated_pull_rows(&repo(), None, &[], 100)
             .unwrap()
             .is_empty()
     );
@@ -657,7 +660,7 @@ fn updated_pulls_never_read_the_issue_list_the_app_may_not_read() {
 }
 
 #[test]
-fn updated_pulls_walk_down_to_the_checkpoint_and_keep_the_oldest_after_it() {
+fn updated_pull_rows_walk_down_to_the_checkpoint_and_keep_the_oldest_after_it() {
     let (gh, t) = client();
     issues_forbidden(&t);
     // Page 1: 100 rows from 12:00 down to 11:01; page 2 repeats the last row
@@ -686,22 +689,22 @@ fn updated_pulls_walk_down_to_the_checkpoint_and_keep_the_oldest_after_it() {
         200,
         &format!("[{}]", page2.join(",")),
     );
-    hydrate(&t, &[10, 30]);
     let since = Timestamp::parse("2026-10-05T11:00:00Z").unwrap();
-    gh.updated_pulls(&repo(), Some(since), &[20], 2).unwrap();
-    let lists: Vec<_> = t
-        .calls()
-        .into_iter()
-        .filter(|c| c.starts_with("GET"))
-        .collect();
-    assert_eq!(lists.len(), 2, "no page past the checkpoint: {lists:?}");
-    let body = &t.bodies()[2];
+    let rows = gh
+        .updated_pull_rows(&repo(), Some(since), &[20], 2)
+        .unwrap();
+    assert_eq!(
+        t.calls().len(),
+        2,
+        "no page past the checkpoint: {:?}",
+        t.calls()
+    );
     // #20 was handled at the checkpoint's second; the oldest two after it.
-    assert!(body.contains(r#""ids":["PR_10","PR_30"]"#), "{body}");
+    assert_eq!(numbers(&rows), [10, 30]);
 }
 
 #[test]
-fn updated_pulls_without_a_checkpoint_start_at_the_oldest() {
+fn updated_pull_rows_without_a_checkpoint_start_at_the_oldest() {
     let (gh, t) = client();
     issues_forbidden(&t);
     let page: Vec<String> = (1..=100u64)
@@ -713,15 +716,87 @@ fn updated_pulls_without_a_checkpoint_start_at_the_oldest() {
         200,
         &format!("[{}]", page.join(",")),
     );
-    hydrate(&t, &[1, 2, 3]);
-    gh.updated_pulls(&repo(), None, &[], 3).unwrap();
-    let lists: Vec<_> = t
-        .calls()
-        .into_iter()
-        .filter(|c| c.starts_with("GET"))
-        .collect();
-    assert_eq!(lists.len(), 1, "one page is enough: {lists:?}");
-    assert!(lists[0].contains("direction=asc"), "{lists:?}");
+    let rows = gh.updated_pull_rows(&repo(), None, &[], 3).unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(t.calls().len(), 1, "one page is enough: {:?}", t.calls());
+    assert!(t.calls()[0].contains("direction=asc"), "{:?}", t.calls());
+}
+
+/// ASDLC-47PN: one query of 100 PRs with the full fragment ran into
+/// GitHub's timeout (a 504, or an answer cut mid-string). The sync reads a
+/// small batch by number, with what it needs only.
+#[test]
+fn sync_pulls_read_a_batch_by_number_in_one_light_query() {
+    let (gh, t) = client();
+    t.on_body(
+        "POST",
+        &url("/graphql"),
+        "...SyncPull",
+        200,
+        &format!(
+            r#"{{"data":{{"repository":{{"p0":{},"p1":null}}}},
+            "errors":[{{"type":"NOT_FOUND","path":["repository","p1"],"message":"Could not resolve to a PullRequest with the number of 12."}}]}}"#,
+            pull_node(11)
+        ),
+    );
+    let pulls = gh.sync_pulls(&repo(), &[11, 12]).unwrap();
+    assert_eq!(pulls.len(), 1, "a number GitHub does not know is left out");
+    let pr = &pulls[0];
+    assert_eq!(pr.number, 11);
+    assert_eq!(pr.checks.len(), 3, "the checks are read");
+    for cut in ["labels", "reviews", "reviewThreads"] {
+        assert!(pr.truncated.iter().any(|t| t == cut), "{:?}", pr.truncated);
+    }
+    assert_eq!(t.calls().len(), 1, "{:?}", t.calls());
+    let body = &t.bodies()[0];
+    assert!(
+        body.contains("p0: pullRequest(number: 11)")
+            && body.contains("p1: pullRequest(number: 12)"),
+        "{body}"
+    );
+    for heavy in [
+        "reviews(first: 100)",
+        "reviewThreads(first: 100)",
+        "labels(first: 50)",
+    ] {
+        assert!(!SYNC_FRAGMENT.contains(heavy), "{heavy}");
+    }
+}
+
+#[test]
+fn sync_pulls_say_a_gateway_timeout() {
+    let (gh, t) = client();
+    t.on_body(
+        "POST",
+        &url("/graphql"),
+        "...SyncPull",
+        504,
+        "<!DOCTYPE html><html>We couldn't respond to your request in time.</html>",
+    );
+    let err = gh.sync_pulls(&repo(), &[11]).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            ReadError::Unreadable {
+                status: Some(504),
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    // An error other than a missing PR is no partial answer.
+    let (gh, t) = client();
+    t.on_body(
+        "POST",
+        &url("/graphql"),
+        "...SyncPull",
+        200,
+        &format!(
+            r#"{{"data":{{"repository":{{"p0":{}}}}},"errors":[{{"type":"MAX_NODE_LIMIT_EXCEEDED","message":"too many"}}]}}"#,
+            pull_node(11)
+        ),
+    );
+    assert!(gh.sync_pulls(&repo(), &[11]).is_err());
 }
 
 #[test]
