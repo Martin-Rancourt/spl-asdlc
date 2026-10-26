@@ -34,6 +34,7 @@ use crate::job::{Host, PassOutcome, RepositoryHost};
 use crate::lock::TickLock;
 use crate::method::checks::{self, CheckState};
 use crate::method::release::shape::Shape;
+use crate::quota::Pace;
 use crate::tracker::{Checks, PrStatus, Tracker};
 
 /// One page per pass. GitHub's issue list has a maximum page size of 100.
@@ -185,6 +186,18 @@ fn run(
         }
         None => None,
     };
+    // The sync can wait: with little left of the GitHub quota, it reads
+    // nothing and keeps its checkpoint for a pass after the reset.
+    let quota = crate::quota::read(github, &repo);
+    if quota.pace() != Pace::Normal {
+        return PassOutcome {
+            ok: true,
+            message: format!(
+                "{repo}: GitHub sync skipped, little is left of the GitHub quota: the next pass resumes at the checkpoint; {}",
+                quota.line().unwrap_or_default()
+            ),
+        };
+    }
     // Both sides readable before anything is written.
     if let Err(e) = tracker.identity() {
         return PassOutcome::failed(format!("{repo}: the tracker: {e}"));
@@ -295,6 +308,9 @@ fn run(
     }
     if spent {
         message.push_str("; the time budget is spent: the next pass resumes");
+    }
+    if let Some(line) = quota.line() {
+        message.push_str(&format!("; {line}"));
     }
     for f in &tally.failures {
         message.push_str(&format!("\n{repo}: {f}"));

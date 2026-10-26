@@ -16,6 +16,7 @@ pub mod lock;
 pub mod method;
 pub mod notify;
 pub mod prepare;
+pub mod quota;
 pub mod setup;
 pub mod sync;
 pub mod tick;

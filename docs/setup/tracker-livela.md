@@ -323,6 +323,8 @@ A pass that works leaves only its writes on the items; a pass with nothing to do
 
 The runner takes the `spl-asdlc` crate by version, from crates.io; the arrow never points the other way (BR-ASDLC-010).
 
+Every pass, the bridge's and the sync's, reads the App's quota first and ends its message with what is left (`GitHub quota: core <remaining>/<limit> until <hh:mm>Z, graphql …`), ok or failed. Every project of the runner shares the App's one installation, so one quota. Low on it, the sync waits and the bridge skips its sweep; almost out, the bridge reads nothing until the reset. Both answer ok and say so in the message (`07-the-bridge.md`, "What a tick does"). A runner that writes only failed passes to its journal shows the line of a pass that works only in its job record: to follow the quota, it writes the line of every pass.
+
 ### The GitHub sync job
 
 A second `DaemonJob` per project, beside the bridge's, also in the runner's code (BR-ASDLC-010): `GithubSyncJob`, named `spl-asdlc-sync:<prefix>`, so that its failed passes are recorded under `job:spl-asdlc-sync:<prefix>`. The method does not require it: a project runs SPL-ASDLC without it. It is the bridge's job with another pass:

@@ -167,6 +167,49 @@ fn a_pr_naming_a_ticket_is_linked_its_status_recorded_and_a_second_pass_writes_n
     );
 }
 
+/// Little left of the GitHub quota: the sync reads nothing, keeps its
+/// checkpoint, and the next pass with quota links the PR (ASDLC-5DDN).
+#[test]
+fn a_sync_low_on_quota_waits_and_the_next_pass_resumes() {
+    let t = FakeTracker::default();
+    t.seed("ABC-12", "T", "", Status::InProgress, &[]);
+    let g = github();
+    let pr = named(7, "feat: thing (ABC-12)");
+    open(&g, vec![pr.clone()]);
+    let quota = |remaining| {
+        Some(Ok(vec![crate::github::Quota {
+            resource: "graphql".into(),
+            limit: 5000,
+            remaining,
+            reset: Timestamp::parse("2026-10-26T13:22:00Z").unwrap(),
+        }]))
+    };
+    g.state.borrow_mut().quota = quota(999);
+    let log = log("low-quota");
+    let out = sync(&t, &g, &log);
+    assert!(out.ok, "{out:?}");
+    assert!(
+        out.message.contains("GitHub sync skipped"),
+        "{}",
+        out.message
+    );
+    assert!(
+        out.message.contains("graphql 999/5000 until 13:22Z"),
+        "{}",
+        out.message
+    );
+    assert!(t.writes().is_empty());
+    assert!(
+        !memory_path(&log).exists(),
+        "the checkpoint is kept as it was"
+    );
+    g.state.borrow_mut().quota = quota(1000);
+    let out = sync(&t, &g, &log);
+    assert!(out.ok, "{out:?}");
+    assert!(out.message.contains("1 link(s) laid"), "{}", out.message);
+    assert!(out.message.contains("graphql 1000/5000"), "{}", out.message);
+}
+
 #[test]
 fn a_draft_is_linked_and_a_link_a_person_removed_is_not_laid_again() {
     let t = FakeTracker::default();

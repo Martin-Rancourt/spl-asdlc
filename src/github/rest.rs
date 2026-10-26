@@ -368,6 +368,11 @@ impl RestGitHub {
     }
 }
 
+/// Every field a tick judges a PR on. GitHub prices a GraphQL query by the
+/// nodes it could return: a connection nested under the 100 review threads
+/// costs 100 points per PR, a page of 50 PRs about 53 points instead of 3,
+/// and the App's one installation has 5000 points an hour for every
+/// repository it serves (ASDLC-5DDN). So nothing is asked under a thread.
 const PULL_FRAGMENT: &str = "fragment Pull on PullRequest {
   number url title body state isDraft
   author { __typename login }
@@ -377,7 +382,7 @@ const PULL_FRAGMENT: &str = "fragment Pull on PullRequest {
   mergedBy { __typename login }
   mergeCommit { oid }
   reviews(first: 100) { pageInfo { hasNextPage } nodes { databaseId author { __typename login } state body commit { oid } submittedAt } }
-  reviewThreads(first: 100) { pageInfo { hasNextPage } nodes { isResolved isOutdated path comments(first: 1) { nodes { author { __typename login } body } } } }
+  reviewThreads(first: 100) { pageInfo { hasNextPage } nodes { isResolved isOutdated path } }
   commits(last: 1) { nodes { commit { oid statusCheckRollup { contexts(first: 100) {
     pageInfo { hasNextPage }
     nodes {
@@ -560,15 +565,10 @@ fn pull_from_gql(v: &Value) -> Result<PullRequest, String> {
     }
     let threads = thread_nodes
         .iter()
-        .map(|t| {
-            let first = &t["comments"]["nodes"][0];
-            ReviewThread {
-                resolved: t["isResolved"].as_bool().unwrap_or(false),
-                outdated: t["isOutdated"].as_bool().unwrap_or(false),
-                path: opt_str(t, "path"),
-                first_author: actor_gql(&first["author"]).map(|a| a.login),
-                first_body: str_of(first, "body"),
-            }
+        .map(|t| ReviewThread {
+            resolved: t["isResolved"].as_bool().unwrap_or(false),
+            outdated: t["isOutdated"].as_bool().unwrap_or(false),
+            path: opt_str(t, "path"),
         })
         .collect();
     let head_sha = opt_str(v, "headRefOid").unwrap_or_default();
@@ -751,6 +751,28 @@ impl GitHub for RestGitHub {
                 })
             }
         }
+    }
+
+    fn quota(&self, repo: &RepoSlug) -> Read<Vec<Quota>> {
+        let what = format!("the GitHub quota of {repo}'s reader");
+        let (v, _) = self.get_json(repo, &what, "/rate_limit")?;
+        ["core", "graphql"]
+            .iter()
+            .map(|resource| {
+                let q = &v["resources"][resource];
+                let quota = (|| {
+                    Some(Quota {
+                        resource: resource.to_string(),
+                        limit: q["limit"].as_u64()?,
+                        remaining: q["remaining"].as_u64()?,
+                        reset: Timestamp(
+                            OffsetDateTime::from_unix_timestamp(q["reset"].as_i64()?).ok()?,
+                        ),
+                    })
+                })();
+                quota.ok_or_else(|| ReadError::unreadable(&what, format!("no `{resource}` quota")))
+            })
+            .collect()
     }
 
     fn default_branch(&self, repo: &RepoSlug) -> Read<String> {

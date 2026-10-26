@@ -87,6 +87,7 @@ impl World {
             deadline: None,
             dry_run,
             method_texts: Default::default(),
+            low_quota: false,
         };
         // A dry run keeps its log in memory, as the command line does.
         let mut log = if dry_run {
@@ -416,6 +417,7 @@ fn two_projects_pinned_on_two_versions_each_get_their_own_texts_read_once_per_ti
         deadline: None,
         dry_run: false,
         method_texts: Default::default(),
+        low_quota: false,
     };
     let (acme, b) = (tick_of(&repo()), tick_of(&beta));
     let older = method_texts::texts(&acme, "main", Job::PrAngle, Some("security")).unwrap();
@@ -955,8 +957,6 @@ fn an_approved_green_pr_is_merged_and_its_ticket_goes_to_deploy() {
         resolved: true,
         outdated: false,
         path: None,
-        first_author: None,
-        first_body: String::new(),
     }];
     w.open(pr);
     let (report, log) = w.tick(false);
@@ -991,8 +991,6 @@ fn an_approval_on_an_older_head_or_an_open_thread_does_not_merge() {
         resolved: false,
         outdated: false,
         path: None,
-        first_author: None,
-        first_body: String::new(),
     }];
     w.open(pr);
     w.tick(false);
@@ -1094,6 +1092,7 @@ fn a_dry_run_reads_everything_and_writes_nothing() {
         deadline: None,
         dry_run: true,
         method_texts: Default::default(),
+        low_quota: false,
     };
     let mut log = ActionLog::in_memory();
     run(&t, &mut log);
@@ -2326,6 +2325,7 @@ fn a_dry_run_says_the_relations_it_would_write() {
         deadline: None,
         dry_run: true,
         method_texts: Default::default(),
+        low_quota: false,
     };
     let mut log = ActionLog::in_memory();
     run(&t, &mut log);
@@ -2504,8 +2504,6 @@ fn a_pr_with_no_angle_waits_for_its_branch_its_threads_and_a_request_for_changes
         resolved: false,
         outdated: false,
         path: None,
-        first_author: None,
-        first_body: String::new(),
     }];
     w.open(pr.clone());
     w.tick(false);
@@ -2575,6 +2573,7 @@ fn a_dry_run_shows_a_merge_with_no_pr_review() {
         deadline: None,
         dry_run: true,
         method_texts: Default::default(),
+        low_quota: false,
     };
     let mut log = ActionLog::in_memory();
     run(&t, &mut log);
@@ -2817,8 +2816,6 @@ fn changes_requested_on_a_pr_with_no_angle_send_the_ticket_back_until_a_new_push
         resolved: false,
         outdated: false,
         path: None,
-        first_author: None,
-        first_body: String::new(),
     }];
     w.open(pr.clone());
     w.tick(false);
@@ -3016,6 +3013,7 @@ fn a_dry_run_prints_the_dismissals_before_the_merge() {
         deadline: None,
         dry_run: true,
         method_texts: Default::default(),
+        low_quota: false,
     };
     let mut log = ActionLog::in_memory();
     run(&t, &mut log);

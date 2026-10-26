@@ -54,6 +54,9 @@ pub struct Tick<'a> {
     /// The method's texts this tick has read ([`method_texts`]): each pin
     /// and each file once.
     pub method_texts: method_texts::MethodTexts,
+    /// Little is left of the GitHub quota ([`crate::quota::Pace::Low`]):
+    /// the sweep of merged and closed PRs waits for a later tick.
+    pub low_quota: bool,
 }
 
 /// What a tick did, for its host.
@@ -290,7 +293,11 @@ fn passes(t: &Tick, log: &mut ActionLog, report: &mut Report) {
             merged_now = true;
         }
     }
-    if t.in_time() {
+    if t.low_quota {
+        report.notes.push(
+            "the sweep of merged and closed PRs waits: little is left of the GitHub quota".into(),
+        );
+    } else if t.in_time() {
         sweep::pass(t, log, report, &pass.open);
     } else {
         report.out_of_time = true;
