@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.1](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.5.0...v1.5.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* **sync:** resume after the time budget and hydrate in batches (ASDLC-47PN) ([#119](https://github.com/Martin-Rancourt/spl-asdlc/issues/119)) ([1ba856f](https://github.com/Martin-Rancourt/spl-asdlc/commit/1ba856f625abb8eabd3c8508aebd079fbb843cf1))
+
 ## [1.5.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.4.4...v1.5.0) (2026-10-26)
 
 
