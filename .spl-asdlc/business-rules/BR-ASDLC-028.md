@@ -4,7 +4,7 @@ Status: Enforced
 
 ## Rule
 
-`.spl-asdlc/process.md` stays exactly as the method delivered it. The project's own instructions (how to build and test, the folders that need care) go in its agent file, `AGENTS.md` (template: `docs/setup/templates/AGENTS.md`), which points to the page and says that the page wins when they contradict it. On every PR but the release chain's own heads, the `guards` job of `asdlc-pr-guards.yml` compares the page at the PR's head with the page of the version it runs at, by git blob id, and fails when the page is missing or differs: a PR that edits it by hand is refused, and the error says how to refresh it from the ref the project's callers name. No input turns the check off; `process-page` only says where the copy lives.
+`.spl-asdlc/process.md` stays exactly as the method delivered it. The project's own instructions (how to build and test, the folders that need care) go in its agent file, `AGENTS.md` (template: `docs/setup/templates/AGENTS.md`), which points to the page and says that the page wins when they contradict it. On every PR but the release chain's own heads, the guards (`asdlc-pr-checks.yml`, or `asdlc-pr-guards.yml`) compare the page at the PR's head with the page of the version it runs at, by git blob id, and fails when the page is missing or differs: a PR that edits it by hand is refused, and the error says how to refresh it from the ref the project's callers name. No input turns the check off; `process-page` only says where the copy lives.
 
 ## Evidence
 

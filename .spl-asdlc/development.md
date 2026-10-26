@@ -4,7 +4,7 @@ This repository does not run the SPL-ASDLC method on itself, so that a bug in th
 
 ## Changes
 
-GitHub Flow: every change is a pull request to `main`, checked by `pr.yml` (format, lints, tests on Linux, macOS and Windows, rule zero) and `pr-title.yml` (Conventional Commits). It is squash-merged once green.
+GitHub Flow: every change is a pull request to `main`, checked by `pr.yml` (the method's checks in one job of `asdlc-pr-checks.yml`, Conventional Commits title included; format, lints, tests, rule zero). It is squash-merged once green.
 
 ## Releases
 
@@ -17,7 +17,7 @@ release-please's normal mode on `main` (`release-please.yml`): it keeps a releas
 
 Without the secret the job fails and says so; the rest of the publication is done. A version that missed crates.io is published by rerunning the `crates-io` job of its `publish` run, once the secret is set. 1.3.2 was published by hand; 1.3.3 and 1.4.0 are not on crates.io.
 
-The process page, `docs/agents/process.md`, is copied into every project and checked there by `asdlc-pr-guards.yml` against the git blob id the workflow carries (`PINNED_BLOB`). A PR that changes the page writes the new id in the same PR (`tests/workflows/pr_guards.rs` names it), and its release note tells the projects to refresh their copy: once `v1` moves to that release, a project's PRs are refused until it does.
+The process page, `docs/agents/process.md`, is copied into every project and checked there by `asdlc-pr-checks.yml` and `asdlc-pr-guards.yml` against the git blob id each workflow carries (`PINNED_BLOB`). A PR that changes the page writes the new id in both, in the same PR (`tests/workflows/pr_guards.rs` names it, `pr_checks.rs` keeps the two equal), and its release note tells the projects to refresh their copy: once `v1` moves to that release, a project's PRs are refused until it does.
 
 ## Tickets
 

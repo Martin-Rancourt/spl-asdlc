@@ -1,0 +1,573 @@
+name: asdlc-pr-checks
+
+# Every method check a pull request runs, in one job: the Conventional
+# Commit title (asdlc-pr-title.yml, REQ-CI-015..020) and the guards
+# (asdlc-pr-guards.yml, REQ-CI-022..034): the "does anything beyond prose
+# change?" detector, the project's extra detectors, the method check of the
+# process page, the check of the branch's name, and its guard commands. Each
+# job a workflow starts is billed at least a minute on a hosted runner: one
+# job instead of two halves what the method's checks cost on every PR event.
+# Its steps are those of the two workflows, as they ship (the tests compare
+# them, tests/workflows/pr_checks.rs); asdlc-pr-title.yml and
+# asdlc-pr-guards.yml stay, unchanged, for the callers that name them.
+#
+# The title is checked first and the guards run whatever its verdict, so one
+# run reports every refusal; the last step fails the job when the title was
+# refused. No `if:` on either: a refused title always turns the job red.
+#
+# The caller owns the trigger (pull_request on main and release/**, no path
+# filter, `edited` included so that a new title is checked again), the
+# concurrency group keyed on the ref and the draft state, its test jobs gated
+# on this job's `code` output, and the `required-check` aggregator
+# (actions/required-check), of which this job is a need: a refused title
+# fails `required-check`. The job is named `conventional-title`, the title
+# check's own name: called from a job named `title`, it reports the context
+# `title / conventional-title` that the rulesets already require beside
+# `required-check` (docs/setup/repository.md), so a project that moves to
+# this workflow changes no ruleset. docs/setup/examples/pr.yml is the
+# caller.
+#
+# The process page (docs/agents/process.md) is copied into the project at
+# `process-page` and never edited there (BR-ASDLC-028): the check refuses a PR
+# whose copy is not the page of the version this workflow is called at. That
+# version's page is known by its git blob id, written below in this very
+# file, as in asdlc-pr-guards.yml; the tests keep the two equal to the file
+# (tests/workflows/pr_guards.rs, pr_checks.rs).
+#
+# A draft PR is out of the flow: no job of the caller runs on it, the job that
+# calls this workflow included (`if: github.event.pull_request.draft ==
+# false`). This job holds the same condition, so a caller that lost it still
+# starts no runner on a draft; outside a pull request event it runs.
+
+on:
+  workflow_call:
+    inputs:
+      title:
+        description: The PR title.
+        type: string
+        required: true
+      base-sha:
+        description: The PR's base commit.
+        type: string
+        required: true
+      head-sha:
+        description: The PR's head commit.
+        type: string
+        required: true
+      head-ref:
+        description: The PR's head branch.
+        type: string
+        required: true
+      base-ref:
+        description: The PR's base branch.
+        type: string
+        required: true
+      head-repo:
+        description: >-
+          The PR's head repository (`github.event.pull_request.head.repo.full_name`):
+          a head of skip-head-prefixes is skipped only from this repository, never from a fork.
+        type: string
+        required: true
+      allowed-types:
+        description: Comma list of types; equal to the CHANGELOG sections `release prepare` writes (spec 08 `release.changelog_sections`).
+        type: string
+        default: build,chore,ci,docs,feat,fix,perf,refactor,revert,style,test
+      default-branch:
+        description: The base of a merge-back.
+        type: string
+        default: main
+      release-branch-prefix:
+        description: Head prefix of release branches.
+        type: string
+        default: release/
+      release-please-head-prefix:
+        description: Head prefix of the release PRs of a project that runs a release tool of its own (release-please's by default); empty for none. The title of such a PR is not checked.
+        type: string
+        default: release-please--
+      default-branch-exempt-heads:
+        description: >-
+          Comma list of head prefixes whose title is not checked when the base
+          is the default branch (a PR merged as a merge commit, whose title
+          never becomes a commit).
+        type: string
+        default: chore/merge-back-
+      release-branch-exempt-heads:
+        description: >-
+          Comma list of head prefixes whose title is not checked when the base
+          is a release branch: the angle PRs, merged as merge commits.
+        type: string
+        default: qa/
+      skip-head-prefixes:
+        description: Comma list of head prefixes for which no guard runs (the release PRs of a project that runs a release tool of its own, release-please's by default).
+        type: string
+        default: release-please--
+      prose-regex:
+        description: ERE of the paths that never need the test suite (a denylist).
+        type: string
+        default: '(\.md$|^docs/)'
+      detectors:
+        description: >-
+          JSON array of extra detectors: {"id", "skip-regex"} runs unless every
+          path matches; {"id", "match-regex", "diff-filter"?} runs only when some
+          path matches.
+        type: string
+        default: '[]'
+      guard-commands:
+        description: JSON array of {"name", "run"}; each runs with BASE_SHA, HEAD_SHA, HEAD_REF and BASE_REF set.
+        type: string
+        default: '[]'
+      process-page:
+        description: >-
+          Where the project keeps its copy of the method's process page; the
+          check refuses a PR whose copy differs from this version's page.
+        type: string
+        default: .spl-asdlc/process.md
+      branch-name-check:
+        description: >-
+          `warn` or `refuse`: what a head branch not named
+          `<type>/<ticket-id>-<description>` in lowercase gets (process page,
+          step 2). `warn` by default, as in asdlc-pr-guards.yml, so that
+          open PRs stay green.
+        type: string
+        default: warn
+      setup-command:
+        description: Run once before the guard commands.
+        type: string
+        default: ''
+      runs-on:
+        description: A runner label, or a JSON array of labels.
+        type: string
+        default: ubuntu-latest
+      timeout-minutes:
+        description: The job's timeout.
+        type: number
+        default: 10
+    outputs:
+      code:
+        description: '`true` unless every changed path is prose (or the PR is skipped).'
+        value: ${{ jobs.checks.outputs.code }}
+      detections:
+        description: 'JSON object {"<detector id>": "true" | "false"}.'
+        value: ${{ jobs.checks.outputs.detections }}
+      skipped:
+        description: '`true` when the head matched skip-head-prefixes.'
+        value: ${{ jobs.checks.outputs.skipped }}
+      exempt:
+        description: '`true` when the PR is one the release chain opens itself, whose title is not checked.'
+        value: ${{ jobs.checks.outputs.exempt }}
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: conventional-title
+    if: github.event.pull_request.draft != true
+    runs-on: ${{ startsWith(inputs.runs-on, '[') && fromJSON(inputs.runs-on) || inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+    outputs:
+      code: ${{ steps.code.outputs.run || 'false' }}
+      detections: ${{ steps.detectors.outputs.detections || '{}' }}
+      skipped: ${{ steps.skip.outputs.skipped }}
+      exempt: ${{ steps.title.outputs.exempt }}
+    steps:
+      - name: Refuse a PR title that is not a Conventional Commit
+        id: title
+        # The guards run whatever the verdict; the last step turns it into
+        # the job's.
+        continue-on-error: true
+        # Author-controlled text reaches the script through the environment,
+        # never as an expression expanded into it (REQ-CI-003).
+        env:
+          TITLE: ${{ inputs.title }}
+          HEAD_REF: ${{ inputs.head-ref }}
+          BASE_REF: ${{ inputs.base-ref }}
+          ALLOWED_TYPES: ${{ inputs.allowed-types }}
+          DEFAULT_BRANCH: ${{ inputs.default-branch }}
+          RELEASE_PREFIX: ${{ inputs.release-branch-prefix }}
+          RELEASE_PLEASE_PREFIX: ${{ inputs.release-please-head-prefix }}
+          DEFAULT_EXEMPT: ${{ inputs.default-branch-exempt-heads }}
+          RELEASE_EXEMPT: ${{ inputs.release-branch-exempt-heads }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${GITHUB_OUTPUT:-/dev/null}"
+
+          exempt() {
+            echo "Exempt: $1"
+            echo 'exempt=true' >> "$out"
+            exit 0
+          }
+          # A head that starts with one of the comma-listed prefixes.
+          starts_with_one_of() {
+            local list="$1" prefix
+            IFS=',' read -r -a prefixes <<< "$list"
+            for prefix in ${prefixes[@]+"${prefixes[@]}"}; do
+              prefix="${prefix#"${prefix%%[![:space:]]*}"}"
+              prefix="${prefix%"${prefix##*[![:space:]]}"}"
+              if [ -n "$prefix" ] && [[ "$HEAD_REF" == "$prefix"* ]]; then
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          # Exemptions are keyed on the branches the release chain owns, never
+          # on the identity that opens the PR (REQ-CI-017).
+          if [ -n "$RELEASE_PLEASE_PREFIX" ] && [[ "$HEAD_REF" == "$RELEASE_PLEASE_PREFIX"* ]]; then
+            exempt "release-please's own release PR (head '$HEAD_REF')."
+          fi
+          if [ "$BASE_REF" = "$DEFAULT_BRANCH" ]; then
+            if [[ "$HEAD_REF" == "$RELEASE_PREFIX"* ]]; then
+              exempt "merge-back of '$HEAD_REF' into $DEFAULT_BRANCH."
+            fi
+            if starts_with_one_of "$DEFAULT_EXEMPT"; then
+              exempt "'$HEAD_REF' into $DEFAULT_BRANCH is merged as a merge commit."
+            fi
+          fi
+          if [[ "$BASE_REF" == "$RELEASE_PREFIX"* ]] && starts_with_one_of "$RELEASE_EXEMPT"; then
+            exempt "'$HEAD_REF' into the release branch is merged as a merge commit."
+          fi
+          echo 'exempt=false' >> "$out"
+
+          # The allowed types: lower-case words, joined into an alternation.
+          types=""
+          IFS=',' read -r -a list <<< "$ALLOWED_TYPES"
+          for t in ${list[@]+"${list[@]}"}; do
+            t="${t//[[:space:]]/}"
+            if [ -z "$t" ]; then
+              continue
+            fi
+            if ! [[ "$t" =~ ^[a-z]+$ ]]; then
+              echo "::error title=Invalid allowed-types::'$t' is not a lower-case type."
+              exit 1
+            fi
+            types="${types:+$types|}$t"
+          done
+          if [ -z "$types" ]; then
+            echo "::error title=Invalid allowed-types::no type is allowed."
+            exit 1
+          fi
+
+          # type, optional (scope) with no space or parenthesis, optional `!`,
+          # then ": " and a subject that neither starts nor ends with a space.
+          pattern="^(${types})(\([^()[:space:]]+\))?!?: [^[:space:]](.*[^[:space:]])?$"
+          if [[ "$TITLE" =~ $pattern ]]; then
+            echo "Conventional Commit title: $TITLE"
+            exit 0
+          fi
+
+          # Refused: say what is wrong in a way the author can act on.
+          shown="${types//|/, }"
+          head="${TITLE%%:*}"
+          lead="${TITLE%%[(:!]*}"
+          lead_lower="$(tr '[:upper:]' '[:lower:]' <<< "$lead")"
+          type_re="^(${types})$"
+          header_re="^(${types})(\([^()[:space:]]+\))?!?$"
+          empty_scope_re="^(${types})\(\)!?$"
+          spaced_scope_re="^(${types})\([^()]*[[:space:]][^()]*\)!?$"
+          hint="Expected 'type(scope): subject' or 'type: subject', e.g. 'fix(merge): subject'."
+          if [[ "$TITLE" =~ ^[A-Za-z]+-[0-9] ]]; then
+            hint="The title starts with a ticket id. Put the type first and the id at the end: 'fix(scope): subject (ABC-123)'."
+          elif [[ "$TITLE" != *:* ]]; then
+            hint="The title has no 'type: ' prefix. Start it with one of ${shown}, e.g. 'fix(scope): subject'."
+          elif [[ "$lead_lower" =~ $type_re && "$lead" != "$lead_lower" ]]; then
+            hint="The type is lower-case: '${lead_lower}', not '${lead}'."
+          elif [[ "$head" =~ $header_re ]]; then
+            hint="After the colon comes exactly one space, then a subject that does not end with a space: 'type(scope): subject'."
+          elif [[ "$head" =~ $empty_scope_re ]]; then
+            hint="The scope is empty: drop the '()' or name the part of the code, e.g. 'fix(merge): subject'."
+          elif [[ "$head" =~ $spaced_scope_re ]]; then
+            hint="The scope holds no space: 'fix(pr-merge): subject', not 'fix(pr merge): subject'."
+          elif ! [[ "$lead_lower" =~ $type_re ]]; then
+            hint="'${lead}' is not an allowed type. Allowed: ${shown}."
+          fi
+          echo "::error title=PR title is not a Conventional Commit::${hint}"
+          echo "Title:  $TITLE"
+          echo "Why:    the squash commit's message is this title; the release cut reads it to pick the version bump and the release-note section, and lists no title it cannot parse."
+          echo "Rule:   type(scope)?!?: subject, with the types ${shown}."
+          echo "Fix:    edit the PR title; this check re-runs on the edit."
+          exit 1
+
+      - name: Skip the heads the release chain generates
+        id: skip
+        env:
+          HEAD_REF: ${{ inputs.head-ref }}
+          HEAD_REPO: ${{ inputs.head-repo }}
+          REPO: ${{ github.repository }}
+          SKIP_PREFIXES: ${{ inputs.skip-head-prefixes }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${GITHUB_OUTPUT:-/dev/stdout}"
+          # Only the release chain's own branches skip: a fork can name a
+          # branch anything.
+          if [ -z "$HEAD_REPO" ] || [ "$HEAD_REPO" != "$REPO" ]; then
+            echo 'skipped=false' >> "$out"
+            exit 0
+          fi
+          IFS=',' read -r -a prefixes <<< "$SKIP_PREFIXES"
+          for prefix in ${prefixes[@]+"${prefixes[@]}"}; do
+            prefix="${prefix//[[:space:]]/}"
+            if [ -n "$prefix" ] && [[ "$HEAD_REF" == "$prefix"* ]]; then
+              echo "Skipped: '$HEAD_REF' is generated by the release chain; the gate validates the release."
+              echo 'skipped=true' >> "$out"
+              exit 0
+            fi
+          done
+          echo 'skipped=false' >> "$out"
+
+      - name: Check out the PR
+        if: steps.skip.outputs.skipped != 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.head-sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Does anything beyond prose change?
+        id: code
+        if: steps.skip.outputs.skipped != 'true'
+        env:
+          BASE_SHA: ${{ inputs.base-sha }}
+          HEAD_SHA: ${{ inputs.head-sha }}
+          PROSE_RE: ${{ inputs.prose-regex }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${GITHUB_OUTPUT:-/dev/stdout}"
+          # Fail closed (REQ-CI-027): only "every path is prose" skips the
+          # suite. grep reads a file, never a pipe: under pipefail a `grep -q`
+          # that quits early breaks its writer and the pipeline reads false.
+          list="$(mktemp)"
+          trap 'rm -f "$list"' EXIT
+          if [ -z "$BASE_SHA" ] || [ -z "$HEAD_SHA" ]; then
+            echo "::warning::no base or head commit; running the test jobs."
+            echo 'run=true' >> "$out"
+            exit 0
+          fi
+          # --no-renames: a `git mv src/x.rs docs/x.md` must show the code
+          # that disappeared, not only the prose it lands on.
+          if ! git diff --no-renames --name-only "$BASE_SHA" "$HEAD_SHA" > "$list"; then
+            echo "::warning::git diff $BASE_SHA $HEAD_SHA failed; running the test jobs."
+            echo 'run=true' >> "$out"
+            exit 0
+          fi
+          if [ ! -s "$list" ]; then
+            echo "::warning::no changed path between $BASE_SHA and $HEAD_SHA; running the test jobs."
+            echo 'run=true' >> "$out"
+            exit 0
+          fi
+          if grep -qvE "$PROSE_RE" "$list"; then rc=0; else rc=$?; fi
+          case "$rc" in
+            0) echo 'run=true' >> "$out" ;;
+            1)
+              echo 'Prose-only change; the test jobs are skipped.'
+              echo 'run=false' >> "$out"
+              ;;
+            *)
+              echo "::warning::grep exited $rc while classifying the diff; running the test jobs."
+              echo 'run=true' >> "$out"
+              ;;
+          esac
+
+      - name: Extra detectors
+        id: detectors
+        if: steps.skip.outputs.skipped != 'true'
+        env:
+          BASE_SHA: ${{ inputs.base-sha }}
+          HEAD_SHA: ${{ inputs.head-sha }}
+          DETECTORS: ${{ inputs.detectors }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${GITHUB_OUTPUT:-/dev/stdout}"
+          if ! jq -e 'type == "array"' > /dev/null <<< "$DETECTORS"; then
+            echo "::error title=Invalid detectors::the detectors input is not a JSON array."
+            exit 1
+          fi
+          count="$(jq 'length' <<< "$DETECTORS")"
+          result='{}'
+          list="$(mktemp)"
+          trap 'rm -f "$list"' EXIT
+          for ((i = 0; i < count; i++)); do
+            id="$(jq -r ".[$i].id // \"\"" <<< "$DETECTORS")"
+            skip_re="$(jq -r ".[$i][\"skip-regex\"] // \"\"" <<< "$DETECTORS")"
+            match_re="$(jq -r ".[$i][\"match-regex\"] // \"\"" <<< "$DETECTORS")"
+            filter="$(jq -r ".[$i][\"diff-filter\"] // \"\"" <<< "$DETECTORS")"
+            if [ -z "$id" ] || { [ -z "$skip_re" ] && [ -z "$match_re" ]; } || { [ -n "$skip_re" ] && [ -n "$match_re" ]; }; then
+              echo "::error title=Invalid detector::detector $i needs an id and exactly one of skip-regex or match-regex."
+              exit 1
+            fi
+            args=(diff --no-renames --name-only)
+            if [ -n "$filter" ]; then
+              args+=("--diff-filter=$filter")
+            fi
+            verdict=true
+            if git ${args[@]+"${args[@]}"} "$BASE_SHA" "$HEAD_SHA" > "$list"; then
+              if [ -n "$skip_re" ]; then
+                # A denylist: runs unless every path is one that cannot matter.
+                if [ -s "$list" ]; then
+                  if grep -qvE "$skip_re" "$list"; then rc=0; else rc=$?; fi
+                  if [ "$rc" = 1 ]; then verdict=false; fi
+                fi
+              else
+                # An allowlist: an extra run only when some path matches.
+                if grep -qE "$match_re" "$list"; then rc=0; else rc=$?; fi
+                if [ "$rc" = 1 ]; then verdict=false; fi
+              fi
+            else
+              echo "::warning::git diff failed for detector '$id'; it runs."
+            fi
+            echo "Detector $id: $verdict"
+            result="$(jq -c --arg k "$id" --arg v "$verdict" '. + {($k): $v}' <<< "$result")"
+          done
+          echo "detections=$result" >> "$out"
+
+      - name: The process page is the pinned version's
+        id: process
+        if: steps.skip.outputs.skipped != 'true'
+        env:
+          HEAD_SHA: ${{ inputs.head-sha }}
+          PAGE: ${{ inputs.process-page }}
+          # The git blob id of docs/agents/process.md at this commit.
+          PINNED_BLOB: 015ceb82b857076ed828e109bc7d14afbb662c0d
+        shell: bash
+        run: |
+          set -euo pipefail
+          source='docs/agents/process.md'
+          if [ -z "$PAGE" ]; then
+            echo "::error title=Invalid process-page::the process-page input is empty."
+            exit 1
+          fi
+          # How to refresh it: from the ref this repository's callers name,
+          # when one is found (only <owner>/<repo> and ref characters).
+          refresh="copy $source of the spl-asdlc version your workflow callers name (their @<ref>) to $PAGE, unchanged, and commit it"
+          calls="$(mktemp)"
+          trap 'rm -f "$calls"' EXIT
+          grep -rhoE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/\.github/workflows/asdlc-pr-(checks|guards)\.yml@[A-Za-z0-9_./-]+' .github/workflows > "$calls" 2>/dev/null || true
+          call="$(sed -n 1p "$calls")"
+          if [ -n "$call" ]; then
+            repo="${call%%/.github/*}"
+            ref="${call##*@}"
+            refresh="run 'gh api \"repos/$repo/contents/$source?ref=$ref\" -H \"Accept: application/vnd.github.raw\" > $PAGE' (the page of $repo@$ref, the version your callers pin) and commit the file unchanged"
+          fi
+          if ! blob="$(git rev-parse --verify --quiet "${HEAD_SHA:-HEAD}:$PAGE")"; then
+            echo "::error title=No process page::$PAGE is missing. SPL-ASDLC delivers it and every PR must carry it: $refresh."
+            exit 1
+          fi
+          if [ "$blob" != "$PINNED_BLOB" ]; then
+            echo "::error title=Process page changed::$PAGE is not the page of the pinned spl-asdlc version (blob $blob, expected $PINNED_BLOB). It is never edited in the project: put the project's own instructions in AGENTS.md, around it. To bring it to the pinned version, $refresh."
+            exit 1
+          fi
+          echo "$PAGE is the page of the pinned version."
+
+      - name: The branch names its ticket
+        id: branch
+        if: steps.skip.outputs.skipped != 'true'
+        env:
+          HEAD_REF: ${{ inputs.head-ref }}
+          TITLE: ${{ github.event.pull_request.title }}
+          CHECK: ${{ inputs.branch-name-check }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$CHECK" != warn ] && [ "$CHECK" != refuse ]; then
+            echo "::error title=Invalid branch-name-check::branch-name-check is '$CHECK', not warn or refuse."
+            exit 1
+          fi
+          # The method's own branches (release, merge-back resolution, release
+          # QA angle) and Dependabot's keep their names.
+          case "$HEAD_REF" in
+            release/* | chore/merge-back-* | qa/* | dependabot/*)
+              echo "'$HEAD_REF' is a branch of the method or of Dependabot: its name is not checked."
+              exit 0
+              ;;
+          esac
+          # The expected name, from the title when it says its type and ends
+          # with its ticket id: `fix(scope): summary (ABC-12)`.
+          types='feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert'
+          id_re='[A-Za-z0-9]+-[A-Za-z0-9]+'
+          type="$(sed -nE "s/^($types)(\([^)]*\))?!?:.*/\1/p" <<< "$TITLE")"
+          id="$(sed -nE "s/.*[([]($id_re)[])][[:space:]]*\$/\1/p" <<< "$TITLE" | tr '[:upper:]' '[:lower:]')"
+          words="$(sed -E "s/^[^:]*:[[:space:]]*//; s/[[:space:]]*[([]$id_re[])][[:space:]]*\$//" <<< "$TITLE" \
+            | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -d- -f1-5)"
+          expected="${type:-<type>}/${id:-<ticket-id>}-${words:-<description>}"
+          ok=true
+          if ! [[ "$HEAD_REF" =~ ^($types)/[a-z0-9]+-[a-z0-9]+(-[a-z0-9]+)*$ ]]; then ok=false; fi
+          if [ -n "$type" ] && [[ "$HEAD_REF" != "$type/"* ]]; then ok=false; fi
+          if [ -n "$id" ] && [[ "$HEAD_REF" != */"$id" ]] && [[ "$HEAD_REF" != */"$id"-* ]]; then ok=false; fi
+          if [ "$ok" = true ]; then
+            echo "The branch '$HEAD_REF' names its ticket."
+            exit 0
+          fi
+          message="The branch '$HEAD_REF' is not named <type>/<ticket-id>-<description> in lowercase (.spl-asdlc/process.md, step 2): expected '$expected'. The bridge links a PR to its ticket by the id in its branch or at the end of its title."
+          if [ "$CHECK" = refuse ]; then
+            echo "::error title=Branch name::$message"
+            exit 1
+          fi
+          echo "::warning title=Branch name::$message A warning only on this version: a later minor version refuses it."
+
+      - name: Set up the guard commands
+        if: steps.skip.outputs.skipped != 'true' && inputs.setup-command != ''
+        env:
+          SETUP: ${{ inputs.setup-command }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -e -c "$SETUP"
+
+      - name: Guard commands
+        if: steps.skip.outputs.skipped != 'true'
+        env:
+          BASE_SHA: ${{ inputs.base-sha }}
+          HEAD_SHA: ${{ inputs.head-sha }}
+          HEAD_REF: ${{ inputs.head-ref }}
+          BASE_REF: ${{ inputs.base-ref }}
+          GUARDS: ${{ inputs.guard-commands }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! jq -e 'type == "array"' > /dev/null <<< "$GUARDS"; then
+            echo "::error title=Invalid guard-commands::the guard-commands input is not a JSON array."
+            exit 1
+          fi
+          count="$(jq 'length' <<< "$GUARDS")"
+          failed=()
+          for ((i = 0; i < count; i++)); do
+            name="$(jq -r ".[$i].name // \"\"" <<< "$GUARDS")"
+            cmd="$(jq -r ".[$i].run // \"\"" <<< "$GUARDS")"
+            if [ -z "$name" ] || [ -z "$cmd" ]; then
+              echo "::error title=Invalid guard command::guard $i needs a name and a run."
+              exit 1
+            fi
+            echo "::group::$name"
+            if bash -e -o pipefail -c "$cmd"; then
+              echo "::endgroup::"
+            else
+              echo "::endgroup::"
+              echo "::error title=Guard failed::$name"
+              failed+=("$name")
+            fi
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            printf 'Failed guard(s): %s\n' "${failed[*]}"
+            exit 1
+          fi
+          echo "$count guard(s) passed."
+
+      # The title's verdict, given by the first step, which let the guards
+      # run: anything but a success refuses the PR.
+      - name: The title is a Conventional Commit
+        env:
+          OUTCOME: ${{ steps.title.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$OUTCOME" != success ]; then
+            echo "::error title=PR title is not a Conventional Commit::the first step refused the title (outcome: ${OUTCOME:-none}); its log says why. Edit the PR title: the checks re-run on the edit."
+            exit 1
+          fi
+          echo "The title check passed."

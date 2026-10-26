@@ -4,7 +4,7 @@ Status: Enforced
 
 ## Rule
 
-The process page, `docs/agents/process.md`, is copied into the project's repository at `.spl-asdlc/process.md` when the project installs the method and each time it moves its workflow callers to another version, from that version (`docs/setup/repository.md`, "The process page"). The agent reads the local file in its clone; nothing fetches the page at run time. The reusable `asdlc-pr-guards.yml` of each version carries the git blob id of that version's page, so the page a project must carry is always the one of the version its callers pin: when a caller on `v1` follows the tag to a version whose page changed, the project's PRs are refused until one refreshes the page. No agent runtime injects process rules of its own; a runtime only points the agent to the project's agent file.
+The process page, `docs/agents/process.md`, is copied into the project's repository at `.spl-asdlc/process.md` when the project installs the method and each time it moves its workflow callers to another version, from that version (`docs/setup/repository.md`, "The process page"). The agent reads the local file in its clone; nothing fetches the page at run time. The reusable `asdlc-pr-checks.yml` and `asdlc-pr-guards.yml` of each version carry the git blob id of that version's page, so the page a project must carry is always the one of the version its callers pin: when a caller on `v1` follows the tag to a version whose page changed, the project's PRs are refused until one refreshes the page. No agent runtime injects process rules of its own; a runtime only points the agent to the project's agent file.
 
 ## Evidence
 

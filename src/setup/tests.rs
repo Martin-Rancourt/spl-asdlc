@@ -122,7 +122,7 @@ fn the_callers_name_the_embedded_minor_line_and_the_cut_runs_its_binary() {
         .iter()
         .filter(|f| f.path.starts_with(".github/workflows/"))
         .collect();
-    assert_eq!(workflows.len(), 6);
+    assert_eq!(workflows.len(), 5);
     for f in &workflows {
         assert!(!f.content.contains("<owner>"), "{}", f.path);
         for uses in f

@@ -1,11 +1,14 @@
 name: pr
 
-# Example caller of asdlc-pr-guards.yml and of the required-check action: copy
+# Example caller of asdlc-pr-checks.yml and of the required-check action: copy
 # it to .github/workflows/ and replace <owner> and the `make` commands with the
-# project's own. The ruleset requires two contexts, `required-check` and the
-# title check of pr-title.yml (docs/setup/repository.md). `guards` is a need
-# of `required-check` and never in `may-skip`: the action refuses a PR
-# otherwise (BR-ASDLC-024).
+# project's own. One job runs every method check of a PR: the title, the
+# branch's name and the guards. Its id is `guards` (the test jobs read
+# `needs.guards.outputs.code`) and its name is `title`, so it reports the
+# context `title / conventional-title`. The ruleset requires two contexts,
+# `required-check` and that one (docs/setup/repository.md). `guards` is a
+# need of `required-check` and never in `may-skip`: the action refuses a PR
+# otherwise (BR-ASDLC-024), and a refused title fails `required-check` too.
 #
 # No path filter: a required check that never reports can never be satisfied
 # (REQ-CI-022). The concurrency key holds the draft state, so the ready run
@@ -17,14 +20,24 @@ name: pr
 # passes a required check: the bridge counts only a success, and marking the
 # PR ready fires `ready_for_review`, whose run reports the check on the same
 # head. A job added here gets the same condition.
+#
+# `edited` is a trigger so that a new title, or a new base, is checked again
+# without a push: that run is a full run, the tests included, since
+# `required-check` speaks for the whole head. An edit of anything else (the
+# body) runs nothing: `guards` and `required-check` are skipped by their
+# `if:`, and the jobs that need `guards` with it, so no runner starts. Such a
+# run has a concurrency group of its own, so it cancels no run in progress,
+# and its `required-check` is reported under another name, so its skip never
+# replaces the check the last full run reported on the head. A job added
+# here that does not need `guards` gets the same condition.
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, edited, synchronize, reopened, ready_for_review]
     branches: [main, 'release/**']
 
 concurrency:
-  group: pr-${{ github.ref }}-${{ github.event.pull_request.draft }}
+  group: pr-${{ github.ref }}-${{ github.event.pull_request.draft }}${{ github.event.action == 'edited' && !github.event.changes.title && !github.event.changes.base && format('-edit-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 permissions:
@@ -32,17 +45,19 @@ permissions:
 
 jobs:
   guards:
-    if: github.event.pull_request.draft == false
+    name: title
+    if: github.event.pull_request.draft == false && (github.event.action != 'edited' || github.event.changes.title || github.event.changes.base)
     permissions:
       contents: read
-    uses: <owner>/spl-asdlc/.github/workflows/asdlc-pr-guards.yml@v1
+    uses: <owner>/spl-asdlc/.github/workflows/asdlc-pr-checks.yml@v1
     with:
+      title: ${{ github.event.pull_request.title }}
       base-sha: ${{ github.event.pull_request.base.sha }}
       head-sha: ${{ github.event.pull_request.head.sha }}
       head-ref: ${{ github.event.pull_request.head.ref }}
       base-ref: ${{ github.event.pull_request.base.ref }}
       head-repo: ${{ github.event.pull_request.head.repo.full_name }}
-      # guards also refuses a PR whose .spl-asdlc/process.md is not the page
+      # It also refuses a PR whose .spl-asdlc/process.md is not the page
       # of the version named after the @ above (docs/setup/repository.md,
       # "The process page").
       # The same list as the gate's (release-gate.yml): a guard that runs on
@@ -66,10 +81,11 @@ jobs:
       - name: Test
         run: make test
 
-  # always(): it runs whatever its needs gave, but never on a draft.
+  # always(): it runs whatever its needs gave, but never on a draft, nor on
+  # an edit that changes neither the title nor the base.
   required-check:
-    name: required-check
-    if: always() && github.event.pull_request.draft == false
+    name: ${{ (github.event.action != 'edited' || github.event.changes.title || github.event.changes.base) && 'required-check' || 'required-check (edit, not checked)' }}
+    if: always() && github.event.pull_request.draft == false && (github.event.action != 'edited' || github.event.changes.title || github.event.changes.base)
     needs: [guards, test]
     runs-on: ubuntu-latest
     timeout-minutes: 5

@@ -1,10 +1,11 @@
 name: pr
 
-# This repository's own pull request check: the caller of asdlc-pr-guards.yml
+# This repository's own pull request check: the caller of asdlc-pr-checks.yml
 # and of the required-check action, as docs/setup/examples/pr.yml shows them,
 # called from this commit (`./`), so a PR exercises the workflows it changes.
-# The ruleset requires one context, `required-check`; the title check lives
-# in pr-title.yml.
+# The ruleset requires two contexts, `required-check` and `title /
+# conventional-title`: the job `guards`, named `title`, runs the title check
+# with the guards.
 #
 # No path filter: a required check that never reports can never be satisfied
 # (REQ-CI-022). The concurrency key holds the draft state, so the ready run
@@ -16,6 +17,13 @@ name: pr
 # passes a required check: the bridge counts only a success, and marking the
 # PR ready fires `ready_for_review`, whose run reports the check on the same
 # head. A job added here gets the same condition.
+#
+# `edited` is a trigger so that a new title, or a new base, is checked again
+# without a push, in a full run. An edit of anything else runs nothing: every
+# job that does not need `guards` is skipped by its `if:`, the others with
+# `guards`; the run has a concurrency group of its own, so it cancels no run
+# in progress, and its `required-check` is reported under another name, so
+# its skip never replaces the check the last full run reported on the head.
 #
 # GitHub Flow: every change reaches main through a PR to main, so the PR is
 # the only trigger. No run on a push to main: the PR already ran on its merge
@@ -31,11 +39,11 @@ name: pr
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, edited, synchronize, reopened, ready_for_review]
     branches: [main]
 
 concurrency:
-  group: pr-${{ github.ref }}-${{ github.event.pull_request.draft }}
+  group: pr-${{ github.ref }}-${{ github.event.pull_request.draft }}${{ github.event.action == 'edited' && !github.event.changes.title && !github.event.changes.base && format('-edit-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 permissions:
@@ -43,16 +51,21 @@ permissions:
 
 jobs:
   guards:
-    if: github.event.pull_request.draft == false
+    name: title
+    if: github.event.pull_request.draft == false && (github.event.action != 'edited' || github.event.changes.title || github.event.changes.base)
     permissions:
       contents: read
-    uses: ./.github/workflows/asdlc-pr-guards.yml
+    uses: ./.github/workflows/asdlc-pr-checks.yml
     with:
+      title: ${{ github.event.pull_request.title }}
       base-sha: ${{ github.event.pull_request.base.sha }}
       head-sha: ${{ github.event.pull_request.head.sha }}
       head-ref: ${{ github.event.pull_request.head.ref }}
       base-ref: ${{ github.event.pull_request.base.ref }}
       head-repo: ${{ github.event.pull_request.head.repo.full_name }}
+      # The types of the changelog sections of release-please-config.json
+      # (REQ-CI-016): a type without a section would ship in silence.
+      allowed-types: build,chore,ci,docs,feat,fix,perf,refactor,revert,style,test
       # Nothing here is prose: the tests read docs/reference/, .spl-asdlc/business-rules/,
       # docs/setup/templates/ and docs/setup/examples/, and rule zero reads
       # every file. Only the licence text, which no test reads, skips the suite.
@@ -69,7 +82,7 @@ jobs:
   # reads every tracked file and costs seconds.
   rule-zero:
     name: BR-ASDLC-001 — no instance data
-    if: github.event.pull_request.draft == false
+    if: github.event.pull_request.draft == false && (github.event.action != 'edited' || github.event.changes.title || github.event.changes.base)
     runs-on: ${{ fromJSON(vars.SPL_ASDLC_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 10
     permissions:
@@ -154,10 +167,11 @@ jobs:
       - run: cargo test --locked
 
   # The action is this commit's, so it is checked out first. always(): it
-  # runs whatever its needs gave, but never on a draft.
+  # runs whatever its needs gave, but never on a draft, nor on an edit that
+  # changes neither the title nor the base.
   required-check:
-    name: required-check
-    if: always() && github.event.pull_request.draft == false
+    name: ${{ (github.event.action != 'edited' || github.event.changes.title || github.event.changes.base) && 'required-check' || 'required-check (edit, not checked)' }}
+    if: always() && github.event.pull_request.draft == false && (github.event.action != 'edited' || github.event.changes.title || github.event.changes.base)
     needs: [guards, rule-zero, fmt, clippy, test]
     runs-on: ${{ fromJSON(vars.SPL_ASDLC_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 5

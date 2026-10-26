@@ -266,6 +266,17 @@ fn the_title_check_has_no_if_anywhere() {
     for (_, s) in steps(&doc) {
         assert!(s["if"].is_badvalue(), "a step has an if: (REQ-CI-018)");
     }
+    // In asdlc-pr-checks.yml, neither the title check nor its verdict has
+    // one; the job's only condition is the draft's, which the guards had.
+    let doc = crate::harness::workflow(".github/workflows/asdlc-pr-checks.yml");
+    let all = steps(&doc);
+    for s in [&all[0].1, &all[all.len() - 1].1] {
+        assert!(
+            s["if"].is_badvalue(),
+            "{:?} has an if: (REQ-CI-018)",
+            s["name"]
+        );
+    }
 }
 
 /// BR-ASDLC-024: no input turns a method check off. The guards job runs on
@@ -273,7 +284,16 @@ fn the_title_check_has_no_if_anywhere() {
 /// add the project's own detectors and commands.
 #[test]
 fn no_input_turns_the_method_checks_off() {
-    let doc = crate::harness::workflow(".github/workflows/asdlc-pr-guards.yml");
+    for file in [
+        ".github/workflows/asdlc-pr-guards.yml",
+        ".github/workflows/asdlc-pr-checks.yml",
+    ] {
+        no_input_turns_off(file);
+    }
+}
+
+fn no_input_turns_off(file: &str) {
+    let doc = crate::harness::workflow(file);
     for (id, job) in doc["jobs"].as_hash().unwrap() {
         let cond = job["if"].as_str().unwrap_or("");
         assert!(

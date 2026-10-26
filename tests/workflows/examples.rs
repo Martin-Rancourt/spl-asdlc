@@ -15,6 +15,13 @@ use crate::harness::{load, relative, root, run_body, steps, workflow};
 
 const PREFIX: &str = "<owner>/spl-asdlc/";
 
+/// The workflows `asdlc-pr-checks.yml` runs in one job, kept unchanged for
+/// the projects whose callers still name them.
+const SUPERSEDED: [&str; 2] = [
+    ".github/workflows/asdlc-pr-guards.yml",
+    ".github/workflows/asdlc-pr-title.yml",
+];
+
 fn examples() -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = std::fs::read_dir(root().join("docs/setup/examples"))
         .unwrap()
@@ -99,7 +106,7 @@ fn check_with(given: &BTreeSet<String>, declared: &BTreeMap<String, bool>, what:
 #[test]
 fn every_example_parses_and_is_a_caller() {
     let all = examples();
-    assert!(all.len() >= 6, "{all:?}");
+    assert!(all.len() >= 5, "{all:?}");
     for f in &all {
         let doc = load(f);
         assert!(
@@ -136,6 +143,11 @@ fn every_reusable_workflow_and_action_has_an_example_caller() {
     }
     for f in crate::harness::files() {
         let rel = relative(&f);
+        // The two workflows asdlc-pr-checks.yml replaced stay for the
+        // callers that name them; no example calls them any more.
+        if SUPERSEDED.contains(&rel.as_str()) {
+            continue;
+        }
         let unit = if rel.starts_with(".github/workflows/asdlc-") {
             rel
         } else if let Some(dir) = rel.strip_prefix("actions/") {
@@ -416,7 +428,7 @@ fn generated() -> Vec<PathBuf> {
         std::fs::write(&path, text).unwrap();
         out.push(path);
     }
-    assert_eq!(out.len(), 6);
+    assert_eq!(out.len(), 5);
     out
 }
 
@@ -440,35 +452,98 @@ fn the_generated_setup_callers_pass_the_checks_of_an_example() {
 
 // ---- per caller ----
 
-#[test]
-fn the_title_check_is_its_own_workflow_and_reruns_on_edits() {
-    let title = example("pr-title.yml");
-    let types: Vec<&str> = title["on"]["pull_request"]["types"]
+/// The condition of a job that never runs on a draft PR.
+pub(crate) const NOT_A_DRAFT: &str = "github.event.pull_request.draft == false";
+
+/// The condition of a run that checks the PR: any event but an edit that
+/// changes neither the title nor the base.
+pub(crate) const CHECKED: &str =
+    "(github.event.action != 'edited' || github.event.changes.title || github.event.changes.base)";
+
+/// `required-check`'s name: its own on a run that checks, another one on an
+/// edit that checks nothing, so that the skipped job of such a run never
+/// replaces the check the last full run reported on the head. GitHub does
+/// not evaluate the name of a skipped job: its check carries this text,
+/// which is not `required-check` either.
+pub(crate) const AGGREGATOR_NAME: &str = "${{ (github.event.action != 'edited' || github.event.changes.title || github.event.changes.base) && 'required-check' || 'required-check (edit, not checked)' }}";
+
+/// The end of the concurrency group: an edit that checks nothing has a group
+/// of its own, so it cancels no run in progress.
+pub(crate) const EDIT_GROUP: &str = "${{ github.event.action == 'edited' && !github.event.changes.title && !github.event.changes.base && format('-edit-{0}', github.run_id) || '' }}";
+
+/// One job of a PR workflow runs every method check (asdlc-pr-checks.yml):
+/// its id is `guards`, its name `title`, so that it reports the title
+/// context the rulesets require, `title / conventional-title`, and it
+/// re-runs on an edit of the title or the base. An edit of anything else
+/// starts no runner: every job is skipped by its `if:`, or by `guards`, its
+/// need; the run cancels nothing, and its `required-check` has another name.
+pub(crate) fn check_the_method_checks_and_an_edit(doc: &Yaml, uses: &str, what: &str) {
+    let types: Vec<&str> = doc["on"]["pull_request"]["types"]
         .as_vec()
         .unwrap()
         .iter()
         .filter_map(Yaml::as_str)
         .collect();
-    assert!(types.contains(&"edited"), "REQ-CI-018");
-    for (id, job) in jobs(&title) {
-        assert!(job["if"].is_badvalue(), "job {id} has an if: (REQ-CI-018)");
-    }
-    let pr = example("pr.yml");
-    for (_, job) in jobs(&pr) {
-        assert_ne!(
-            job["uses"].as_str().map(|u| u.contains("asdlc-pr-title")),
-            Some(true),
-            "the title check is not a job of pr.yml (REQ-CI-018, REQ-CI-021)"
+    assert!(types.contains(&"edited"), "{what}: a new title is checked");
+    let guards = &doc["jobs"]["guards"];
+    assert_eq!(guards["uses"].as_str(), Some(uses), "{what}");
+    assert_eq!(guards["name"].as_str(), Some("title"), "{what}");
+    assert_eq!(
+        guards["with"]["title"].as_str(),
+        Some("${{ github.event.pull_request.title }}"),
+        "{what}"
+    );
+    for (id, job) in jobs(doc) {
+        if id == "guards" {
+            assert_eq!(
+                job["if"].as_str(),
+                Some(format!("{NOT_A_DRAFT} && {CHECKED}").as_str()),
+                "{what}: {id}"
+            );
+            continue;
+        }
+        let needs_guards = job["needs"].as_str() == Some("guards")
+            || job["needs"]
+                .as_vec()
+                .is_some_and(|n| n.iter().any(|n| n.as_str() == Some("guards")));
+        let cond = job["if"].as_str().unwrap_or_default();
+        assert!(
+            cond.contains(CHECKED) || (needs_guards && !cond.contains("always()")),
+            "{what}: job {id} runs on an edit that changes neither the title nor the base: if: {cond:?}"
         );
     }
-    assert_ne!(
-        title["concurrency"]["group"].as_str(),
-        pr["concurrency"]["group"].as_str()
+    assert_eq!(
+        doc["jobs"]["required-check"]["name"].as_str(),
+        Some(AGGREGATOR_NAME),
+        "{what}"
+    );
+    let group = doc["concurrency"]["group"].as_str().unwrap();
+    assert!(group.ends_with(EDIT_GROUP), "{what}: {group}");
+    assert_eq!(
+        doc["concurrency"]["cancel-in-progress"].as_bool(),
+        Some(true)
     );
 }
 
-/// The condition of a job that never runs on a draft PR.
-pub(crate) const NOT_A_DRAFT: &str = "github.event.pull_request.draft == false";
+#[test]
+fn one_job_runs_the_method_checks_and_a_mere_edit_runs_nothing() {
+    let pr = example("pr.yml");
+    check_the_method_checks_and_an_edit(
+        &pr,
+        "<owner>/spl-asdlc/.github/workflows/asdlc-pr-checks.yml@v1",
+        "the example pr.yml",
+    );
+    // No example calls the two workflows it replaced, nor has a title
+    // workflow of its own.
+    assert!(!root().join("docs/setup/examples/pr-title.yml").exists());
+    for f in examples() {
+        let text = std::fs::read_to_string(&f).unwrap();
+        for old in SUPERSEDED {
+            let name = old.rsplit('/').next().unwrap();
+            assert!(!text.contains(name), "{}: {name}", relative(&f));
+        }
+    }
+}
 
 /// No job of a PR workflow runs on a draft PR, `required-check` included
 /// (the owner's decision, 2026-10-15): a draft costs no runner minute. Each
@@ -478,14 +553,22 @@ pub(crate) fn check_no_job_runs_on_a_draft(doc: &Yaml, what: &str) {
     for (id, job) in jobs(doc) {
         let cond = job["if"].as_str().unwrap_or_default();
         if id == "required-check" {
-            assert_eq!(cond, format!("always() && {NOT_A_DRAFT}"), "{what}: {id}");
+            assert_eq!(
+                cond,
+                format!("always() && {NOT_A_DRAFT} && {CHECKED}"),
+                "{what}: {id}"
+            );
             continue;
         }
         assert!(
             cond == NOT_A_DRAFT || cond.starts_with(&format!("{NOT_A_DRAFT} && ")),
             "{what}: job {id} runs on a draft: if: {cond:?}"
         );
-        assert!(!cond.contains("||"), "{what}: job {id}: if: {cond:?}");
+        // The one `||` allowed is the edit condition's, in its parentheses.
+        assert!(
+            !cond.replace(CHECKED, "").contains("||"),
+            "{what}: job {id}: if: {cond:?}"
+        );
     }
 }
 
@@ -522,7 +605,7 @@ fn the_pr_workflow_is_unfiltered_and_aggregates_every_job() {
     check_no_job_runs_on_a_draft(&pr, "the example pr.yml");
 
     let aggregator = &pr["jobs"]["required-check"];
-    assert_eq!(aggregator["name"].as_str(), Some("required-check"));
+    assert_eq!(aggregator["name"].as_str(), Some(AGGREGATOR_NAME));
     assert_eq!(aggregator["runs-on"].as_str(), Some("ubuntu-latest"));
     let needs: BTreeSet<String> = aggregator["needs"]
         .as_vec()
