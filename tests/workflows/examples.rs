@@ -462,7 +462,9 @@ pub(crate) const CHECKED: &str =
 
 /// `required-check`'s name: its own on a run that checks, another one on an
 /// edit that checks nothing, so that the skipped job of such a run never
-/// replaces the check the last full run reported on the head.
+/// replaces the check the last full run reported on the head. GitHub does
+/// not evaluate the name of a skipped job: its check carries this text,
+/// which is not `required-check` either.
 pub(crate) const AGGREGATOR_NAME: &str = "${{ (github.event.action != 'edited' || github.event.changes.title || github.event.changes.base) && 'required-check' || 'required-check (edit, not checked)' }}";
 
 /// The end of the concurrency group: an edit that checks nothing has a group
