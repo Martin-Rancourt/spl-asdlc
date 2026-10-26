@@ -41,3 +41,4 @@ This page is an index for people, kept by hand; the method never reads it, and a
 | [BR-ASDLC-033](BR-ASDLC-033.md) | The project owns when an angle runs and who does it; the method's angle carries only its content. | Enforced |
 | [BR-ASDLC-034](BR-ASDLC-034.md) | Adding or retiring a method angle is a normal change of the method; a retired angle stays available to projects pinned on an older version and is reported at their update. | Enforced |
 | [BR-ASDLC-035](BR-ASDLC-035.md) | Everything the bridge writes is in English, with no message catalogue. | Proposed |
+| [BR-ASDLC-036](BR-ASDLC-036.md) | A PR branch is named `<type>/<ticket-id>-<description>`, in lowercase, and the ticket id in it is enough to link the PR to its ticket. | Enforced |

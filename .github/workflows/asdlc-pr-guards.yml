@@ -4,7 +4,7 @@ name: asdlc-pr-guards
 # test suite, and nothing that can release or deploy
 # (.spl-asdlc/requirements/ci.md, REQ-CI-022..034): the "does anything beyond prose
 # change?" detector, the project's extra detectors, the method check of the
-# process page, and its guard commands.
+# process page, the check of the branch's name, and its guard commands.
 #
 # The process page (docs/agents/process.md) is copied into the project at
 # `process-page` and never edited there (BR-ASDLC-028): the check refuses a PR
@@ -73,6 +73,14 @@ on:
           check refuses a PR whose copy differs from this version's page.
         type: string
         default: .spl-asdlc/process.md
+      branch-name-check:
+        description: >-
+          `warn` or `refuse`: what a head branch not named
+          `<type>/<ticket-id>-<description>` in lowercase gets (process page,
+          step 2). `warn` on the 1.4 line, so that open PRs stay green; the
+          next minor line makes `refuse` the default.
+        type: string
+        default: warn
       setup-command:
         description: Run once before the guard commands.
         type: string
@@ -254,7 +262,7 @@ jobs:
           HEAD_SHA: ${{ inputs.head-sha }}
           PAGE: ${{ inputs.process-page }}
           # The git blob id of docs/agents/process.md at this commit.
-          PINNED_BLOB: 3314214cbf995df84552d4eb4dccbfdfce958601
+          PINNED_BLOB: 015ceb82b857076ed828e109bc7d14afbb662c0d
         shell: bash
         run: |
           set -euo pipefail
@@ -284,6 +292,52 @@ jobs:
             exit 1
           fi
           echo "$PAGE is the page of the pinned version."
+
+      - name: The branch names its ticket
+        id: branch
+        if: steps.skip.outputs.skipped != 'true'
+        env:
+          HEAD_REF: ${{ inputs.head-ref }}
+          TITLE: ${{ github.event.pull_request.title }}
+          CHECK: ${{ inputs.branch-name-check }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$CHECK" != warn ] && [ "$CHECK" != refuse ]; then
+            echo "::error title=Invalid branch-name-check::branch-name-check is '$CHECK', not warn or refuse."
+            exit 1
+          fi
+          # The method's own branches (release, merge-back resolution, release
+          # QA angle) and Dependabot's keep their names.
+          case "$HEAD_REF" in
+            release/* | chore/merge-back-* | qa/* | dependabot/*)
+              echo "'$HEAD_REF' is a branch of the method or of Dependabot: its name is not checked."
+              exit 0
+              ;;
+          esac
+          # The expected name, from the title when it says its type and ends
+          # with its ticket id: `fix(scope): summary (ABC-12)`.
+          types='feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert'
+          id_re='[A-Za-z0-9]+-[A-Za-z0-9]+'
+          type="$(sed -nE "s/^($types)(\([^)]*\))?!?:.*/\1/p" <<< "$TITLE")"
+          id="$(sed -nE "s/.*[([]($id_re)[])][[:space:]]*\$/\1/p" <<< "$TITLE" | tr '[:upper:]' '[:lower:]')"
+          words="$(sed -E "s/^[^:]*:[[:space:]]*//; s/[[:space:]]*[([]$id_re[])][[:space:]]*\$//" <<< "$TITLE" \
+            | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -d- -f1-5)"
+          expected="${type:-<type>}/${id:-<ticket-id>}-${words:-<description>}"
+          ok=true
+          if ! [[ "$HEAD_REF" =~ ^($types)/[a-z0-9]+-[a-z0-9]+(-[a-z0-9]+)*$ ]]; then ok=false; fi
+          if [ -n "$type" ] && [[ "$HEAD_REF" != "$type/"* ]]; then ok=false; fi
+          if [ -n "$id" ] && [[ "$HEAD_REF" != */"$id" ]] && [[ "$HEAD_REF" != */"$id"-* ]]; then ok=false; fi
+          if [ "$ok" = true ]; then
+            echo "The branch '$HEAD_REF' names its ticket."
+            exit 0
+          fi
+          message="The branch '$HEAD_REF' is not named <type>/<ticket-id>-<description> in lowercase (.spl-asdlc/process.md, step 2): expected '$expected'. The bridge links a PR to its ticket by the id in its branch or at the end of its title."
+          if [ "$CHECK" = refuse ]; then
+            echo "::error title=Branch name::$message"
+            exit 1
+          fi
+          echo "::warning title=Branch name::$message A warning only on this version: a later minor version refuses it."
 
       - name: Set up the guard commands
         if: steps.skip.outputs.skipped != 'true' && inputs.setup-command != ''

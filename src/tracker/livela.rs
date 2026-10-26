@@ -714,6 +714,9 @@ impl<S: LivelaStore> Tracker for Livela<S> {
                     .collect::<String>()
             })
             .filter(|k| !k.is_empty())
+            // The item's internal id (`livela://item/01a1…`, what an agent
+            // copies from Livela) names it as its short id does.
+            .map(|k| self.short_of(&k).unwrap_or(k))
             .collect();
         keys.sort();
         keys.dedup();

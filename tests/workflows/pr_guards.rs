@@ -398,3 +398,88 @@ fn the_process_check_runs_on_every_pr_but_the_skipped_heads() {
     );
     assert!(s["continue-on-error"].is_badvalue());
 }
+
+fn check_branch(branch: &str, title: &str, check: &str) -> Ran {
+    let repo = Repo::new();
+    run(
+        &step_body("branch"),
+        &[("HEAD_REF", branch), ("TITLE", title), ("CHECK", check)],
+        &repo.dir.0,
+    )
+}
+
+#[test]
+fn a_branch_named_after_its_ticket_passes_silently() {
+    for (branch, title) in [
+        (
+            "fix/lvl-7gtc-mcp-asdlc-settings",
+            "fix(mcp): ASDLC settings (LVL-7GTC)",
+        ),
+        ("feat/abc-12", "feat!: new screen (ABC-12)"),
+        ("docs/abc-12-guide", "docs: guide"),
+        // Not the method's to name.
+        ("release/2026-10-25-15-55-utc", "fix: gate"),
+        ("qa/security", "docs: security report"),
+        ("dependabot/cargo/serde-1.0.200", "chore(deps): bump serde"),
+        ("chore/merge-back-2026-10-25", "chore: merge back"),
+    ] {
+        let r = check_branch(branch, title, "refuse");
+        assert_eq!(r.code, 0, "{branch}: {}", r.log);
+        assert!(!r.log.contains("::warning"), "{branch}: {}", r.log);
+    }
+}
+
+#[test]
+fn a_misnamed_branch_warns_with_the_expected_name_and_refuses_when_asked() {
+    for (branch, title) in [
+        (
+            "someone/lvl-7gtc-mcp-asdlc",
+            "fix(mcp): ASDLC settings (LVL-7GTC)",
+        ),
+        (
+            "fix/LVL-7GTC-mcp-asdlc",
+            "fix(mcp): ASDLC settings (LVL-7GTC)",
+        ),
+        (
+            "feat/lvl-7gtc-mcp-asdlc",
+            "fix(mcp): ASDLC settings (LVL-7GTC)",
+        ),
+        (
+            "fix/lvl-7gtd-mcp-asdlc",
+            "fix(mcp): ASDLC settings (LVL-7GTC)",
+        ),
+    ] {
+        let r = check_branch(branch, title, "warn");
+        assert_eq!(r.code, 0, "{branch}: warn only: {}", r.log);
+        assert!(
+            r.log.contains("::warning title=Branch name::")
+                && r.log.contains("expected 'fix/lvl-7gtc-asdlc-settings'"),
+            "{branch}: {}",
+            r.log
+        );
+        let r = check_branch(branch, title, "refuse");
+        assert_eq!(r.code, 1, "{branch}: {}", r.log);
+        assert!(r.log.contains("::error title=Branch name::"), "{}", r.log);
+    }
+    // A title without its type or id: the format alone, the rest to fill.
+    let r = check_branch("patch-1", "Update README", "warn");
+    assert!(
+        r.log
+            .contains("expected '<type>/<ticket-id>-update-readme'"),
+        "{}",
+        r.log
+    );
+}
+
+#[test]
+fn the_branch_check_warns_by_default_on_this_minor_line_and_rejects_a_bad_value() {
+    let w = workflow(".github/workflows/asdlc-pr-guards.yml");
+    assert_eq!(
+        w["on"]["workflow_call"]["inputs"]["branch-name-check"]["default"].as_str(),
+        Some("warn"),
+        "1.4 only warns: open PRs of the projects must stay green"
+    );
+    let r = check_branch("fix/abc-1", "fix: x (ABC-1)", "maybe");
+    assert_eq!(r.code, 1, "{}", r.log);
+    assert!(r.log.contains("Invalid branch-name-check"), "{}", r.log);
+}
