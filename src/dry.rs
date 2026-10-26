@@ -72,6 +72,17 @@ impl GitHub for DryGitHub<'_> {
     fn pull(&self, repo: &RepoSlug, number: u64) -> Read<github::PullRequest> {
         self.inner.pull(repo, number)
     }
+
+    fn updated_pulls(
+        &self,
+        repo: &RepoSlug,
+        since: Option<github::Timestamp>,
+        handled_at_since: &[u64],
+        limit: usize,
+    ) -> Read<Vec<github::PullRequest>> {
+        self.inner
+            .updated_pulls(repo, since, handled_at_since, limit)
+    }
     fn merged_pulls(
         &self,
         repo: &RepoSlug,

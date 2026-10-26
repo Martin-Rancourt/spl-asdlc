@@ -549,6 +549,35 @@ fn pull_node(number: u64) -> String {
 }
 
 #[test]
+fn updated_pulls_are_a_page_of_100_hydrated_in_one_batch() {
+    let (gh, t) = client();
+    let since = Timestamp::parse("2026-10-05T10:59:00Z").unwrap();
+    t.on(
+        "GET",
+        &url("/repos/example-org/acme/issues?state=all&sort=updated&direction=asc&per_page=100&page=1&since="),
+        200,
+        r#"[{"number":11,"node_id":"PR_11","updated_at":"2026-10-05T11:00:00Z","pull_request":{}},{"number":12,"node_id":"PR_12","updated_at":"2026-10-05T11:00:00Z","pull_request":{}}]"#,
+    );
+    t.on_body(
+        "POST",
+        &url("/graphql"),
+        "nodes(ids: $ids)",
+        200,
+        &format!(
+            r#"{{"data":{{"nodes":[{},{}]}}}}"#,
+            pull_node(11),
+            pull_node(12)
+        ),
+    );
+    let pulls = gh.updated_pulls(&repo(), Some(since), &[], 100).unwrap();
+    assert_eq!(pulls.iter().map(|p| p.number).collect::<Vec<_>>(), [11, 12]);
+    assert_eq!(t.calls().len(), 2, "one list call and one batch hydration");
+    assert!(t.calls()[0].contains("per_page=100"));
+    let body = &t.bodies()[1];
+    assert!(body.contains(r#""ids":["PR_11","PR_12"]"#), "{body}");
+}
+
+#[test]
 fn open_pulls_parse_checks_reviews_threads_and_say_what_was_cut() {
     let (gh, t) = client();
     t.on(

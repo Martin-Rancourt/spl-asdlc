@@ -1110,6 +1110,71 @@ impl GitHub for RestGitHub {
         pull_from_gql(node).map_err(|e| ReadError::unreadable(what, e))
     }
 
+    fn updated_pulls(
+        &self,
+        repo: &RepoSlug,
+        since: Option<Timestamp>,
+        handled_at_since: &[u64],
+        limit: usize,
+    ) -> Read<Vec<PullRequest>> {
+        let what = format!("PRs updated since the sync checkpoint of {repo}");
+        let mut page = 1;
+        let mut ids = Vec::new();
+        while ids.len() < limit {
+            let since_arg = since
+                .map(|s| format!("&since={}", encode(&s.to_string(), false)))
+                .unwrap_or_default();
+            let (value, _) = self.get_json(
+                repo,
+                &what,
+                &format!("/repos/{repo}/issues?state=all&sort=updated&direction=asc&per_page=100&page={page}{since_arg}"),
+            )?;
+            let rows = value
+                .as_array()
+                .ok_or_else(|| ReadError::unreadable(&what, "the issue list is not an array"))?;
+            if rows.is_empty() {
+                break;
+            }
+            for row in rows {
+                if row.get("pull_request").is_none() {
+                    continue;
+                }
+                let number = row["number"].as_u64().unwrap_or(0);
+                let updated = time_of(row, "updated_at");
+                if since
+                    .zip(updated)
+                    .is_some_and(|(s, u)| u == s && handled_at_since.contains(&number))
+                {
+                    continue;
+                }
+                if let Some(id) = row["node_id"].as_str() {
+                    ids.push(id.to_string());
+                }
+                if ids.len() == limit {
+                    break;
+                }
+            }
+            if rows.len() < 100 || ids.len() == limit {
+                break;
+            }
+            page += 1;
+        }
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let query =
+            format!("query($ids: [ID!]!) {{ nodes(ids: $ids) {{ ...Pull }} }}\n{PULL_FRAGMENT}");
+        let data = self.graphql(repo, &what, &query, json!({"ids": ids}))?;
+        let mut pulls = data["nodes"]
+            .as_array()
+            .ok_or_else(|| ReadError::unreadable(&what, "the PR node list is not an array"))?
+            .iter()
+            .map(|n| pull_from_gql(n).map_err(|e| ReadError::unreadable(&what, e)))
+            .collect::<Read<Vec<_>>>()?;
+        pulls.sort_by_key(|p| (p.updated_at, p.number));
+        Ok(pulls)
+    }
+
     fn merged_pulls(
         &self,
         repo: &RepoSlug,
