@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.4.4...v1.5.0) (2026-10-26)
+
+
+### Features
+
+* **workflows:** one job for every pull request check (ASDLC-NAN3) ([#117](https://github.com/Martin-Rancourt/spl-asdlc/issues/117)) ([b008e24](https://github.com/Martin-Rancourt/spl-asdlc/commit/b008e24334b5c4ca518a00518165498ee7e62fae))
+
 ## [1.4.4](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.4.3...v1.4.4) (2026-10-26)
 
 
