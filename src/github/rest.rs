@@ -1139,51 +1139,67 @@ impl GitHub for RestGitHub {
         handled_at_since: &[u64],
         limit: usize,
     ) -> Read<Vec<PullRequest>> {
+        // The pull list, not the issue list: `/issues` needs the App's
+        // Issues permission, which the App does not have (Pull requests read
+        // is enough here). The pull list has no `since`, so with a checkpoint
+        // it is walked newest update first down to the checkpoint, and the
+        // oldest `limit` rows after it are kept. Pages are offsets of a
+        // moving list, but a PR updated during the walk only moves up to
+        // the first page: rows below shift down and repeat (deduplicated),
+        // none is skipped but that PR, whose new update is after every row
+        // read and so after the checkpoint this pass leaves.
         let what = format!("PRs updated since the sync checkpoint of {repo}");
-        let mut page = 1;
-        let mut ids = Vec::new();
-        while ids.len() < limit {
-            let since_arg = since
-                .map(|s| format!("&since={}", encode(&s.to_string(), false)))
-                .unwrap_or_default();
+        let direction = if since.is_some() { "desc" } else { "asc" };
+        let mut rows: Vec<(Option<Timestamp>, u64, String)> = Vec::new();
+        let mut seen = BTreeSet::new();
+        for page in 1..=MAX_PAGES {
             let (value, _) = self.get_json(
                 repo,
                 &what,
-                &format!("/repos/{repo}/issues?state=all&sort=updated&direction=asc&per_page=100&page={page}{since_arg}"),
+                &format!("/repos/{repo}/pulls?state=all&sort=updated&direction={direction}&per_page=100&page={page}"),
             )?;
-            let rows = value
+            let list = value
                 .as_array()
-                .ok_or_else(|| ReadError::unreadable(&what, "the issue list is not an array"))?;
-            if rows.is_empty() {
-                break;
-            }
-            for row in rows {
-                if row.get("pull_request").is_none() {
-                    continue;
-                }
+                .ok_or_else(|| ReadError::unreadable(&what, "the PR list is not an array"))?;
+            let mut past_checkpoint = false;
+            for row in list {
                 let number = row["number"].as_u64().unwrap_or(0);
                 let updated = time_of(row, "updated_at");
-                if since
-                    .zip(updated)
-                    .is_some_and(|(s, u)| u == s && handled_at_since.contains(&number))
-                {
+                if let (Some(s), Some(u)) = (since, updated) {
+                    if u < s {
+                        past_checkpoint = true;
+                        break;
+                    }
+                    if u == s && handled_at_since.contains(&number) {
+                        continue;
+                    }
+                }
+                let Some(id) = row["node_id"].as_str() else {
                     continue;
-                }
-                if let Some(id) = row["node_id"].as_str() {
-                    ids.push(id.to_string());
-                }
-                if ids.len() == limit {
-                    break;
+                };
+                if seen.insert(number) {
+                    rows.push((updated, number, id.to_string()));
                 }
             }
-            if rows.len() < 100 || ids.len() == limit {
+            // Without a checkpoint the walk is oldest first: the first
+            // `limit` rows are the ones to keep.
+            let enough = since.is_none() && rows.len() >= limit;
+            if past_checkpoint || enough || list.len() < 100 {
                 break;
             }
-            page += 1;
+            if page == MAX_PAGES {
+                return Err(ReadError::unreadable(
+                    &what,
+                    format!("more than {MAX_PAGES} pages: the list would be cut"),
+                ));
+            }
         }
-        if ids.is_empty() {
+        rows.sort_by_key(|(updated, number, _)| (*updated, *number));
+        rows.truncate(limit);
+        if rows.is_empty() {
             return Ok(Vec::new());
         }
+        let ids: Vec<String> = rows.into_iter().map(|(_, _, id)| id).collect();
         let query =
             format!("query($ids: [ID!]!) {{ nodes(ids: $ids) {{ ...Pull }} }}\n{PULL_FRAGMENT}");
         let data = self.graphql(repo, &what, &query, json!({"ids": ids}))?;

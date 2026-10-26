@@ -563,33 +563,165 @@ fn the_pr_fragment_nests_no_list_under_a_list_of_prs() {
     }
 }
 
-#[test]
-fn updated_pulls_are_a_page_of_100_hydrated_in_one_batch() {
-    let (gh, t) = client();
-    let since = Timestamp::parse("2026-10-05T10:59:00Z").unwrap();
+const PULLS_DESC: &str =
+    "/repos/example-org/acme/pulls?state=all&sort=updated&direction=desc&per_page=100&page=";
+const PULLS_ASC: &str =
+    "/repos/example-org/acme/pulls?state=all&sort=updated&direction=asc&per_page=100&page=";
+const ISSUES: &str = "/repos/example-org/acme/issues";
+
+fn pull_row(number: u64, updated: &str) -> String {
+    format!(r#"{{"number":{number},"node_id":"PR_{number}","updated_at":"{updated}"}}"#)
+}
+
+/// The App has no Issues permission: GitHub answers the issue list 403.
+fn issues_forbidden(t: &ScriptedTransport) {
     t.on(
         "GET",
-        &url("/repos/example-org/acme/issues?state=all&sort=updated&direction=asc&per_page=100&page=1&since="),
-        200,
-        r#"[{"number":11,"node_id":"PR_11","updated_at":"2026-10-05T11:00:00Z","pull_request":{}},{"number":12,"node_id":"PR_12","updated_at":"2026-10-05T11:00:00Z","pull_request":{}}]"#,
+        &url(ISSUES),
+        403,
+        r#"{"message":"Resource not accessible by integration"}"#,
     );
+}
+
+fn hydrate(t: &ScriptedTransport, numbers: &[u64]) {
+    let nodes: Vec<String> = numbers.iter().map(|n| pull_node(*n)).collect();
     t.on_body(
         "POST",
         &url("/graphql"),
         "nodes(ids: $ids)",
         200,
+        &format!(r#"{{"data":{{"nodes":[{}]}}}}"#, nodes.join(",")),
+    );
+}
+
+#[test]
+fn updated_pulls_are_a_page_of_100_hydrated_in_one_batch() {
+    let (gh, t) = client();
+    issues_forbidden(&t);
+    let since = Timestamp::parse("2026-10-05T10:59:00Z").unwrap();
+    t.on(
+        "GET",
+        &url(&format!("{PULLS_DESC}1")),
+        200,
         &format!(
-            r#"{{"data":{{"nodes":[{},{}]}}}}"#,
-            pull_node(11),
-            pull_node(12)
+            "[{},{},{}]",
+            pull_row(12, "2026-10-05T11:00:00Z"),
+            pull_row(11, "2026-10-05T11:00:00Z"),
+            pull_row(9, "2026-10-05T10:58:00Z")
         ),
     );
+    hydrate(&t, &[11, 12]);
     let pulls = gh.updated_pulls(&repo(), Some(since), &[], 100).unwrap();
     assert_eq!(pulls.iter().map(|p| p.number).collect::<Vec<_>>(), [11, 12]);
     assert_eq!(t.calls().len(), 2, "one list call and one batch hydration");
-    assert!(t.calls()[0].contains("per_page=100"));
+    assert!(t.calls()[0].contains("/pulls?") && t.calls()[0].contains("per_page=100"));
     let body = &t.bodies()[1];
     assert!(body.contains(r#""ids":["PR_11","PR_12"]"#), "{body}");
+}
+
+#[test]
+fn updated_pulls_never_read_the_issue_list_the_app_may_not_read() {
+    // ASDLC-47PN: 1.4.2 listed `/issues`, which needs the Issues permission
+    // the App lacks: every sync pass failed with a 403.
+    let (gh, t) = client();
+    issues_forbidden(&t);
+    t.on(
+        "GET",
+        &url(&format!("{PULLS_DESC}1")),
+        200,
+        &format!("[{}]", pull_row(5, "2026-10-05T11:00:00Z")),
+    );
+    hydrate(&t, &[5]);
+    let since = Timestamp::parse("2026-10-05T10:00:00Z").unwrap();
+    let pulls = gh.updated_pulls(&repo(), Some(since), &[], 100).unwrap();
+    assert_eq!(pulls.len(), 1);
+    assert!(
+        !t.calls().iter().any(|c| c.contains("/issues")),
+        "{:?}",
+        t.calls()
+    );
+    // Nor without a checkpoint.
+    let (gh, t) = client();
+    issues_forbidden(&t);
+    t.on("GET", &url(&format!("{PULLS_ASC}1")), 200, "[]");
+    assert!(
+        gh.updated_pulls(&repo(), None, &[], 100)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        !t.calls().iter().any(|c| c.contains("/issues")),
+        "{:?}",
+        t.calls()
+    );
+}
+
+#[test]
+fn updated_pulls_walk_down_to_the_checkpoint_and_keep_the_oldest_after_it() {
+    let (gh, t) = client();
+    issues_forbidden(&t);
+    // Page 1: 100 rows from 12:00 down to 11:01; page 2 repeats the last row
+    // of page 1 (a PR updated between the pages shifted the list), then
+    // reaches the checkpoint's second and goes past it.
+    let page1: Vec<String> = (0..100u64)
+        .map(|i| pull_row(1000 - i, &format!("2026-10-05T12:{:02}:00Z", 59 - i % 60)))
+        .collect();
+    let page2 = [
+        pull_row(901, "2026-10-05T11:01:00Z"),
+        pull_row(30, "2026-10-05T11:00:00Z"),
+        pull_row(20, "2026-10-05T11:00:00Z"),
+        pull_row(10, "2026-10-05T11:00:00Z"),
+        pull_row(5, "2026-10-05T10:00:00Z"),
+        pull_row(4, "2026-10-05T09:00:00Z"),
+    ];
+    t.on(
+        "GET",
+        &url(&format!("{PULLS_DESC}1")),
+        200,
+        &format!("[{}]", page1.join(",")),
+    );
+    t.on(
+        "GET",
+        &url(&format!("{PULLS_DESC}2")),
+        200,
+        &format!("[{}]", page2.join(",")),
+    );
+    hydrate(&t, &[10, 30]);
+    let since = Timestamp::parse("2026-10-05T11:00:00Z").unwrap();
+    gh.updated_pulls(&repo(), Some(since), &[20], 2).unwrap();
+    let lists: Vec<_> = t
+        .calls()
+        .into_iter()
+        .filter(|c| c.starts_with("GET"))
+        .collect();
+    assert_eq!(lists.len(), 2, "no page past the checkpoint: {lists:?}");
+    let body = &t.bodies()[2];
+    // #20 was handled at the checkpoint's second; the oldest two after it.
+    assert!(body.contains(r#""ids":["PR_10","PR_30"]"#), "{body}");
+}
+
+#[test]
+fn updated_pulls_without_a_checkpoint_start_at_the_oldest() {
+    let (gh, t) = client();
+    issues_forbidden(&t);
+    let page: Vec<String> = (1..=100u64)
+        .map(|n| pull_row(n, &format!("2026-01-01T00:{:02}:00Z", n % 60)))
+        .collect();
+    t.on(
+        "GET",
+        &url(&format!("{PULLS_ASC}1")),
+        200,
+        &format!("[{}]", page.join(",")),
+    );
+    hydrate(&t, &[1, 2, 3]);
+    gh.updated_pulls(&repo(), None, &[], 3).unwrap();
+    let lists: Vec<_> = t
+        .calls()
+        .into_iter()
+        .filter(|c| c.starts_with("GET"))
+        .collect();
+    assert_eq!(lists.len(), 1, "one page is enough: {lists:?}");
+    assert!(lists[0].contains("direction=asc"), "{lists:?}");
 }
 
 #[test]

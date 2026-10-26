@@ -339,5 +339,5 @@ What a pass writes, through the adapter only, each write signed by `spl-asdlc` w
 
 What it never writes: a status, an assignee, a label, a description, a comment, anything on GitHub. Those stay the bridge's, which moves the tickets from the facts as before.
 
-What it reads: PRs updated after its durable checkpoint, oldest first, in pages of 100 (the first pass starts at the beginning of the repository history), and PRs linked to tickets still open, by their number; the release tags, to tell a released PR. The checkpoint advances after each PR handled, so an interrupted pass resumes without replaying its page. No search API, no person's token.
+What it reads: PRs updated after its durable checkpoint, oldest first, in pages of 100 (the first pass starts at the beginning of the repository history), and PRs linked to tickets still open, by their number; the release tags, to tell a released PR. The checkpoint advances after each PR handled, so an interrupted pass resumes without replaying its page. It reads them from the PR list (`/pulls`, newest update first down to the checkpoint), never the issue list: the App has no Issues permission (`github-app.md`). No search API, no person's token.
 
