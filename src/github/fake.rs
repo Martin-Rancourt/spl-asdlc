@@ -20,6 +20,8 @@ pub struct FakeState {
     pub default_branch: BTreeMap<RepoSlug, String>,
     /// `(repo, name)`: a repository variable; a missing entry is `NotFound`.
     pub variables: HashMap<(RepoSlug, String), Read<Variable>>,
+    /// The quotas; none when not scripted (a pass goes at its normal pace).
+    pub quota: Option<Read<Vec<Quota>>>,
     pub branches: BTreeMap<RepoSlug, Vec<GitRef>>,
     pub tags: BTreeMap<RepoSlug, Vec<GitRef>>,
     pub tag_objects: HashMap<(RepoSlug, String), AnnotatedTag>,
@@ -168,6 +170,10 @@ impl GitHub for FakeGitHub {
             Some(i) => Ok(i.clone()),
             None => not_scripted("identity".into()),
         }
+    }
+
+    fn quota(&self, _repo: &RepoSlug) -> Read<Vec<Quota>> {
+        self.state.borrow().quota.clone().unwrap_or(Ok(Vec::new()))
     }
 
     fn default_branch(&self, repo: &RepoSlug) -> Read<String> {

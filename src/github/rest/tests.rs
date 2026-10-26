@@ -539,13 +539,28 @@ fn pull_node(number: u64) -> String {
         "mergeable":"CONFLICTING","mergeStateStatus":"DIRTY","additions":10,"deletions":2,
         "createdAt":"2026-10-05T10:00:00Z","updatedAt":"2026-10-05T11:00:00Z","mergedAt":null,"mergedBy":null,"mergeCommit":null,
         "reviews":{{"pageInfo":{{"hasNextPage":false}},"nodes":[{{"databaseId":7,"author":{{"login":"coordinator-login"}},"state":"APPROVED","commit":{{"oid":"h{number}"}},"submittedAt":"2026-10-05T11:00:00Z"}}]}},
-        "reviewThreads":{{"pageInfo":{{"hasNextPage":true}},"nodes":[{{"isResolved":false,"isOutdated":false,"path":"src/x.rs","comments":{{"nodes":[{{"author":{{"login":"reviewer"}},"body":"blocker: x"}}]}}}}]}},
+        "reviewThreads":{{"pageInfo":{{"hasNextPage":true}},"nodes":[{{"isResolved":false,"isOutdated":false,"path":"src/x.rs"}}]}},
         "commits":{{"nodes":[{{"commit":{{"oid":"h{number}","statusCheckRollup":{{"contexts":{{"pageInfo":{{"hasNextPage":false}},"nodes":[
             {{"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-10-05T10:01:00Z","detailsUrl":"https://github.com/example-org/acme/actions/runs/1/job/2","checkSuite":{{"workflowRun":{{"workflow":{{"name":"Checks"}}}}}}}},
             {{"__typename":"CheckRun","name":"lint","status":"QUEUED","conclusion":null,"startedAt":"0001-01-01T00:00:00Z","detailsUrl":null,"checkSuite":{{"workflowRun":null}}}},
             {{"__typename":"StatusContext","context":"legacy/ci","state":"FAILURE","targetUrl":"https://ci.test/1","createdAt":"2026-10-05T10:02:00Z"}}
         ]}}}}}}}}]}}}}"#
     )
+}
+
+#[test]
+fn the_pr_fragment_nests_no_list_under_a_list_of_prs() {
+    // GitHub prices a query by the nodes it could return: a list under
+    // each review thread costs 100 points per PR (ASDLC-5DDN).
+    let threads = PULL_FRAGMENT
+        .lines()
+        .find(|l| l.contains("reviewThreads("))
+        .unwrap();
+    assert_eq!(threads.matches("(first:").count(), 1, "{threads}");
+    for list in ["labels(", "reviews("] {
+        let line = PULL_FRAGMENT.lines().find(|l| l.contains(list)).unwrap();
+        assert_eq!(line.matches("(first:").count(), 1, "{line}");
+    }
 }
 
 #[test]
@@ -632,16 +647,11 @@ fn bot(slug: &str) -> String {
 fn an_app_reviewing_is_named_in_the_rest_spelling() {
     // GraphQL names an App by its bare slug; the bridge reads it as REST
     // and the UI show it, and a human as they are.
-    let node = pull_node(12)
-        .replace(
-            r#""author":{"login":"coordinator-login"}"#,
-            r#""author":{"__typename":"Bot","login":"coord-app"}"#,
-        )
-        .replace(
-            r#""author":{"login":"reviewer"}"#,
-            r#""author":{"__typename":"User","login":"reviewer"}"#,
-        );
-    assert!(node.contains(r#""__typename":"User""#), "the fixture moved");
+    let node = pull_node(12).replace(
+        r#""author":{"login":"coordinator-login"}"#,
+        r#""author":{"__typename":"Bot","login":"coord-app"}"#,
+    );
+    assert!(node.contains(r#""login":"coord-app""#), "the fixture moved");
     let (gh, t) = client();
     t.on(
         "POST",
@@ -654,7 +664,6 @@ fn an_app_reviewing_is_named_in_the_rest_spelling() {
     let pulls = gh.open_pulls(&repo(), None).unwrap();
     let p = &pulls[0];
     assert_eq!(p.reviews[0].author, Some(bot("coord-app")));
-    assert_eq!(p.threads[0].first_author.as_deref(), Some("reviewer"));
     assert!(
         t.bodies()[0].contains("nodes { databaseId author { __typename login } state"),
         "the query asks what the review's author is"
@@ -1497,4 +1506,40 @@ fn a_file_of_another_repository_is_read_with_the_projects_installation_token() {
     );
     let log = t.log.lock().unwrap();
     assert_eq!(bearer_of(log.last().unwrap()), "Bearer inst-1");
+}
+
+#[test]
+fn the_quota_is_read_from_rate_limit_for_rest_and_graphql() {
+    let (gh, t) = client();
+    t.on(
+        "GET",
+        &url("/rate_limit"),
+        200,
+        r#"{"resources":{"core":{"limit":5000,"remaining":4210,"reset":3600,"used":790},"graphql":{"limit":5000,"remaining":120,"reset":2520,"used":4880},"search":{"limit":30,"remaining":30,"reset":60}}}"#,
+    );
+    let quotas = gh.quota(&repo()).unwrap();
+    assert_eq!(
+        quotas
+            .iter()
+            .map(|q| (
+                q.resource.as_str(),
+                q.remaining,
+                q.limit,
+                q.reset.to_string()
+            ))
+            .collect::<Vec<_>>(),
+        [
+            ("core", 4210, 5000, "1970-01-01T01:00:00Z".to_string()),
+            ("graphql", 120, 5000, "1970-01-01T00:42:00Z".to_string()),
+        ]
+    );
+    // An answer without one of them is no answer.
+    let (gh, t) = client();
+    t.on(
+        "GET",
+        &url("/rate_limit"),
+        200,
+        r#"{"resources":{"core":{"limit":5000,"remaining":1,"reset":1}}}"#,
+    );
+    assert!(gh.quota(&repo()).is_err());
 }

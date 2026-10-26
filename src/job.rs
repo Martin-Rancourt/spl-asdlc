@@ -21,6 +21,7 @@ use crate::config::{Config, Source};
 use crate::github::{GitHub, RepoSlug, Timestamp};
 use crate::lock::TickLock;
 use crate::notify::{Channels, Signal};
+use crate::quota::Pace;
 use crate::tick::{self, Tick};
 use crate::tracker::Tracker;
 
@@ -149,6 +150,18 @@ pub fn pass_with(host: &Host, config: &Config, github: &dyn GitHub) -> PassOutco
         }
         None => None,
     };
+    // The quota first: with almost nothing left, the pass reads nothing
+    // and waits for the reset rather than fail on "rate limit exceeded".
+    let quota = crate::quota::read(github, &repo);
+    if quota.pace() == Pace::Exhausted {
+        return PassOutcome {
+            ok: true,
+            message: format!(
+                "{repo}: nothing read, the GitHub quota is almost spent: the next pass after the reset resumes; {}",
+                quota.line().unwrap_or_default()
+            ),
+        };
+    }
     let login = match github.identity() {
         Ok(i) => i.login(),
         Err(e) => return PassOutcome::failed(format!("GitHub identity: {e}")),
@@ -166,6 +179,7 @@ pub fn pass_with(host: &Host, config: &Config, github: &dyn GitHub) -> PassOutco
         deadline: host.budget.map(|b| started + b),
         dry_run: false,
         method_texts: Default::default(),
+        low_quota: quota.pace() == Pace::Low,
     };
     let mut log = match path {
         Some(p) => ActionLog::at(p),
@@ -176,6 +190,9 @@ pub fn pass_with(host: &Host, config: &Config, github: &dyn GitHub) -> PassOutco
     let mut message = format!("{repo}: {}", report.summary());
     if let Err(e) = &flushed {
         message.push_str(&format!("; the action log could not be written: {e}"));
+    }
+    if let Some(line) = quota.line() {
+        message.push_str(&format!("; {line}"));
     }
     for line in report.waiting_lines() {
         message.push_str(&format!("\n{repo}: {line}"));
@@ -299,6 +316,89 @@ mod tests {
         assert!(out.ok, "{out:?}");
         assert!(!log.exists(), "no heartbeat");
         assert!(tracker.writes().is_empty());
+    }
+
+    fn quota(remaining: u64) -> crate::github::Read<Vec<crate::github::Quota>> {
+        Ok(vec![crate::github::Quota {
+            resource: "graphql".into(),
+            limit: 5000,
+            remaining,
+            reset: Timestamp::parse("2026-10-26T13:22:00Z").unwrap(),
+        }])
+    }
+
+    /// Little left of the quota: the merge pass runs, the sweep of merged
+    /// and closed PRs waits, and the line says what is left (ASDLC-5DDN).
+    #[test]
+    fn a_pass_low_on_quota_skips_the_sweep_and_says_what_is_left() {
+        let (config, path) = spec_config();
+        let tracker = FakeTracker::default();
+        let host = Host {
+            config_path: &path,
+            tracker: &tracker,
+            budget: None,
+            log_path: None,
+            env: &|_| None,
+        };
+        let github = quiet_github();
+        let repo = RepoSlug::parse("example-org/acme").unwrap();
+        // A sweep that ran would fail on this read.
+        github.state.borrow_mut().merged_pulls.insert(
+            repo,
+            Err(crate::github::ReadError::unreadable(
+                "merged PRs",
+                "HTTP 403",
+            )),
+        );
+        github.state.borrow_mut().quota = Some(quota(900));
+        let out = pass_with(&host, &config, &github);
+        assert!(out.ok, "{out:?}");
+        assert!(
+            out.message
+                .contains("the sweep of merged and closed PRs waits"),
+            "{}",
+            out.message
+        );
+        assert!(
+            out.message
+                .contains("GitHub quota: graphql 900/5000 until 13:22Z"),
+            "{}",
+            out.message
+        );
+        github.state.borrow_mut().quota = Some(quota(4000));
+        let out = pass_with(&host, &config, &github);
+        assert!(!out.ok, "with the quota back, the sweep runs: {out:?}");
+        assert!(
+            out.message.contains("GitHub quota: graphql 4000/5000"),
+            "{}",
+            out.message
+        );
+    }
+
+    /// Almost nothing left: the pass reads nothing (its GitHub knows no
+    /// identity, so a pass that went on would fail) and waits for the reset.
+    #[test]
+    fn a_pass_with_the_quota_spent_reads_nothing_and_is_no_failure() {
+        let (config, path) = spec_config();
+        let tracker = FakeTracker::default();
+        let github = FakeGitHub::new();
+        github.state.borrow_mut().quota = Some(quota(100));
+        let out = pass_with(
+            &Host {
+                config_path: &path,
+                tracker: &tracker,
+                budget: None,
+                log_path: None,
+                env: &|_| None,
+            },
+            &config,
+            &github,
+        );
+        assert!(out.ok, "{out:?}");
+        assert!(out.message.contains("nothing read"), "{}", out.message);
+        assert!(out.message.contains("until 13:22Z"), "{}", out.message);
+        assert!(tracker.writes().is_empty());
+        assert!(github.writes().is_empty());
     }
 
     /// A tick already running (a timer and a run by hand overlapping): the

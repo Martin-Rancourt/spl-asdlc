@@ -65,6 +65,17 @@ impl fmt::Display for Timestamp {
     }
 }
 
+/// One of the hourly quotas of the identity the bridge reads with, as
+/// `/rate_limit` reports it: `core` (REST calls) or `graphql` (points).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Quota {
+    pub resource: String,
+    pub limit: u64,
+    pub remaining: u64,
+    /// When `remaining` is back to `limit`.
+    pub reset: Timestamp,
+}
+
 /// A read that did not return a trustworthy answer is never "nothing there".
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ReadError {
@@ -318,8 +329,6 @@ pub struct ReviewThread {
     pub resolved: bool,
     pub outdated: bool,
     pub path: Option<String>,
-    pub first_author: Option<String>,
-    pub first_body: String,
 }
 
 /// A pull request with everything a tick judges it on.

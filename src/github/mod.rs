@@ -28,6 +28,10 @@ pub trait GitHub {
     /// The repository variable `name` (GitHub Actions variables);
     /// `NotFound` when the repository has none of that name.
     fn variable(&self, repo: &RepoSlug, name: &str) -> Read<Variable>;
+    /// The hourly quotas of the identity that reads `repo` (an App's are
+    /// shared by every repository of its installation). Reading them costs
+    /// none of them.
+    fn quota(&self, repo: &RepoSlug) -> Read<Vec<Quota>>;
 
     // ---- refs and history ----
 

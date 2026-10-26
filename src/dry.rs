@@ -39,6 +39,9 @@ impl GitHub for DryGitHub<'_> {
     fn variable(&self, repo: &RepoSlug, name: &str) -> Read<github::Variable> {
         self.inner.variable(repo, name)
     }
+    fn quota(&self, repo: &RepoSlug) -> Read<Vec<github::Quota>> {
+        self.inner.quota(repo)
+    }
     fn branches(&self, repo: &RepoSlug, prefix: &str) -> Read<Vec<github::GitRef>> {
         self.inner.branches(repo, prefix)
     }

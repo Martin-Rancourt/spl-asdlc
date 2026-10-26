@@ -372,8 +372,6 @@ fn unresolved_threads_are_counted_outdated_or_not() {
         resolved,
         outdated,
         path: None,
-        first_author: None,
-        first_body: String::new(),
     };
     pr.threads = vec![
         thread(true, false),
