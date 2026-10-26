@@ -864,6 +864,45 @@ fn a_pr_without_a_ticket_is_told_once_and_left_alone() {
     assert!(w.tracker.writes().is_empty());
 }
 
+/// A PR whose branch names its ticket (`<type>/<ticket-id>-<description>`,
+/// any case) is linked to it with no tracker link: the ticket goes In Review
+/// and the bridge lays the tracker's link once (ASDLC-VW9U).
+#[test]
+fn a_pr_named_by_its_branch_is_linked_and_its_ticket_goes_in_review() {
+    let w = World::new();
+    w.tracker
+        .seed("ABC-12", "A ticket", COMPLETE, Status::InProgress, &[]);
+    let mut pr = pull_request(7);
+    pr.head_ref = "fix/abc-12-mcp-settings".into();
+    pr.title = "fix(mcp): settings (ABC-12)".into();
+    w.open(pr.clone());
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(
+        w.tracker.item("ABC-12").state.status,
+        Some(Status::InReview)
+    );
+    assert_eq!(
+        w.tracker.items_linked_to_pr(&pr.url).unwrap(),
+        vec!["ABC-12"]
+    );
+    assert!(
+        !w.github_writes().iter().any(|l| l.starts_with("comment")),
+        "no « no ticket » comment: {:?}",
+        w.github_writes()
+    );
+    let links = |w: &World| {
+        w.tracker
+            .writes()
+            .iter()
+            .filter(|x| x.contains("link"))
+            .count()
+    };
+    let laid = links(&w);
+    w.tick(false);
+    assert_eq!(links(&w), laid, "the link is laid once");
+}
+
 #[test]
 fn a_behind_branch_is_brought_up_to_date_before_the_round() {
     let w = World::new();

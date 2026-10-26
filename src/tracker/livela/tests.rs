@@ -967,3 +967,58 @@ fn a_ticket_type_with_triage_keeps_it() {
     let names = t.status_names().unwrap();
     assert_eq!(names.iter().filter(|n| *n == "Triage").count(), 1);
 }
+
+/// A PR names its Livela item by its branch, its title or its address in the
+/// body, the address by the short id or by the internal id; an unknown code
+/// names nothing (ASDLC-ASB8, ASDLC-VW9U).
+#[test]
+fn a_pr_names_its_livela_ticket_by_branch_title_or_either_address() {
+    use crate::config::LinkFallback;
+    use crate::github::fake::pull_request;
+    use crate::tick::link::{Linked, ticket_item};
+    let mut config = crate::config::spec_example::config().tracker;
+    config.team_keys.clear();
+    config.link_fallback = LinkFallback::BodyUrl;
+    let t = td(MemStore::default());
+    let a = t.create_item(&new_item("a", Status::InProgress)).unwrap();
+    let raw = t.store.borrow().resolve(&a.key).unwrap().unwrap();
+    let code = a.key.rsplit_once('-').unwrap().1.to_ascii_lowercase();
+    let found = |branch: String, title: String, body: String| {
+        let pr = crate::github::PullRequest {
+            head_ref: branch,
+            title,
+            body,
+            ..pull_request(1)
+        };
+        match ticket_item(&pr, &t, &config).unwrap() {
+            Linked::One(i) => Some(i.key),
+            Linked::None => None,
+            other => panic!("{other:?}"),
+        }
+    };
+    let none = String::new;
+    assert_eq!(
+        found(
+            format!("fix/td-{code}-mcp-settings"),
+            format!("fix: settings ({})", a.key),
+            none()
+        ),
+        Some(a.key.clone())
+    );
+    assert_eq!(
+        found(none(), none(), format!("livela://item/{}", a.key)),
+        Some(a.key.clone())
+    );
+    assert_eq!(
+        found(none(), none(), format!("livela://item/{raw}")),
+        Some(a.key.clone())
+    );
+    assert_eq!(
+        found(
+            "fix/td-zzzz-mcp".into(),
+            "fix: settings (TD-ZZZZ)".into(),
+            none()
+        ),
+        None
+    );
+}

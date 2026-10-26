@@ -269,8 +269,8 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> Pass {
             );
             continue;
         }
-        let link = link::ticket_item(&pr, t.tracker, t.config.tracker.link_fallback);
-        match &link {
+        let link = link::resolve(&pr, t.tracker, &t.config.tracker);
+        match link.as_ref().map(|r| &r.linked) {
             Ok(Linked::One(item)) => open.add(&item.key, &pr, coordinators),
             // A PR that several tickets claim is live work on each of them.
             Ok(Linked::Several(keys)) => {
@@ -315,11 +315,15 @@ fn one(
     log: &mut ActionLog,
     report: &mut Report,
     pr: PullRequest,
-    link: crate::tracker::TResult<Linked>,
+    link: crate::tracker::TResult<link::Resolution>,
     base: &Base,
     open: &OpenPrs,
 ) -> Option<Candidate> {
     let object = format!("pr#{}", pr.number);
+    let (link, unlinked) = match link {
+        Ok(r) => (Ok(r.linked), r.unlinked),
+        Err(e) => (Err(e), false),
+    };
 
     // ---- the ticket ----
     let ticket = match link {
@@ -342,7 +346,9 @@ fn one(
                 &[("pr", &pr.url)],
                 &format!(
                     "No ticket is linked to this PR, so the bridge does not review or merge it. \
-                     Link the ticket in the tracker (its PR link{}).",
+                     Name the ticket in the branch (`<type>/<ticket-id>-<description>`, such as \
+                     `fix/abc-12-short-description`) or at the end of the title (`… (ABC-12)`), \
+                     or link it in the tracker (its PR link{}).",
                     match t.config.tracker.link_fallback {
                         crate::config::LinkFallback::BodyUrl =>
                             ", or the ticket's URL in this PR's description",
@@ -384,6 +390,22 @@ fn one(
         return None;
     }
     let object = format!("pr#{} {}", pr.number, ticket.key);
+    // Found by its id in the branch, the title or the body: the tracker's
+    // link is laid, so that the release that ships the PR embarks the ticket.
+    if unlinked {
+        t.act(
+            log,
+            report,
+            &ticket.key,
+            &format!("link {}", pr.url),
+            json!({}),
+            || {
+                t.tracker
+                    .link_pr(&ticket.key, &pr.url, &pr.title)
+                    .map_err(|e| e.to_string())
+            },
+        );
+    }
 
     // ---- an open PR on a ticket past the merge (REQ-MERGE-028) ----
     if ticket

@@ -61,7 +61,7 @@ fn closed(t: &Tick, log: &mut ActionLog, report: &mut Report, open: &OpenPrs) {
         if trusted_author(pr, authors) {
             closed_ticketless(t, log, report, pr);
         }
-        let ticket = match link::ticket_item(pr, t.tracker, t.config.tracker.link_fallback) {
+        let ticket = match link::ticket_item(pr, t.tracker, &t.config.tracker) {
             Ok(Linked::One(item)) => *item,
             Ok(_) => continue,
             Err(e) => {
@@ -268,7 +268,7 @@ fn merged(t: &Tick, log: &mut ActionLog, report: &mut Report, open: &OpenPrs) {
             continue;
         }
         let object = format!("pr#{}", pr.number);
-        let ticket = match link::ticket_item(&pr, t.tracker, t.config.tracker.link_fallback) {
+        let ticket = match link::ticket_item(&pr, t.tracker, &t.config.tracker) {
             Ok(Linked::One(item)) => *item,
             Ok(_) => continue,
             Err(e) => {
