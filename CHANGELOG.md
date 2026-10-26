@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.4.2](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.4.1...v1.4.2) (2026-10-26)
+
+
+### Bug Fixes
+
+* **bridge:** link a PR by the ticket id in its branch or title (ASDLC-VW9U) ([#112](https://github.com/Martin-Rancourt/spl-asdlc/issues/112)) ([e04bab7](https://github.com/Martin-Rancourt/spl-asdlc/commit/e04bab78d4e1d473218addbc737bbb05d27cdcda))
+* **sync:** advance GitHub sync by checkpoint (ASDLC-47PN) ([#111](https://github.com/Martin-Rancourt/spl-asdlc/issues/111)) ([fbb3975](https://github.com/Martin-Rancourt/spl-asdlc/commit/fbb397527caba4e066ff3786e2a3a6188ee64dd4))
+
+
+### Documentation
+
+* say that spl-asdlc's tickets now live in Livela (SID-1292) ([#109](https://github.com/Martin-Rancourt/spl-asdlc/issues/109)) ([184ee35](https://github.com/Martin-Rancourt/spl-asdlc/commit/184ee3525a01d4a998e5d4a75c1c3d4286cd51f8))
+
 ## [1.4.1](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.4.0...v1.4.1) (2026-10-24)
 
 
