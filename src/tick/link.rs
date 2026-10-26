@@ -338,7 +338,7 @@ mod tests {
             "the branch alone"
         );
         assert_eq!(
-            key(named("ben/LVL-7gtc", "fix(mcp): ASDLC settings")),
+            key(named("someone/LVL-7gtc", "fix(mcp): ASDLC settings")),
             "LVL-7GTC",
             "the id ends the branch, any case"
         );

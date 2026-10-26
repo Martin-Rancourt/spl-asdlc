@@ -433,7 +433,7 @@ fn a_branch_named_after_its_ticket_passes_silently() {
 fn a_misnamed_branch_warns_with_the_expected_name_and_refuses_when_asked() {
     for (branch, title) in [
         (
-            "ben/lvl-7gtc-mcp-asdlc",
+            "someone/lvl-7gtc-mcp-asdlc",
             "fix(mcp): ASDLC settings (LVL-7GTC)",
         ),
         (
