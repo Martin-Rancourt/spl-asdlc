@@ -394,30 +394,320 @@ fn a_spent_budget_stops_the_pass_says_so_and_the_next_resumes() {
     assert_eq!(t.writes().len(), 2);
 }
 
+/// `n` minutes into the day: PRs past the 60th still sort by number.
+fn minute(n: u64) -> Option<Timestamp> {
+    Timestamp::parse("2026-10-25T00:00:00Z")
+        .map(|t| Timestamp(t.0 + time::Duration::minutes(n as i64)))
+}
+
+/// PRs `1..=n` naming no ticket, updated one minute apart.
+fn unrelated(n: u64) -> Vec<PullRequest> {
+    (1..=n)
+        .map(|i| PullRequest {
+            updated_at: minute(i),
+            ..named(i, "chore: unrelated")
+        })
+        .collect()
+}
+
+fn checkpoint(log: &Path) -> (Option<String>, BTreeSet<u64>) {
+    let m = load(&memory_path(log)).unwrap();
+    (m.since, m.handled_at_since)
+}
+
+/// ASDLC-47PN: a backlog after the checkpoint is read 25 PRs a request and
+/// at most 50 a pass; the next pass goes on after the last one.
 #[test]
-fn a_failure_checkpoints_each_prior_pr_and_the_next_pass_resumes_after_it() {
+fn a_catch_up_reads_batches_of_25_and_spreads_over_passes() {
+    let t = FakeTracker::default();
+    let g = github();
+    open(&g, unrelated(60));
+    let log = log("catch-up");
+    let out = sync(&t, &g, &log);
+    assert!(out.ok, "{out:?}");
+    assert!(out.message.contains("50 PR(s) read"), "{}", out.message);
+    assert!(
+        out.message
+            .contains("the next pass goes on after the checkpoint"),
+        "{}",
+        out.message
+    );
+    let reads = g.state.borrow().sync_reads.clone();
+    assert_eq!(
+        reads,
+        [(1..=25).collect::<Vec<u64>>(), (26..=50).collect()],
+        "two batches of 25, the oldest first"
+    );
+    assert_eq!(
+        checkpoint(&log),
+        (minute(50).map(|t| t.to_string()), BTreeSet::from([50]))
+    );
+    let out = sync(&t, &g, &log);
+    assert!(out.ok, "{out:?}");
+    assert!(out.message.contains("10 PR(s) read"), "{}", out.message);
+    assert_eq!(
+        g.state.borrow().sync_reads.last().unwrap(),
+        &(51..=60).collect::<Vec<u64>>()
+    );
+}
+
+/// ASDLC-47PN: a pass over its budget keeps the checkpoint of every PR it
+/// handled, says where the next one resumes, and the next one does.
+#[test]
+fn an_over_budget_pass_keeps_its_progress_and_the_next_resumes_after_it() {
+    let t = FakeTracker::default();
+    let g = github();
+    open(&g, unrelated(40));
+    // GitHub is slow on the second batch: the budget is spent when it answers.
+    g.state
+        .borrow_mut()
+        .slow_sync_reads
+        .insert(30, Duration::from_millis(300));
+    let log = log("over-budget");
+    let out = sync_within(&t, &g, &log, Some(Duration::from_millis(200)));
+    assert!(out.ok, "a step of a catch-up, not a failure: {out:?}");
+    assert!(out.message.contains("25 PR(s) read"), "{}", out.message);
+    let at = minute(25).unwrap().to_string();
+    assert!(
+        out.message.contains(&format!(
+            "the time budget is spent: the next pass resumes after the checkpoint {at}"
+        )),
+        "{}",
+        out.message
+    );
+    assert_eq!(checkpoint(&log), (Some(at), BTreeSet::from([25])));
+
+    g.state.borrow_mut().slow_sync_reads.clear();
+    let out = sync(&t, &g, &log);
+    assert!(out.ok, "{out:?}");
+    assert!(out.message.contains("15 PR(s) read"), "{}", out.message);
+    assert_eq!(
+        g.state.borrow().sync_reads.last().unwrap(),
+        &(26..=40).collect::<Vec<u64>>()
+    );
+    assert_eq!(checkpoint(&log).0, minute(40).map(|t| t.to_string()));
+}
+
+/// ASDLC-47PN: a 504 on one batch keeps the batches before it; the pass
+/// says the error on its line.
+#[test]
+fn a_504_on_one_batch_keeps_the_progress_of_the_batches_before_it() {
+    let t = FakeTracker::default();
+    let g = github();
+    open(&g, unrelated(40));
+    g.state.borrow_mut().failing_sync_reads.insert(
+        30,
+        crate::github::ReadError::Unreadable {
+            what: "PRs #26… of example-org/acme".into(),
+            status: Some(504),
+            detail: "HTTP 504: <!DOCTYPE html>".into(),
+        },
+    );
+    let log = log("504");
+    let out = sync(&t, &g, &log);
+    assert!(!out.ok, "{out:?}");
+    assert!(!out.message.contains('\n'), "one line: {}", out.message);
+    assert!(out.message.contains("25 PR(s) read"), "{}", out.message);
+    assert!(
+        out.message
+            .contains("1 failure(s): the PRs after the checkpoint:")
+            && out.message.contains("504"),
+        "{}",
+        out.message
+    );
+    assert_eq!(checkpoint(&log).0, minute(25).map(|t| t.to_string()));
+
+    g.state.borrow_mut().failing_sync_reads.clear();
+    let out = sync(&t, &g, &log);
+    assert!(out.ok, "{out:?}");
+    assert!(out.message.contains("15 PR(s) read"), "{}", out.message);
+}
+
+/// Livela's sync failed every pass on « 1 PR(s) read » and no reason: the
+/// failure was on a second line the host's job line drops, and the failing
+/// PR held the checkpoint back for good. Now the reason is on the line, the
+/// PRs after it go on, and it is read again until it goes through.
+#[test]
+fn a_pr_that_fails_says_why_on_the_line_and_no_longer_holds_back_the_others() {
     let t = FakeTracker::default();
     t.seed("ABC-12", "T", "", Status::InProgress, &[]);
     t.fail_writes_starting_with("link ABC-12");
     let g = github();
     let first = named(1, "chore: unrelated");
     let second = named(2, "feat: thing (ABC-12)");
-    open(&g, vec![second.clone(), first.clone()]);
+    let third = named(3, "chore: unrelated");
+    open(&g, vec![second.clone(), first.clone(), third.clone()]);
     let log = log("checkpoint-each");
     let out = sync(&t, &g, &log);
     assert!(!out.ok, "{out:?}");
-    let memory = load(&memory_path(&log)).unwrap();
-    assert_eq!(memory.since, first.updated_at.map(|t| t.to_string()));
-    assert_eq!(memory.handled_at_since, BTreeSet::from([1]));
+    assert!(!out.message.contains('\n'), "one line: {}", out.message);
+    assert!(out.message.contains("3 PR(s) read"), "{}", out.message);
+    assert!(
+        out.message.contains("; 1 failure(s): PR #2: ") && out.message.contains("link ABC-12"),
+        "the reason: {}",
+        out.message
+    );
+    assert_eq!(
+        checkpoint(&log),
+        (third.updated_at.map(|t| t.to_string()), BTreeSet::from([3]))
+    );
+    assert_eq!(
+        load(&memory_path(&log)).unwrap().followed.get(&second.url),
+        Some(&2),
+        "read again until it goes through"
+    );
 
     t.clear_failing_writes();
     let out = sync(&t, &g, &log);
     assert!(out.ok, "{out:?}");
-    assert_eq!(out.message.matches("PR(s) read").count(), 1);
-    assert_eq!(
-        load(&memory_path(&log)).unwrap().handled_at_since,
-        BTreeSet::from([2])
+    assert!(
+        out.message.contains("1 PR(s) read, 1 link(s) laid"),
+        "{}",
+        out.message
     );
+    assert_eq!(
+        t.writes(),
+        [
+            format!("REFUSED link ABC-12 {}", second.url),
+            format!("link ABC-12 {}", second.url),
+            format!("pr status ABC-12 {} open", second.url),
+        ]
+    );
+}
+
+/// The checkpoint takes the update time of the list, not of the PR read
+/// after it: a PR updated in between is listed again by the next pass, and
+/// the checkpoint never jumps past a row the pass did not handle.
+#[test]
+fn the_checkpoint_takes_the_lists_update_time() {
+    let t = FakeTracker::default();
+    let g = github();
+    let mut prs = unrelated(3);
+    // #2 was updated after the list was read: read with a later time.
+    prs[1].updated_at = minute(30);
+    open(&g, prs);
+    {
+        let mut s = g.state.borrow_mut();
+        s.listed_at.insert((repo(), 2), minute(2).unwrap());
+        s.listed_at.insert((repo(), 3), minute(3).unwrap());
+    }
+    let log = log("list-time");
+    let out = sync(&t, &g, &log);
+    assert!(out.ok, "{out:?}");
+    assert_eq!(
+        checkpoint(&log),
+        (minute(3).map(|t| t.to_string()), BTreeSet::from([3]))
+    );
+}
+
+/// More PRs followed than a pass reads: each pass goes on from where the
+/// last one stopped, so every one is read in turn.
+#[test]
+fn followed_prs_are_read_in_turn_a_bounded_number_per_pass() {
+    let t = FakeTracker::default();
+    t.seed("ABC-12", "T", "", Status::InReview, &[]);
+    let g = github();
+    let prs = unrelated(120);
+    for p in &prs {
+        t.link("ABC-12", &p.url);
+    }
+    {
+        let mut s = g.state.borrow_mut();
+        s.open_pulls.insert(repo(), Ok(prs.clone()));
+    }
+    let log = log("followed-turn");
+    let memory = Memory {
+        since: minute(1000).map(|t| t.to_string()),
+        followed: prs.iter().map(|p| (p.url.clone(), p.number)).collect(),
+        ..Memory::default()
+    };
+    save(&memory_path(&log), &memory).unwrap();
+    let read = |g: &FakeGitHub| -> BTreeSet<u64> {
+        g.state
+            .borrow_mut()
+            .sync_reads
+            .drain(..)
+            .flatten()
+            .collect()
+    };
+    let out = sync(&t, &g, &log);
+    assert!(out.ok, "{out:?}");
+    assert!(
+        out.message.contains("100 of 120 PR(s) followed read"),
+        "{}",
+        out.message
+    );
+    let first = read(&g);
+    assert_eq!(first.len(), 100);
+    let out = sync(&t, &g, &log);
+    assert!(out.ok, "{out:?}");
+    let second = read(&g);
+    let all: BTreeSet<u64> = (1..=120).collect();
+    assert!(
+        all.difference(&first).all(|n| second.contains(n)),
+        "the second pass reads the ones the first did not"
+    );
+}
+
+/// Hundreds of release tags: the oldest that holds a commit is found in a
+/// few compares, not one per tag (one PR took most of a pass's budget).
+#[test]
+fn a_release_is_found_in_a_few_compares_among_hundreds_of_tags() {
+    let t = FakeTracker::default();
+    t.seed("ABC-1", "T", "", Status::PostDeploy, &[]);
+    let g = github();
+    let pr = PullRequest {
+        state: PrState::Merged,
+        merged_at: Some(Timestamp::now()),
+        merge_commit_sha: Some("sha-1".into()),
+        ..named(1, "feat: x (ABC-1)")
+    };
+    merged(&g, vec![pr.clone()]);
+    {
+        let mut s = g.state.borrow_mut();
+        let names: Vec<String> = (0..263).map(|i| format!("acme-v1.{i}.0")).collect();
+        s.tags.insert(
+            repo(),
+            names
+                .iter()
+                .map(|n| GitRef {
+                    name: n.clone(),
+                    sha: format!("c-{n}"),
+                    object_type: ObjectType::Commit,
+                })
+                .collect(),
+        );
+        for (i, n) in names.iter().enumerate() {
+            let status = if i >= 200 {
+                CompareStatus::Ahead
+            } else {
+                CompareStatus::Behind
+            };
+            s.compares.insert(
+                (repo(), "sha-1".into(), n.clone()),
+                Ok(Comparison {
+                    status,
+                    ahead_by: 0,
+                    behind_by: 0,
+                    commits: Vec::new(),
+                    files: Vec::new(),
+                    base_committed_at: None,
+                }),
+            );
+        }
+    }
+    let out = sync(&t, &g, &log("many-tags"));
+    assert!(out.ok, "{out:?}");
+    assert!(
+        t.writes().contains(&format!(
+            "pr status ABC-1 {} released:acme-v1.200.0",
+            pr.url
+        )),
+        "{:?}",
+        t.writes()
+    );
+    let compares = g.state.borrow().compares_read;
+    assert!(compares <= 10, "{compares} compares");
 }
 
 #[test]

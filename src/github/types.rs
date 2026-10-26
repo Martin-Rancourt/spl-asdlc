@@ -368,6 +368,16 @@ pub struct PullRequest {
     pub truncated: Vec<String>,
 }
 
+/// A row of the PR list: what the GitHub sync orders and checkpoints on,
+/// before it reads the PR itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRow {
+    pub number: u64,
+    /// The update time the list gave: a PR updated after the list was read
+    /// is read with a later one, and listed again by the next pass.
+    pub updated_at: Option<Timestamp>,
+}
+
 /// A PR GitHub associates with a commit (`commits/{sha}/pulls`).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CommitPull {
