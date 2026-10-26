@@ -15,8 +15,9 @@ use regex::Regex;
 use yaml_rust2::Yaml;
 
 use crate::examples::{
-    NOT_A_DRAFT, check_called_actions, check_called_workflows, check_no_job_runs_on_a_draft,
-    check_permissions, check_pins, jobs, keys,
+    AGGREGATOR_NAME, CHECKED, NOT_A_DRAFT, check_called_actions, check_called_workflows,
+    check_no_job_runs_on_a_draft, check_permissions, check_pins,
+    check_the_method_checks_and_an_edit, jobs, keys,
 };
 use crate::harness::{own_workflows, relative, root, workflow};
 
@@ -85,7 +86,6 @@ fn this_repositorys_workflows_are_its_callers_and_binaries() {
         .collect();
     let want: BTreeSet<String> = [
         "binaries.yml",
-        "pr-title.yml",
         "pr.yml",
         "publish.yml",
         "release-please.yml",
@@ -156,14 +156,12 @@ fn every_job_runs_on_the_repositorys_runner() {
             }
         }
     }
-    // The calls whose jobs run on the project's runner take it.
-    for (file, job) in [("pr.yml", "guards"), ("pr-title.yml", "title")] {
-        assert_eq!(
-            own(file)["jobs"][job]["with"]["runs-on"].as_str(),
-            Some(RUNS_ON_INPUT),
-            "{file} job {job}"
-        );
-    }
+    // The call whose job runs on the project's runner takes it.
+    assert_eq!(
+        own("pr.yml")["jobs"]["guards"]["with"]["runs-on"].as_str(),
+        Some(RUNS_ON_INPUT),
+        "pr.yml job guards"
+    );
 }
 
 // ---- pr.yml ----
@@ -196,9 +194,10 @@ fn the_pr_workflow_is_unfiltered_runs_on_prs_only_and_aggregates_every_job() {
     );
 
     check_no_job_runs_on_a_draft(&pr, "pr.yml");
+    check_the_method_checks_and_an_edit(&pr, "./.github/workflows/asdlc-pr-checks.yml", "pr.yml");
 
     let aggregator = &pr["jobs"]["required-check"];
-    assert_eq!(aggregator["name"].as_str(), Some("required-check"));
+    assert_eq!(aggregator["name"].as_str(), Some(AGGREGATOR_NAME));
     let others: BTreeSet<String> = jobs(&pr)
         .into_iter()
         .map(|(id, _)| id)
@@ -219,7 +218,8 @@ fn the_pr_workflow_is_unfiltered_runs_on_prs_only_and_aggregates_every_job() {
     let step = steps.last().unwrap();
     assert_eq!(step["uses"].as_str(), Some("./actions/required-check"));
     assert_eq!(step["with"]["needs"].as_str(), Some("${{ toJSON(needs) }}"));
-    // Exactly the jobs an `if:` may skip on a PR that is not a draft.
+    // Exactly the jobs an `if:` may skip on a PR that is not a draft, in a
+    // run that checks it.
     let may_skip: BTreeSet<String> = step["with"]["may-skip"]
         .as_str()
         .unwrap()
@@ -228,7 +228,10 @@ fn the_pr_workflow_is_unfiltered_runs_on_prs_only_and_aggregates_every_job() {
         .collect();
     let gated: BTreeSet<String> = jobs(&pr)
         .into_iter()
-        .filter(|(id, job)| id != "required-check" && job["if"].as_str() != Some(NOT_A_DRAFT))
+        .filter(|(id, job)| {
+            id != "required-check"
+                && job["if"].as_str() != Some(format!("{NOT_A_DRAFT} && {CHECKED}").as_str())
+        })
         .map(|(id, _)| id)
         .collect();
     assert_eq!(may_skip, gated);
@@ -243,9 +246,13 @@ fn the_pr_workflow_is_unfiltered_runs_on_prs_only_and_aggregates_every_job() {
             "{id}"
         );
     }
-    // Rule zero runs on every PR but a draft, whatever guards says.
+    // Rule zero runs on every PR but a draft, whatever guards says, in a run
+    // that checks it.
     let rule_zero = &pr["jobs"]["rule-zero"];
-    assert_eq!(rule_zero["if"].as_str(), Some(NOT_A_DRAFT));
+    assert_eq!(
+        rule_zero["if"].as_str(),
+        Some(format!("{NOT_A_DRAFT} && {CHECKED}").as_str())
+    );
     assert!(rule_zero["needs"].is_badvalue());
 }
 
@@ -292,21 +299,12 @@ fn no_file_a_test_reads_is_prose() {
     }
 }
 
-// ---- pr-title.yml ----
+// ---- the title check, a step of pr.yml's guards ----
 
 #[test]
-fn the_title_check_allows_the_changelog_types_and_reruns_on_edits() {
-    let title = own("pr-title.yml");
-    assert!(strings(&title["on"]["pull_request"]["types"]).contains(&"edited"));
-    assert_eq!(strings(&title["on"]["pull_request"]["branches"]), ["main"]);
-    for (id, job) in jobs(&title) {
-        assert!(job["if"].is_badvalue(), "job {id} has an if: (REQ-CI-018)");
-    }
-    assert_ne!(
-        title["concurrency"]["group"].as_str(),
-        own("pr.yml")["concurrency"]["group"].as_str()
-    );
-    let allowed: BTreeSet<String> = title["jobs"]["title"]["with"]["allowed-types"]
+fn the_title_check_allows_the_changelog_types() {
+    let pr = own("pr.yml");
+    let allowed: BTreeSet<String> = pr["jobs"]["guards"]["with"]["allowed-types"]
         .as_str()
         .unwrap()
         .split(',')

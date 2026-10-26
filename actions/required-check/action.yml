@@ -18,7 +18,8 @@ inputs:
     description: >-
       Comma list of job ids that may be skipped (for example the test jobs a
       prose-only PR does not run). Any other skipped job fails the check, and
-      the method's guards (asdlc-pr-guards.yml) may never be listed.
+      the method's guards (asdlc-pr-checks.yml or asdlc-pr-guards.yml) may
+      never be listed.
     required: false
     default: ''
 
@@ -56,12 +57,12 @@ runs:
           fi
         done
         bad=()
-        # The method's guards (asdlc-pr-guards.yml), known by their outputs,
-        # always run (BR-ASDLC-024): they are a need of this job, and never
-        # one it may skip.
+        # The method's guards (asdlc-pr-checks.yml or asdlc-pr-guards.yml),
+        # known by their outputs, always run (BR-ASDLC-024): they are a need
+        # of this job, and never one it may skip.
         guards="$(jq -r 'to_entries[] | select((.value.outputs // {}) | has("code") and has("detections")) | .key' <<< "$NEEDS")"
         if [ -z "$guards" ]; then
-          echo "::error title=required-check::No job of needs ran the method's guards (asdlc-pr-guards.yml): every PR runs them, as a need of required-check."
+          echo "::error title=required-check::No job of needs ran the method's guards (asdlc-pr-checks.yml or asdlc-pr-guards.yml): every PR runs them, as a need of required-check."
           bad+=("the method's guards (not among needs)")
         fi
         for name in $guards; do

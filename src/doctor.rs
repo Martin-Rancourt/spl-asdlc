@@ -752,16 +752,23 @@ fn files(
     out
 }
 
-/// The title check's job in `asdlc-pr-title.yml`, required by the default
-/// and release branch rulesets beside `required-check` (BR-ASDLC-024).
+/// The title check's job in `asdlc-pr-checks.yml` and `asdlc-pr-title.yml`,
+/// required by the default and release branch rulesets beside
+/// `required-check` (BR-ASDLC-024).
 const TITLE_CHECK: &str = "conventional-title";
 
-/// The method checks every project runs on every PR (BR-ASDLC-024).
-const METHOD_CHECKS: [&str; 2] = ["asdlc-pr-guards.yml", "asdlc-pr-title.yml"];
+/// The workflow that runs every method check of a PR in one job
+/// (BR-ASDLC-024).
+const METHOD_CHECKS: &str = "asdlc-pr-checks.yml";
 
-/// Whether the repository's workflows at `rev` call every reusable workflow
-/// of `METHOD_CHECKS`: `missing` names the ones no job calls. What else its
-/// CI runs is the project's, never judged.
+/// The two workflows that run the same checks in two jobs, before
+/// `METHOD_CHECKS`: a project that still calls both runs every check.
+const SPLIT_METHOD_CHECKS: [&str; 2] = ["asdlc-pr-guards.yml", "asdlc-pr-title.yml"];
+
+/// Whether the repository's workflows at `rev` run every method check: a job
+/// calls `METHOD_CHECKS`, or jobs call both of `SPLIT_METHOD_CHECKS`;
+/// `missing` names what no job calls. What else its CI runs is the
+/// project's, never judged.
 fn method_checks(github: &dyn GitHub, repo: &RepoSlug, rev: &str) -> Check {
     const NAME: &str = "method checks";
     const DIR: &str = ".github/workflows";
@@ -780,18 +787,21 @@ fn method_checks(github: &dyn GitHub, repo: &RepoSlug, rev: &str) -> Check {
             Err(e) => return check(NAME, Verdict::Missing, format!("{name}: {e}")),
         }
     }
-    let absent: Vec<&str> = METHOD_CHECKS
+    if called.contains(METHOD_CHECKS) {
+        return check(NAME, Verdict::Ok, METHOD_CHECKS);
+    }
+    let absent: Vec<&str> = SPLIT_METHOD_CHECKS
         .into_iter()
         .filter(|w| !called.contains(*w))
         .collect();
     if absent.is_empty() {
-        check(NAME, Verdict::Ok, METHOD_CHECKS.join(", "))
+        check(NAME, Verdict::Ok, SPLIT_METHOD_CHECKS.join(", "))
     } else {
         check(
             NAME,
             Verdict::Missing,
             format!(
-                "no job of {DIR} calls {}: every PR runs the method checks (docs/setup/examples/pr.yml, pr-title.yml)",
+                "no job of {DIR} calls {METHOD_CHECKS}, nor {}: every PR runs the method checks (docs/setup/examples/pr.yml)",
                 absent.join(", ")
             ),
         )
@@ -1272,7 +1282,7 @@ fn fix_of(name: &str, config: &Config) -> Fix {
             REPOSITORY,
         ),
         "method checks" => (
-            "Call asdlc-pr-guards.yml and asdlc-pr-title.yml from the project's workflows, as docs/setup/examples/pr.yml and pr-title.yml do.",
+            "Call asdlc-pr-checks.yml from the project's workflows, as docs/setup/examples/pr.yml does.",
             REPOSITORY,
         ),
         "method version" => (
@@ -1848,8 +1858,9 @@ mod tests {
         let half = method_checks(&g, &repo, "main");
         assert_eq!(
             half.to_string(),
-            "method checks: missing — no job of .github/workflows calls asdlc-pr-title.yml: every PR runs the method checks (docs/setup/examples/pr.yml, pr-title.yml)"
+            "method checks: missing — no job of .github/workflows calls asdlc-pr-checks.yml, nor asdlc-pr-title.yml: every PR runs the method checks (docs/setup/examples/pr.yml)"
         );
+        // The two workflows of before asdlc-pr-checks.yml, both called.
         file(
             ".github/workflows/pr-title.yml",
             caller("asdlc-pr-title.yml"),
@@ -1859,6 +1870,18 @@ mod tests {
             all.to_string(),
             "method checks: ok — asdlc-pr-guards.yml, asdlc-pr-title.yml"
         );
+    }
+
+    #[test]
+    fn the_one_workflow_of_every_method_check_is_enough() {
+        let g = FakeGitHub::new();
+        let repo = RepoSlug::parse("example-org/acme").unwrap();
+        g.state.borrow_mut().files.insert(
+            (repo.clone(), "main".into(), ".github/workflows/pr.yml".into()),
+            Ok("jobs:\n  guards:\n    name: title\n    uses: acme/spl-asdlc/.github/workflows/asdlc-pr-checks.yml@v1\n".into()),
+        );
+        let one = method_checks(&g, &repo, "main");
+        assert_eq!(one.to_string(), "method checks: ok — asdlc-pr-checks.yml");
     }
 
     #[test]

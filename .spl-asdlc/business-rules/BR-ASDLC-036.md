@@ -8,7 +8,7 @@ A PR's head branch is `<type>/<ticket-id>-<description>`, all in lowercase: `<ty
 
 The bridge links a PR to its ticket by the id in its branch, or at the end of its title (`… (ABC-123)`), whatever the tracker, comparing ids without regard to case. It never guesses: only an id with one of the project's prefixes whose item carries that very code names a ticket, and an id no item has names none. The tracker's own link wins, and an item URL in the body still names the ticket under `tracker.link_fallback = "body-url"`. A PR found by its id gets the tracker's link from the bridge, so that its release embarks the ticket.
 
-`asdlc-pr-guards.yml` checks the branch's name and gives the expected one, from the title's type and id. On the 1.4 line it only warns (`branch-name-check: warn`, the default), so that PRs already open stay green; `branch-name-check: refuse` refuses it, the next minor line's default.
+`asdlc-pr-checks.yml` (as `asdlc-pr-guards.yml`) checks the branch's name and gives the expected one, from the title's type and id. On the 1.4 line it only warns (`branch-name-check: warn`, the default), so that PRs already open stay green; `branch-name-check: refuse` refuses it, the next minor line's default.
 
 ## Evidence
 
