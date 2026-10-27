@@ -434,11 +434,11 @@ pub fn abandon(t: &Tick, log: &mut ActionLog, who: &str) -> Result<String, Strin
         .default_branch(&t.repo)
         .map_err(|e| e.to_string())?;
     if let Some(branch) = &cy.branch {
-        let cmp = t
+        let status = t
             .github
-            .compare(&t.repo, &default, branch)
+            .compare_status(&t.repo, &default, branch)
             .map_err(|e| e.to_string())?;
-        if matches!(cmp.status, CompareStatus::Ahead | CompareStatus::Diverged) {
+        if matches!(status, CompareStatus::Ahead | CompareStatus::Diverged) {
             // The merge is pinned to the branch as read now.
             let head = t
                 .github

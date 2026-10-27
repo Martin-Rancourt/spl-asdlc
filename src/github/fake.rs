@@ -268,7 +268,26 @@ impl GitHub for FakeGitHub {
             .compares
             .get(&(repo.clone(), base.to_string(), head.to_string()))
         {
+            // Like GitHub's REST compare: a list of 300 files or more is cut,
+            // so the whole comparison is refused.
+            Some(Ok(c)) if c.files.len() >= 300 => Err(ReadError::unreadable(
+                format!("{base}...{head}"),
+                "300 files or more: GitHub cuts the list at 300",
+            )),
             Some(c) => c.clone(),
+            None => not_scripted(format!("{base}...{head}")),
+        }
+    }
+
+    fn compare_status(&self, repo: &RepoSlug, base: &str, head: &str) -> Read<CompareStatus> {
+        self.state.borrow_mut().compares_read += 1;
+        match self
+            .state
+            .borrow()
+            .compares
+            .get(&(repo.clone(), base.to_string(), head.to_string()))
+        {
+            Some(c) => c.clone().map(|c| c.status),
             None => not_scripted(format!("{base}...{head}")),
         }
     }
