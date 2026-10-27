@@ -979,6 +979,63 @@ fn an_approved_green_pr_is_merged_and_its_ticket_goes_to_deploy() {
     }));
 }
 
+/// A ticket whose PR is opened always goes through In Review (BR-ASDLC-037):
+/// with no review configured, one pass writes In Review, merges and writes
+/// To Deploy.
+#[test]
+fn without_a_review_one_pass_writes_in_review_merges_and_writes_to_deploy() {
+    let mut w = World::new();
+    w.config.review.angles = Vec::new();
+    let pr = green(pull_request(7));
+    w.ticket("ABC-7", Status::InProgress, &pr);
+    check_every_box(&w, "ABC-7");
+    w.open(pr);
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert!(
+        w.github_writes()
+            .contains(&"merge example-org/acme#7 at head-7 squash".to_string()),
+        "{:?}",
+        w.github_writes()
+    );
+    let statuses: Vec<String> = w
+        .tracker
+        .writes()
+        .into_iter()
+        .filter(|l| l.starts_with("status ABC-7 "))
+        .collect();
+    assert_eq!(
+        statuses,
+        vec!["status ABC-7 In Review", "status ABC-7 To Deploy"],
+        "{:?}",
+        w.tracker.writes()
+    );
+}
+
+/// The In Review write failed: the PR is not merged past it, so the
+/// ticket never skips In Review (BR-ASDLC-037).
+#[test]
+fn a_failed_in_review_write_holds_the_merge() {
+    let mut w = World::new();
+    w.config.review.angles = Vec::new();
+    let pr = green(pull_request(7));
+    w.ticket("ABC-7", Status::InProgress, &pr);
+    check_every_box(&w, "ABC-7");
+    w.open(pr);
+    w.tracker
+        .fail_writes_starting_with("status ABC-7 In Review");
+    w.tick(false);
+    assert!(
+        !w.github_writes().iter().any(|l| l.starts_with("merge ")),
+        "{:?}",
+        w.github_writes()
+    );
+    assert_eq!(
+        w.tracker.item("ABC-7").state.status,
+        Some(Status::InProgress)
+    );
+}
+
 /// GitHub reports `SUCCESS` next to a status still `IN_PROGRESS` (hung
 /// post-job steps): the conclusion wins and the PR is merged (ASDLC-CPSK).
 #[test]
