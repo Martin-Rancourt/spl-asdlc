@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.5.2](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.5.1...v1.5.2) (2026-10-27)
+
+
+### Bug Fixes
+
+* **checks:** a check run that concluded is not waited for (ASDLC-CPSK) ([#124](https://github.com/Martin-Rancourt/spl-asdlc/issues/124)) ([fcc806d](https://github.com/Martin-Rancourt/spl-asdlc/commit/fcc806d2765f62e57e3728a2545230f800fececb))
+* **github:** read a release's hold from the compare's status alone (ASDLC-X7AX) ([#123](https://github.com/Martin-Rancourt/spl-asdlc/issues/123)) ([84f15d5](https://github.com/Martin-Rancourt/spl-asdlc/commit/84f15d526f135e95cc7ad9d7fe7e56b35a8cef9c))
+* **lock:** a lock found taken is tried again for a moment (ASDLC-PQ7Q) ([#126](https://github.com/Martin-Rancourt/spl-asdlc/issues/126)) ([9c86fcb](https://github.com/Martin-Rancourt/spl-asdlc/commit/9c86fcb497d6eff09ba83dae8fde552e0ad302e6))
+* **merge:** a ticket whose PR is opened always goes through In Review (ASDLC-FDHS) ([#125](https://github.com/Martin-Rancourt/spl-asdlc/issues/125)) ([a2d0a3d](https://github.com/Martin-Rancourt/spl-asdlc/commit/a2d0a3d41c71f5c05c7cf1c7827030d672249ce9))
+
+
+### Documentation
+
+* **setup:** start a Livela project from Livela's guided setup (ASDLC-J5J3) ([#121](https://github.com/Martin-Rancourt/spl-asdlc/issues/121)) ([229517f](https://github.com/Martin-Rancourt/spl-asdlc/commit/229517f82300a59848fbbe6ff00156eceaa46df7))
+
 ## [1.5.1](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.5.0...v1.5.1) (2026-10-26)
 
 
