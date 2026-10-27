@@ -462,9 +462,11 @@ fn an_over_budget_pass_keeps_its_progress_and_the_next_resumes_after_it() {
     g.state
         .borrow_mut()
         .slow_sync_reads
-        .insert(30, Duration::from_millis(300));
+        .insert(30, Duration::from_millis(1200));
     let log = log("over-budget");
-    let out = sync_within(&t, &g, &log, Some(Duration::from_millis(200)));
+    // A budget wide enough for the first batch on a loaded runner, the
+    // slow answer past it (ASDLC-PQ7Q).
+    let out = sync_within(&t, &g, &log, Some(Duration::from_millis(1000)));
     assert!(out.ok, "a step of a catch-up, not a failure: {out:?}");
     assert!(out.message.contains("25 PR(s) read"), "{}", out.message);
     let at = minute(25).unwrap().to_string();
