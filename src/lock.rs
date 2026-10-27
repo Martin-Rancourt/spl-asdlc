@@ -9,10 +9,21 @@
 //! and stays in place: removing it on release would let a third tick lock a
 //! new file while a second still holds the old one. A system without `flock`
 //! (Windows) takes no lock: there, one tick at a time is the host's to keep.
+//!
+//! A `flock` belongs to the open file, which a child process forked by any
+//! thread of the host inherits until it execs: for that instant, the lock of
+//! a tick that just ended still looks held. A tick that finds it taken tries
+//! again for a moment before it gives up (ASDLC-PQ7Q).
 
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+/// How long a lock found taken is tried again: well past a fork's instant,
+/// far below a tick.
+const RETRY: Duration = Duration::from_millis(500);
+const RETRY_STEP: Duration = Duration::from_millis(25);
 
 /// The lock of a running tick, released when dropped.
 #[derive(Debug)]
@@ -29,8 +40,9 @@ impl TickLock {
         PathBuf::from(name)
     }
 
-    /// Take the lock at `path` without waiting: `None` when another tick
-    /// holds it. The file and its directory are created when missing.
+    /// Take the lock at `path`, waiting at most [`RETRY`] for it: `None`
+    /// when another tick holds it. The file and its directory are created
+    /// when missing.
     pub fn try_acquire(path: &Path) -> io::Result<Option<TickLock>> {
         if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
             crate::action_log::private_dir(dir)?;
@@ -40,8 +52,13 @@ impl TickLock {
             .truncate(false)
             .write(true)
             .open(path)?;
-        if !try_lock(&file)? {
-            return Ok(None);
+        let mut waited = Duration::ZERO;
+        while !try_lock(&file)? {
+            if waited >= RETRY {
+                return Ok(None);
+            }
+            std::thread::sleep(RETRY_STEP);
+            waited += RETRY_STEP;
         }
         Ok(Some(TickLock {
             _file: file,
@@ -112,6 +129,21 @@ mod tests {
         assert!(TickLock::try_acquire(&path).unwrap().is_none());
         drop(first);
         assert!(TickLock::try_acquire(&path).unwrap().is_some());
+    }
+
+    /// A lock released a moment later (a forked child's copy of the file
+    /// closed at its exec) is taken, not reported held.
+    #[cfg(unix)]
+    #[test]
+    fn a_lock_released_a_moment_later_is_taken() {
+        let path = scratch("moment.jsonl.lock");
+        let first = TickLock::try_acquire(&path).unwrap().expect("the lock");
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            drop(first);
+        });
+        assert!(TickLock::try_acquire(&path).unwrap().is_some());
+        release.join().unwrap();
     }
 
     #[test]
