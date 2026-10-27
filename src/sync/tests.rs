@@ -819,3 +819,65 @@ fn a_host_runs_the_sync_from_the_repositorys_configuration() {
     assert!(out.ok, "{out:?}");
     assert_eq!(t.writes().len(), 2);
 }
+
+fn review(author: &str, state: &str) -> crate::github::Review {
+    crate::github::Review {
+        id: None,
+        author: Some(author.into()),
+        body: String::new(),
+        state: state.into(),
+        commit_sha: None,
+        submitted_at: None,
+    }
+}
+
+#[test]
+fn a_prs_github_reviews_are_mirrored_on_its_ticket_read_only_and_once() {
+    let t = FakeTracker::default();
+    t.seed("ABC-12", "T", "", Status::InReview, &[]);
+    let g = github();
+    let mut pr = named(7, "feat: thing (ABC-12)");
+    pr.reviews = vec![review("alice", "APPROVED"), review("bob", "COMMENTED")];
+    open(&g, vec![pr.clone()]);
+    let log = log("reviews");
+    let out = sync(&t, &g, &log);
+    assert!(out.ok, "{out:?}");
+    assert!(
+        out.message.contains("1 review mirror(s) recorded"),
+        "{}",
+        out.message
+    );
+    let mirrored = format!("pr reviews ABC-12 {} alice:approved bob:commented", pr.url);
+    assert!(t.writes().contains(&mirrored), "{:?}", t.writes());
+    let before = t.writes().len();
+    sync(&t, &g, &log);
+    assert_eq!(t.writes().len(), before, "no heartbeat: {:?}", t.writes());
+    // Bob asks for changes: the mirror follows GitHub.
+    pr.reviews.push(review("bob", "CHANGES_REQUESTED"));
+    pr.updated_at = Timestamp::parse("2026-10-25T01:00:00Z");
+    open(&g, vec![pr.clone()]);
+    sync(&t, &g, &log);
+    assert_eq!(
+        t.writes().last().unwrap(),
+        &format!(
+            "pr reviews ABC-12 {} alice:approved bob:changes_requested",
+            pr.url
+        )
+    );
+    // A review list GitHub cut is never mirrored partial; the ticket's
+    // status is never moved by a review.
+    pr.reviews.push(review("carol", "APPROVED"));
+    pr.truncated = vec!["reviews".into()];
+    pr.updated_at = Timestamp::parse("2026-10-25T02:00:00Z");
+    open(&g, vec![pr.clone()]);
+    let before = t.writes().len();
+    sync(&t, &g, &log);
+    assert!(
+        t.writes()[before..]
+            .iter()
+            .all(|w| !w.starts_with("pr reviews ")),
+        "{:?}",
+        t.writes()
+    );
+    assert_eq!(t.item("ABC-12").state.status, Some(Status::InReview));
+}

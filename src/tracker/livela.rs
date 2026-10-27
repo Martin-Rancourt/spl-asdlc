@@ -138,6 +138,39 @@ pub trait LivelaStore {
     /// Record the status of the PR an item's web link names: `code` is
     /// [`PrStatus::code`] (the GitHub sync, `crate::sync`).
     fn set_pr_status(&mut self, id: &str, url: &str, code: &str) -> Result<(), String>;
+
+    /// Whether this store creates a milestone under a release item
+    /// ([`Self::create_milestone`]): until it does, a candidate's QA items
+    /// are the release item's own children (BR-ASDLC-038).
+    fn creates_milestones(&self) -> bool {
+        false
+    }
+    /// A new `milestone` of `project` (its id) under `parent`, with no status
+    /// of the bridge's (the core derives it). Returns its id.
+    fn create_milestone(
+        &mut self,
+        _project: &str,
+        _title: &str,
+        _description: &str,
+        _parent: &str,
+    ) -> Result<String, String> {
+        Err("this Livela creates no milestone".into())
+    }
+    /// Whether this store keeps the reviews of the PR a web link names
+    /// ([`Self::set_pr_reviews`]).
+    fn holds_pr_reviews(&self) -> bool {
+        false
+    }
+    /// The reviews recorded for the PR an item's web link names: the code of
+    /// [`PrReviews::code`].
+    fn pr_reviews(&self, _id: &str, _url: &str) -> Option<String> {
+        None
+    }
+    /// Record the reviews of the PR an item's web link names, read-only in
+    /// Livela: `code` is [`PrReviews::code`] (the GitHub sync).
+    fn set_pr_reviews(&mut self, _id: &str, _url: &str, _code: &str) -> Result<(), String> {
+        Err("this Livela keeps no PR review".into())
+    }
 }
 
 pub struct Livela<S: LivelaStore> {
@@ -764,6 +797,49 @@ impl<S: LivelaStore> Tracker for Livela<S> {
         self.as_bridge(format!("status of {pr_url} on {key}"), |s, _| {
             s.set_pr_status(&raw.id, pr_url, &code)
         })
+    }
+
+    fn holds_pr_reviews(&self) -> bool {
+        self.store.borrow().holds_pr_reviews()
+    }
+
+    fn pr_reviews(&self, key: &str, pr_url: &str) -> TResult<Option<PrReviews>> {
+        let raw = self.raw(key)?;
+        let code = self.store.borrow().pr_reviews(&raw.id, pr_url);
+        Ok(code.and_then(|c| PrReviews::parse(&c)))
+    }
+
+    fn record_pr_reviews(&self, key: &str, pr_url: &str, reviews: &PrReviews) -> TResult<()> {
+        if !self.holds_pr_reviews() {
+            return Ok(());
+        }
+        let raw = self.raw(key)?;
+        let code = reviews.code();
+        let store = self.store.borrow();
+        if !store.find_by_web_link(pr_url).contains(&raw.id)
+            || store.pr_reviews(&raw.id, pr_url).as_deref() == Some(code.as_str())
+        {
+            return Ok(());
+        }
+        drop(store);
+        self.as_bridge(format!("reviews of {pr_url} on {key}"), |s, _| {
+            s.set_pr_reviews(&raw.id, pr_url, &code)
+        })
+    }
+
+    fn candidate_milestones(&self) -> bool {
+        self.store.borrow().creates_milestones()
+    }
+
+    /// In the project, under `parent`.
+    fn create_milestone(&self, parent: &str, title: &str, description: &str) -> TResult<Item> {
+        let project = self.scope()?;
+        let parent = self.id_of(parent)?;
+        let id = self.as_bridge(format!("milestone \"{title}\""), |s, _| {
+            s.create_milestone(&project.id, title, description, &parent)
+        })?;
+        let raw = self.raw_id(title, &id)?;
+        self.item_of(&raw)
     }
 }
 

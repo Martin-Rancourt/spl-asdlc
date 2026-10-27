@@ -114,7 +114,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
     if let Some(published) = published {
         // The release published ends every overall review of the cycle
         // (BR-ASDLC-020); the closure stays the fallback.
-        match t.tracker.children(&item.key) {
+        match release_children(t, &item) {
             Ok(children) => end_consolidations(t, log, report, &children, None),
             Err(e) => t.unreadable(report, &item.key, format!("children: {e}")),
         }
@@ -200,7 +200,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
         without_angles,
     );
     let children = match round {
-        Round::Wait => match t.tracker.children(&item.key) {
+        Round::Wait => match release_children(t, &item) {
             Ok(c) => c,
             Err(e) => {
                 t.unreadable(report, &item.key, format!("children: {e}"));
@@ -381,7 +381,7 @@ fn overtaken(
         closure::archive_closed(t, log, report, shape, &candidate, &item, &published);
         return;
     }
-    match t.tracker.children(&item.key) {
+    match release_children(t, &item) {
         Ok(children) => end_consolidations(t, log, report, &children, None),
         Err(e) => t.unreadable(report, &item.key, format!("children: {e}")),
     }
@@ -1046,7 +1046,7 @@ fn open_round(
     offered: &[String],
 ) -> Option<(Vec<Item>, bool)> {
     let release = section(t);
-    let mut children = match t.tracker.children(&item.key) {
+    let mut children = match release_children(t, item) {
         Ok(c) => c,
         Err(e) => {
             t.unreadable(report, &item.key, format!("children: {e}"));
@@ -1055,6 +1055,8 @@ fn open_round(
     };
     let product = &t.config.product.name;
     let v = c.version.to_string();
+    // The key the candidate's QA items are created under, once one is.
+    let mut milestone: Option<String> = None;
     for angle in &release.angles {
         if !offered.contains(&angle.key) {
             continue;
@@ -1107,10 +1109,10 @@ fn open_round(
             &pinned,
         );
         let assignee = angle.assignee.as_ref().and_then(|a| t.tracker.user(a).ok());
-        if let Some(created) =
-            create_child(t, log, report, &item.key, &title, &body, label, assignee)
+        let parent = qa_parent(t, log, report, item, c, &mut milestone)?;
+        if let Some(created) = create_child(t, log, report, &parent, &title, &body, label, assignee)
         {
-            children.push(created);
+            children.push(as_release_child(created, item));
         }
     }
     let title_of = format!("{product} {v} (rc.{})", c.rc);
@@ -1145,14 +1147,100 @@ fn open_round(
         };
         let (_, body) = texts::consolidation_item(&c.tag, &title_of, of, &pinned);
         let assignee = coordinator(t);
-        if let Some(created) =
-            create_child(t, log, report, &item.key, &title, &body, label, assignee)
+        let parent = qa_parent(t, log, report, item, c, &mut milestone)?;
+        if let Some(created) = create_child(t, log, report, &parent, &title, &body, label, assignee)
         {
-            children.push(created);
+            children.push(as_release_child(created, item));
         }
     }
     let blocked = block_consolidation(t, log, report, &children, &c.tag);
     Some((children, blocked))
+}
+
+/// The release item's children as the method reads them (BR-ASDLC-038): a
+/// candidate's QA milestone is the tracker's grouping, not an item of the
+/// method's, so the items in it read as the release item's own children
+/// and the milestone itself is left out.
+pub fn release_children(t: &Tick, item: &Item) -> crate::tracker::TResult<Vec<Item>> {
+    let mut out = Vec::new();
+    for ch in t.tracker.children(&item.key)? {
+        if !is_milestone(&ch) {
+            out.push(ch);
+            continue;
+        }
+        for inner in t.tracker.children(&ch.key)? {
+            out.push(as_release_child(inner, item));
+        }
+    }
+    Ok(out)
+}
+
+/// A candidate's QA milestone: its marker, and no status of the method's
+/// (the tracker derives it), so that a ticket carrying a pasted marker is
+/// never taken for one.
+fn is_milestone(item: &Item) -> bool {
+    item.state.status.is_none() && texts::milestone_scope(&item.description).is_some()
+}
+
+/// An item of a candidate's milestone, read as the release item's child.
+fn as_release_child(mut inner: Item, release: &Item) -> Item {
+    inner.parent = Some(release.key.clone());
+    inner
+}
+
+/// The key the candidate's QA items are created under (BR-ASDLC-038): on a
+/// tracker that groups them, the candidate's milestone under the release
+/// item, named after the candidate, found by its marker or created once;
+/// the release item itself otherwise. `None` when the milestone could not
+/// be read or created: nothing is created under the release item instead,
+/// and the next tick retries.
+fn qa_parent(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    item: &Item,
+    c: &Candidate,
+    known: &mut Option<String>,
+) -> Option<String> {
+    if let Some(k) = known {
+        return Some(k.clone());
+    }
+    if !t.tracker.candidate_milestones() {
+        *known = Some(item.key.clone());
+        return known.clone();
+    }
+    let children = match t.tracker.children(&item.key) {
+        Ok(ch) => ch,
+        Err(e) => {
+            t.unreadable(report, &item.key, format!("children: {e}"));
+            return None;
+        }
+    };
+    let found = children.into_iter().find(|ch| {
+        is_milestone(ch)
+            && texts::milestone_scope(&ch.description).as_deref() == Some(c.tag.as_str())
+    });
+    let key = match found {
+        Some(m) => m.key,
+        None => {
+            let description = for_tracker(t, &texts::milestone_description(&c.tag));
+            t.act(
+                log,
+                report,
+                &item.key,
+                &format!("create milestone \"{}\"", c.tag),
+                json!({"candidate": c.tag}),
+                || {
+                    t.tracker
+                        .create_milestone(&item.key, &c.tag, &description)
+                        .map_err(|e| e.to_string())
+                },
+            )?
+            .key
+        }
+    };
+    *known = Some(key.clone());
+    Some(key)
 }
 
 /// The children as `found` reads them (a marker written back).
@@ -1193,11 +1281,13 @@ fn block_consolidation(
     super::merge::block_consolidation(t, log, report, &consolidation.key, &angles)
 }
 
-/// The consolidation items of the release item ended by a later fact
-/// (BR-ASDLC-020): every one but the `current` candidate's goes Done, since
-/// a newer candidate was tagged (the overall review cut it); with no
-/// `current`, the release is published and every one goes Done. The
-/// cycle's closure still closes what is left (spec 05 §11).
+/// The QA rounds of the release item ended by a later fact: once a newer
+/// candidate is tagged, it redoes every review (BR-ASDLC-038), so every QA
+/// item of an older candidate still open (its angle items, its
+/// consolidation item) goes Canceled, in the pass that first sees the newer
+/// candidate; with no `current`, the release is published and every
+/// consolidation item goes Done (BR-ASDLC-020). The cycle's closure still
+/// closes what is left (spec 05 §11).
 fn end_consolidations(
     t: &Tick,
     log: &mut ActionLog,
@@ -1206,17 +1296,20 @@ fn end_consolidations(
     current: Option<&str>,
 ) {
     for ch in children {
-        let Some(BridgeItem::Consolidation { scope }) =
-            texts::bridge_item(&ch.description, ch.parent.as_deref())
-        else {
-            continue;
+        let scope = match texts::bridge_item(&ch.description, ch.parent.as_deref()) {
+            Some(BridgeItem::Consolidation { scope }) => scope,
+            Some(BridgeItem::Angle { scope, .. }) if current.is_some() => scope,
+            _ => continue,
         };
         if ch.state.is_resolved() || Some(scope.as_str()) == current {
             continue;
         }
-        let why = match current {
-            Some(newer) => format!("status Done (newer candidate {newer})"),
-            None => "status Done (release published)".to_string(),
+        let (status, why) = match current {
+            Some(newer) => (
+                Status::Canceled,
+                format!("status Canceled (newer candidate {newer} redoes every review)"),
+            ),
+            None => (Status::Done, "status Done (release published)".to_string()),
         };
         t.act(
             log,
@@ -1226,7 +1319,7 @@ fn end_consolidations(
             json!({"candidate": scope}),
             || {
                 t.tracker
-                    .set_status(&ch.key, Status::Done, None)
+                    .set_status(&ch.key, status, None)
                     .map_err(|e| e.to_string())
             },
         );
@@ -1421,7 +1514,7 @@ fn gate_fix(
     if gate::red_gate(first, &[], &wait) == gate::RedGate::NotRed {
         return;
     }
-    let children = match t.tracker.children(&item.key) {
+    let children = match release_children(t, item) {
         Ok(ch) => ch,
         Err(e) => {
             t.unreadable(report, &item.key, format!("children: {e}"));
@@ -1595,7 +1688,7 @@ fn close_gate_fixes(
     c: &Candidate,
     run: &crate::github::WorkflowRun,
 ) {
-    let children = match t.tracker.children(&item.key) {
+    let children = match release_children(t, item) {
         Ok(ch) => ch,
         Err(e) => {
             t.unreadable(report, &item.key, format!("children: {e}"));

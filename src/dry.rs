@@ -477,6 +477,30 @@ impl Tracker for DryTracker<'_> {
             .push(format!("tracker: link {key} to {pr_url}"));
         Ok(())
     }
+    fn candidate_milestones(&self) -> bool {
+        self.inner.candidate_milestones()
+    }
+    fn create_milestone(&self, parent: &str, title: &str, description: &str) -> TResult<Item> {
+        self.intents.push(format!(
+            "tracker: create milestone \"{title}\" under {parent}"
+        ));
+        Ok(Item {
+            id: String::new(),
+            key: format!("{NEW_KEY}{title})"),
+            title: title.to_string(),
+            description: description.to_string(),
+            url: String::new(),
+            state: ItemState {
+                name: "Open".into(),
+                status: None,
+                kind: crate::method::vocabulary::StateKind::Unknown,
+            },
+            labels: Vec::new(),
+            assignee: None,
+            parent: Some(parent.to_string()),
+            archived: false,
+        })
+    }
     fn archives(&self) -> bool {
         self.inner.archives()
     }

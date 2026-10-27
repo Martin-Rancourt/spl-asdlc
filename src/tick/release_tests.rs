@@ -457,9 +457,16 @@ impl World {
     /// The round of `candidate`: its angle sub-items and its consolidation item.
     fn round(&self, candidate: &str) -> Vec<crate::tracker::Item> {
         let release = self.release_item();
-        self.tracker
-            .children(&release.key)
-            .unwrap()
+        // The items of a candidate's milestone count as the release's own.
+        let mut children = Vec::new();
+        for ch in self.tracker.children(&release.key).unwrap() {
+            if texts::milestone_scope(&ch.description).is_some() {
+                children.extend(self.tracker.children(&ch.key).unwrap());
+            } else {
+                children.push(ch);
+            }
+        }
+        children
             .into_iter()
             .filter(
                 |c| match texts::bridge_item(&c.description, c.parent.as_deref()) {
@@ -4129,26 +4136,28 @@ fn a_release_relation_that_cannot_be_written_holds_the_brief_until_it_is_laid() 
 }
 
 #[test]
-fn a_newer_candidate_tagged_closes_the_older_consolidation_once() {
+fn a_newer_candidate_tagged_cancels_every_open_qa_item_of_the_older_once() {
     let w = World::new();
     w.tick();
     let older = w.consolidation(CAND).key;
+    let angles = w.angle_keys(CAND);
+    // One angle finished before the newer candidate: it stays Done.
+    w.tracker
+        .set_status(&angles[0], Status::Done, None)
+        .unwrap();
     w.cut_rc2();
-    // Tagged, its gate not green yet: the older overall review is over all
-    // the same.
+    // Tagged, its gate not green yet: it redoes every review all the same
+    // (BR-ASDLC-038), so the older candidate's open QA items are canceled.
     w.gate(vec![
         gate_run(2, CAND2, "c2", None),
         gate_run(1, CAND, "c1", Some("success")),
     ]);
     let r = w.tick();
     assert!(r.ok(), "{r:?}");
-    assert_eq!(w.tracker.item(&older).state.status, Some(Status::Done));
-    for angle in w.angle_keys(CAND) {
-        assert_eq!(
-            w.tracker.item(&angle).state.status,
-            Some(Status::Ready),
-            "only the consolidation is ended by the newer candidate"
-        );
+    assert_eq!(w.tracker.item(&older).state.status, Some(Status::Canceled));
+    assert_eq!(w.tracker.item(&angles[0]).state.status, Some(Status::Done));
+    for angle in &angles[1..] {
+        assert_eq!(w.tracker.item(angle).state.status, Some(Status::Canceled));
     }
     w.quiet();
 
@@ -4164,6 +4173,87 @@ fn a_newer_candidate_tagged_closes_the_older_consolidation_once() {
     assert_eq!(newer.state.status, Some(Status::Ready));
     assert_eq!(w.blockers(&newer.key), w.angle_keys(CAND2));
     w.quiet();
+}
+
+/// The milestones under the release item: `(title, its children's keys
+/// sorted)`.
+fn milestones(w: &World) -> Vec<(String, Vec<String>)> {
+    let release = w.release_item();
+    w.tracker
+        .children(&release.key)
+        .unwrap()
+        .into_iter()
+        .filter(|ch| texts::milestone_scope(&ch.description).is_some())
+        .map(|m| {
+            let mut keys: Vec<String> = w
+                .tracker
+                .children(&m.key)
+                .unwrap()
+                .into_iter()
+                .map(|i| i.key)
+                .collect();
+            keys.sort();
+            (m.title, keys)
+        })
+        .collect()
+}
+
+#[test]
+fn on_a_tracker_with_milestones_each_candidate_gets_its_own_qa_milestone() {
+    let mut w = World::new();
+    w.tracker.milestones = true;
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    // One milestone named after the candidate, holding one item per angle
+    // and the overall review; nothing of the round directly under the
+    // release item.
+    let mut first = w.angle_keys(CAND);
+    let consolidation = w.consolidation(CAND);
+    assert_eq!(w.blockers(&consolidation.key), first);
+    assert_eq!(first.len(), config().release.angles.len());
+    first.push(consolidation.key);
+    first.sort();
+    assert_eq!(milestones(&w), vec![(CAND.to_string(), first.clone())]);
+    assert_eq!(w.briefs(CAND).len(), 1);
+    w.quiet();
+
+    // A newer candidate redoes every review in its own milestone; the older
+    // one's open items are canceled.
+    w.cut_rc2();
+    w.gate(vec![
+        gate_run(2, CAND2, "c2", Some("success")),
+        gate_run(1, CAND, "c1", Some("success")),
+    ]);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let ms = milestones(&w);
+    assert_eq!(ms.len(), 2, "{ms:?}");
+    assert_eq!(ms[0], (CAND.to_string(), first.clone()));
+    assert_eq!(ms[1].0, CAND2);
+    assert_eq!(ms[1].1.len(), first.len());
+    for key in &first {
+        assert_eq!(w.tracker.item(key).state.status, Some(Status::Canceled));
+    }
+    let newer = w.consolidation(CAND2);
+    assert_eq!(newer.state.status, Some(Status::Ready));
+    assert_eq!(w.blockers(&newer.key), w.angle_keys(CAND2));
+    w.quiet();
+}
+
+#[test]
+fn a_milestone_that_cannot_be_created_creates_no_qa_item_and_is_retried() {
+    let mut w = World::new();
+    w.tracker.milestones = true;
+    w.tracker.fail_writes_starting_with("create milestone");
+    let r = w.tick();
+    assert!(!r.ok(), "{r:?}");
+    assert!(w.round(CAND).is_empty());
+    assert!(w.briefs(CAND).is_empty());
+    w.tracker.state.borrow_mut().failing_writes.clear();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(milestones(&w).len(), 1);
+    assert_eq!(w.briefs(CAND).len(), 1);
 }
 
 #[test]
