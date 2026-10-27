@@ -31,6 +31,11 @@ enum Command {
         #[command(subcommand)]
         command: TicketCommand,
     },
+    /// Business-rule commands.
+    Rules {
+        #[command(subcommand)]
+        command: RulesCommand,
+    },
     /// One pass of the bridge over the repository of each configuration.
     Tick {
         /// A configuration (`.spl-asdlc/config.toml`); repeat for several repositories.
@@ -155,6 +160,20 @@ enum TicketCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum RulesCommand {
+    /// Split a one-file register of rules (`## BR-<PRODUCT>-<NNN>: <title>`
+    /// headings) into the registry, one file per rule; a rule that already has
+    /// its file is kept as it is.
+    Split {
+        /// The register, e.g. `docs/business-rules.md`, as the rules' Evidence names it.
+        register: PathBuf,
+        /// The registry to write into.
+        #[arg(long, default_value = crate::method::business_rules::REGISTRY_DIR)]
+        out: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum ConfigCommand {
     /// Validate a configuration; exits 1 and lists every problem when it is invalid.
     Check {
@@ -206,6 +225,9 @@ where
             &mut out,
             &mut err,
         ),
+        Command::Rules {
+            command: RulesCommand::Split { register, out: dir },
+        } => rules_split(&register, &dir, &mut out, &mut err),
         Command::Tick {
             files,
             instance,
@@ -696,6 +718,56 @@ fn doctor(
     } else {
         ExitCode::from(1)
     }
+}
+
+fn rules_split(
+    register: &std::path::Path,
+    dir: &std::path::Path,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> ExitCode {
+    let text = match std::fs::read_to_string(register) {
+        Ok(t) => t,
+        Err(e) => {
+            let _ = writeln!(err, "{} could not be read: {e}", register.display());
+            return ExitCode::from(2);
+        }
+    };
+    let name = register.display().to_string().replace('\\', "/");
+    let rules = match crate::method::business_rules::split::split(&name, &text) {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = writeln!(err, "{e}");
+            return ExitCode::from(1);
+        }
+    };
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        let _ = writeln!(err, "{} could not be created: {e}", dir.display());
+        return ExitCode::from(2);
+    }
+    let (mut written, mut kept) = (0, Vec::new());
+    for r in &rules {
+        let path = dir.join(&r.name);
+        if path.exists() {
+            kept.push(r.id.as_str());
+            continue;
+        }
+        if let Err(e) = std::fs::write(&path, &r.text) {
+            let _ = writeln!(err, "{} could not be written: {e}", path.display());
+            return ExitCode::from(2);
+        }
+        written += 1;
+    }
+    let _ = writeln!(
+        out,
+        "{name}: {} rule(s), {written} written to {}",
+        rules.len(),
+        dir.display()
+    );
+    if !kept.is_empty() {
+        let _ = writeln!(out, "kept, their file already exists: {}", kept.join(", "));
+    }
+    ExitCode::SUCCESS
 }
 
 fn ticket_check(
