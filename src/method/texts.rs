@@ -89,6 +89,28 @@ pub enum BridgeItem {
     Consolidation { scope: String },
 }
 
+/// The description of a candidate's QA milestone (BR-ASDLC-038): one item
+/// per QA angle and the overall review, in the milestone named after the
+/// candidate.
+pub fn milestone_description(candidate: &str) -> String {
+    format!(
+        "The QA of the release candidate `{candidate}`: one item per QA angle and the overall review. \
+         A newer candidate redoes every review in its own milestone; what is left open here is then canceled.\n\n{}\n",
+        marker("milestone", &[("scope", candidate)])
+    )
+}
+
+static MILESTONE_MARKER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"spl-asdlc:milestone scope=([^\s`>]+)").unwrap());
+
+/// The candidate whose QA milestone this description is, read off its
+/// marker.
+pub fn milestone_scope(description: &str) -> Option<String> {
+    MILESTONE_MARKER
+        .captures(description)
+        .map(|c| c[1].to_string())
+}
+
 static ITEM_MARKER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"spl-asdlc:(release|angle|consolidation)((?: [a-z]+=[^\s`>]+)*)").unwrap()
 });

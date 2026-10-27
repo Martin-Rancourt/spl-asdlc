@@ -256,6 +256,101 @@ impl fmt::Display for PrStatus {
     }
 }
 
+/// A reviewer's latest verdict on a PR, as GitHub shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    Approved,
+    ChangesRequested,
+    /// Comments only, with no approval or request for changes.
+    Commented,
+    /// An approval or request for changes that was dismissed.
+    Dismissed,
+}
+
+impl Verdict {
+    pub fn code(self) -> &'static str {
+        match self {
+            Verdict::Approved => "approved",
+            Verdict::ChangesRequested => "changes_requested",
+            Verdict::Commented => "commented",
+            Verdict::Dismissed => "dismissed",
+        }
+    }
+
+    fn parse(code: &str) -> Option<Verdict> {
+        [
+            Verdict::Approved,
+            Verdict::ChangesRequested,
+            Verdict::Commented,
+            Verdict::Dismissed,
+        ]
+        .into_iter()
+        .find(|v| v.code() == code)
+    }
+}
+
+/// The reviews of a PR as GitHub holds them, mirrored read-only on the items
+/// linked to it (the GitHub sync, `crate::sync`): each reviewer's latest
+/// verdict, by login. GitHub is the source; the tracker only shows them.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PrReviews(pub Vec<(String, Verdict)>);
+
+impl PrReviews {
+    /// Each reviewer's latest verdict, sorted by login (case folded): an
+    /// approval or a request for changes, dismissed or not, stands over a
+    /// later comment; a pending review counts for nothing. Reviews are
+    /// oldest first.
+    pub fn of(reviews: &[crate::github::Review]) -> PrReviews {
+        let mut latest: Vec<(String, Verdict)> = Vec::new();
+        for r in reviews {
+            let Some(login) = r.author.as_deref().filter(|l| !l.is_empty()) else {
+                continue;
+            };
+            let verdict = match r.state.to_ascii_uppercase().as_str() {
+                "APPROVED" => Verdict::Approved,
+                "CHANGES_REQUESTED" => Verdict::ChangesRequested,
+                "DISMISSED" => Verdict::Dismissed,
+                "COMMENTED" => Verdict::Commented,
+                _ => continue,
+            };
+            match latest
+                .iter_mut()
+                .find(|(l, _)| l.eq_ignore_ascii_case(login))
+            {
+                Some(entry) if verdict != Verdict::Commented => entry.1 = verdict,
+                Some(_) => {}
+                None => latest.push((login.to_string(), verdict)),
+            }
+        }
+        latest.sort_by_key(|(l, _)| l.to_ascii_lowercase());
+        PrReviews(latest)
+    }
+
+    /// The value a tracker stores: `<login>:<verdict>` pairs separated by a
+    /// space (`alice:approved bob:changes_requested`); empty for none.
+    pub fn code(&self) -> String {
+        self.0
+            .iter()
+            .map(|(l, v)| format!("{l}:{}", v.code()))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// The reviews of a stored value; `None` for a value of no known shape.
+    pub fn parse(code: &str) -> Option<PrReviews> {
+        code.split_whitespace()
+            .map(|pair| {
+                let (login, verdict) = pair.rsplit_once(':')?;
+                if login.is_empty() {
+                    return None;
+                }
+                Some((login.to_string(), Verdict::parse(verdict)?))
+            })
+            .collect::<Option<Vec<_>>>()
+            .map(PrReviews)
+    }
+}
+
 /// What the bridge creates: a release item, an angle sub-item, a
 /// consolidation item, a finding ticket, the nits ticket, a gate-fix
 /// ticket, a validation sub-task.
@@ -357,6 +452,38 @@ pub trait Tracker {
         Ok(())
     }
 
+    /// Whether the tracker holds a PR's reviews on the items linked to it
+    /// ([`Tracker::record_pr_reviews`]).
+    fn holds_pr_reviews(&self) -> bool {
+        false
+    }
+    /// The reviews of a linked PR mirrored on the item; `None` when none
+    /// are, or the tracker holds none.
+    fn pr_reviews(&self, _key: &str, _pr_url: &str) -> TResult<Option<PrReviews>> {
+        Ok(None)
+    }
+    /// Mirror on the item the reviews of a PR linked to it, read-only (the
+    /// GitHub sync). A value already there records nothing; a PR not linked
+    /// to the item, or a tracker that holds no reviews, writes nothing.
+    fn record_pr_reviews(&self, _key: &str, _pr_url: &str, _reviews: &PrReviews) -> TResult<()> {
+        Ok(())
+    }
+
+    /// Whether the tracker groups a release candidate's QA items in a
+    /// milestone of their own under the release item (BR-ASDLC-038). Without
+    /// it they are the release item's own children.
+    fn candidate_milestones(&self) -> bool {
+        false
+    }
+    /// A milestone under `parent`, in the project: a grouping whose status
+    /// the tracker derives from its children, never set by the bridge.
+    fn create_milestone(&self, parent: &str, title: &str, _description: &str) -> TResult<Item> {
+        Err(TrackerError::refused(
+            format!("milestone {title} under {parent}"),
+            "this tracker has no milestones",
+        ))
+    }
+
     /// Whether the tracker archives items: one that counts its open items
     /// against a limit (Linear's free plan) archives what a closed cycle
     /// resolved (BR-ASDLC-019); one without a limit does not, and the bridge
@@ -416,6 +543,38 @@ impl StatusTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn review(author: &str, state: &str) -> crate::github::Review {
+        crate::github::Review {
+            id: None,
+            author: Some(author.into()),
+            body: String::new(),
+            state: state.into(),
+            commit_sha: None,
+            submitted_at: None,
+        }
+    }
+
+    #[test]
+    fn a_prs_reviews_are_each_reviewers_latest_verdict_and_round_trip() {
+        let reviews = PrReviews::of(&[
+            review("bob", "CHANGES_REQUESTED"),
+            review("alice", "COMMENTED"),
+            review("Bob", "APPROVED"),
+            review("bob", "COMMENTED"),
+            review("carol", "PENDING"),
+            review("dave", "APPROVED"),
+            review("dave", "DISMISSED"),
+        ]);
+        assert_eq!(
+            reviews.code(),
+            "alice:commented bob:approved dave:dismissed"
+        );
+        assert_eq!(PrReviews::parse(&reviews.code()), Some(reviews));
+        assert_eq!(PrReviews::parse(""), Some(PrReviews::default()));
+        assert_eq!(PrReviews::parse("alice:shrugged"), None);
+        assert_eq!(PrReviews::parse(":approved"), None);
+    }
 
     #[test]
     fn the_status_table_is_the_identity_by_exact_name() {

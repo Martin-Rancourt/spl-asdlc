@@ -102,10 +102,7 @@ pub fn status(t: &Tick) -> Result<(Cycle, GoDecision), String> {
         .branch
         .clone()
         .ok_or_else(|| format!("no release branch holds {}", cy.candidate.tag))?;
-    let children = t
-        .tracker
-        .children(&cy.item.key)
-        .map_err(|e| e.to_string())?;
+    let children = release::release_children(t, &cy.item).map_err(|e| e.to_string())?;
     // A draft angle PR is out of the flow and counts for nothing.
     let open: Vec<_> = t
         .github

@@ -34,6 +34,10 @@ struct MemStore {
     priorities: BTreeMap<String, Option<u8>>,
     /// A status the ticket type lacks, for the refusal tests.
     lacks: Option<&'static str>,
+    /// Whether it creates milestones and keeps PR reviews (LVL-TCAY).
+    milestones: bool,
+    /// The reviews recorded for each `(item id, PR url)`.
+    reviews: BTreeMap<(String, String), String>,
 }
 
 impl Default for MemStore {
@@ -52,6 +56,8 @@ impl Default for MemStore {
             facts: Vec::new(),
             priorities: BTreeMap::new(),
             lacks: None,
+            milestones: false,
+            reviews: BTreeMap::new(),
         }
     }
 }
@@ -283,6 +289,54 @@ impl LivelaStore for MemStore {
         let item = self.items.get_mut(id).ok_or("no item")?;
         item.pr_statuses.retain(|(u, _)| u != url);
         item.pr_statuses.push((url.into(), code.into()));
+        Ok(())
+    }
+    fn creates_milestones(&self) -> bool {
+        self.milestones
+    }
+    fn create_milestone(
+        &mut self,
+        project: &str,
+        title: &str,
+        description: &str,
+        parent: &str,
+    ) -> Result<String, String> {
+        if !self.milestones {
+            return Err("no milestone".into());
+        }
+        let prefix = self
+            .projects
+            .iter()
+            .find(|p| p.id == project)
+            .map(|p| p.prefix.clone())
+            .ok_or(format!("no project {project}"))?;
+        let id = self.id();
+        self.fact(format!("create milestone {id}"));
+        let item = LivelaItem {
+            id: id.clone(),
+            short_id: format!("{prefix}-{}", &id[4..]),
+            title: title.into(),
+            description: description.into(),
+            status: "Open".into(),
+            parent: Some(parent.into()),
+            projects: vec![project.into()],
+            ..LivelaItem::default()
+        };
+        self.items.insert(id.clone(), item);
+        Ok(id)
+    }
+    fn holds_pr_reviews(&self) -> bool {
+        self.milestones
+    }
+    fn pr_reviews(&self, id: &str, url: &str) -> Option<String> {
+        self.reviews
+            .get(&(id.to_string(), url.to_string()))
+            .cloned()
+    }
+    fn set_pr_reviews(&mut self, id: &str, url: &str, code: &str) -> Result<(), String> {
+        self.fact(format!("pr reviews {id} {url} {code}"));
+        self.reviews
+            .insert((id.to_string(), url.to_string()), code.to_string());
         Ok(())
     }
 }
@@ -1025,4 +1079,80 @@ fn a_pr_names_its_livela_ticket_by_branch_title_or_either_address() {
         ),
         None
     );
+}
+
+#[test]
+fn a_store_without_milestones_says_so_and_creates_none() {
+    let t = td(MemStore::default());
+    assert!(!t.candidate_milestones());
+    assert!(!t.holds_pr_reviews());
+    let release = t
+        .create_item(&new_item("release", Status::InProgress))
+        .unwrap();
+    let err = t
+        .create_milestone(&release.key, "v1.0.0-rc.1", "d")
+        .unwrap_err();
+    assert!(matches!(err, TrackerError::Refused { .. }), "{err}");
+    // Reviews to mirror write nothing on a store that keeps none.
+    let reviews = PrReviews(vec![("alice".into(), Verdict::Approved)]);
+    let before = t.store.borrow().facts.len();
+    t.record_pr_reviews(&release.key, "https://github.com/o/r/pull/1", &reviews)
+        .unwrap();
+    assert_eq!(t.store.borrow().facts.len(), before);
+}
+
+#[test]
+fn a_milestone_is_created_under_its_parent_signed_and_reads_with_no_status_of_the_method() {
+    let t = td(MemStore {
+        milestones: true,
+        ..MemStore::default()
+    });
+    assert!(t.candidate_milestones());
+    let release = t
+        .create_item(&new_item("release", Status::InProgress))
+        .unwrap();
+    let m = t
+        .create_milestone(&release.key, "v1.0.0-rc.1", "the QA")
+        .unwrap();
+    assert_eq!(m.title, "v1.0.0-rc.1");
+    assert_eq!(m.parent.as_deref(), Some(release.key.as_str()));
+    assert_eq!(m.state.status, None);
+    assert!(!m.state.is_resolved());
+    let children = t.children(&release.key).unwrap();
+    assert_eq!(
+        children.iter().map(|c| &c.key).collect::<Vec<_>>(),
+        vec![&m.key]
+    );
+    let (author, _) = t.store.borrow().facts.last().unwrap().clone();
+    assert_eq!(
+        t.store
+            .borrow()
+            .participants
+            .get(&author)
+            .map(String::as_str),
+        Some(PARTICIPANT)
+    );
+}
+
+#[test]
+fn pr_reviews_are_mirrored_on_a_linked_item_once() {
+    let t = td(MemStore {
+        milestones: true,
+        ..MemStore::default()
+    });
+    let a = t.create_item(&new_item("a", Status::InReview)).unwrap();
+    let url = "https://github.com/o/r/pull/1";
+    let reviews = PrReviews(vec![
+        ("alice".into(), Verdict::Approved),
+        ("bob".into(), Verdict::ChangesRequested),
+    ]);
+    // Not linked: nothing.
+    t.record_pr_reviews(&a.key, url, &reviews).unwrap();
+    assert_eq!(t.pr_reviews(&a.key, url).unwrap(), None);
+    t.link_pr(&a.key, url, "PR").unwrap();
+    t.record_pr_reviews(&a.key, url, &reviews).unwrap();
+    assert_eq!(t.pr_reviews(&a.key, url).unwrap(), Some(reviews.clone()));
+    let before = t.store.borrow().facts.len();
+    t.record_pr_reviews(&a.key, url, &reviews).unwrap();
+    assert_eq!(t.store.borrow().facts.len(), before);
 }

@@ -16,6 +16,8 @@ struct Stored {
     links: Vec<String>,
     /// The status recorded for each linked PR, by its URL.
     pr_statuses: BTreeMap<String, PrStatus>,
+    /// The reviews mirrored for each linked PR, by its URL.
+    pr_reviews: BTreeMap<String, PrReviews>,
     /// The priority it was created with.
     priority: Option<Priority>,
 }
@@ -52,6 +54,9 @@ pub struct FakeTracker {
     /// The tracker's projects, by name; `None` plays a tracker that places
     /// no item in a project (the key is ignored).
     pub projects: Option<Vec<String>>,
+    /// Whether it groups a candidate's QA items in a milestone (false by
+    /// default, as Linear); true plays Livela.
+    pub milestones: bool,
     pub state: RefCell<FakeState>,
 }
 
@@ -72,6 +77,7 @@ impl FakeTracker {
             status_names: Status::ALL.iter().map(|s| s.name().to_string()).collect(),
             archiving: true,
             projects: Some(Vec::new()),
+            milestones: false,
             state: RefCell::new(FakeState::default()),
         }
     }
@@ -97,6 +103,7 @@ impl FakeTracker {
                 comments: Vec::new(),
                 links: Vec::new(),
                 pr_statuses: BTreeMap::new(),
+                pr_reviews: BTreeMap::new(),
                 priority: None,
             },
         );
@@ -354,6 +361,34 @@ impl Tracker for FakeTracker {
         Ok(self.item(&key))
     }
 
+    fn candidate_milestones(&self) -> bool {
+        self.milestones
+    }
+
+    fn create_milestone(&self, parent: &str, title: &str, description: &str) -> TResult<Item> {
+        if !self.milestones {
+            return Err(TrackerError::refused(title, "no milestones"));
+        }
+        self.read(parent)?;
+        self.record(format!("create milestone {title} under {parent}"))?;
+        let key = {
+            let mut s = self.state.borrow_mut();
+            s.next += 1;
+            format!("{}-{}", self.team, 1000 + s.next)
+        };
+        self.seed(&key, title, description, Status::Ready, &[]);
+        self.with(&key, |st| {
+            // Its status is the tracker's, derived: none of the method's.
+            st.item.state = ItemState {
+                name: "Open".into(),
+                status: None,
+                kind: StateKind::Unknown,
+            };
+            st.item.parent = Some(parent.to_string());
+        })?;
+        Ok(self.item(&key))
+    }
+
     fn update_description(&self, key: &str, description: &str) -> TResult<()> {
         if self.read(key)?.item.description == description {
             return Ok(());
@@ -554,6 +589,25 @@ impl Tracker for FakeTracker {
         self.record(format!("pr status {key} {pr_url} {}", status.code()))?;
         self.with(key, |st| {
             st.pr_statuses.insert(pr_url.to_string(), status.clone());
+        })
+    }
+
+    fn holds_pr_reviews(&self) -> bool {
+        true
+    }
+
+    fn pr_reviews(&self, key: &str, pr_url: &str) -> TResult<Option<PrReviews>> {
+        Ok(self.read(key)?.pr_reviews.get(pr_url).cloned())
+    }
+
+    fn record_pr_reviews(&self, key: &str, pr_url: &str, reviews: &PrReviews) -> TResult<()> {
+        let st = self.read(key)?;
+        if !st.links.iter().any(|l| l == pr_url) || st.pr_reviews.get(pr_url) == Some(reviews) {
+            return Ok(());
+        }
+        self.record(format!("pr reviews {key} {pr_url} {}", reviews.code()))?;
+        self.with(key, |st| {
+            st.pr_reviews.insert(pr_url.to_string(), reviews.clone());
         })
     }
 }

@@ -1,7 +1,7 @@
 //! The GitHub → item sync (`docs/reference/livela-contract.md` §5): a pass a
 //! host runs beside the bridge, through the same inputs, that keeps a
 //! project's tickets current with their PRs even when no surface is open.
-//! It does two things and nothing else:
+//! It does three things and nothing else:
 //!
 //! - it links a PR that names a ticket of the project to that ticket
 //!   ([`names_item`]), as a tracker's own GitHub integration does; a link a
@@ -9,6 +9,9 @@
 //! - it records on each open ticket the status of each PR linked to it
 //!   ([`PrStatus`]): draft, open with its checks, merged, released in a
 //!   tag, closed.
+//! - it mirrors on each open ticket the reviews of each PR linked to it
+//!   ([`PrReviews`]), read-only: each reviewer's latest verdict, as GitHub
+//!   holds it (BR-ASDLC-038), on a tracker that keeps them.
 //!
 //! It never moves a status, an assignee, a label or a description: those
 //! are the bridge's. It talks to the tracker through the `Tracker` trait and
@@ -36,7 +39,7 @@ use crate::lock::TickLock;
 use crate::method::checks::{self, CheckState};
 use crate::method::release::shape::Shape;
 use crate::quota::Pace;
-use crate::tracker::{Checks, PrStatus, Tracker};
+use crate::tracker::{Checks, PrReviews, PrStatus, Tracker};
 
 /// The PRs after the checkpoint one pass handles at most, oldest first: a
 /// catch-up spreads over passes instead of failing each one.
@@ -154,6 +157,7 @@ struct Tally {
     read: usize,
     links: usize,
     statuses: usize,
+    reviews: usize,
     failures: Vec<String>,
 }
 
@@ -386,6 +390,9 @@ fn run(
         "{repo}: GitHub sync: {} PR(s) read, {} link(s) laid, {} status(es) recorded",
         tally.read, tally.links, tally.statuses
     );
+    if tally.reviews > 0 {
+        message.push_str(&format!(", {} review mirror(s) recorded", tally.reviews));
+    }
     let mut saved = true;
     if let (Some(p), true) = (&path, memory != before) {
         if let Err(e) = save(p, &memory) {
@@ -547,6 +554,7 @@ fn record(
         return Ok(());
     }
     memory.followed.insert(pr.url.clone(), pr.number);
+    mirror_reviews(tracker, pr, &open, tally)?;
     if !tracker.holds_pr_status() {
         return Ok(());
     }
@@ -564,6 +572,34 @@ fn record(
             .record_pr_status(&key, &pr.url, &status)
             .map_err(|e| e.to_string())?;
         tally.statuses += 1;
+    }
+    Ok(())
+}
+
+/// Mirror the PR's GitHub reviews on each open ticket linked to it,
+/// read-only (BR-ASDLC-038): GitHub is the source, the tracker only shows
+/// them. A review list GitHub cut is never mirrored partial.
+fn mirror_reviews(
+    tracker: &dyn Tracker,
+    pr: &PullRequest,
+    open: &[String],
+    tally: &mut Tally,
+) -> Result<(), String> {
+    if !tracker.holds_pr_reviews() || pr.truncated.iter().any(|t| t == "reviews") {
+        return Ok(());
+    }
+    let reviews = PrReviews::of(&pr.reviews);
+    for key in open {
+        let known = tracker
+            .pr_reviews(key, &pr.url)
+            .map_err(|e| e.to_string())?;
+        if known.as_ref() == Some(&reviews) || (known.is_none() && reviews.0.is_empty()) {
+            continue;
+        }
+        tracker
+            .record_pr_reviews(key, &pr.url, &reviews)
+            .map_err(|e| e.to_string())?;
+        tally.reviews += 1;
     }
     Ok(())
 }

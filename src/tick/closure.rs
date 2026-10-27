@@ -414,7 +414,7 @@ fn round_item(m: &Item, release: &Item, sub_items: &[String]) -> bool {
 
 /// The release item's children and every item carrying the release label.
 fn members(t: &Tick, item: &Item, label: &str) -> TResult<Vec<Item>> {
-    let mut out = t.tracker.children(&item.key)?;
+    let mut out = super::release::release_children(t, item)?;
     for i in t.tracker.list_by_label(label)? {
         if i.key != item.key && !out.iter().any(|o| o.key == i.key) {
             out.push(i);
