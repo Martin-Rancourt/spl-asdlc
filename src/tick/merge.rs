@@ -527,8 +527,20 @@ fn one(
                 "required checks have not reported at {head}: {}",
                 missing.join(", ")
             ),
-            CheckState::Pending if checks::running(&pr.checks) => {
-                format!("checks are still running at {head}")
+            CheckState::Pending if !checks::running(&pr.checks).is_empty() => {
+                let running = checks::running(&pr.checks);
+                let listed: Vec<String> =
+                    running.iter().take(5).map(|n| format!("`{n}`")).collect();
+                let more = running.len().saturating_sub(listed.len());
+                format!(
+                    "checks are still running at {head}: {}{}",
+                    listed.join(", "),
+                    if more > 0 {
+                        format!(" and {more} more")
+                    } else {
+                        String::new()
+                    }
+                )
             }
             // Only a success counts: a skipped required check, a draft
             // run's for one, waits for a run that succeeds.
@@ -539,7 +551,10 @@ fn one(
                 None if checks::none_succeeded(&pr.checks) => {
                     format!("no check succeeded at {head}")
                 }
-                None => format!("checks are still running at {head}"),
+                None => match checks::first_unsettled(&pr.checks) {
+                    Some(name) => format!("the check `{name}` has no outcome yet at {head}"),
+                    None => format!("checks are still running at {head}"),
+                },
             },
             CheckState::None => format!("no check reported at {head}"),
             _ => format!("the checks of {head} could not be read whole"),

@@ -979,6 +979,55 @@ fn an_approved_green_pr_is_merged_and_its_ticket_goes_to_deploy() {
     }));
 }
 
+/// GitHub reports `SUCCESS` next to a status still `IN_PROGRESS` (hung
+/// post-job steps): the conclusion wins and the PR is merged (ASDLC-CPSK).
+#[test]
+fn a_required_check_that_succeeded_while_still_in_progress_merges() {
+    let w = World::new();
+    let mut pr = in_review(&w, 7);
+    check_every_box(&w, "ABC-7");
+    let angle = children_of(&w, "ABC-7")
+        .into_iter()
+        .find(|c| c.title.starts_with("Maintainability"))
+        .unwrap();
+    pr.checks[0].status = Some("IN_PROGRESS".into());
+    pr.reviews = vec![
+        review(
+            "angle-agent",
+            "COMMENTED",
+            &pr.head_sha,
+            &format!("Reviewed for {}.", angle.key),
+        ),
+        review("coordinator-login", "APPROVED", &pr.head_sha, "LGTM"),
+    ];
+    w.open(pr);
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert!(
+        w.github_writes()
+            .contains(&"merge example-org/acme#7 at head-7 squash".to_string()),
+        "{:?}",
+        w.github_writes()
+    );
+}
+
+/// A wait on a running check names it, so a stuck PR is diagnosed without
+/// GitHub's API.
+#[test]
+fn a_wait_on_a_running_check_names_it() {
+    let w = World::new();
+    let mut pr = in_review(&w, 7);
+    check_every_box(&w, "ABC-7");
+    pr.checks[0].status = Some("IN_PROGRESS".into());
+    pr.checks[0].conclusion = None;
+    w.open(pr);
+    let (report, _) = w.tick(false);
+    assert!(
+        format!("{report:?}").contains("checks are still running at head-7: `required-check`"),
+        "{report:?}"
+    );
+}
+
 #[test]
 fn an_approval_on_an_older_head_or_an_open_thread_does_not_merge() {
     let w = World::new();
