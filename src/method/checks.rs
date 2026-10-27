@@ -2,7 +2,10 @@
 //! run of each check counts; a red wins over a pending; no check at all is
 //! not green; a required check is green only by a success: one that never
 //! reported, or was skipped or neutral, is not green either; a rollup in
-//! which nothing succeeded is not green.
+//! which nothing succeeded is not green. A check run's conclusion is its
+//! outcome: GitHub can report `SUCCESS` next to a status still
+//! `IN_PROGRESS` (post-job steps that hang), and a run that concluded is
+//! never waited for (ASDLC-CPSK).
 
 use std::collections::BTreeSet;
 
@@ -88,6 +91,9 @@ fn is_red(c: &CheckEntry) -> bool {
 fn is_pending(c: &CheckEntry) -> bool {
     let status = upper(&c.status);
     let conclusion = upper(&c.conclusion);
+    if c.kind == CheckKind::Run && PASSING.contains(&conclusion.as_str()) {
+        return false;
+    }
     PENDING.contains(&status.as_str())
         || PENDING.contains(&conclusion.as_str())
         || (c.kind == CheckKind::Run && status != "COMPLETED" && conclusion.is_empty())
@@ -134,9 +140,22 @@ fn required_succeeded(latest: &[CheckEntry], name: &str) -> bool {
     runs.peek().is_some() && runs.all(|c| upper(&c.conclusion) == "SUCCESS")
 }
 
-/// Some check of the rollup is still running (its latest run).
-pub fn running(checks: &[CheckEntry]) -> bool {
-    latest_runs(checks).iter().any(is_pending)
+/// The checks of the rollup still running (their latest run), by name.
+pub fn running(checks: &[CheckEntry]) -> Vec<String> {
+    latest_runs(checks)
+        .into_iter()
+        .filter(is_pending)
+        .map(|c| c.name)
+        .collect()
+}
+
+/// The first check that is neither running, red nor passing: completed
+/// without a conclusion, or with one nobody listed.
+pub fn first_unsettled(checks: &[CheckEntry]) -> Option<String> {
+    latest_runs(checks)
+        .into_iter()
+        .find(|c| !is_pending(c) && !is_red(c) && !PASSING.contains(&upper(&c.conclusion).as_str()))
+        .map(|c| c.name)
 }
 
 /// No check of the rollup succeeded (its latest runs).
@@ -356,13 +375,13 @@ mod tests {
             run("pr", "required-check", "COMPLETED", "SKIPPED", T1),
         ];
         assert_eq!(state(&draft, &required), CheckState::Pending);
-        assert!(!running(&draft));
+        assert!(running(&draft).is_empty());
         let mut ready = draft.to_vec();
         ready.push(run("pr", "guards", "COMPLETED", "SUCCESS", T2));
         assert_eq!(state(&ready, &required), CheckState::Pending);
         ready.push(run("pr", "required-check", "QUEUED", "", None));
         assert_eq!(state(&ready, &required), CheckState::Pending);
-        assert!(running(&ready));
+        assert!(!running(&ready).is_empty());
         ready.pop();
         ready.push(run("pr", "required-check", "COMPLETED", "SUCCESS", T2));
         assert_eq!(state(&ready, &required), CheckState::Green);
@@ -383,6 +402,25 @@ mod tests {
             "SUCCESS",
             T1
         )]));
+    }
+
+    /// GitHub can report a run's `SUCCESS` while its status still says
+    /// `IN_PROGRESS`: the conclusion wins, the run is not waited for.
+    #[test]
+    fn a_run_that_concluded_is_not_pending_whatever_its_status() {
+        let required: BTreeSet<String> = ["test".to_string()].into();
+        let checks = [
+            run("CI", "test", "IN_PROGRESS", "SUCCESS", T1),
+            run("CI", "lint", "IN_PROGRESS", "NEUTRAL", T1),
+        ];
+        assert_eq!(state(&checks, &required), CheckState::Green);
+        assert!(running(&checks).is_empty());
+        let checks = [
+            run("CI", "test", "COMPLETED", "SUCCESS", T1),
+            run("CI", "lint", "IN_PROGRESS", "", T1),
+        ];
+        assert_eq!(state(&checks, &required), CheckState::Pending);
+        assert_eq!(running(&checks), vec!["lint".to_string()]);
     }
 
     #[test]
