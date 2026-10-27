@@ -464,11 +464,11 @@ pub fn release_branch(t: &Tick, shape: &Shape, c: &Candidate) -> Result<String, 
         .map_err(|e| e.to_string())?;
     let mut holding = Vec::new();
     for b in branches.iter().filter(|b| shape.is_release_branch(&b.name)) {
-        let cmp = t
+        let status = t
             .github
-            .compare(&t.repo, &c.sha, &b.name)
+            .compare_status(&t.repo, &c.sha, &b.name)
             .map_err(|e| e.to_string())?;
-        if matches!(cmp.status, CompareStatus::Ahead | CompareStatus::Identical) {
+        if matches!(status, CompareStatus::Ahead | CompareStatus::Identical) {
             holding.push(b.name.clone());
         }
     }

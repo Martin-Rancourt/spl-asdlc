@@ -710,6 +710,53 @@ fn a_release_is_found_in_a_few_compares_among_hundreds_of_tags() {
     assert!(compares <= 10, "{compares} compares");
 }
 
+/// GitHub cuts a compare's file list at 300: the release lookup reads the
+/// compare's status alone, so a release of 300+ files holds its PR like any
+/// other and the pass is OK (ASDLC-X7AX).
+#[test]
+fn a_release_whose_compare_has_300_files_or_more_holds_its_pr() {
+    let t = FakeTracker::default();
+    t.seed("ABC-1", "T", "", Status::PostDeploy, &[]);
+    let g = github();
+    let pr = PullRequest {
+        state: PrState::Merged,
+        merged_at: Some(Timestamp::now()),
+        merge_commit_sha: Some("sha-1".into()),
+        ..named(1, "feat: x (ABC-1)")
+    };
+    merged(&g, vec![pr.clone()]);
+    {
+        let mut s = g.state.borrow_mut();
+        s.tags.insert(
+            repo(),
+            vec![GitRef {
+                name: "acme-v1.0.0".into(),
+                sha: "c-1".into(),
+                object_type: ObjectType::Commit,
+            }],
+        );
+        s.compares.insert(
+            (repo(), "sha-1".into(), "acme-v1.0.0".into()),
+            Ok(Comparison {
+                status: CompareStatus::Ahead,
+                ahead_by: 400,
+                behind_by: 0,
+                commits: Vec::new(),
+                files: (0..300).map(|i| format!("f{i}")).collect(),
+                base_committed_at: None,
+            }),
+        );
+    }
+    let out = sync(&t, &g, &log("300-files"));
+    assert!(out.ok, "{out:?}");
+    assert!(
+        t.writes()
+            .contains(&format!("pr status ABC-1 {} released:acme-v1.0.0", pr.url)),
+        "{:?}",
+        t.writes()
+    );
+}
+
 #[test]
 fn an_old_pr_on_a_closed_ticket_only_lays_a_missing_link() {
     let t = FakeTracker::default();

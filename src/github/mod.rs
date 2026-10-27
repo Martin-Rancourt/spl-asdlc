@@ -45,6 +45,10 @@ pub trait GitHub {
     fn commit(&self, repo: &RepoSlug, rev: &str) -> Read<Commit>;
     /// `base...head`, refused when GitHub cannot return it whole.
     fn compare(&self, repo: &RepoSlug, base: &str, head: &str) -> Read<Comparison>;
+    /// The status of `base...head` alone, read whatever the number of files
+    /// or commits (GitHub cuts a compare's file list at 300): whether `head`
+    /// holds `base` needs nothing else.
+    fn compare_status(&self, repo: &RepoSlug, base: &str, head: &str) -> Read<CompareStatus>;
     /// `head`'s whole history, as a comparison from the repository's root:
     /// every commit `head` reaches and every file at `head` (no base, so no
     /// `base_committed_at`). The range of a first release, which no earlier
