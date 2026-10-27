@@ -44,3 +44,4 @@ This page is an index for people, kept by hand; the method never reads it, and a
 | [BR-ASDLC-036](BR-ASDLC-036.md) | A PR branch is named `<type>/<ticket-id>-<description>`, in lowercase, and the ticket id in it is enough to link the PR to its ticket. | Enforced |
 | [BR-ASDLC-037](BR-ASDLC-037.md) | A ticket whose PR is opened always goes through In Review; with no review configured, one pass writes In Review, merges and writes To Deploy. | Enforced |
 | [BR-ASDLC-038](BR-ASDLC-038.md) | A release candidate's QA lives in its own milestone; a newer candidate redoes every review and cancels the older one's open QA items; PR reviews stay in GitHub, mirrored read-only. | Enforced |
+| [BR-ASDLC-039](BR-ASDLC-039.md) | Before the rulesets, `doctor` names every branch and open PR that would block the method once they are on, with the gesture to clear it. | Enforced |

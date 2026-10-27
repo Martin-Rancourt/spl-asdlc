@@ -8,7 +8,7 @@ use std::fmt;
 use serde::Serialize;
 
 use crate::config::{Config, Source};
-use crate::github::{GitHub, Read, RepoSlug, Ruleset};
+use crate::github::{CompareStatus, GitHub, Read, RepoSlug, Ruleset};
 use crate::method::business_rules;
 use crate::method::pin::{self, Pin, PinError, WORKFLOWS};
 use crate::method::release::shape::Shape;
@@ -153,6 +153,7 @@ fn checks(
     out.extend(files(config, instance, github, &repo, &default));
     out.push(method_checks(github, &repo, &default));
     out.extend(method_version(config, github, &repo, &default, embedded));
+    out.push(branches_and_prs(config, github, &repo, &default));
     out.extend(ruleset_checks(config, &default, &github.rulesets(&repo)));
     out.extend(tracker_checks(config, tracker));
     out
@@ -292,6 +293,113 @@ struct Required {
 /// `active` ruleset counts; one that covers a ref but is `evaluate` or
 /// `disabled` makes the line `invalid`. The bypass list is not judged: an
 /// App's token reads it empty.
+const BRANCHES_AND_PRS: &str = "branches and PRs";
+
+/// The branches and open PRs that would block the method once the rulesets
+/// are on (BR-ASDLC-039), read before the ruleset checks: a branch under the
+/// release prefix that is no release branch of the method, or one whose
+/// every commit is in the default branch (a finished cycle's leftover),
+/// keeps the cut refused, and deleting it then needs a bypass; an open PR
+/// whose title the title check refuses cannot merge. A release branch with
+/// commits of its own is a cycle in flight, never flagged.
+fn branches_and_prs(config: &Config, github: &dyn GitHub, repo: &RepoSlug, default: &str) -> Check {
+    let shape = Shape::of(&config.product.name, &config.release);
+    let prefix = &config.release.branch_prefix;
+    let branches = match github.branches(repo, prefix) {
+        Ok(b) => b,
+        Err(e) => {
+            return check(
+                BRANCHES_AND_PRS,
+                Verdict::Missing,
+                format!("the branches under {prefix}: {e}"),
+            );
+        }
+    };
+    let mut found = Vec::new();
+    for b in &branches {
+        if !shape.is_release_branch(&b.name) {
+            found.push(format!(
+                "branch {}: under {prefix} but no release branch of the method ({prefix}<YYYY-MM-DD-HH-MM>-utc), so the cut refuses while it exists",
+                b.name
+            ));
+            continue;
+        }
+        match github.compare_status(repo, default, &b.name) {
+            Ok(CompareStatus::Behind | CompareStatus::Identical) => found.push(format!(
+                "branch {}: every commit of it is in {default}, a leftover of a finished cycle that the cut takes as in flight",
+                b.name
+            )),
+            Ok(_) => {}
+            Err(e) => {
+                return check(
+                    BRANCHES_AND_PRS,
+                    Verdict::Missing,
+                    format!("{default}...{}: {e}", b.name),
+                );
+            }
+        }
+    }
+    let pulls = match github.open_pulls(repo, None) {
+        Ok(p) => p,
+        Err(e) => {
+            return check(
+                BRANCHES_AND_PRS,
+                Verdict::Missing,
+                format!("the open PRs: {e}"),
+            );
+        }
+    };
+    let types: Vec<&str> = config
+        .release
+        .changelog_sections
+        .iter()
+        .map(|c| c.kind.as_str())
+        .collect();
+    for pr in &pulls {
+        if !title_allowed(&pr.title, &types) {
+            found.push(format!(
+                "PR #{} \"{}\": its title is not <type>(<scope>)?!?: <summary> with a type of {}, so the title check refuses it",
+                pr.number,
+                pr.title,
+                types.join(", ")
+            ));
+        }
+    }
+    if found.is_empty() {
+        return check(
+            BRANCHES_AND_PRS,
+            Verdict::Ok,
+            format!(
+                "{} branch(es) under {prefix}, {} open PR(s): none would block the method",
+                branches.len(),
+                pulls.len()
+            ),
+        );
+    }
+    check(BRANCHES_AND_PRS, Verdict::Invalid, found.join("; "))
+}
+
+/// Whether the PR title check (`asdlc-pr-title.yml`) accepts a title:
+/// `<type>(<scope>)?!?: <summary>`, a type of `types`, a scope with no space
+/// or parenthesis, a summary that neither starts nor ends with a space.
+fn title_allowed(title: &str, types: &[&str]) -> bool {
+    let Some((header, summary)) = title.split_once(": ") else {
+        return false;
+    };
+    let header = header.strip_suffix('!').unwrap_or(header);
+    let (kind, scope) = match header.split_once('(') {
+        Some((k, rest)) => match rest.strip_suffix(')') {
+            Some(scope) => (k, Some(scope)),
+            None => return false,
+        },
+        None => (header, None),
+    };
+    let scope_ok = scope.is_none_or(|s| {
+        !s.is_empty() && !s.chars().any(|c| c.is_whitespace() || c == '(' || c == ')')
+    });
+    types.contains(&kind) && scope_ok && !summary.is_empty() && summary.trim() == summary
+}
+
 fn ruleset_checks(config: &Config, default: &str, rulesets: &Read<Vec<Ruleset>>) -> Vec<Check> {
     let mut required = vec![Required {
         name: format!("ruleset {default}"),
@@ -1323,6 +1431,10 @@ fn fix_of(name: &str, config: &Config) -> Fix {
         {
             ("Name a participant the tracker knows.", tracker)
         }
+        BRANCHES_AND_PRS => (
+            "Before installing the rulesets, delete each branch listed (its fixes merged into the default branch first) and retitle each PR listed `<type>(<scope>): <summary> (<TICKET-ID>)`: once the release prefix's ruleset is on, deleting a branch under it needs a bypass.",
+            REPOSITORY,
+        ),
         n if n.starts_with("angle ") => (
             "Drop the angle the method retired, or keep it as the project's own under another key with its notes.",
             REPOSITORY,
@@ -1507,6 +1619,152 @@ mod tests {
                 .any(|c| c.name == "release base" && c.verdict == Verdict::Missing),
             "{checks:#?}"
         );
+    }
+
+    fn branch(name: &str) -> crate::github::GitRef {
+        crate::github::GitRef {
+            name: name.into(),
+            sha: format!("sha-{name}"),
+            object_type: crate::github::ObjectType::Commit,
+        }
+    }
+
+    fn compare(status: CompareStatus) -> crate::github::Comparison {
+        crate::github::Comparison {
+            status,
+            ahead_by: 0,
+            behind_by: 0,
+            commits: Vec::new(),
+            files: Vec::new(),
+            base_committed_at: None,
+        }
+    }
+
+    #[test]
+    fn leftover_release_branches_and_refused_pr_titles_are_flagged_before_the_rulesets() {
+        let c = config();
+        let g = FakeGitHub::new();
+        let repo = RepoSlug::parse("example-org/acme").unwrap();
+        let prefix = c.release.branch_prefix.clone();
+        let stamped = |s: &str| format!("{prefix}{s}");
+        let pr = |n: u64, title: &str, draft: bool| crate::github::PullRequest {
+            title: title.into(),
+            draft,
+            ..crate::github::fake::pull_request(n)
+        };
+        {
+            let mut s = g.state.borrow_mut();
+            s.branches.insert(
+                repo.clone(),
+                vec![
+                    branch(&stamped("0.1.18")),
+                    branch(&stamped("2026-10-01-12-00-utc")),
+                    branch(&stamped("2026-10-20-09-30-utc")),
+                    branch("feat/abc-1-thing"),
+                ],
+            );
+            for (b, st) in [
+                ("2026-10-01-12-00-utc", CompareStatus::Behind),
+                ("2026-10-20-09-30-utc", CompareStatus::Ahead),
+            ] {
+                s.compares
+                    .insert((repo.clone(), "main".into(), stamped(b)), Ok(compare(st)));
+            }
+            s.open_pulls.insert(
+                repo.clone(),
+                Ok(vec![
+                    pr(7, "feat(web): a thing (ABC-1)", false),
+                    pr(8, "Update the readme", false),
+                    pr(9, "wip: try it", true),
+                    pr(10, "fix(): empty scope", false),
+                ]),
+            );
+        }
+        let got = branches_and_prs(&c, &g, &repo, "main");
+        assert_eq!(got.verdict, Verdict::Invalid, "{got}");
+        let d = &got.detail;
+        assert!(
+            d.contains(&format!("branch {}: under", stamped("0.1.18"))),
+            "{d}"
+        );
+        assert!(
+            d.contains(&format!(
+                "branch {}: every commit",
+                stamped("2026-10-01-12-00-utc")
+            )),
+            "{d}"
+        );
+        // A cycle in flight, and a branch outside the prefix: not flagged.
+        assert!(!d.contains("2026-10-20-09-30-utc"), "{d}");
+        assert!(!d.contains("feat/abc-1-thing"), "{d}");
+        assert!(!d.contains("PR #7"), "{d}");
+        for n in [8, 9, 10] {
+            assert!(d.contains(&format!("PR #{n} ")), "{d}");
+        }
+        // Its fix says what to do before the rulesets.
+        let fix = fix_of(BRANCHES_AND_PRS, &c);
+        assert!(
+            fix.gesture.starts_with("Before installing the rulesets"),
+            "{fix:?}"
+        );
+        assert!(g.writes().is_empty(), "doctor never writes");
+
+        // Cleared: ok, with what was read.
+        {
+            let mut s = g.state.borrow_mut();
+            s.branches
+                .insert(repo.clone(), vec![branch(&stamped("2026-10-20-09-30-utc"))]);
+            s.open_pulls.insert(
+                repo.clone(),
+                Ok(vec![pr(7, "feat(web): a thing (ABC-1)", false)]),
+            );
+        }
+        let got = branches_and_prs(&c, &g, &repo, "main");
+        assert_eq!(
+            got.to_string(),
+            format!(
+                "branches and PRs: ok — 1 branch(es) under {prefix}, 1 open PR(s): none would block the method"
+            )
+        );
+
+        // A list that cannot be read is never ok.
+        g.state.borrow_mut().open_pulls.remove(&repo);
+        assert_eq!(
+            branches_and_prs(&c, &g, &repo, "main").verdict,
+            Verdict::Missing
+        );
+        g.state.borrow_mut().branches.remove(&repo);
+        assert_eq!(
+            branches_and_prs(&c, &g, &repo, "main").verdict,
+            Verdict::Missing
+        );
+    }
+
+    #[test]
+    fn the_title_check_is_read_as_the_title_workflow_reads_it() {
+        let types = ["feat", "fix", "chore"];
+        for ok in [
+            "feat: a",
+            "fix(web): a thing (ABC-1)",
+            "feat(api)!: breaking",
+            "chore!: drop it",
+        ] {
+            assert!(title_allowed(ok, &types), "{ok}");
+        }
+        for refused in [
+            "Feat: a",
+            "feat:a",
+            "feat: ",
+            "feat:  a",
+            "feat: a ",
+            "feat(): a",
+            "feat(a b): c",
+            "feat(a: b",
+            "docs: a",
+            "a thing",
+        ] {
+            assert!(!title_allowed(refused, &types), "{refused}");
+        }
     }
 
     #[test]
