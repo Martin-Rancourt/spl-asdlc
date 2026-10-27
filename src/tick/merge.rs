@@ -716,6 +716,27 @@ fn one(
             send_back(t, log, report, &pr, &ticket, status, open, by);
             return None;
         }
+        // A ticket whose PR is opened always goes through In Review
+        // (BR-ASDLC-037): when the write above failed, or a round of an
+        // older configuration skipped it, it is written now, and the merge
+        // waits for it.
+        if status != Some(Status::InReview)
+            && t.act(
+                log,
+                report,
+                &object,
+                "status In Review",
+                json!({"pr": pr.url, "head": pr.head_sha, "unreviewed": true}),
+                || {
+                    t.tracker
+                        .set_status(&ticket.key, Status::InReview, None)
+                        .map_err(|e| e.to_string())
+                },
+            )
+            .is_none()
+        {
+            return None;
+        }
         let children = match read_children {
             Some(c) => c,
             None => match t.tracker.children(&ticket.key) {
