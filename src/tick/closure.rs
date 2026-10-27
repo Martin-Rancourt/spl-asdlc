@@ -364,12 +364,12 @@ fn ready_to_close(
         .branches(&t.repo, &shape.branch_prefix)
         .map_err(|e| e.to_string())?;
     let holds = |sha: &str, branch: &str| -> Result<bool, String> {
-        let cmp = t
+        let status = t
             .github
-            .compare(&t.repo, sha, branch)
+            .compare_status(&t.repo, sha, branch)
             .map_err(|e| e.to_string())?;
         Ok(matches!(
-            cmp.status,
+            status,
             CompareStatus::Ahead | CompareStatus::Identical
         ))
     };
@@ -386,11 +386,11 @@ fn ready_to_close(
         .github
         .default_branch(&t.repo)
         .map_err(|e| e.to_string())?;
-    let cmp = t
+    let status = t
         .github
-        .compare(&t.repo, &published.tag, &default)
+        .compare_status(&t.repo, &published.tag, &default)
         .map_err(|e| e.to_string())?;
-    if !matches!(cmp.status, CompareStatus::Ahead | CompareStatus::Identical) {
+    if !matches!(status, CompareStatus::Ahead | CompareStatus::Identical) {
         return Ok(Some(format!(
             "{} is not merged back into {default}",
             published.tag

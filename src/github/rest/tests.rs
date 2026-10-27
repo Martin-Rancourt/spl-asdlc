@@ -459,6 +459,37 @@ fn a_comparison_reads_every_commit_and_refuses_a_cut_file_list() {
     );
 }
 
+/// The status alone is read whatever the number of files: GitHub's cut
+/// file list (300) does not make it unreadable (ASDLC-X7AX).
+#[test]
+fn a_comparison_status_is_read_past_300_files() {
+    let (gh, t) = client();
+    let files: Vec<String> = (0..300)
+        .map(|i| format!(r#"{{"filename":"f{i}"}}"#))
+        .collect();
+    t.on(
+        "GET",
+        &url("/repos/example-org/acme/compare/a...b?per_page=1"),
+        200,
+        &format!(
+            r#"{{"status":"behind","total_commits":900,"commits":[],"files":[{}]}}"#,
+            files.join(",")
+        ),
+    );
+    assert_eq!(
+        gh.compare_status(&repo(), "a", "b").unwrap(),
+        CompareStatus::Behind
+    );
+    let (gh, t) = client();
+    t.on(
+        "GET",
+        &url("/repos/example-org/acme/compare/a...b?per_page=1"),
+        200,
+        r#"{"status":"sideways"}"#,
+    );
+    assert!(gh.compare_status(&repo(), "a", "b").is_err());
+}
+
 #[test]
 fn a_comparison_github_lists_partially_is_unreadable() {
     let (gh, t) = client();

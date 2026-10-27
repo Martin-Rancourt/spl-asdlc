@@ -629,8 +629,8 @@ impl<'a> Releases<'a> {
         let tags = self.tags.as_deref().unwrap_or_default();
         let holds = |tag: &str| -> Result<bool, String> {
             self.github
-                .compare(self.repo, sha, tag)
-                .map(|c| matches!(c.status, CompareStatus::Ahead | CompareStatus::Identical))
+                .compare_status(self.repo, sha, tag)
+                .map(|s| matches!(s, CompareStatus::Ahead | CompareStatus::Identical))
                 .map_err(|e| e.to_string())
         };
         // Not in the newest release: in none. A release holds what the

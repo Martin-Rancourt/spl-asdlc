@@ -542,6 +542,20 @@ fn time_of(v: &Value, key: &str) -> Option<Timestamp> {
         .and_then(Timestamp::parse)
 }
 
+/// The `status` of a compare answer.
+fn compare_status_of(what: &str, v: &Value) -> Read<CompareStatus> {
+    match v["status"].as_str() {
+        Some("ahead") => Ok(CompareStatus::Ahead),
+        Some("behind") => Ok(CompareStatus::Behind),
+        Some("identical") => Ok(CompareStatus::Identical),
+        Some("diverged") => Ok(CompareStatus::Diverged),
+        other => Err(ReadError::unreadable(
+            what,
+            format!("unknown comparison status {other:?}"),
+        )),
+    }
+}
+
 fn object_type(s: &str) -> ObjectType {
     match s {
         "commit" => ObjectType::Commit,
@@ -925,18 +939,7 @@ impl GitHub for RestGitHub {
             encode(head, true)
         );
         let (first, _) = self.get_json(repo, &what, &path)?;
-        let status = match first["status"].as_str() {
-            Some("ahead") => CompareStatus::Ahead,
-            Some("behind") => CompareStatus::Behind,
-            Some("identical") => CompareStatus::Identical,
-            Some("diverged") => CompareStatus::Diverged,
-            other => {
-                return Err(ReadError::unreadable(
-                    &what,
-                    format!("unknown comparison status {other:?}"),
-                ));
-            }
-        };
+        let status = compare_status_of(&what, &first)?;
         let total = first["total_commits"]
             .as_u64()
             .ok_or_else(|| ReadError::unreadable(&what, "no commit count in the answer"))?;
@@ -992,6 +995,19 @@ impl GitHub for RestGitHub {
             files,
             base_committed_at: time_of(&first["base_commit"]["commit"]["committer"], "date"),
         })
+    }
+
+    fn compare_status(&self, repo: &RepoSlug, base: &str, head: &str) -> Read<CompareStatus> {
+        let what = format!("{base}...{head} in {repo}");
+        // The status is given whatever the number of files or commits: one
+        // request, and neither list is read.
+        let path = format!(
+            "/repos/{repo}/compare/{}...{}?per_page=1",
+            encode(base, true),
+            encode(head, true)
+        );
+        let (v, _) = self.get_json(repo, &what, &path)?;
+        compare_status_of(&what, &v)
     }
 
     fn since_root(&self, repo: &RepoSlug, head: &str) -> Read<Comparison> {
