@@ -1,5 +1,20 @@
 # 3b. Tracker: Livela
 
+## Starting a project: the guided setup in Livela
+
+A project starts on SPL-ASDLC from Livela itself, not from this crate's command line. The person who owns the repository does it in Livela's interface, and every step either happens there or on the GitHub page that Livela links to. Nobody runs a `spl-asdlc` command, a `gh` command or a shell on the machine that hosts the runner.
+
+1. **Create the project in Livela** (its prefix becomes the tickets' key), set its GitHub repository, and turn SPL-ASDLC on. The project page then shows the guided setup: each step with the state `doctor` gives it, and the gesture that completes it.
+2. **The App**: install the SPL-ASDLC GitHub App on the repository, on its GitHub page (`github-app.md` for its permissions).
+3. **The secrets**: set the App's id and private key as repository secrets, on the repository's settings page. `doctor` reports them « not checkable »: GitHub never shows a secret's value.
+4. **The rulesets**: create them on the repository's settings page, as `repository.md` describes them, with the App as the only bypass.
+5. **Connect GitHub in Livela** with the person's own identity, then open the **setup PR** from the project page. Livela opens it with that identity, because workflow files need « Workflows: write », which the App does not have. The PR holds what `spl_asdlc::setup::files` gives: `.spl-asdlc/config.toml`, the workflow callers pinned at the minor line the runner embeds (`@vX.Y`), the process page and `AGENTS.md`.
+6. **Merge the setup PR** once its checks are green. At the next pass, `doctor` runs on the merged configuration. When every step is done, the project page says « doctor is green: the runner moves this project ».
+
+From then on, the runner is the project's only bridge: a ticket moved to Ready, taken by an agent from « what's next », goes through its PR, its merge and a release with no other gesture than the method's own. Check `doctor` from a second surface (the web, the Mac or the iPhone app) with « Check again »: both read the same project.
+
+The rest of this page describes what the runner does on its side, for whoever maintains it or writes another host.
+
 - **Service participant**: an `agent` participant named `spl-asdlc` (`docs/reference/livela-contract.md`, point 4).
 - **Statuses**: `in_review`, `to_deploy` and `post_deploy` are the `validation` group: open, still blocking, never served by "what's next" (contract, point 1). `set_status` accepts the English names, so the canonical names are the tracker's (the configuration maps no status). Triage is the one exception: Livela tickets have no Triage status (triage is an item type of its own), so the adapter writes the canonical Triage as Backlog. A non-blocking finding and a finding requalified as non-blocking land in Backlog, and the glue maps no status.
 - **Refined, Ready, In Progress**: a refined ticket stays in Backlog, marked by a `refined` field Livela computes from the description (a goal, at least one acceptance criterion and a release note), which nobody writes; a person moves it to Ready when agents may take it. An implementing agent takes work from Ready only, and its verb ("implement the next ticket") moves the ticket it takes to In Progress.

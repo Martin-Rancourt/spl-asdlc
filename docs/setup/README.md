@@ -7,7 +7,7 @@ Four steps, in this order. `spl-asdlc doctor` verifies every point below and nam
 3. `tracker-linear.md` or `tracker-livela.md` — the service identity and the statuses.
 4. `bridge.md` — where the bridge runs (a tracker's runner, a timer at the interval the host chooses, a skill) and with which secrets.
 
-A host application that embeds the crate (the Livela runner, `tracker-livela.md`) takes steps 2 and 4 itself: `spl_asdlc::setup::files` gives the files of the repository's setup PR (step 2's configuration, workflow callers pinned at the embedded minor line `@vX.Y`, process page and `AGENTS.md`), which the host opens with the person's GitHub identity; the App, its secrets and the rulesets stay the person's steps, and the host's `doctor` checks each one.
+A project on Livela starts from Livela's guided setup, not from this list: see « Starting a project: the guided setup in Livela » in `tracker-livela.md`. A host application that embeds the crate (the Livela runner, `tracker-livela.md`) takes steps 2 and 4 itself: `spl_asdlc::setup::files` gives the files of the repository's setup PR (step 2's configuration, workflow callers pinned at the embedded minor line `@vX.Y`, process page and `AGENTS.md`), which the host opens with the person's GitHub identity; the App, its secrets and the rulesets stay the person's steps, and the host's `doctor` checks each one.
 
 Once it runs, any step of the flow can be taken over by hand: `manual-gestures.md` gives each step's command or click, what the bridge does at its next tick, and the commands an AI session needs permission for to take them on the owner's go.
 
