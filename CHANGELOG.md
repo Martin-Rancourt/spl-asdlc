@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.6.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.5.2...v1.6.0) (2026-10-27)
+
+
+### Features
+
+* **release:** one QA milestone per candidate, older QA canceled, PR reviews mirrored (ASDLC-JPCU) ([#129](https://github.com/Martin-Rancourt/spl-asdlc/issues/129)) ([ac31321](https://github.com/Martin-Rancourt/spl-asdlc/commit/ac31321dc27ea92b15732fb681933e7227572721))
+* **rules:** split a one-file register into the registry (ASDLC-T68W) ([#127](https://github.com/Martin-Rancourt/spl-asdlc/issues/127)) ([35955c8](https://github.com/Martin-Rancourt/spl-asdlc/commit/35955c8e85aa01350de9695c240584f68e570217))
+
+
+### Bug Fixes
+
+* **doctor:** flag leftover release branches and refused PR titles before the rulesets (ASDLC-SZKK) ([#130](https://github.com/Martin-Rancourt/spl-asdlc/issues/130)) ([28f66c8](https://github.com/Martin-Rancourt/spl-asdlc/commit/28f66c871e30a8be11ebbe8762b5f81fc3e857b6))
+
 ## [1.5.2](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.5.1...v1.5.2) (2026-10-27)
 
 
