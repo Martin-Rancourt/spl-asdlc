@@ -5,11 +5,13 @@
 //! or [`ReadError::Unreadable`] (anything else, including a list GitHub cut):
 //! "I could not read" is never "there is nothing". The classification is by
 //! HTTP status, never by the wording of a message. The bridge talks to the
-//! API only; it never needs a clone.
+//! API, except for an exact conflict preview in a disposable bare repository:
+//! GitHub exposes mergeability but no list of conflicting paths.
 
 pub mod auth;
 pub mod fake;
 pub use crate::http;
+mod merge_preview;
 mod rest;
 pub mod types;
 pub(crate) mod zip;
@@ -156,6 +158,10 @@ pub trait GitHub {
         method: MergeMethod,
     ) -> Write<String>;
     /// Merge the base into the head (REST `update-branch`), pinned to the head.
+    /// Return an open PR to draft after an implementation failure.
+    fn draft_pull(&self, repo: &RepoSlug, number: u64) -> Write<()>;
+    /// Exact unmerged paths from a read-only merge preview.
+    fn conflict_files(&self, repo: &RepoSlug, pr: &PullRequest) -> Read<Vec<String>>;
     fn update_branch(&self, repo: &RepoSlug, number: u64, head_sha: &str) -> Write<()>;
     fn delete_branch(&self, repo: &RepoSlug, branch: &str) -> Write<()>;
     fn create_branch(&self, repo: &RepoSlug, branch: &str, sha: &str) -> Write<()>;

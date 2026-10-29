@@ -1,7 +1,7 @@
 //! The business-rule guard (`docs/reference/02-business-rules.md`,
 //! REQ-MERGE-034..043, REQ-REL-088): the rules a ticket cites, the rule it
 //! states, and the judgement against the registry read at a ref. The
-//! registry is a directory, one file per rule (`<ID>.md`): the guard reads
+//! registry is a directory, one file per rule (`<ID>-<slug>.md`): the guard reads
 //! its listing, `doctor` and the tests read and check every file.
 
 use std::collections::BTreeSet;
@@ -30,11 +30,17 @@ pub const REGISTRY_DIR: &str = ".spl-asdlc/business-rules";
 const INDEX: &str = "README.md";
 
 static RULE_ID: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\bBR-[A-Z]{2,6}-\d{2,4}\b").unwrap());
-static RULE_FILE_NAME: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(BR-[A-Z]{2,6}-\d{2,4})\.md$").unwrap());
+    LazyLock::new(|| Regex::new(r"\b(?:BR-[A-Z]{2,6}-\d{2,4}|[A-Z2-9]{4})\b").unwrap());
+static RULE_FILE_NAME: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^((?:BR-[A-Z]{2,6}-\d{2,4})|(?:[A-Z2-9]{4}))(-[a-z0-9]+(?:-[a-z0-9]+)*)?\.md$")
+        .unwrap()
+});
+/// The legacy id a random rule's slug starts with: `-br-acme-073-…`.
+static ALIAS_SLUG: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^-br-([a-z]{2,6})-(\d{2,4})(?:-|$)").unwrap());
 static TITLE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^#[ \t]+(BR-[A-Z]{2,6}-\d{2,4})[ \t]+[—–-][ \t]+(\S.*?)[ \t]*$").unwrap()
+    Regex::new(r"^#[ \t]+(BR-[A-Z]{2,6}-\d{2,4}|[A-Z2-9]{4})[ \t]+[—–-][ \t]+(\S.*?)[ \t]*$")
+        .unwrap()
 });
 static STATUS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?m)^(?:\*\*)?Status(?:\*\*)?[ \t]*:[ \t]*(?:\*\*)?[ \t]*(\S+?)(?:\*\*)?[ \t]*$")
@@ -64,10 +70,23 @@ static ABSENCE_WITH_REASON: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
-/// Every rule id in a text (`BR-<2-6 capitals>-<2-4 digits>`).
+/// A random rule id: four characters of the short-id alphabet, at least
+/// one digit and one letter, so that no word written in capitals (`MUST`,
+/// `JSON`) reads as a rule id.
+pub fn is_random_id(id: &str) -> bool {
+    id.len() == 4
+        && id.bytes().all(|b| matches!(b, b'A'..=b'Z' | b'2'..=b'9'))
+        && id.bytes().any(|b| b.is_ascii_digit())
+        && id.bytes().any(|b| b.is_ascii_uppercase())
+}
+
+/// Every rule id in a text: `BR-<2-6 capitals>-<2-4 digits>`, or a random
+/// id ([`is_random_id`]) that does not follow a hyphen, which is the end of
+/// a ticket id such as `ABC-K7QF`.
 pub fn rule_ids(text: &str) -> BTreeSet<String> {
     RULE_ID
         .find_iter(text)
+        .filter(|m| m.len() != 4 || (is_random_id(m.as_str()) && !text[..m.start()].ends_with('-')))
         .map(|m| m.as_str().to_string())
         .collect()
 }
@@ -139,7 +158,7 @@ pub fn new_rule_statement(description: &str) -> Option<String> {
             if stripped.is_empty() || NOISE.is_match(&stripped) || NOISE.is_match(&item) {
                 continue;
             }
-            if declares_absence(&stripped) || RULE_ID.is_match(&stripped) {
+            if declares_absence(&stripped) || !rule_ids(&stripped).is_empty() {
                 continue;
             }
             return Some(stripped);
@@ -148,14 +167,31 @@ pub fn new_rule_statement(description: &str) -> Option<String> {
     None
 }
 
-/// The id a rule file's name declares: `BR-ACME-001.md` (or a path ending
-/// in it) -> `BR-ACME-001`; any other name declares none.
+/// The id a rule file's name declares: `K7QF-green-prs-first.md` ->
+/// `K7QF` (a random id needs its slug), or the legacy `BR-ACME-001.md` ->
+/// `BR-ACME-001` (or a path ending in either); any other name declares none.
 pub fn rule_file_id(name: &str) -> Option<&str> {
     let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
-    RULE_FILE_NAME
-        .captures(base)
-        .and_then(|c| c.get(1))
-        .map(|m| m.as_str())
+    let c = RULE_FILE_NAME.captures(base)?;
+    let id = c.get(1)?.as_str();
+    if id.len() == 4 && (c.get(2).is_none() || !is_random_id(id)) {
+        return None;
+    }
+    Some(id)
+}
+
+/// The legacy id a random rule keeps as its alias, carried by its file name
+/// so that the registry's listing alone holds it: `K7QF-br-acme-073-signed.md`
+/// -> `BR-ACME-073`. A ticket that cites the old id still finds its rule.
+pub fn rule_file_alias(name: &str) -> Option<String> {
+    let id = rule_file_id(name)?;
+    if !is_random_id(id) {
+        return None;
+    }
+    let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    let slug = RULE_FILE_NAME.captures(base)?.get(2)?.as_str();
+    let c = ALIAS_SLUG.captures(slug)?;
+    Some(format!("BR-{}-{}", c[1].to_ascii_uppercase(), &c[2]))
 }
 
 /// Whether a repository path is a rule file of the registry: directly in
@@ -168,12 +204,18 @@ pub fn is_rule_file(path: &str) -> bool {
 }
 
 /// The ids a registry declares: the names of its rule files, as the
-/// directory lists them. Any other name declares nothing.
+/// directory lists them, with the legacy alias a random rule's name keeps
+/// ([`rule_file_alias`]). Any other name declares nothing.
 pub fn registry_ids<S: AsRef<str>>(names: &[S]) -> BTreeSet<String> {
     names
         .iter()
-        .filter_map(|n| rule_file_id(n.as_ref()))
-        .map(str::to_string)
+        .flat_map(|n| {
+            let n = n.as_ref();
+            rule_file_id(n)
+                .map(str::to_string)
+                .into_iter()
+                .chain(rule_file_alias(n))
+        })
         .collect()
 }
 
@@ -207,7 +249,10 @@ fn field_heading(field: &str, heading: &str) -> bool {
 /// content. The error says what is wrong, for a person to fix.
 pub fn parse_rule_file(name: &str, text: &str) -> Result<RuleFile, String> {
     let id = rule_file_id(name)
-        .ok_or_else(|| "the file name is not `<ID>.md` (`BR-<PRODUCT>-<NNN>.md`)".to_string())?;
+        .ok_or_else(|| {
+            "the file name is not `<ID>-<slug>.md` (`K7QF-short-slug.md`) nor the legacy `BR-<PRODUCT>-<NNN>.md`"
+                .to_string()
+        })?;
     let first = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
     let title = TITLE
         .captures(first.trim_end())
@@ -363,7 +408,7 @@ pub fn evaluate(
     let unknown_ids: Vec<String> = cited_ids(description)
         .into_iter()
         .filter(|id| !ids.contains(id))
-        .filter(|id| owned.is_empty() || owned.contains(rule_prefix(id)))
+        .filter(|id| is_random_id(id) || owned.is_empty() || owned.contains(rule_prefix(id)))
         .collect();
     let mut gate = RuleGate {
         unknown_ids,

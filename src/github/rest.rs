@@ -1731,6 +1731,41 @@ impl GitHub for RestGitHub {
         }
     }
 
+    fn draft_pull(&self, repo: &RepoSlug, number: u64) -> Write<()> {
+        let what = format!("draft of PR #{number}");
+        let data = self.graphql(repo, &what,
+            "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){id}}}",
+            json!({"owner": repo.owner, "name": repo.name, "number": number}))
+            .map_err(|e| WriteError { what: what.clone(), status: None, detail: e.to_string() })?;
+        let id = data["repository"]["pullRequest"]["id"]
+            .as_str()
+            .ok_or_else(|| WriteError {
+                what: what.clone(),
+                status: None,
+                detail: "no PR node id".into(),
+            })?;
+        let result = self.write(repo, &what, "POST", "/graphql", Some(json!({
+            "query": "mutation($id:ID!){convertPullRequestToDraft(input:{pullRequestId:$id}){pullRequest{isDraft}}}",
+            "variables": {"id": id}
+        })), &[200])?;
+        if result["data"]["convertPullRequestToDraft"]["pullRequest"]["isDraft"] == true {
+            Ok(())
+        } else {
+            Err(WriteError {
+                what,
+                status: None,
+                detail: "GitHub did not confirm draft conversion".into(),
+            })
+        }
+    }
+    fn conflict_files(&self, repo: &RepoSlug, pr: &PullRequest) -> Read<Vec<String>> {
+        let token = self
+            .token(repo)
+            .map_err(|e| ReadError::unreadable("merge preview", e))?;
+        super::merge_preview::conflicts(repo, pr, &token)
+            .map_err(|e| ReadError::unreadable("merge preview", e))
+    }
+
     fn update_branch(&self, repo: &RepoSlug, number: u64, head_sha: &str) -> Write<()> {
         self.write(
             repo,

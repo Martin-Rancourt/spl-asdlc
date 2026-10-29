@@ -193,7 +193,12 @@ pub fn skipped_required(checks: &[CheckEntry], required: &BTreeSet<String>) -> O
 
 /// The first failing check, for the red-CI report (REQ-MERGE-013).
 pub fn first_failure(checks: &[CheckEntry]) -> Option<CheckEntry> {
-    latest_runs(checks).into_iter().find(is_red)
+    failures(checks).into_iter().next()
+}
+
+/// Latest failing runs only, for implementation handbacks.
+pub fn failures(checks: &[CheckEntry]) -> Vec<CheckEntry> {
+    latest_runs(checks).into_iter().filter(is_red).collect()
 }
 
 #[cfg(test)]

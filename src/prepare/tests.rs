@@ -201,6 +201,43 @@ fn a_fix_merged_while_a_cycle_was_open_is_in_the_next_release() {
 }
 
 #[test]
+fn a_changelog_folder_gets_one_file_per_version_written_by_its_release_only() {
+    let r = released_with_a_merge_back();
+    r.write("changelog/0.1.0.md", "## 0.1.0\n");
+    r.commit("docs: the notes of 0.1.0", "2026-10-03T11:00:00Z");
+    let prep = preparation("changelog_dir = \"changelog\"\n");
+    let p = run(&prep, &r.options()).unwrap();
+    assert_eq!(
+        p.files,
+        vec!["Cargo.toml", "Cargo.lock", CHANGELOG, "changelog/0.2.0.md"]
+    );
+    assert_eq!(r.read("changelog/0.2.0.md"), p.notes);
+    assert_eq!(
+        r.read("changelog/0.1.0.md"),
+        "## 0.1.0\n",
+        "an earlier version is left alone"
+    );
+    // A version whose file exists is refused, and nothing is written.
+    let r = released_with_a_merge_back();
+    r.write("notes/0.2.0.md", "kept\n");
+    let before = r.read("Cargo.toml");
+    let e = run(&preparation("changelog_dir = \"notes\"\n"), &r.options()).unwrap_err();
+    assert!(e.contains("notes/0.2.0.md already exists"), "{e}");
+    assert_eq!(r.read("Cargo.toml"), before);
+    assert_eq!(r.read("notes/0.2.0.md"), "kept\n");
+    // Without the key, no folder.
+    let r = released_with_a_merge_back();
+    let p = run(&preparation(""), &r.options()).unwrap();
+    assert!(!p.files.iter().any(|f| f.ends_with("0.2.0.md")));
+    // A folder outside the repository is refused by the configuration.
+    let e = Config::preparation(
+        "schema = 1\n[product]\nname = \"acme\"\n[release]\nangles = []\nchangelog_dir = \"../out\"\n",
+    )
+    .unwrap_err();
+    assert!(e.to_string().contains("release.changelog_dir"), "{e}");
+}
+
+#[test]
 fn a_first_release_is_measured_from_the_root_and_bumped_from_0_0_0() {
     let r = Repo::new();
     r.commit("chore: the repository", "2026-10-01T10:00:00Z");

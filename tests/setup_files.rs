@@ -154,16 +154,16 @@ fn the_configuration_template_names_its_identities_by_placeholder() {
 #[test]
 fn the_rule_template_is_a_valid_rule_file_under_its_ids_name() {
     let text = read(RULE);
-    // Copied to `.spl-asdlc/business-rules/BR-ACME-001.md`, it is a rule.
-    let path = format!("{}/BR-ACME-001.md", business_rules::REGISTRY_DIR);
+    // Copied to `.spl-asdlc/business-rules/K7QF-signed-exports.md`, it is a rule.
+    let path = format!("{}/K7QF-signed-exports.md", business_rules::REGISTRY_DIR);
     let rule =
         business_rules::parse_rule_file(&path, &text).unwrap_or_else(|e| panic!("{RULE}: {e}"));
-    assert_eq!(rule.id, "BR-ACME-001");
+    assert_eq!(rule.id, "K7QF");
     assert_eq!(rule.status, business_rules::RuleStatus::Proposed);
     assert!(business_rules::is_rule_file(&path));
     assert_eq!(
         business_rules::registry_ids(&[path]),
-        BTreeSet::from(["BR-ACME-001".to_string()])
+        BTreeSet::from(["K7QF".to_string()])
     );
     // Under its template name it is not one: the name is the id.
     assert!(business_rules::parse_rule_file(RULE, &text).is_err());

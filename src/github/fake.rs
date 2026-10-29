@@ -29,6 +29,7 @@ pub struct FakeState {
     pub compares: HashMap<(RepoSlug, String, String), Read<Comparison>>,
     /// How many compares were read.
     pub compares_read: usize,
+    pub conflict_files: HashMap<(RepoSlug, u64), Read<Vec<String>>>,
     /// `(repo, head)`: `head`'s whole history (`since_root`).
     pub histories: HashMap<(RepoSlug, String), Read<Comparison>>,
     /// `(repo, rev, path)`; a missing entry is `NotFound`.
@@ -676,6 +677,24 @@ impl GitHub for FakeGitHub {
             }
         }
         Ok(merge_sha)
+    }
+
+    fn draft_pull(&self, repo: &RepoSlug, number: u64) -> Write<()> {
+        self.record(format!("draft-pull {repo}#{number}"))?;
+        if let Some(Ok(prs)) = self.state.borrow_mut().open_pulls.get_mut(repo) {
+            if let Some(pr) = prs.iter_mut().find(|p| p.number == number) {
+                pr.draft = true;
+            }
+        }
+        Ok(())
+    }
+    fn conflict_files(&self, repo: &RepoSlug, pr: &PullRequest) -> Read<Vec<String>> {
+        self.state
+            .borrow()
+            .conflict_files
+            .get(&(repo.clone(), pr.number))
+            .cloned()
+            .unwrap_or_else(|| Err(ReadError::unreadable("conflicting paths", "not scripted")))
     }
 
     fn update_branch(&self, repo: &RepoSlug, number: u64, head_sha: &str) -> Write<()> {
