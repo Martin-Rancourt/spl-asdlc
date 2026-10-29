@@ -1131,6 +1131,25 @@ pub fn closed_unmerged_comment(pr_url: &str, state: &str, next: &str) -> String 
     )
 }
 
+/// The marker of [`settled_comment`]: one per latest merged PR and state, so
+/// a ticket settled again after a later merge or closure is told again.
+pub fn settled_marker(pr_url: &str, state: &str) -> String {
+    marker("settled", &[("pr", pr_url), ("state", state)])
+}
+
+/// The comment on a ticket left In Progress past a merge when it is settled
+/// at a later tick, its boxes checked since (spec 04 §10). `shipped` is the
+/// release tag that already holds its last merged PR, if any.
+pub fn settled_comment(pr_url: &str, shipped: Option<&str>, state: &str, next: &str) -> String {
+    let shipped = shipped
+        .map(|tag| format!(" That PR already shipped in `{tag}`."))
+        .unwrap_or_default();
+    format!(
+        "Every box of this ticket's contract outside `## Post deploy` is checked now, after its PR {pr_url} was merged, and no PR of it is open.{shipped}\n\nstate: {state}\nnext: {next}\n\n{}",
+        settled_marker(pr_url, state)
+    )
+}
+
 /// The comment that opens a review round on the ticket (spec 04 §3).
 pub fn review_round_comment(
     pr_url: &str,
