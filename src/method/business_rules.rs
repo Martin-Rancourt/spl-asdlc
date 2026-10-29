@@ -17,6 +17,10 @@ use crate::github::{GitHub, RepoSlug};
 /// new rule; the reader accepts it.
 pub const ABSENCE_DECLARATION: &str = "No new rule.";
 
+/// The refusal's example of an absence that gives its reason; the reader
+/// accepts it.
+pub const ABSENCE_WITH_REASON_EXAMPLE: &str = "None: the order stays the view's.";
+
 /// The registry: one file per rule, `<ID>.md`, in this directory of the
 /// repository. Fixed by the method, never configured (spec 02).
 pub const REGISTRY_DIR: &str = ".spl-asdlc/business-rules";
@@ -47,10 +51,16 @@ static CHECKBOX_MARK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\[[ xX]\]
 static NOISE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(?:[-*+]\s*|\d+[.)]\s*|\|[\s:|-]*\||#+\s|>\s*)?$").unwrap());
 static DECORATION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[\W_]+|[\W_]+$").unwrap());
-static ABSENCE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?i)^(?:aucune?(?:\s+(?:nouvel(?:les?)?|nouveaux?|r[eè]gles?|m[eé]tiers?))*|no(?:\s+(?:new|business|rules?))+|none|n/?a|n[eé]ant|sans\s+objet)$",
-    )
+/// The phrases that say there is no rule (REQ-MERGE-037).
+const ABSENCE_PHRASE: &str = r"aucune?(?:\s+(?:nouvel(?:les?)?|nouveaux?|r[eè]gles?|m[eé]tiers?))*|no(?:\s+(?:new|business|rules?))+|none|n/?a|n[eé]ant|sans\s+objet";
+static ABSENCE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!(r"(?i)^(?:{ABSENCE_PHRASE})$")).unwrap());
+/// An absence phrase, its closing emphasis, then a colon or a dash (a hyphen
+/// between spaces): what follows is the reason, never read as a rule.
+static ABSENCE_WITH_REASON: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r"(?i)^(?:{ABSENCE_PHRASE})[*_`]*(?:\s*[:—–]|\s+-{{1,2}}\s)"
+    ))
     .unwrap()
 });
 
@@ -110,11 +120,13 @@ pub fn section_items(body: &str) -> Vec<String> {
     items
 }
 
-/// A statement whose entire content says there is no rule (REQ-MERGE-037).
+/// A statement that says there is no rule (REQ-MERGE-037): its entire
+/// content, or the opening of a statement that goes on, after a colon or a
+/// dash, with the reason.
 pub fn declares_absence(statement: &str) -> bool {
     let core = DECORATION.replace_all(statement.trim(), "");
     let core = core.split_whitespace().collect::<Vec<_>>().join(" ");
-    ABSENCE.is_match(&core)
+    ABSENCE.is_match(&core) || ABSENCE_WITH_REASON.is_match(&core)
 }
 
 /// The first statement of the Business rules section(s) that states a new
@@ -415,9 +427,10 @@ pub fn refusal(gate: &RuleGate, ticket: &str) -> String {
              A rule born in a ticket outlives the ticket: its file `<ID>.md` is added **in the same PR** \
              as the change that introduces it, with a stable id, its evidence and its named tests — like \
              a red/green test. If the line is not a rule but a scope boundary, it belongs in `Non-goals`.\n\n\
-             **If the ticket really has no new rule**, say so: write only « {ABSENCE_DECLARATION} » — the \
-             whole sentence, nothing else. A sentence that starts with “No” or “None” but states something \
-             else remains a rule.\n"
+             **If the ticket really has no new rule**, say so: write « {ABSENCE_DECLARATION} » alone, or \
+             « None » followed by a colon or a dash and the reason (« {ABSENCE_WITH_REASON_EXAMPLE} »). A \
+             sentence that starts with “No” or “None” and goes on without that colon or dash remains a \
+             rule.\n"
         ));
     }
     out.push_str(
