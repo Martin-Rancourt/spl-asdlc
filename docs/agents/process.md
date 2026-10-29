@@ -28,7 +28,7 @@ The bridge is a deterministic program that reads GitHub and moves the tickets. Y
 | In Review | The bridge | When its PR is opened (not a draft). |
 | To Deploy | The bridge | At the merge, once every box is ticked and no other PR of the ticket is open: the code is on the base branch and waits for the next release. |
 | Done | The bridge | At the closure of the release that ships it. A ticket with nothing to deploy (the no-deploy label) is Done at its merge. |
-| Post Deploy | The bridge | At the closure, when only the boxes under `## Post deploy` remain; an urgent validation sub-task in Post Deploy is assigned to the operator to verify them in production. |
+| Post Deploy | The bridge | At the closure, when only the boxes under `## Post deploy` remain. The ticket itself is the validation, with no sub-task: an agent verifies what it can in production, then hands the same ticket to the owner for the rest (below, "Validate a ticket in Post Deploy"). |
 
 **Who closes a ticket**: the bridge, at the closure of the release that ships it (at its merge when it has nothing to deploy). Never close a ticket yourself, never move it to In Review, To Deploy or Done, and never move a ticket to Ready.
 
@@ -63,6 +63,15 @@ Never write an acceptance criterion the implementer cannot prove, and never spli
 9. One PR per ticket is the default, with as many commits as needed. Open a second PR for the same ticket only for a real reason, typically a deployment that must happen before the rest, and record that reason in a comment on the ticket before you open it. A later PR also starts from the base (step 2), once the earlier one is merged. Every PR must be deployable on its own: once merged it may ship at any time, even if the ticket is not done.
 10. A merged PR that leaves boxes open sends the ticket back to you (In Progress): carry on, tick what each PR delivers, and open the next PR, until every box is ticked.
 
+## Validate a ticket in Post Deploy
+
+**Input**: a ticket in Post Deploy: its release is deployed, and only the boxes under `## Post deploy` remain. **Output**: the same ticket, each box you verified in production checked, and assigned to the owner when boxes remain that need a human.
+
+1. Work on the ticket itself. The bridge creates no other item for its validation, and the ticket keeps its assignee: an agent takes it first, the one assigned to it or one asked to validate the project's tickets in Post Deploy. Never move its status.
+2. For each box under `## Post deploy`, verify in production what you can verify yourself: a command, a request, a page, a log. Check a box once its check passed in production, never before, and write the proof in a comment on the ticket.
+3. When boxes remain that need a human (an account or a device you do not have, a judgment that is the owner's), assign this same ticket to the owner (the person the release issue is assigned to), with a comment that names each remaining box and what to check. Do not add the escalation label: a validation is an action, not a decision.
+4. The bridge moves the ticket to Done at the tick that finds every box of its `## Post deploy` section checked; until then the ticket stays in Post Deploy.
+
 ## Review, consolidate, release QA
 
 These jobs come as items the bridge creates and serves to their reviewer or coordinator: an angle sub-item of a PR or of a release candidate, a consolidation item. Each item carries its whole protocol under its `## Protocol` section, at the version that created it. Follow that protocol; it says what to leave behind (a review on the PR, a report file, an approval) and what closes the item. Never move such an item's status: the bridge does, from what you leave on GitHub.
@@ -76,7 +85,7 @@ Every project has one. It takes the tickets in To Deploy, already on the default
 3. **QA**, when present. Angles review the candidate, each on its own angle branch with a report; the coordinator reviews each angle PR, then the whole. A blocking finding becomes an urgent fix ticket on the release branch, a non-blocking one a ticket for later.
 4. **GO.** It is computed by the bridge from the facts, never declared: the latest candidate's CI green, every QA angle done, no blocking finding open. The bridge then tags and publishes the release.
 5. **Publication.** The project's publish workflow deploys the release and merges the release branch back into the default branch.
-6. **Closure.** The bridge judges each ticket of the release: every box ticked, Done; only `## Post deploy` boxes left, Post Deploy; anything else open, back to In Progress.
+6. **Closure.** The bridge judges each ticket of the release: every box ticked, Done; only `## Post deploy` boxes left, Post Deploy, where the ticket is validated in production ("Validate a ticket in Post Deploy"); anything else open, back to In Progress.
 
 Each fix merged to the release branch makes the next candidate: the coordinator cuts it as its protocol says, a person does, or the bridge does with `release.auto_candidate = true`. Work merged to the default branch during a cycle goes into the next release.
 

@@ -262,7 +262,7 @@ jobs:
           HEAD_SHA: ${{ inputs.head-sha }}
           PAGE: ${{ inputs.process-page }}
           # The git blob id of docs/agents/process.md at this commit.
-          PINNED_BLOB: 015ceb82b857076ed828e109bc7d14afbb662c0d
+          PINNED_BLOB: dd2847679a1e5f0aa39c3a51176037989cffafa5
         shell: bash
         run: |
           set -euo pipefail
