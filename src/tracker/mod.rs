@@ -393,6 +393,9 @@ pub trait Tracker {
     fn children(&self, key: &str) -> TResult<Vec<Item>>;
     /// Every item carrying a label (a list the tracker cuts is unreadable).
     fn list_by_label(&self, label: &str) -> TResult<Vec<Item>>;
+    /// Every item in this status, in the bridge's scope (the team, the
+    /// project); a list the tracker cuts is unreadable.
+    fn list_by_status(&self, status: Status) -> TResult<Vec<Item>>;
     /// Items carrying a label whose description contains `needle` (a
     /// marker's text): a tracker that can search does it on its side, so the
     /// answer does not grow with the label's history. The caller still checks

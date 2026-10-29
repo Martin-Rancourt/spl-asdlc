@@ -320,6 +320,21 @@ impl Tracker for FakeTracker {
             .collect())
     }
 
+    fn list_by_status(&self, status: Status) -> TResult<Vec<Item>> {
+        let name = status.to_string();
+        if self.state.borrow().unreadable.iter().any(|k| *k == name) {
+            return Err(TrackerError::unreadable(name, "injected outage"));
+        }
+        Ok(self
+            .state
+            .borrow()
+            .items
+            .values()
+            .filter(|s| s.item.state.status == Some(status))
+            .map(|s| s.item.clone())
+            .collect())
+    }
+
     fn items_linked_to_pr(&self, pr_url: &str) -> TResult<Vec<String>> {
         Ok(self
             .state

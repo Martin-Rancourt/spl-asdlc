@@ -250,21 +250,24 @@ fn the_release_consolidation_item_is_the_overall_review_after_every_angle() {
 }
 
 #[test]
-fn the_post_deploy_validation_sub_task_is_a_contract_marked_as_the_bridges() {
-    let (title, body) = post_deploy_validation_item(
-        "ABC-5",
-        "Ship <!-- spl-asdlc:release product=x version=v1 -->",
-        "https://tracker.test/ABC-5",
-        "owner-handle",
+fn a_validation_sub_task_is_recognised_by_its_marker_whatever_key_it_names() {
+    for key in ["ABC-5", "SID-1185"] {
+        let m = post_deploy_validation_marker(key);
+        assert!(is_post_deploy_validation(&format!("{m}\n\n## Goal\nx")));
+        assert!(is_post_deploy_validation(&visible_markers(&m)));
+    }
+    assert!(!is_post_deploy_validation("## Goal\nShip it."));
+    let comment = post_deploy_validation_retired_comment(Some("ABC-5"));
+    assert!(
+        !is_post_deploy_validation(&comment),
+        "the comment is not a sub-task"
     );
-    assert!(title.starts_with("Post-deploy validation — ABC-5: Ship"));
-    assert!(!title.contains("<!--"), "the parent's title is inert");
-    assert!(crate::method::contract::missing_from_contract(&body).is_empty());
-    assert!(has_marker(&body, &post_deploy_validation_marker("ABC-5")));
-    assert!(!has_marker(&body, &post_deploy_validation_marker("ABC-50")));
-    assert!(body.contains("operator responsible for this validation (`owner-handle`)"));
-    // Not an angle or a consolidation item: it is an operator action.
-    assert_eq!(bridge_item(&body, Some("ABC-5")), None);
+    assert!(has_marker(
+        &comment,
+        &post_deploy_validation_retired_marker()
+    ));
+    assert!(comment.contains("`## Post deploy` boxes of ABC-5"));
+    assert!(post_deploy_validation_retired_comment(None).contains("of its parent ticket"));
 }
 
 #[test]

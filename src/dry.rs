@@ -362,6 +362,9 @@ impl Tracker for DryTracker<'_> {
     fn list_by_label(&self, label: &str) -> TResult<Vec<Item>> {
         self.inner.list_by_label(label)
     }
+    fn list_by_status(&self, status: Status) -> TResult<Vec<Item>> {
+        self.inner.list_by_status(status)
+    }
     fn find_labelled_containing(&self, label: &str, needle: &str) -> TResult<Vec<Item>> {
         self.inner.find_labelled_containing(label, needle)
     }

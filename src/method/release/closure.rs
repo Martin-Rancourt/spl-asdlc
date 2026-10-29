@@ -210,7 +210,7 @@ pub fn comment(r: &CloseResult) -> String {
     }
     if !r.awaiting_post_release.is_empty() {
         out.push_str(&format!(
-            "\n\nMoved to `Post Deploy`: {} — their `## Post deploy` boxes are verified in production and checked on each ticket, as its validation sub-task asks; the bridge moves each ticket to `Done` at the tick that finds all its `## Post deploy` boxes checked.",
+            "\n\nMoved to `Post Deploy`: {} — each ticket is its own validation: an agent verifies in production and checks the `## Post deploy` boxes it can, then hands the ticket to the owner for the rest; the bridge moves each ticket to `Done` at the tick that finds all its `## Post deploy` boxes checked.",
             list(&r.awaiting_post_release)
         ));
     }
@@ -454,6 +454,9 @@ mod tests {
         assert!(text.contains("Moved to `Post Deploy`: `ABC-4`"));
         // BR-ASDLC-002: the boxes are the gesture, no verb.
         assert!(text.contains("at the tick that finds all its `## Post deploy` boxes checked"));
+        // BR-ASDLC-003: the ticket is the validation, no sub-task.
+        assert!(text.contains("each ticket is its own validation"));
+        assert!(!text.contains("sub-task"));
         assert!(!text.contains("post-release-check"));
         assert!(!r.complete());
         assert_eq!(

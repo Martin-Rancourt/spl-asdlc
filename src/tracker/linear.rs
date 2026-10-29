@@ -677,6 +677,19 @@ impl Tracker for Linear {
         )
     }
 
+    fn list_by_status(&self, status: Status) -> TResult<Vec<Item>> {
+        let (team_id, _) = self.team()?;
+        let name = self.statuses.tracker_name(status);
+        self.issues(
+            &format!("items in {name}"),
+            &format!(
+                "query($state: String!, $team: ID!, $after: String) {{ issues(filter: {{state: {{name: {{eqIgnoreCase: $state}}}}, team: {{id: {{eq: $team}}}}}}, first: 50, after: $after) {{ nodes {{ {LIST_ISSUE_FIELDS} }} pageInfo {{ hasNextPage endCursor }} }} }}"
+            ),
+            json!({"state": name, "team": team_id}),
+            &["issues"],
+        )
+    }
+
     fn find_labelled_containing(&self, label: &str, needle: &str) -> TResult<Vec<Item>> {
         let (team_id, _) = self.team()?;
         self.issues(

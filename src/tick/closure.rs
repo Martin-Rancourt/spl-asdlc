@@ -25,7 +25,6 @@ use crate::method::vocabulary::{self, ItemState, Status};
 use crate::tracker::{Item, TResult};
 
 use super::merge::{for_tracker, tracker_said};
-use super::post_deploy;
 use super::release::{Candidate, embarked_items};
 use super::{Notice, Report, Tick};
 
@@ -519,15 +518,13 @@ fn judge_member(
                     }
                 }
                 Judgement::PostDeploy => {
-                    // The index label first, so the post-deploy pass finds
-                    // every ticket this moves; then its validation sub-task
-                    // (BR-ASDLC-003). A replay writes none of them again.
-                    if post_deploy::watch(t, log, report, m)
-                        && (m.state.status == Some(Status::PostDeploy)
-                            || set(Status::PostDeploy, None, log, report))
+                    // The ticket itself is the validation (BR-ASDLC-003): its
+                    // status only, its assignee kept; the post-deploy pass
+                    // finds it by that status. A replay writes nothing again.
+                    if m.state.status == Some(Status::PostDeploy)
+                        || set(Status::PostDeploy, None, log, report)
                     {
                         result.awaiting_post_release.push(m.key.clone());
-                        post_deploy::ensure_sub_task(t, log, report, m);
                     }
                 }
                 Judgement::Reopen => {

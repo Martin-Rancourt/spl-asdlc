@@ -8,7 +8,7 @@ This page is an index for people, kept by hand; the method never reads it, and a
 |---|---|---|
 | [BR-ASDLC-001](BR-ASDLC-001.md) | The repository carries no instance data. | Enforced |
 | [BR-ASDLC-002](BR-ASDLC-002.md) | A ticket leaves Post Deploy for Done at the bridge's tick, once every box of its `## Post deploy` section is checked; there is no verb. | Enforced |
-| [BR-ASDLC-003](BR-ASDLC-003.md) | Post Deploy stays outside the in-progress group; its verification is served through a validation sub-task. | Enforced |
+| [BR-ASDLC-003](BR-ASDLC-003.md) | A ticket in Post Deploy is its own validation: no sub-task; an agent checks what it verifies in production and hands the same ticket to the owner for the rest. | Enforced |
 | [BR-ASDLC-004](BR-ASDLC-004.md) | Release angle sub-items and the brief are created only once the candidate's gate is green, never at the release item's creation. | Enforced |
 | [BR-ASDLC-005](BR-ASDLC-005.md) | Every PR is independently deployable. | Proposed |
 | [BR-ASDLC-006](BR-ASDLC-006.md) | One PR per ticket by default. | Proposed |
@@ -22,7 +22,7 @@ This page is an index for people, kept by hand; the method never reads it, and a
 | [BR-ASDLC-014](BR-ASDLC-014.md) | A setting is defined in exactly one place: a key present in both the repository's `.spl-asdlc/config.toml` and the instance overlay is an error, never an override; the overlay carries instance identities only. | Enforced |
 | [BR-ASDLC-015](BR-ASDLC-015.md) | An item the bridge serves to an agent carries its protocol: the agent never depends on reading the method's repository to know what to do. | Enforced |
 | [BR-ASDLC-016](BR-ASDLC-016.md) | A red gate always produces urgent work served to an agent, never a silence. | Enforced |
-| [BR-ASDLC-017](BR-ASDLC-017.md) | A post-deploy validation sub-task is urgent: production is waiting on it. | Enforced |
+| [BR-ASDLC-017](BR-ASDLC-017.md) | A validation sub-task an earlier version created is canceled once, with a comment that sends its reader to the ticket. | Enforced |
 | [BR-ASDLC-018](BR-ASDLC-018.md) | The consolidation of a round starts only after its angles: its item is blocked by every angle item of the round, and no approval counts while an angle item is open. | Enforced |
 | [BR-ASDLC-019](BR-ASDLC-019.md) | A release closure leaves the tracker as it found it: it archives the items its cycle resolved, never an open one. | Enforced |
 | [BR-ASDLC-020](BR-ASDLC-020.md) | A release angle's item follows the normal flow and is Done when its angle PR merges; the candidate's consolidation is the overall review, served only once every angle is merged. | Enforced |
