@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.7.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.6.1...v1.7.0) (2026-10-29)
+
+
+### Features
+
+* **merge:** merge green PRs first, refresh a failing PR once, hand it back as draft (ASDLC-NN5K) ([#136](https://github.com/Martin-Rancourt/spl-asdlc/issues/136)) ([2e45d99](https://github.com/Martin-Rancourt/spl-asdlc/commit/2e45d99a206de89827aa87c4b60d36ab5ea31e70))
+* **post-deploy:** validate on the ticket itself, not on a sub-task (ASDLC-3XWH) ([#133](https://github.com/Martin-Rancourt/spl-asdlc/issues/133)) ([74d4893](https://github.com/Martin-Rancourt/spl-asdlc/commit/74d4893af32056d2592eafa2f306c2cd6ddc7a79))
+
+
+### Continuous Integration
+
+* run fork PRs on GitHub-hosted runners only (ASDLC-3RQQ) ([#135](https://github.com/Martin-Rancourt/spl-asdlc/issues/135)) ([320fe26](https://github.com/Martin-Rancourt/spl-asdlc/commit/320fe267317f78fb2b41c2f5739d9915d4ca4dbd))
+
 ## [1.6.1](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.6.0...v1.6.1) (2026-10-29)
 
 
