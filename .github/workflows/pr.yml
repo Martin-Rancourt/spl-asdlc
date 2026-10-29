@@ -36,6 +36,12 @@ name: pr
 # ["self-hosted","linux","x64"]) moves every job to another runner. A job of
 # this file reads it with fromJSON; a reusable workflow takes a label or a
 # JSON array, so a JSON string is decoded to its label before it is passed.
+#
+# A PR from a fork never reads it: its jobs run on GitHub's hosted runner,
+# whatever the variable says, so code from outside the repository never
+# reaches a self-hosted runner (ASDLC-3RQQ). The repository is public. The
+# trigger is `pull_request`, never `pull_request_target`, so a fork's run
+# gets no secret and a read-only token.
 
 on:
   pull_request:
@@ -76,14 +82,14 @@ jobs:
       process-page: docs/agents/process.md
       # This repository's checks are jobs of their own.
       guard-commands: '[]'
-      runs-on: ${{ startsWith(vars.SPL_ASDLC_RUNS_ON, '"') && fromJSON(vars.SPL_ASDLC_RUNS_ON) || vars.SPL_ASDLC_RUNS_ON || 'ubuntu-latest' }}
+      runs-on: ${{ github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || startsWith(vars.SPL_ASDLC_RUNS_ON, '"') && fromJSON(vars.SPL_ASDLC_RUNS_ON) || vars.SPL_ASDLC_RUNS_ON || 'ubuntu-latest' }}
 
   # BR-ASDLC-001, on every PR but a draft, release-please's included: it
   # reads every tracked file and costs seconds.
   rule-zero:
     name: BR-ASDLC-001 — no instance data
     if: github.event.pull_request.draft == false && (github.event.action != 'edited' || github.event.changes.title || github.event.changes.base)
-    runs-on: ${{ fromJSON(vars.SPL_ASDLC_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.full_name == github.repository && vars.SPL_ASDLC_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -104,7 +110,7 @@ jobs:
     name: rustfmt
     needs: guards
     if: github.event.pull_request.draft == false && needs.guards.outputs.code == 'true'
-    runs-on: ${{ fromJSON(vars.SPL_ASDLC_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.full_name == github.repository && vars.SPL_ASDLC_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -123,7 +129,7 @@ jobs:
     name: clippy
     needs: guards
     if: github.event.pull_request.draft == false && needs.guards.outputs.code == 'true'
-    runs-on: ${{ fromJSON(vars.SPL_ASDLC_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.full_name == github.repository && vars.SPL_ASDLC_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 30
     permissions:
       contents: read
@@ -147,7 +153,7 @@ jobs:
     name: test
     needs: guards
     if: github.event.pull_request.draft == false && needs.guards.outputs.code == 'true'
-    runs-on: ${{ fromJSON(vars.SPL_ASDLC_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.full_name == github.repository && vars.SPL_ASDLC_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 30
     permissions:
       contents: read
@@ -173,7 +179,7 @@ jobs:
     name: ${{ (github.event.action != 'edited' || github.event.changes.title || github.event.changes.base) && 'required-check' || 'required-check (edit, not checked)' }}
     if: always() && github.event.pull_request.draft == false && (github.event.action != 'edited' || github.event.changes.title || github.event.changes.base)
     needs: [guards, rule-zero, fmt, clippy, test]
-    runs-on: ${{ fromJSON(vars.SPL_ASDLC_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.full_name == github.repository && vars.SPL_ASDLC_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 5
     permissions:
       contents: read

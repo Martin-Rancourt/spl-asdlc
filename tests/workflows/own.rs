@@ -29,6 +29,13 @@ const RUNS_ON: &str = r#"${{ fromJSON(vars.SPL_ASDLC_RUNS_ON || '"ubuntu-latest"
 /// JSON array: a JSON string is decoded to its label.
 const RUNS_ON_INPUT: &str = r#"${{ startsWith(vars.SPL_ASDLC_RUNS_ON, '"') && fromJSON(vars.SPL_ASDLC_RUNS_ON) || vars.SPL_ASDLC_RUNS_ON || 'ubuntu-latest' }}"#;
 
+/// A job of `pr.yml`: the repository variable, except on a PR from a fork,
+/// which always runs on GitHub's hosted runner (ASDLC-3RQQ).
+const RUNS_ON_PR: &str = r#"${{ fromJSON(github.event.pull_request.head.repo.full_name == github.repository && vars.SPL_ASDLC_RUNS_ON || '"ubuntu-latest"') }}"#;
+
+/// The same, passed to a reusable workflow.
+const RUNS_ON_PR_INPUT: &str = r#"${{ github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || startsWith(vars.SPL_ASDLC_RUNS_ON, '"') && fromJSON(vars.SPL_ASDLC_RUNS_ON) || vars.SPL_ASDLC_RUNS_ON || 'ubuntu-latest' }}"#;
+
 fn own(name: &str) -> Yaml {
     workflow(&format!(".github/workflows/{name}"))
 }
@@ -147,19 +154,25 @@ fn every_job_runs_on_the_repositorys_runner() {
             // One runner per target, by design.
             continue;
         }
+        // A PR, from a fork too, is the one trigger code from outside can fire.
+        let (runs_on, runs_on_input) = if relative(&f).ends_with("/pr.yml") {
+            (RUNS_ON_PR, RUNS_ON_PR_INPUT)
+        } else {
+            (RUNS_ON, RUNS_ON_INPUT)
+        };
         for (id, job) in jobs(&crate::harness::load(&f)) {
             let what = format!("{} job {id}", relative(&f));
             if job["uses"].is_badvalue() {
-                assert_eq!(job["runs-on"].as_str(), Some(RUNS_ON), "{what}");
+                assert_eq!(job["runs-on"].as_str(), Some(runs_on), "{what}");
             } else if let Some(given) = job["with"]["runs-on"].as_str() {
-                assert_eq!(given, RUNS_ON_INPUT, "{what}");
+                assert_eq!(given, runs_on_input, "{what}");
             }
         }
     }
     // The call whose job runs on the project's runner takes it.
     assert_eq!(
         own("pr.yml")["jobs"]["guards"]["with"]["runs-on"].as_str(),
-        Some(RUNS_ON_INPUT),
+        Some(RUNS_ON_PR_INPUT),
         "pr.yml job guards"
     );
 }
