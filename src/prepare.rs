@@ -1,7 +1,8 @@
 //! `spl-asdlc release prepare` (`docs/reference/05-release-cycle.md` §1): run by
 //! the cut's `open` in a checkout of the new release branch, it reads the
 //! range along the git graph, computes the next version, writes it into the
-//! version files and the CHANGELOG, and writes the release notes. It writes
+//! version files and the CHANGELOG (and, with `release.changelog_dir`, the
+//! version's own notes file), and writes the release notes. It writes
 //! files only: the workflow commits them and tags the first candidate. It
 //! never talks to GitHub nor to the tracker.
 
@@ -236,9 +237,22 @@ pub fn run(prep: &Preparation, o: &Options) -> Result<Prepared, String> {
         CHANGELOG.into(),
         prepare::insert(changelog.as_deref(), version, &notes),
     ));
+    // One file per version, written once by its release: no PR touches it.
+    if let Some(folder) = &prep.changelog_dir {
+        let path = format!("{folder}/{version}.md");
+        if read(dir, &path)?.is_some() {
+            return Err(format!("{path} already exists: {version} has its notes"));
+        }
+        writes.push((path, notes.clone()));
+    }
     if !o.dry_run {
         for (path, text) in &writes {
-            std::fs::write(dir.join(path), text)
+            let target = dir.join(path);
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("{path} could not be written: {e}"))?;
+            }
+            std::fs::write(target, text)
                 .map_err(|e| format!("{path} could not be written: {e}"))?;
         }
     }

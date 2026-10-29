@@ -69,7 +69,7 @@ fn a_minimal_file_gets_every_documented_default() {
     assert_eq!(c.release.gate_rerun_wait_minutes, 30);
     assert_eq!(c.release.angles[0].title, "Security review");
     assert_eq!(c.review.merge_method, MergeMethod::Squash);
-    assert!(c.review.require_up_to_date);
+    assert!(!c.review.require_up_to_date);
     assert_eq!(c.review.diff_size_extra_angle, 0, "no size trigger");
     assert_eq!(c.review.human_approval, HumanApproval::Never);
     assert!(c.review.angles[0].paths.is_empty(), "on every PR");

@@ -3,19 +3,19 @@
 ## Invariants
 
 1. **A business rule is a global, permanent invariant of the project.** Unlike an acceptance criterion, which lives and dies with its ticket, a rule applies to the whole current state of the application. If the existing code violates a new rule, fixing it is in scope of the ticket that introduces the rule.
-2. **Rules live in the repository**, in the registry `.spl-asdlc/business-rules/`, one file per rule named after its stable id, `BR-<PRODUCT>-<NNN>.md`; an id is never reused. The product prefix is two to six capital letters. The place is fixed by the method, never configured. One file per rule means two PRs that touch different rules never conflict.
+2. **Rules live in the repository**, in the registry `.spl-asdlc/business-rules/`, one file per rule named `<ID>-<short-slug>.md`, such as `K7QF-green-prs-first.md`. The id is four random characters of the short-id alphabet (capital letters and the digits 2 to 9), at least one letter and one digit, so that no word written in capitals reads as an id; an id is never reused or allocated sequentially. References use the id alone; an id right after a hyphen is the end of a ticket id (`ABC-K7QF`), never a rule's. Existing `BR-<PRODUCT>-<NNN>.md` files stay readable during migration. A legacy rule renamed to a random id keeps its old id as an alias at the start of its slug, `K7QF-br-acme-073-signed-exports.md`: the registry then holds both `K7QF` and `BR-ACME-073`, so a ticket that still cites the old id finds its rule. The title names the new id only; the alias lives in the name because the guard reads only the directory's listing. The place is fixed by the method, never configured. One file per rule means two PRs that touch different rules never conflict.
 3. **A rule is enforced only by a named test that runs in CI.** The rule's file names the test. A rule without a test is `Proposed`; only `Enforced` rules block. `spl-asdlc doctor` checks, on its `business-rule tests` line, that each test an `Enforced` rule cites exists in the repository at the default branch ("The rule file" below says how it reads them). It does not run them: that is CI's.
-4. **A rule born in a ticket is promoted to the registry in the same PR.** The bridge refuses to merge a PR whose ticket states a new rule when the PR adds or changes no rule file (`.spl-asdlc/business-rules/<ID>.md`; the index alone does not count).
-5. **A rule cited by id must exist** in the registry of the product it names, read at the ref being judged: the PR head at merge time, the release tag at closure. The registry is read through the Git host, never from a working tree: the guard reads the directory's listing, and an id is registered when its file `<ID>.md` is there. A directory absent at a ref that exists is a registry with no rule.
+4. **A rule born in a ticket is promoted to the registry in the same PR.** The bridge refuses to merge a PR whose ticket states a new rule when the PR adds or changes no rule file (`.spl-asdlc/business-rules/<ID>-<slug>.md`; any other file of the directory does not count).
+5. **A rule cited by id must exist** in the registry of the product it names (a random id names none: it is the project's own registry's), read at the ref being judged: the PR head at merge time, the release tag at closure. The registry is read through the Git host, never from a working tree: the guard reads the directory's listing, and an id is registered when its file `<ID>-<slug>.md` (or a legacy `BR-<PRODUCT>-<NNN>.md`) is there. A directory absent at a ref that exists is a registry with no rule.
 6. **The guard fails closed.** An unreadable registry keeps the PR waiting and, at closure, leaves the ticket in its state and reports the rule as unverified. A ticket that neither cites nor states a rule is judged without reading the registry.
 7. **Declaring the absence of a rule is explicit**: the Business rules section contains a sentence that says there is none (`None.`, `No new rule.`, `N/A`), alone or followed by a colon or a dash and the reason (`None: the layout is display only.`, `No new rule — a refactor.`, `Aucune : l'ordre reste celui du cœur.`). What follows that colon or dash is the author's reason, never read as a rule; a rule id it cites is still checked against the registry. An empty section is not a declaration. A sentence that merely begins with "No" or "None" and goes on without that colon or dash to state something is a rule (`None of the redirects may leave the public origin.`, `None but the owner may publish.`).
 
 ## The rule file
 
-`.spl-asdlc/business-rules/<ID>.md`, one per rule; `docs/setup/templates/business-rule.md` is an example to copy.
+`.spl-asdlc/business-rules/<ID>-<slug>.md`, one per rule; `docs/setup/templates/business-rule.md` is an example to copy.
 
 ```markdown
-# BR-ACME-001 — Every exported file carries its signature.
+# K7QF — Every exported file carries its signature.
 
 Status: Enforced
 
@@ -40,7 +40,7 @@ The test name(s) that enforce it, as CI reports them.
 | `## Evidence` | Why it exists; the incident or decision that created it |
 | `## Test` (or `## Tests`) | The test name(s) that enforce it, as CI reports them |
 
-Only the file's name registers an id; an id mentioned in another file vouches for nothing. A file may carry more sections (domain, owner decision); the parts above are the contract, and none is empty. `spl-asdlc doctor` reads every file of the directory and names each one that breaks the format by its path. Beside the rules the directory may hold a `README.md`, an index for people that the method never reads.
+Only the file's name registers an id; an id mentioned in another file vouches for nothing. A file may carry more sections (domain, owner decision); the parts above are the contract, and none is empty. `spl-asdlc doctor` reads every file of the directory and names each one that breaks the format by its path. There is no committed index: the directory is the register; generate a full view on demand. The reader still ignores a legacy README during migration.
 
 `doctor`'s `business-rule tests` line reads the backticked names of each `Enforced` rule's Test section, in any language:
 

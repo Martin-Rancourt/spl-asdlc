@@ -1781,3 +1781,30 @@ fn the_quota_is_read_from_rate_limit_for_rest_and_graphql() {
     );
     assert!(gh.quota(&repo()).is_err());
 }
+
+#[test]
+fn returning_a_pr_to_draft_requires_graphql_confirmation() {
+    for (reply, succeeds) in [
+        (
+            r#"{"data":{"convertPullRequestToDraft":{"pullRequest":{"isDraft":true}}}}"#,
+            true,
+        ),
+        (r#"{"errors":[{"message":"denied"}]}"#, false),
+        (
+            r#"{"data":{"convertPullRequestToDraft":{"pullRequest":{"isDraft":false}}}}"#,
+            false,
+        ),
+    ] {
+        let (gh, t) = client();
+        t.on(
+            "POST",
+            &url("/graphql"),
+            200,
+            r#"{"data":{"repository":{"pullRequest":{"id":"PR_node"}}}}"#,
+        );
+        t.on("POST", &url("/graphql"), 200, reply);
+        assert_eq!(gh.draft_pull(&repo(), 7).is_ok(), succeeds);
+        assert!(t.bodies()[1].contains("convertPullRequestToDraft"));
+        assert!(t.bodies()[1].contains("PR_node"));
+    }
+}

@@ -234,8 +234,8 @@ impl Tick<'_> {
 
 /// One tick over the repository of `t.config`: the release pass (with its
 /// closure), the PR pass, the sweep, the post-deploy validation (spec 07,
-/// "What a tick does"). At most one merge per repository per tick
-/// (invariant 6). The pause switch, read first, stops it before any pass
+/// "What a tick does"). Every green PR is merged before a failing one is
+/// refreshed or handed back (invariant 6). The pause switch, read first, stops it before any pass
 /// ([`pause`]). The caller flushes the action log.
 pub fn run(t: &Tick, log: &mut ActionLog) -> Report {
     let mut report = Report::default();
@@ -267,32 +267,38 @@ fn passes(t: &Tick, log: &mut ActionLog, report: &mut Report) {
         report.out_of_time = true;
         return;
     }
-    let merged = release::pass(t, log, report);
+    release::pass(t, log, report);
     if !t.in_time() {
         report.out_of_time = true;
         return;
     }
     let pass = merge::pass(t, log, report);
-    let mut merged_now = merged;
-    // The first candidate GitHub accepts; a refused merge does not starve
-    // the others.
+
+    // Every green candidate, oldest first; a refused merge does not starve
+    // the others. A project that wants its PRs up to date merges one per
+    // base: the next one is behind once the first lands.
+    let mut moved: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
     for c in &pass.candidates {
-        if merged_now {
-            t.wait(
-                report,
-                &c.pr,
-                "ready, but a PR was merged this tick: one merge per repository per tick",
-            );
-            continue;
-        }
         if !t.in_time() {
             report.out_of_time = true;
             break;
         }
+        if t.config.review.require_up_to_date && moved.contains(c.pr.base_ref.as_str()) {
+            t.wait(
+                report,
+                &c.pr,
+                format!(
+                    "ready, but {} moved this tick and the project requires an up-to-date branch",
+                    c.pr.base_ref
+                ),
+            );
+            continue;
+        }
         if merge::merge(t, log, report, c, &pass.open) {
-            merged_now = true;
+            moved.insert(&c.pr.base_ref);
         }
     }
+    merge::deferred(t, log, report, &pass);
     if t.low_quota {
         report.notes.push(
             "the sweep of merged and closed PRs waits: little is left of the GitHub quota".into(),

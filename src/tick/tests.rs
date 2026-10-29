@@ -1133,8 +1133,9 @@ fn changes_requested_send_the_ticket_back_without_a_loop() {
 }
 
 #[test]
-fn one_merge_per_repository_per_tick() {
-    let w = World::new();
+fn every_green_pr_is_merged_in_one_tick() {
+    let mut w = World::new();
+    w.config.review.require_up_to_date = false;
     let mut prs = Vec::new();
     for n in [7, 8] {
         prs.push(in_review(&w, n));
@@ -1148,7 +1149,13 @@ fn one_merge_per_repository_per_tick() {
         .into_iter()
         .filter(|l| l.starts_with("merge"))
         .collect();
-    assert_eq!(merges, vec!["merge example-org/acme#7 at head-7 squash"]);
+    assert_eq!(
+        merges,
+        vec![
+            "merge example-org/acme#7 at head-7 squash",
+            "merge example-org/acme#8 at head-8 squash"
+        ]
+    );
     w.tick(false);
     assert!(
         w.github_writes()
@@ -2202,24 +2209,45 @@ fn a_held_pr_says_what_holds_it() {
         report.waiting_lines(),
         vec![
             "waiting: pr#7 it is a draft, out of the flow until it is marked ready",
-            "waiting: pr#8 checks are red at head-8 (`required-check`)",
             "waiting: pr#9 its ticket ABC-9 is Triage, not Backlog, Ready, In Progress or In Review",
         ]
     );
 }
 
 #[test]
-fn a_ready_pr_left_for_the_next_tick_says_so() {
-    let w = World::new();
+fn no_green_pr_waits_for_an_artificial_merge_limit() {
+    let mut w = World::new();
+    w.config.review.require_up_to_date = false;
     let prs: Vec<PullRequest> = [7, 8].into_iter().map(|n| in_review(&w, n)).collect();
     for pr in prs {
         w.open(approved(&w, pr));
     }
     let (report, _) = w.tick(false);
+    assert_eq!(report.waiting_lines(), Vec::<String>::new());
+}
+
+#[test]
+fn a_project_requiring_up_to_date_branches_merges_one_pr_per_base_and_tick() {
+    let w = World::new();
+    assert!(
+        w.config.review.require_up_to_date,
+        "the spec's example opts in"
+    );
+    let prs: Vec<PullRequest> = [7, 8].into_iter().map(|n| in_review(&w, n)).collect();
+    for pr in prs {
+        w.open(approved(&w, pr));
+    }
+    let (report, _) = w.tick(false);
+    let merges: Vec<String> = w
+        .github_writes()
+        .into_iter()
+        .filter(|l| l.starts_with("merge"))
+        .collect();
+    assert_eq!(merges, vec!["merge example-org/acme#7 at head-7 squash"]);
     assert_eq!(
         report.waiting_lines(),
         vec![
-            "waiting: pr#8 ready, but a PR was merged this tick: one merge per repository per tick"
+            "waiting: pr#8 ready, but main moved this tick and the project requires an up-to-date branch"
         ]
     );
 }
@@ -2583,11 +2611,15 @@ fn a_pr_with_no_angle_and_a_red_ci_is_not_merged() {
     let mut pr = ready_pr(&w);
     pr.checks[0].conclusion = Some("FAILURE".into());
     w.open(pr);
+    base_for_red(&w, "head-7", crate::github::CompareStatus::Ahead);
     let (report, _) = w.tick(false);
     assert!(report.ok(), "{report:?}");
     assert!(!merged(&w));
     assert!(children_of(&w, "ABC-7").is_empty());
-    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::InReview));
+    assert_eq!(
+        w.tracker.item("ABC-7").state.status,
+        Some(Status::InProgress)
+    );
     quiet(&w);
 }
 
@@ -3230,4 +3262,281 @@ fn a_rule_stated_by_the_ticket_merges_once_its_pr_adds_the_rule_file() {
     let (report, _) = w.tick(false);
     assert!(report.ok(), "{report:?}");
     assert!(merged(&w), "{:?}", w.github_writes());
+}
+
+fn base_for_red(w: &World, head: &str, status: crate::github::CompareStatus) {
+    use crate::github::{Commit, Comparison};
+    let mut s = w.github.state.borrow_mut();
+    s.commits.insert(
+        (repo(), "main".into()),
+        Ok(Commit {
+            sha: "base-tip".into(),
+            message: "base".into(),
+            committer_date: None,
+            parents: vec![],
+        }),
+    );
+    s.compares.insert(
+        (repo(), "base-tip".into(), head.into()),
+        Ok(Comparison {
+            status,
+            ahead_by: 1,
+            behind_by: 1,
+            commits: vec![],
+            files: vec![],
+            base_committed_at: None,
+        }),
+    );
+}
+
+#[test]
+fn a_green_behind_pr_without_currency_requirement_merges_without_refresh() {
+    let mut w = World::new();
+    no_review(&mut w);
+    w.config.review.require_up_to_date = false;
+    let mut pr = ready_pr(&w);
+    pr.merge_state = "BEHIND".into();
+    w.open(pr);
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert!(merged(&w));
+    assert!(
+        !w.github_writes()
+            .iter()
+            .any(|s| s.starts_with("update-branch"))
+    );
+}
+
+#[test]
+fn all_green_prs_merge_before_an_older_red_pr_is_refreshed() {
+    let mut w = World::new();
+    no_review(&mut w);
+    w.config.review.require_up_to_date = false;
+    for n in [3, 8, 9] {
+        let mut pr = green(pull_request(n));
+        if n == 3 {
+            pr.checks[0].conclusion = Some("FAILURE".into());
+        }
+        w.ticket(&format!("ABC-{n}"), Status::InProgress, &pr);
+        check_every_box(&w, &format!("ABC-{n}"));
+        w.open(pr);
+    }
+    base_for_red(&w, "head-3", crate::github::CompareStatus::Diverged);
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    let writes = w.github_writes();
+    let refresh = writes
+        .iter()
+        .position(|s| s.starts_with("update-branch"))
+        .unwrap();
+    let merges: Vec<_> = writes
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.starts_with("merge "))
+        .collect();
+    assert_eq!(merges.len(), 2);
+    assert!(merges.iter().all(|(i, _)| *i < refresh));
+    // GitHub has not yet published its async update: the accepted head/base
+    // marker prevents a second refresh on unchanged facts.
+    w.tick(false);
+    assert_eq!(
+        w.github_writes()
+            .iter()
+            .filter(|s| s.starts_with("update-branch"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn red_ci_with_current_base_returns_to_draft_with_diagnostics_once() {
+    let mut w = World::new();
+    no_review(&mut w);
+    let mut pr = ready_pr(&w);
+    pr.checks[0].conclusion = Some("FAILURE".into());
+    pr.checks[0].details_url = Some("https://example.test/failed-check".into());
+    w.open(pr);
+    base_for_red(&w, "head-7", crate::github::CompareStatus::Ahead);
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert!(!merged(&w));
+    assert_eq!(
+        w.tracker.item("ABC-7").state.status,
+        Some(Status::InProgress)
+    );
+    assert!(
+        w.github_writes()
+            .iter()
+            .any(|s| s == "draft-pull example-org/acme#7")
+    );
+    let s = w.github.state.borrow();
+    let comments = s.comments.get(&(repo(), 7)).unwrap().as_ref().unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.body.contains("https://example.test/failed-check"))
+    );
+    drop(s);
+    quiet(&w);
+}
+
+#[test]
+fn a_conflicting_pr_returns_exact_paths_to_its_implementer_before_drafting() {
+    let mut w = World::new();
+    no_review(&mut w);
+    let mut pr = ready_pr(&w);
+    pr.mergeable = crate::github::Mergeable::Conflicting;
+    w.open(pr);
+    w.github.state.borrow_mut().conflict_files.insert(
+        (repo(), 7),
+        Ok(vec!["src/a file.rs".into(), "src/b.rs".into()]),
+    );
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(
+        w.tracker.item("ABC-7").state.status,
+        Some(Status::InProgress)
+    );
+    assert!(
+        w.github_writes()
+            .iter()
+            .any(|s| s == "draft-pull example-org/acme#7")
+    );
+    assert!(
+        w.tracker
+            .comments("ABC-7")
+            .unwrap()
+            .iter()
+            .any(|c| c.body.contains("src/a file.rs") && c.body.contains("src/b.rs"))
+    );
+    quiet(&w);
+}
+
+#[test]
+fn an_unreadable_conflict_preview_keeps_the_pr_visible_and_does_not_guess_files() {
+    let mut w = World::new();
+    no_review(&mut w);
+    let mut pr = ready_pr(&w);
+    pr.mergeable = crate::github::Mergeable::Conflicting;
+    w.open(pr);
+    let (report, _) = w.tick(false);
+    assert!(!report.ok());
+    assert!(
+        !w.github_writes()
+            .iter()
+            .any(|s| s.starts_with("draft-pull"))
+    );
+    assert!(!merged(&w));
+}
+
+#[test]
+fn a_refreshed_failed_pr_merges_when_its_new_head_turns_green() {
+    let mut w = World::new();
+    no_review(&mut w);
+    w.config.review.require_up_to_date = false;
+    let mut pr = ready_pr(&w);
+    pr.checks[0].conclusion = Some("FAILURE".into());
+    w.open(pr.clone());
+    base_for_red(&w, "head-7", crate::github::CompareStatus::Diverged);
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert!(!merged(&w));
+    pr.head_sha = "refreshed-head".into();
+    pr.checks[0].conclusion = Some("SUCCESS".into());
+    w.open(pr);
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert!(
+        w.github_writes()
+            .contains(&"merge example-org/acme#7 at refreshed-head squash".into())
+    );
+    assert_eq!(
+        w.github_writes()
+            .iter()
+            .filter(|s| s.starts_with("update-branch"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn no_branch_refresh_is_attempted_when_the_base_cannot_be_read() {
+    let mut w = World::new();
+    no_review(&mut w);
+    let mut pr = ready_pr(&w);
+    pr.checks[0].conclusion = Some("FAILURE".into());
+    w.open(pr);
+    let (report, _) = w.tick(false);
+    assert!(!report.ok());
+    assert!(
+        !w.github_writes()
+            .iter()
+            .any(|s| s.starts_with("update-branch") || s.starts_with("draft-pull"))
+    );
+}
+
+#[test]
+fn automatic_refreshes_stop_after_three_trusted_attempts_even_if_main_moves() {
+    let mut w = World::new();
+    no_review(&mut w);
+    let mut pr = ready_pr(&w);
+    pr.checks[0].conclusion = Some("FAILURE".into());
+    w.open(pr);
+    base_for_red(&w, "head-7", crate::github::CompareStatus::Diverged);
+    let comments = (0..3)
+        .map(|n| crate::github::Comment {
+            id: n,
+            author: Some(Actor {
+                login: bot("spl-asdlc"),
+                is_bot: true,
+            }),
+            body: texts::marker(
+                "ci-refresh",
+                &[("head", &format!("old-head-{n}")), ("base", "old-base")],
+            ),
+            created_at: None,
+            url: String::new(),
+        })
+        .collect();
+    w.github
+        .state
+        .borrow_mut()
+        .comments
+        .insert((repo(), 7), Ok(comments));
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert!(
+        !w.github_writes()
+            .iter()
+            .any(|s| s.starts_with("update-branch"))
+    );
+    assert!(
+        w.github_writes()
+            .contains(&"draft-pull example-org/acme#7".into())
+    );
+    assert!(
+        w.tracker
+            .comments("ABC-7")
+            .unwrap()
+            .iter()
+            .any(|c| c.body.contains("limit (3)"))
+    );
+}
+
+#[test]
+fn a_failed_handback_comment_never_hides_the_pr() {
+    let mut w = World::new();
+    no_review(&mut w);
+    let mut pr = ready_pr(&w);
+    pr.checks[0].conclusion = Some("FAILURE".into());
+    w.open(pr);
+    base_for_red(&w, "head-7", crate::github::CompareStatus::Ahead);
+    w.tracker.fail_writes_starting_with("comment ABC-7");
+    let (report, _) = w.tick(false);
+    assert!(!report.ok());
+    assert!(
+        !w.github_writes()
+            .iter()
+            .any(|s| s.starts_with("draft-pull"))
+    );
 }

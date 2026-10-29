@@ -233,3 +233,13 @@ An AI session (Claude Code, for instance) can take these gestures on the owner's
 | `Bash(ssh <bridge host> spl-asdlc release *)` | Cut, requalify, abandon, retract |
 
 The reads (`gh pr list`, `gh pr view`, `gh run list`, `gh run view`, `gh variable get`, `gh api` without `--method`) change nothing. Every rule of the table but the two dry reads is an **outward action**: it merges, drafts, dispatches, publishes, pauses or writes the tracker, on the shared repository, and most cannot be undone (a merge, an uploaded asset that replaced another, an abandoned cycle). A rule only lets the session run the command; each gesture still waits for the owner's go.
+
+## Refresh or return a failing PR
+
+A green PR normally merges as it stands: do not click **Update branch** by reflex. On each pass the bridge attempts every green PR, oldest first, before refreshing or returning failing/conflicting PRs, also oldest first.
+
+For a red PR whose branch does not contain the current base, click **Update branch** in GitHub, or run `gh api --method PUT repos/OWNER/REPO/pulls/NUMBER/update-branch -f expected_head_sha=HEAD_SHA`. This merges the base into its head, pushes and triggers PR CI. The bridge waits for the refreshed head's CI; if it is green it merges normally. If that head still fails, it posts the failing check names and links on the PR and ticket, moves the ticket back to In Progress when no other PR keeps it in review, and runs `gh pr ready NUMBER --undo` to return the PR to draft. The same head/base pair is never refreshed twice while GitHub publishes its asynchronous update. Automatic refreshes are capped at three per PR, counted from the bridge’s own accepted-refresh comments; after that, the implementer merges the latest base locally while fixing CI.
+
+For a conflict, use a clean checkout of the PR branch: `git fetch origin`, then `git merge origin/BASE`. `git diff --name-only --diff-filter=U` lists the conflicting files. The bridge computes the same list in a temporary bare repository with `git merge-tree`, deletes it, and includes the paths in its handback. Resolve the files, commit and push. Run the local build, lint and unit tests, then `gh pr ready NUMBER`. Integration, UI and database suites stay in CI/QA. If a read or write fails, keep the PR visible and retry that step; never hide a PR before its diagnosis is posted.
+
+No runner is required for these gestures. A person may comment, update the ticket, change draft/readiness, refresh, and merge through the same GitHub and tracker state; the bridge reads the result on its next pass.

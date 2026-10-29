@@ -1,4 +1,4 @@
-# BR-ACME-001 — Every exported file carries its signature.
+# K7QF — Every exported file carries its signature.
 
 Status: Proposed
 

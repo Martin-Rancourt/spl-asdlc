@@ -84,7 +84,9 @@ angles = []                            # no review angle: layer 1 replaces it
 # release and writes it into Cargo.toml and Cargo.lock and the CHANGELOG; a
 # project whose version lives in other files lists them, after the section's
 # keys, as `[[release.version_files]]` tables (a `path` and a `pattern`
-# holding `{version}`). The other release keys have defaults
+# holding `{version}`). A project that shows its release notes reads them from
+# one file per version, `changelog_dir = "changelog"` (no PR ever writes the
+# changelog). The other release keys have defaults
 # (docs/reference/08-configuration.md).
 candidate_tag = "acme-v{version}-rc.{rc}"    # {version} once, {rc} once (never in release_tag); the callers pass the same patterns
 release_tag = "acme-v{version}"

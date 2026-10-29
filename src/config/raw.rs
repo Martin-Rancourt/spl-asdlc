@@ -76,6 +76,7 @@ pub(super) struct RawRelease {
     pub gate_rerun_wait_minutes: Option<i64>,
     pub version_files: Option<Vec<RawVersionFile>>,
     pub changelog_sections: Option<Vec<RawChangelogSection>>,
+    pub changelog_dir: Option<String>,
     /// `None` when the file writes no angle at all; `Some([])` when it
     /// writes `angles = []` under `[release]`: a release with no QA angle.
     pub angles: Option<Vec<RawReleaseAngle>>,

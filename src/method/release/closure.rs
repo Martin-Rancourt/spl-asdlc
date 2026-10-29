@@ -2,7 +2,7 @@
 //! REQ-REL-084..091): what happens to each member of the release, judged by
 //! code, and the comment that says so.
 
-use crate::method::business_rules::{Registry, cited_ids, rule_prefix};
+use crate::method::business_rules::{Registry, cited_ids, is_random_id, rule_prefix};
 use crate::method::done_gate::{self, ClosureVerdict, DoneGate};
 use crate::method::vocabulary::{ItemState, StateKind, Status};
 
@@ -122,12 +122,13 @@ pub fn judge(
             Some(Registry::Absent) => &empty,
             Some(Registry::Ids(ids)) => ids,
         };
-        // An id of another product's prefix is that product's to judge.
+        // An id of another product's prefix is that product's to judge; a
+        // random id has no prefix, so it is always this registry's.
         let owned: std::collections::BTreeSet<&str> = ids.iter().map(|i| rule_prefix(i)).collect();
         let missing: Vec<String> = cited
             .into_iter()
             .filter(|c| !ids.contains(c))
-            .filter(|c| owned.is_empty() || owned.contains(rule_prefix(c)))
+            .filter(|c| is_random_id(c) || owned.is_empty() || owned.contains(rule_prefix(c)))
             .collect();
         if !missing.is_empty() {
             return Judgement::UnknownRules(missing);

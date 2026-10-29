@@ -190,28 +190,15 @@ fn the_registry_of_this_repo_parses_into_its_real_ids() {
 }
 
 #[test]
-fn this_repos_index_lists_every_rule_and_only_them() {
+fn this_repos_registry_has_no_committed_index_and_accepts_migration_ids() {
     let files = this_repos_registry();
-    let index = files
-        .iter()
-        .find(|(p, _)| p.ends_with("/README.md"))
-        .map(|(_, t)| t.clone())
-        .expect("this repository keeps an index");
-    let listed = rule_ids(&index);
-    let names: Vec<&str> = files
-        .iter()
-        .map(|(p, _)| p.rsplit('/').next().unwrap())
-        .collect();
-    assert_eq!(listed, registry_ids(&names));
-}
-
-#[test]
-fn this_repos_registry_owns_only_its_own_prefix() {
-    let files = this_repos_registry();
+    assert!(!files.iter().any(|(p, _)| p.ends_with("/README.md")));
     let names: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
     let ids = registry_ids(&names);
-    let prefixes: BTreeSet<&str> = ids.iter().map(|i| rule_prefix(i)).collect();
-    assert_eq!(prefixes.into_iter().collect::<Vec<_>>(), vec!["BR-ASDLC"]);
+    assert!(
+        ids.iter()
+            .all(|id| id.len() == 4 || rule_prefix(id) == "BR-ASDLC")
+    );
 }
 
 // ---- the rule file (spec 02, "The rule file") ----
@@ -741,4 +728,78 @@ fn skip_reasons_name_what_holds_the_pr() {
         skip_reason(&judge("- New.", &["src/a.rs"])),
         "declares a business rule the PR does not add to the registry"
     );
+}
+
+#[test]
+fn random_four_character_rule_ids_have_a_slug_and_are_referenced_by_id_alone() {
+    assert_eq!(rule_file_id("K7QF-green-prs-first.md"), Some("K7QF"));
+    assert_eq!(rule_file_id("K7QF.md"), None);
+    let rule = parse_rule_file("K7QF-green-prs-first.md", "# K7QF — Green PRs first\n\nStatus: Proposed\n\n## Rule\nMerge green PRs before refreshing red PRs.\n\n## Evidence\nDecision of the owner, 2026-10-27.\n\n## Test\n`all_green_prs_merge_before_an_older_red_pr_is_refreshed`\n").unwrap();
+    assert_eq!(rule.id, "K7QF");
+    assert_eq!(
+        cited_ids(&ticket("- K7QF applies.")),
+        ["K7QF".to_string()].into()
+    );
+    let gate = evaluate(
+        &ticket("- Z8KP applies."),
+        &Registry::Ids(["K7QF".to_string()].into()),
+        Some(&paths(&["src/a.rs"])),
+    );
+    assert_eq!(gate.unknown_ids, vec!["Z8KP"]);
+}
+
+#[test]
+fn a_word_in_capitals_or_a_ticket_id_is_never_read_as_a_random_rule_id() {
+    assert!(is_random_id("K7QF"));
+    assert!(!is_random_id("MUST"), "a word has no digit");
+    assert!(!is_random_id("2026"), "a year has no letter");
+    assert!(!is_random_id("K1QF"), "1 is not in the alphabet");
+    assert_eq!(rule_file_id("JSON-exports-are-signed.md"), None);
+    let text = ticket("- Every export MUST be signed as JSON (decided in ABC-K7QF).");
+    assert!(cited_ids(&text).is_empty());
+    assert_eq!(
+        new_rule_statement(&text).as_deref(),
+        Some("Every export MUST be signed as JSON (decided in ABC-K7QF).")
+    );
+    let gate = evaluate(
+        &text,
+        &Registry::Ids(["K7QF".to_string()].into()),
+        Some(&paths(&["src/a.rs"])),
+    );
+    assert!(gate.unknown_ids.is_empty());
+    assert!(gate.unpromoted, "a stated rule still needs its file");
+}
+
+#[test]
+fn a_renamed_rule_keeps_its_legacy_id_as_an_alias_in_its_file_name() {
+    let name = format!("{REGISTRY_DIR}/K7QF-br-acme-073-signed-exports.md");
+    assert_eq!(rule_file_id(&name), Some("K7QF"));
+    assert_eq!(rule_file_alias(&name).as_deref(), Some("BR-ACME-073"));
+    assert_eq!(rule_file_alias("K7QF-signed-exports.md"), None, "no alias");
+    assert_eq!(
+        rule_file_alias("BR-ACME-073.md"),
+        None,
+        "a legacy file is its own id"
+    );
+    assert_eq!(rule_file_alias("K7QF-brief-notes.md"), None);
+    let ids = registry_ids(&[name.as_str(), "M2PX-br-acme-104.md"]);
+    assert_eq!(
+        ids,
+        ["BR-ACME-073", "BR-ACME-104", "K7QF", "M2PX"]
+            .map(String::from)
+            .into()
+    );
+    // A ticket citing the old id or the new one passes; an unknown old id of
+    // the same product is still caught.
+    let registry = Registry::Ids(ids);
+    for cited in ["- BR-ACME-073 applies.", "- K7QF applies."] {
+        let gate = evaluate(&ticket(cited), &registry, Some(&paths(&["src/a.rs"])));
+        assert!(gate.ok(), "{cited}");
+    }
+    let gate = evaluate(
+        &ticket("- BR-ACME-099 applies."),
+        &registry,
+        Some(&paths(&["src/a.rs"])),
+    );
+    assert_eq!(gate.unknown_ids, vec!["BR-ACME-099"]);
 }

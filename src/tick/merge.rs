@@ -4,7 +4,7 @@
 //! reconciliation, the PR opened (its ticket In Review), CI, the ticket's
 //! contract, the
 //! business-rule guard, the branch, then the review round, changes
-//! requested, and the merge, at most one per repository per tick.
+//! requested, and the merge, every green candidate before handling failures.
 //!
 //! A ticket may have several PRs (spec 04 §10): the pass reads the ticket of
 //! every open PR first, each PR has its own review round, and the state of
@@ -149,9 +149,10 @@ pub fn dismiss(
 #[derive(Default)]
 pub struct Pass {
     /// In the order they would be merged (oldest PR first). The caller
-    /// merges at most one per tick.
+    /// attempts every green merge before handling failures.
     pub candidates: Vec<Candidate>,
     pub open: OpenPrs,
+    deferred: Vec<(PullRequest, crate::tracker::TResult<link::Resolution>)>,
 }
 
 /// The open PRs of the repository, by the ticket they are linked to.
@@ -285,6 +286,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> Pass {
     }
     let mut bases: BTreeMap<String, Base> = BTreeMap::new();
     let mut candidates = Vec::new();
+    let mut deferred = Vec::new();
     for (pr, link) in linked {
         if !t.in_time() {
             report.out_of_time = true;
@@ -293,11 +295,62 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> Pass {
         let base = bases
             .entry(pr.base_ref.clone())
             .or_insert_with(|| read_base(t, &pr.base_ref));
+        // Defer failing/conflicting PRs until every green candidate has had
+        // its merge attempted. Their refresh must not move main first.
+        let green = base
+            .required
+            .as_ref()
+            .is_ok_and(|r| checks::pr_state(&pr, &r.contexts) == CheckState::Green);
+        if !green || review::branch_state(&pr) == BranchState::Conflicting {
+            deferred.push((pr, link));
+            continue;
+        }
         if let Some(c) = one(t, log, report, pr, link, base, &open) {
             candidates.push(c);
         }
     }
-    Pass { candidates, open }
+    Pass {
+        candidates,
+        open,
+        deferred,
+    }
+}
+
+/// Run only after the caller has attempted all green merges. Re-read each
+/// PR: earlier merges in this pass may have changed its mergeability.
+pub fn deferred(t: &Tick, log: &mut ActionLog, report: &mut Report, pass: &Pass) {
+    for (pr, link) in &pass.deferred {
+        if !t.in_time() {
+            report.out_of_time = true;
+            break;
+        }
+        let fresh = match t.github.pull(&t.repo, pr.number) {
+            Ok(p) => p,
+            Err(e) => {
+                t.unreadable(report, &format!("pr#{}", pr.number), e);
+                continue;
+            }
+        };
+        if fresh.draft || fresh.state != PrState::Open {
+            continue;
+        }
+        if fresh.head_sha != pr.head_sha
+            || fresh.body != pr.body
+            || fresh.base_ref != pr.base_ref
+            || fresh.title != pr.title
+        {
+            t.wait(
+                report,
+                &fresh,
+                "PR changed during the pass; waiting for a fresh ticket/PR snapshot",
+            );
+            continue;
+        }
+        let base = read_base(t, &fresh.base_ref);
+        // A formerly failing PR which became green is merged next tick,
+        // never refreshed on stale facts.
+        let _ = one(t, log, report, fresh, link.clone(), &base, &pass.open);
+    }
 }
 
 fn read_base(t: &Tick, base: &str) -> Base {
@@ -514,7 +567,29 @@ fn one(
         }
     };
     let ci = checks::pr_state(&pr, &required.contexts);
-    let branch = review::branch_state(&pr);
+    let branch = match review::branch_state(&pr) {
+        BranchState::Behind if !t.config.review.require_up_to_date && !required.strict => {
+            BranchState::Current
+        }
+        other => other,
+    };
+    if branch == BranchState::Conflicting {
+        hand_back(
+            t,
+            log,
+            report,
+            &pr,
+            &ticket,
+            status,
+            open,
+            ReturnReason::Conflict,
+        );
+        return None;
+    }
+    if ci == CheckState::Red {
+        refresh_or_return(t, log, report, &pr, &ticket, status, open);
+        return None;
+    }
     if ci != CheckState::Green {
         let head = texts::short(&pr.head_sha);
         let missing = checks::missing_required(&pr.checks, &required.contexts);
@@ -560,9 +635,6 @@ fn one(
             _ => format!("the checks of {head} could not be read whole"),
         };
         t.wait(report, &pr, why);
-        if ci == CheckState::None && branch == BranchState::Conflicting {
-            conflict(t, log, report, &pr);
-        }
         return None;
     }
 
@@ -679,7 +751,16 @@ fn one(
     match branch {
         BranchState::Conflicting => {
             t.wait(report, &pr, format!("it conflicts with {}", pr.base_ref));
-            conflict(t, log, report, &pr);
+            hand_back(
+                t,
+                log,
+                report,
+                &pr,
+                &ticket,
+                status,
+                open,
+                ReturnReason::Conflict,
+            );
             return None;
         }
         BranchState::Behind if must_be_current => {
@@ -2033,21 +2114,265 @@ pub fn names(text: &str, key: &str) -> bool {
     })
 }
 
-fn conflict(t: &Tick, log: &mut ActionLog, report: &mut Report, pr: &PullRequest) {
+/// Refresh only a failed head which does not contain the current base.
+/// The ancestry check is the retry boundary: after the refresh, another red
+/// CI is returned rather than re-running unchanged code forever.
+#[allow(clippy::too_many_arguments)]
+fn refresh_or_return(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    pr: &PullRequest,
+    ticket: &Item,
+    status: Option<Status>,
+    open: &OpenPrs,
+) {
+    use crate::github::CompareStatus;
+    let base = match t.github.commit(&t.repo, &pr.base_ref) {
+        Ok(c) => c.sha,
+        Err(e) => {
+            t.unreadable(report, &pr.url, e);
+            return;
+        }
+    };
+    let comparison = match t.github.compare_status(&t.repo, &base, &pr.head_sha) {
+        Ok(c) => c,
+        Err(e) => {
+            t.unreadable(report, &pr.url, e);
+            return;
+        }
+    };
+    if matches!(comparison, CompareStatus::Identical | CompareStatus::Ahead) {
+        hand_back(
+            t,
+            log,
+            report,
+            pr,
+            ticket,
+            status,
+            open,
+            ReturnReason::Checks,
+        );
+        return;
+    }
+    let fields = [("head", pr.head_sha.as_str()), ("base", base.as_str())];
+    let marker = texts::marker("ci-refresh", &fields);
+    match pr_said(t, pr.number, &marker) {
+        Ok(true) => {
+            t.wait(
+                report,
+                pr,
+                "base refresh accepted; waiting for GitHub to publish the new head and its CI",
+            );
+            return;
+        }
+        Err(e) => {
+            t.unreadable(report, &pr.url, e);
+            return;
+        }
+        Ok(false) => {}
+    }
+    // Bound automatic retries even when the base keeps moving underneath a
+    // permanently broken PR. Only the bridge's own accepted-refresh markers count.
+    let comments = match t.github.issue_comments(&t.repo, pr.number) {
+        Ok(c) => c,
+        Err(e) => {
+            t.unreadable(report, &pr.url, e);
+            return;
+        }
+    };
+    let attempts = comments
+        .iter()
+        .filter(|c| {
+            c.author
+                .as_ref()
+                .is_some_and(|a| a.login.eq_ignore_ascii_case(&t.github_login))
+                && c.body.contains("<!-- spl-asdlc:ci-refresh ")
+        })
+        .count();
+    if attempts >= 3 {
+        hand_back(
+            t,
+            log,
+            report,
+            pr,
+            ticket,
+            status,
+            open,
+            ReturnReason::RefreshLimit,
+        );
+        return;
+    }
+    let object = format!("pr#{}", pr.number);
+    if t.act(
+        log,
+        report,
+        &object,
+        "refresh failed CI",
+        json!({"head": pr.head_sha, "base": base}),
+        || {
+            t.github
+                .update_branch(&t.repo, pr.number, &pr.head_sha)
+                .map_err(|e| e.to_string())
+        },
+    )
+    .is_some()
+    {
+        say_once(
+            t,
+            log,
+            report,
+            pr,
+            "ci-refresh",
+            &fields,
+            &format!(
+                "CI failed at `{}`. Merging `{}` (`{base}`) into this branch once; its push starts CI again. If the refreshed head still fails, the PR returns to draft for its implementer.",
+                pr.head_sha, pr.base_ref
+            ),
+        );
+        t.wait(
+            report,
+            pr,
+            "failed CI: base refresh requested; waiting for the new head's CI",
+        );
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ReturnReason {
+    Conflict,
+    Checks,
+    RefreshLimit,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn hand_back(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    pr: &PullRequest,
+    ticket: &Item,
+    status: Option<Status>,
+    open: &OpenPrs,
+    reason: ReturnReason,
+) {
+    let why = if matches!(reason, ReturnReason::Conflict) {
+        let files = match t.github.conflict_files(&t.repo, pr) {
+            Ok(f) if !f.is_empty() => f,
+            Ok(_) => {
+                t.wait(
+                    report,
+                    pr,
+                    "mergeability changed during preview; waiting for fresh facts",
+                );
+                return;
+            }
+            Err(e) => {
+                t.unreadable(report, &pr.url, e);
+                return;
+            }
+        };
+        format!(
+            "Conflicts with `{}` in:\n\n{}\n\nMerge `{}` into this branch, resolve these files and push.",
+            pr.base_ref,
+            files
+                .iter()
+                .map(|f| format!("- `{f}`"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            pr.base_ref
+        )
+    } else {
+        let failures: Vec<String> = checks::failures(&pr.checks)
+            .iter()
+            .map(|c| match &c.details_url {
+                Some(url) => format!("- [{}]({url})", c.name),
+                None => format!("- `{}`", c.name),
+            })
+            .collect();
+        format!(
+            "{} Fix the failing checks:\n\n{}",
+            if matches!(reason, ReturnReason::RefreshLimit) {
+                "The automatic refresh limit (3) was reached. Merge the latest base locally while fixing this PR."
+            } else {
+                "CI is still red with the current base included."
+            },
+            failures.join("\n")
+        )
+    };
+    let message = format!(
+        "PR #{} returns to its implementer as a draft. {why}\n\nRun the local build, lint and unit tests, then mark the PR ready. CI and QA own the integration, UI and database tests.",
+        pr.number
+    );
+    let fields = [("head", pr.head_sha.as_str())];
+    let marker = texts::marker("implementation-failed", &fields);
+    say_once_on_item(
+        t,
+        log,
+        report,
+        &ticket.key,
+        "implementation-failed",
+        &[("pr", &pr.url), ("head", &pr.head_sha)],
+        &message,
+    );
     say_once(
         t,
         log,
         report,
         pr,
-        "conflict",
-        &[("head", texts::short(&pr.head_sha))],
-        &format!(
-            "This PR conflicts with `{}` at `{}`: the implementer resolves the conflict on the branch; \
-             the bridge cannot.",
-            pr.base_ref,
-            texts::short(&pr.head_sha)
-        ),
+        "implementation-failed",
+        &fields,
+        &message,
     );
+    // Do not hide the PR until both explanations are visible at source.
+    let item_marker = texts::marker(
+        "implementation-failed",
+        &[("pr", &pr.url), ("head", &pr.head_sha)],
+    );
+    if !t.dry_run
+        && (!matches!(pr_said(t, pr.number, &marker), Ok(true))
+            || !matches!(tracker_said(t, &ticket.key, &item_marker), Ok(true)))
+    {
+        return;
+    }
+    send_back(
+        t,
+        log,
+        report,
+        pr,
+        ticket,
+        status,
+        open,
+        "CI or merge conflicts",
+    );
+    if !t.dry_run
+        && status == Some(Status::InReview)
+        && !open_prs_of(open, &ticket.key, Some(pr.number))
+            .iter()
+            .any(OpenPr::in_review)
+    {
+        match t.tracker.get(&ticket.key) {
+            Ok(i) if i.state.status == Some(Status::InProgress) => {}
+            Ok(_) => return,
+            Err(e) => {
+                t.unreadable(report, &ticket.key, e);
+                return;
+            }
+        }
+    }
+    t.act(
+        log,
+        report,
+        &format!("pr#{}", pr.number),
+        "return to draft",
+        json!({"head": pr.head_sha}),
+        || {
+            t.github
+                .draft_pull(&t.repo, pr.number)
+                .map_err(|e| e.to_string())
+        },
+    );
+    t.wait(report, pr, why);
 }
 
 /// Ask a human to approve, once per head. `reviewed`: the PR has a round,

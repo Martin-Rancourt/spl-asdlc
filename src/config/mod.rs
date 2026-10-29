@@ -219,6 +219,9 @@ pub struct Release {
     pub version_files: Vec<VersionFile>,
     /// The CHANGELOG sections, by Conventional Commit type, in order.
     pub changelog_sections: Vec<ChangelogSection>,
+    /// The folder `release prepare` writes one notes file per version
+    /// into, `<dir>/<X.Y.Z>.md`; `None` writes none.
+    pub changelog_dir: Option<String>,
     pub angles: Vec<Angle>,
 }
 
@@ -260,6 +263,7 @@ pub struct Preparation {
     pub release_tag: String,
     pub version_files: Vec<VersionFile>,
     pub changelog_sections: Vec<ChangelogSection>,
+    pub changelog_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -517,6 +521,7 @@ impl Config {
         );
         let version_files = v.version_files(release.version_files);
         let changelog_sections = v.changelog_sections(release.changelog_sections);
+        let changelog_dir = v.changelog_dir(release.changelog_dir);
         match product {
             Some((product, repository)) if v.errors.is_empty() => Ok(Preparation {
                 product,
@@ -524,6 +529,7 @@ impl Config {
                 release_tag,
                 version_files,
                 changelog_sections,
+                changelog_dir,
             }),
             _ => Err(ConfigErrors(v.errors)),
         }
@@ -1086,6 +1092,7 @@ impl Validator {
         );
         let version_files = self.version_files(raw.version_files);
         let changelog_sections = self.changelog_sections(raw.changelog_sections);
+        let changelog_dir = self.changelog_dir(raw.changelog_dir);
         Some(Release {
             candidate_tag,
             release_tag,
@@ -1109,6 +1116,7 @@ impl Validator {
             publish_workflow,
             version_files,
             changelog_sections,
+            changelog_dir,
             angles,
         })
     }
@@ -1127,7 +1135,7 @@ impl Validator {
                 ("merge", MergeMethod::Merge),
             ],
         );
-        let require_up_to_date = raw.require_up_to_date.unwrap_or(true);
+        let require_up_to_date = raw.require_up_to_date.unwrap_or(false);
         // Off by default: a project that wants an angle by size sets the
         // threshold and the angle it adds.
         let diff_size_extra_angle =
@@ -1293,6 +1301,28 @@ impl Validator {
         out
     }
 
+    /// A path inside the repository, `dir/file`: never absolute, never a
+    /// `.` or `..` segment, `/` its only separator.
+    fn inside_repository(&mut self, key: &str, p: &str) {
+        if p.starts_with('/')
+            || p.contains('\\')
+            || p.split('/').any(|s| s.is_empty() || s == "." || s == "..")
+        {
+            self.err(
+                key,
+                format!("\"{p}\" must be a path inside the repository (`dir/file`)"),
+            );
+        }
+    }
+
+    /// `release.changelog_dir`: a folder inside the repository, absent by
+    /// default (no file per version).
+    fn changelog_dir(&mut self, raw: Option<String>) -> Option<String> {
+        let dir = raw?;
+        self.inside_repository("release.changelog_dir", &dir);
+        Some(dir)
+    }
+
     /// `[[release.version_files]]`: a relative path and a pattern holding
     /// `{version}` once, each pair listed once.
     fn version_files(&mut self, raw: Option<Vec<raw::RawVersionFile>>) -> Vec<VersionFile> {
@@ -1302,15 +1332,7 @@ impl Validator {
             let path = self.required(&format!("{key}.path"), f.path);
             let pattern = self.required(&format!("{key}.pattern"), f.pattern);
             if let Some(p) = &path {
-                if p.starts_with('/')
-                    || p.contains('\\')
-                    || p.split('/').any(|s| s.is_empty() || s == "." || s == "..")
-                {
-                    self.err(
-                        &format!("{key}.path"),
-                        format!("\"{p}\" must be a path inside the repository (`dir/file`)"),
-                    );
-                }
+                self.inside_repository(&format!("{key}.path"), p);
             }
             if let Some(p) = &pattern {
                 self.template(&format!("{key}.pattern"), p, &[("{version}", 1)]);

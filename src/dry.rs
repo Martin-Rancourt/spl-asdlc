@@ -166,6 +166,13 @@ impl GitHub for DryGitHub<'_> {
         ));
         Ok(format!("dry-run-merge-of-{number}"))
     }
+    fn draft_pull(&self, repo: &RepoSlug, number: u64) -> Write<()> {
+        self.intents.push(format!("github {repo}: draft #{number}"));
+        Ok(())
+    }
+    fn conflict_files(&self, repo: &RepoSlug, pr: &github::PullRequest) -> Read<Vec<String>> {
+        self.inner.conflict_files(repo, pr)
+    }
     fn update_branch(&self, repo: &RepoSlug, number: u64, head_sha: &str) -> Write<()> {
         self.intents.push(format!(
             "github {repo}: update branch of #{number} at {head_sha}"
