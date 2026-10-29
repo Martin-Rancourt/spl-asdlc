@@ -535,6 +535,78 @@ fn a_declaration_of_absence_does_not_hide_a_real_rule_next_to_it() {
     assert!(judge("- Exports are signed.\n- None.", &["src/a.rs"]).unpromoted);
 }
 
+const ABSENCES_WITH_A_REASON: [&str; 14] = [
+    "None: the layout is display only; the order is the view's (the core's).",
+    "None: the order is the core's (ABC-110), the shells only cut it by status.",
+    "No new rule — display only.",
+    "Aucune : l'ordre reste celui du cœur.",
+    "Aucune\u{a0}: l'ordre reste celui du cœur.",
+    "Aucune\u{202f}: l'ordre reste celui du cœur.",
+    "No new rule: a refactor.",
+    "None – the change is internal.",
+    "None - the change is internal.",
+    "None -- the change is internal.",
+    "None—the change is internal.",
+    "N/A: display only.",
+    "**None**: display only.",
+    "_Aucune nouvelle règle_ — affichage seulement.",
+];
+
+#[test]
+fn a_declaration_of_absence_may_give_its_reason_after_a_colon_or_a_dash() {
+    for phrase in ABSENCES_WITH_A_REASON {
+        for shape in ["{}", "- {}", "* {}", "1. {}", "- [ ] {}", "- [x] {}"] {
+            let rules = shape.replace("{}", phrase);
+            assert_eq!(new_rule_statement(&ticket(&rules)), None, "{rules:?}");
+            assert!(judge(&rules, &["src/a.rs"]).ok(), "{rules:?}");
+        }
+    }
+}
+
+#[test]
+fn a_reason_that_wraps_over_two_lines_is_still_one_declaration() {
+    assert_eq!(
+        new_rule_statement(&ticket(
+            "- None: the layout is display only;\n  the order is the view's."
+        )),
+        None
+    );
+}
+
+#[test]
+fn only_a_colon_or_a_dash_opens_the_reason() {
+    for rule in [
+        "None-the-less, every export is signed.",
+        "Aucune, sauf l'admin, ne publie.",
+        "None (the owner) may publish.",
+        "No new-rule exports are signed.",
+    ] {
+        assert!(
+            judge(&format!("- {rule}"), &["src/a.rs"]).unpromoted,
+            "{rule}"
+        );
+    }
+}
+
+#[test]
+fn a_declaration_with_a_reason_does_not_hide_a_real_rule_next_to_it() {
+    assert!(
+        judge(
+            "- None: display only.\n- Exports are signed.",
+            &["src/a.rs"]
+        )
+        .unpromoted
+    );
+}
+
+#[test]
+fn a_rule_id_cited_in_the_reason_is_still_checked_against_the_registry() {
+    assert!(judge("None: the order is BR-AF-001's.", &["src/a.rs"]).ok());
+    let gate = judge("None: the order is BR-AF-999's.", &["src/a.rs"]);
+    assert_eq!(gate.unknown_ids, vec!["BR-AF-999"]);
+    assert!(!gate.unpromoted);
+}
+
 #[test]
 fn a_rule_of_process_cited_without_an_id_is_still_a_new_rule() {
     assert!(judge("- The usual one-PR-per-ticket rule applies.", &["src/a.rs"]).unpromoted);
@@ -553,13 +625,16 @@ fn the_refusal_says_how_to_declare_that_there_is_no_rule() {
     let text = refusal(&judge("- Exports are signed.", &["src/a.rs"]), "ABC-1");
     assert!(text.contains(ABSENCE_DECLARATION));
     assert!(text.contains("If the ticket really has no new rule"));
+    assert!(text.contains(ABSENCE_WITH_REASON_EXAMPLE));
 }
 
 #[test]
 fn the_sentence_the_refusal_recommends_is_accepted_by_the_reader() {
     for shape in ["{}", "- {}", "- [ ] {}"] {
-        let rules = shape.replace("{}", ABSENCE_DECLARATION);
-        assert_eq!(new_rule_statement(&ticket(&rules)), None, "{rules}");
+        for sentence in [ABSENCE_DECLARATION, ABSENCE_WITH_REASON_EXAMPLE] {
+            let rules = shape.replace("{}", sentence);
+            assert_eq!(new_rule_statement(&ticket(&rules)), None, "{rules}");
+        }
     }
 }
 
