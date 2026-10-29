@@ -594,39 +594,37 @@ pub fn gate_fix_closed_comment(candidate: &str, green: &str, run_url: &str) -> S
     )
 }
 
-/// The marker of the validation sub-task of a ticket in Post Deploy.
+/// The marker of the validation sub-task earlier versions created under a
+/// ticket in Post Deploy. None is created any more: the validation happens on
+/// the ticket itself (BR-ASDLC-003).
 pub fn post_deploy_validation_marker(parent: &str) -> String {
     marker("post-deploy-validation", &[("parent", parent)])
 }
 
-/// The validation sub-task of a ticket the closure moved to Post Deploy
-/// (BR-ASDLC-003): assigned to the operator in Post Deploy, with a complete
-/// contract, it asks for the parent's `## Post deploy` boxes to be verified
-/// in production and checked.
-pub fn post_deploy_validation_item(
-    parent: &str,
-    parent_title: &str,
-    parent_url: &str,
-    owner: &str,
-) -> (String, String) {
-    let title = format!("Post-deploy validation — {parent}: {}", inert(parent_title));
-    let body = format!(
-        "{marker}\n\n## Goal\nValidate in production the `## Post deploy` boxes of {parent} ({parent_url}), now that its \
-         release is deployed: check on {parent} each box you verify in production, then close this sub-task. You are the \
-         operator responsible for this validation (`{owner}`). The bridge moves {parent} to `Done` at the tick that finds every one of its `## Post deploy` \
-         boxes checked.\n\n\
-         ## Non-goals\n- Changing the code, or any box of {parent} outside its `## Post deploy` section.\n\
-         - Checking a box whose check was not verified in production.\n\n\
-         ## Acceptance criteria\n\
-         - [ ] Every `## Post deploy` box of {parent} is checked once its check was verified in production.\n\n\
-         ## Business rules\n{absence}\n\n\
-         ## Context\n- Parent: {parent}\n- The owner: `{owner}`\n- {keep}",
-        marker = post_deploy_validation_marker(parent),
-        keep = KEEP_MARKER,
-        owner = inert(owner),
-        absence = crate::method::business_rules::ABSENCE_DECLARATION,
-    );
-    (title, body)
+/// Whether a text carries a validation sub-task's marker, hidden or visible,
+/// whatever parent key it names (the key of a tracker the items came from
+/// included).
+pub fn is_post_deploy_validation(text: &str) -> bool {
+    text.contains(token(&post_deploy_validation_marker("")))
+}
+
+/// The marker of the comment that cancels a validation sub-task.
+pub fn post_deploy_validation_retired_marker() -> String {
+    marker("post-deploy-validation-retired", &[])
+}
+
+/// The comment on a validation sub-task the bridge cancels (BR-ASDLC-017):
+/// the validation goes on on its parent, under `parent`'s `## Post deploy`
+/// section.
+pub fn post_deploy_validation_retired_comment(parent: Option<&str>) -> String {
+    let on = parent.map_or_else(|| "its parent ticket".to_string(), str::to_string);
+    format!(
+        "Canceled by the bridge: the post-deploy validation now happens on the ticket itself, not on a sub-task. \
+         Verify in production and check the `## Post deploy` boxes of {on}: an agent checks those it can verify, and \
+         hands that ticket to the owner for the rest. The bridge moves {on} to `Done` at the tick that finds every one \
+         of its `## Post deploy` boxes checked.\n\n{}",
+        post_deploy_validation_retired_marker()
+    )
 }
 
 /// What a consolidation item consolidates.

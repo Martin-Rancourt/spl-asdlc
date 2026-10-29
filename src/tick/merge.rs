@@ -1365,9 +1365,8 @@ pub fn delivered(
 }
 
 /// Write the status the state rules gave a ticket whose PR resolved; whether
-/// it is in place. Post Deploy (only with nothing to deploy, at a merge)
-/// gets its index label first and its validation sub-task after, as at the
-/// closure (BR-ASDLC-003): a replay writes none of them again.
+/// it is in place. Post Deploy (only with nothing to deploy, at a merge) is
+/// the ticket's status alone, as at the closure (BR-ASDLC-003).
 pub fn set_state(
     t: &Tick,
     log: &mut ActionLog,
@@ -1377,20 +1376,12 @@ pub fn set_state(
     to: Status,
     inputs: serde_json::Value,
 ) -> bool {
-    if to == Status::PostDeploy && !super::post_deploy::watch(t, log, report, ticket) {
-        return false;
-    }
-    let moved = t
-        .act(log, report, object, &format!("status {to}"), inputs, || {
-            t.tracker
-                .set_status(&ticket.key, to, None)
-                .map_err(|e| e.to_string())
-        })
-        .is_some();
-    if moved && to == Status::PostDeploy {
-        super::post_deploy::ensure_sub_task(t, log, report, ticket);
-    }
-    moved
+    t.act(log, report, object, &format!("status {to}"), inputs, || {
+        t.tracker
+            .set_status(&ticket.key, to, None)
+            .map_err(|e| e.to_string())
+    })
+    .is_some()
 }
 
 /// Whether the bridge already recorded this merge on the ticket.

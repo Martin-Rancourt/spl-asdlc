@@ -509,6 +509,18 @@ impl<S: LivelaStore> Tracker for Livela<S> {
         self.listed(Some(label), None)
     }
 
+    /// The project's items, kept by their status before they are read whole.
+    fn list_by_status(&self, status: Status) -> TResult<Vec<Item>> {
+        let project = self.scope()?;
+        let items = self.store.borrow().items(&project.id, None, None);
+        items
+            .iter()
+            .filter(|i| in_project(i, &project))
+            .filter(|i| self.statuses.canonical(&i.status) == Some(status))
+            .map(|i| self.item_of(i))
+            .collect()
+    }
+
     fn items_linked_to_pr(&self, pr_url: &str) -> TResult<Vec<String>> {
         let ids = self.store.borrow().find_by_web_link(pr_url);
         Ok(self

@@ -1,43 +1,40 @@
 //! Post-deploy validation (`docs/reference/05-release-cycle.md` §11,
-//! BR-ASDLC-002/003). When the closure (or, for a ticket with nothing to
-//! deploy, the merge) moves a ticket to Post Deploy it labels it `post-deploy-validation` and creates one validation sub-task,
-//! assigned to the operator in Post Deploy and urgent (BR-ASDLC-017:
-//! production is waiting on it). The operator verifies the ticket's `## Post
-//! deploy` boxes in production and checks them. At each tick the bridge reads the labelled tickets and moves
-//! to Done each one whose boxes are all checked. No verb: the boxes are the
-//! gesture. The ticket itself is never served: Post Deploy stays a
-//! validation state.
+//! BR-ASDLC-002/003/017). The closure (or, for a ticket with nothing to
+//! deploy, the merge) moves a ticket whose only open boxes are its `## Post
+//! deploy` ones to Post Deploy, and that ticket is the validation: an agent
+//! checks the boxes it verifies in production and hands the same ticket to
+//! the owner for the rest. At each tick the bridge reads every item in Post
+//! Deploy and moves to Done each ticket whose boxes are all checked, whatever
+//! its labels. No verb, no sub-task: the boxes are the gesture.
 //!
-//! The label is only an index (a tracker cannot be listed by status): the
-//! status and the boxes are the facts, and the label is removed once the
-//! ticket is resolved, so the list stays as short as the tickets still
-//! waiting. The sub-task is found again among the ticket's children by its
-//! marker: a lost answer is found, never created twice.
+//! Earlier versions created a validation sub-task under the ticket (marker
+//! `spl-asdlc:post-deploy-validation parent=<key>`) and labelled the ticket
+//! `post-deploy-validation/<product>` as an index. The pass cancels such a
+//! sub-task once, with a comment that sends its reader to the ticket, and
+//! takes the old label off a ticket it moves to Done.
 
 use serde_json::json;
 
 use crate::action_log::ActionLog;
 use crate::method::texts;
 use crate::method::vocabulary::{Status, post_deploy_label};
-use crate::tracker::{Item, NewItem, Priority};
+use crate::tracker::Item;
 
 use super::closure::contract_gate;
-use super::identity;
 use super::merge::for_tracker;
 use super::{Report, Tick};
 
-/// The tick's step after the sweep: every labelled ticket still in Post
-/// Deploy whose contract is complete moves to Done; one that still waits
-/// gets its validation sub-task if it lost it.
+/// The tick's step after the sweep: every ticket in Post Deploy whose
+/// contract is complete moves to Done; a validation sub-task of an earlier
+/// version is canceled.
 pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) {
-    let label = label(t);
-    let items = match t.tracker.list_by_label(&label) {
+    let items = match t.tracker.list_by_status(Status::PostDeploy) {
         Ok(i) => i,
         Err(e) => {
             t.unreadable(
                 report,
                 "post-deploy validation",
-                format!("the items labelled {label}: {e}"),
+                format!("the items in {}: {e}", Status::PostDeploy),
             );
             return;
         }
@@ -50,17 +47,13 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) {
         if item.archived {
             continue;
         }
-        if item.state.is_resolved() {
-            unwatch(t, log, report, &item);
-            continue;
-        }
-        // Moved elsewhere by someone: not the bridge's to judge here. The
-        // label stays until the ticket is resolved.
-        if item.state.status != Some(Status::PostDeploy) {
+        if texts::is_post_deploy_validation(&item.description) {
+            retire_sub_task(t, log, report, &item);
             continue;
         }
         // The same Done gate as every door to Done: the ticket's boxes and
-        // its duplicates', a read that fails never promotes.
+        // its duplicates', a read that fails never promotes. A ticket with
+        // a box still open waits, and nothing is written for it.
         let gate = match contract_gate(t, &item) {
             Ok(g) => g,
             Err(e) => {
@@ -86,58 +79,16 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) {
                 )
                 .is_some();
             if done {
-                unwatch(t, log, report, &item);
+                unlabel(t, log, report, &item);
             }
-        } else {
-            ensure_sub_task(t, log, report, &item);
         }
     }
 }
 
-fn label(t: &Tick) -> String {
-    post_deploy_label(&t.config.product.name)
-}
-
-fn labelled(t: &Tick, item: &Item) -> bool {
-    let label = label(t);
-    item.labels.iter().any(|l| l.eq_ignore_ascii_case(&label))
-}
-
-/// Put the index label on a ticket going to Post Deploy; whether it carries
-/// it now. Nothing is written when it already does.
-pub fn watch(t: &Tick, log: &mut ActionLog, report: &mut Report, item: &Item) -> bool {
-    let label = label(t);
-    if labelled(t, item) {
-        return true;
-    }
-    t.act(
-        log,
-        report,
-        &item.key,
-        &format!("ensure label {label}"),
-        json!({}),
-        || t.tracker.ensure_label(&label).map_err(|e| e.to_string()),
-    )
-    .is_some()
-        && t.act(
-            log,
-            report,
-            &item.key,
-            &format!("label {label}"),
-            json!({}),
-            || {
-                t.tracker
-                    .add_label(&item.key, &label)
-                    .map_err(|e| e.to_string())
-            },
-        )
-        .is_some()
-}
-
-/// Take the index label off a resolved ticket.
-fn unwatch(t: &Tick, log: &mut ActionLog, report: &mut Report, item: &Item) {
-    let label = label(t);
-    if !labelled(t, item) {
+/// Take the index label of earlier versions off a ticket the pass resolved.
+fn unlabel(t: &Tick, log: &mut ActionLog, report: &mut Report, item: &Item) {
+    let label = post_deploy_label(&t.config.product.name);
+    if !item.labels.iter().any(|l| l.eq_ignore_ascii_case(&label)) {
         return;
     }
     t.act(
@@ -154,115 +105,55 @@ fn unwatch(t: &Tick, log: &mut ActionLog, report: &mut Report, item: &Item) {
     );
 }
 
-/// The validation sub-task of a ticket in Post Deploy, created once
-/// (BR-ASDLC-003): assigned to the operator, in Post Deploy, urgent
-/// (BR-ASDLC-017), under the
-/// ticket. One the ticket
-/// already has, in any state, is never created again: a sub-task closed while
-/// boxes remain leaves the ticket waiting in Post Deploy for a human.
-pub fn ensure_sub_task(t: &Tick, log: &mut ActionLog, report: &mut Report, parent: &Item) {
-    let marker = texts::post_deploy_validation_marker(&parent.key);
-    let assignee = match t.tracker.user(&t.config.owner.tracker_user) {
-        Ok(user) => user,
+/// Cancel, once, an open validation sub-task an earlier version created
+/// (BR-ASDLC-017): its comment first, found again by its marker, so a lost
+/// cancel is retried at the next tick without a second comment. A canceled
+/// sub-task is no longer in Post Deploy, so the next passes never see it.
+fn retire_sub_task(t: &Tick, log: &mut ActionLog, report: &mut Report, item: &Item) {
+    let marker = texts::post_deploy_validation_retired_marker();
+    let commented = match t.tracker.comments(&item.key) {
+        Ok(c) => c
+            .iter()
+            .any(|c| c.by_bridge && texts::has_marker(&c.body, &marker)),
         Err(e) => {
-            t.unreadable(
+            t.unreadable(report, &item.key, format!("its comments: {e}"));
+            return;
+        }
+    };
+    if !commented {
+        let body = for_tracker(
+            t,
+            &texts::post_deploy_validation_retired_comment(item.parent.as_deref()),
+        );
+        let posted = t
+            .act(
+                log,
                 report,
-                &parent.key,
-                format!(
-                    "the post-deploy operator {}: {e}",
-                    t.config.owner.tracker_user
-                ),
-            );
-            return;
-        }
-    };
-    let children = match t.tracker.children(&parent.key) {
-        Ok(c) => c,
-        Err(e) => {
-            t.unreadable(report, &parent.key, format!("its sub-items: {e}"));
-            return;
-        }
-    };
-    match identity::find(t, log, report, &children, &marker, |c| {
-        texts::has_marker(&c.description, &marker)
-    }) {
-        Ok(found) if !found.is_empty() => {
-            for child in found {
-                reconcile_sub_task(t, log, report, &child, &assignee);
-            }
-            return;
-        }
-        Ok(_) => {}
-        Err(e) => {
-            t.unreadable(report, &parent.key, e);
+                &item.key,
+                "comment the validation moved to its ticket",
+                json!({}),
+                || {
+                    t.tracker
+                        .comment(&item.key, &body)
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
+                },
+            )
+            .is_some();
+        if !posted {
             return;
         }
     }
-    let (title, body) = texts::post_deploy_validation_item(
-        &parent.key,
-        &parent.title,
-        &parent.url,
-        &t.config.owner.tracker_user,
-    );
-    identity::create(
-        t,
+    t.act(
         log,
         report,
-        &parent.key,
-        "create post-deploy validation",
-        json!({"parent": parent.key}),
-        &NewItem {
-            title,
-            description: for_tracker(t, &body),
-            labels: Vec::new(),
-            status: Status::PostDeploy,
-            // Production is waiting on it (BR-ASDLC-017).
-            priority: Some(Priority::Urgent),
-            assignee: Some(assignee),
-            parent: Some(parent.key.clone()),
+        &item.key,
+        "status Canceled (the validation happens on its ticket)",
+        json!({}),
+        || {
+            t.tracker
+                .set_status(&item.key, Status::Canceled, None)
+                .map_err(|e| e.to_string())
         },
     );
-}
-
-/// Bring an open validation sub-task created before SR-015 to its current
-/// shape: in Post Deploy, assigned to the operator. A resolved one is left
-/// alone. The migration is part of the normal pass, so it reaches every open
-/// indexed parent at the next tick and writes nothing afterwards.
-fn reconcile_sub_task(
-    t: &Tick,
-    log: &mut ActionLog,
-    report: &mut Report,
-    child: &Item,
-    operator: &crate::tracker::User,
-) {
-    if child.state.is_resolved() {
-        return;
-    }
-    if child.state.status != Some(Status::PostDeploy) {
-        t.act(
-            log,
-            report,
-            &child.key,
-            "move the validation to Post Deploy, assigned to the operator",
-            json!({}),
-            || {
-                t.tracker
-                    .set_status(&child.key, Status::PostDeploy, Some(Some(operator)))
-                    .map_err(|e| e.to_string())
-            },
-        );
-    } else if child.assignee.as_ref() != Some(operator) {
-        t.act(
-            log,
-            report,
-            &child.key,
-            "assign the validation to the operator",
-            json!({}),
-            || {
-                t.tracker
-                    .assign(&child.key, Some(operator))
-                    .map_err(|e| e.to_string())
-            },
-        );
-    }
 }
