@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.1](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.6.0...v1.6.1) (2026-10-29)
+
+
+### Bug Fixes
+
+* **rules:** accept "None: &lt;reason&gt;" as a declaration of no new rule (ASDLC-TDZX) ([#131](https://github.com/Martin-Rancourt/spl-asdlc/issues/131)) ([5fa5a35](https://github.com/Martin-Rancourt/spl-asdlc/commit/5fa5a35834157eb3976bf41970263cd46ed57ffa))
+
 ## [1.6.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.5.2...v1.6.0) (2026-10-27)
 
 
