@@ -139,6 +139,8 @@ pub(super) struct RawReviewAngle {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawBridge {
+    pub queue_url: Option<String>,
+    pub queue_token: Option<String>,
     pub poll_minutes: Option<i64>,
     pub github_identity: Option<String>,
     pub sweep_hours: Option<i64>,

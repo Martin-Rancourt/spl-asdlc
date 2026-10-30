@@ -36,6 +36,13 @@ enum Command {
         #[command(subcommand)]
         command: RulesCommand,
     },
+    /// Run one repository continuously, polling and optionally pulling webhook wakes.
+    Watch {
+        #[arg(long, default_value = config::DEFAULT_PATH)]
+        file: PathBuf,
+        #[arg(long)]
+        instance: Option<PathBuf>,
+    },
     /// One pass of the bridge over the repository of each configuration.
     Tick {
         /// A configuration (`.spl-asdlc/config.toml`); repeat for several repositories.
@@ -228,6 +235,7 @@ where
         Command::Rules {
             command: RulesCommand::Split { register, out: dir },
         } => rules_split(&register, &dir, &mut out, &mut err),
+        Command::Watch { file, instance } => watch(&file, instance.as_deref(), &mut out, &mut err),
         Command::Tick {
             files,
             instance,
@@ -884,6 +892,62 @@ fn config_check(
             }
             ExitCode::from(1)
         }
+    }
+}
+
+fn watch(
+    file: &std::path::Path,
+    instance: Option<&std::path::Path>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> ExitCode {
+    use std::time::{Duration, Instant};
+    let config = match Config::load_with(file, instance) {
+        Ok((c, _)) => c,
+        Err(e) => {
+            let _ = writeln!(err, "{e}");
+            return ExitCode::from(2);
+        }
+    };
+    let interval = Duration::from_secs(u64::from(config.bridge.poll_minutes) * 60);
+    let mut schedule = crate::relay::Schedule::new(interval);
+    let mut elapsed = std::time::Duration::ZERO;
+    let started = Instant::now();
+    loop {
+        if schedule.due(elapsed, false) {
+            let _ = tick(&[file.to_path_buf()], instance, false, None, out, err);
+            let _ = out.flush();
+        }
+        let remaining = schedule.remaining(started.elapsed());
+        let wait = remaining.min(Duration::from_secs(25));
+        if config.bridge.queue_url.is_some() {
+            match crate::relay::pull(
+                &config.bridge,
+                &config.product.repository,
+                wait,
+                &crate::host::process_env,
+            ) {
+                Ok(wake) => {
+                    if schedule.due(started.elapsed(), wake) {
+                        let _ = tick(&[file.to_path_buf()], instance, false, None, out, err);
+                        let _ = out.flush();
+                    }
+                    // Also bound traffic when a queue answers empty immediately.
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Err(e) => {
+                    let _ = writeln!(err, "webhook queue: {e}; periodic polling continues");
+                    std::thread::sleep(
+                        schedule
+                            .remaining(started.elapsed())
+                            .min(Duration::from_secs(5)),
+                    );
+                }
+            }
+        } else {
+            std::thread::sleep(wait);
+        }
+        elapsed = started.elapsed();
     }
 }
 

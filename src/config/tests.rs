@@ -1264,3 +1264,27 @@ fn something_at_the_siblings_path_that_is_not_a_file_is_an_error() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn optional_queue_requires_https_and_a_secret_reference() {
+    let c = Config::parse(MINIMAL).unwrap();
+    assert!(c.bridge.queue_url.is_none());
+    let configured = format!(
+        "{MINIMAL}\n[bridge]\nqueue_url = \"https://relay.example.org\"\nqueue_token = \"env:QUEUE_TOKEN\"\n"
+    );
+    assert!(
+        Config::parse(&configured)
+            .unwrap()
+            .bridge
+            .queue_url
+            .is_some()
+    );
+    assert!(Config::parse(&configured.replace("https://", "http://")).is_err());
+    assert!(Config::parse(&configured.replace("env:QUEUE_TOKEN", "literal-secret")).is_err());
+    assert!(
+        Config::parse(&format!(
+            "{MINIMAL}\n[bridge]\nqueue_url = \"https://relay.example.org\"\n"
+        ))
+        .is_err()
+    );
+}

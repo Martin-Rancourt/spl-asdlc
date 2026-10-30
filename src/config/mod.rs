@@ -324,8 +324,10 @@ pub enum GithubIdentity {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bridge {
+    pub queue_url: Option<String>,
+    pub queue_token: Option<SecretRef>,
     /// A hint for the host that runs the bridge: the interval is the host's
-    /// choice (Livela's runner, a timer), and the bridge never reads it.
+    /// choice (Livela's runner, a timer); `watch` uses it as its interval.
     pub poll_minutes: u32,
     pub github_identity: GithubIdentity,
     pub sweep_hours: u32,
@@ -1222,10 +1224,30 @@ impl Validator {
 
     fn bridge(&mut self, raw: Option<raw::RawBridge>) -> Bridge {
         let raw = raw.unwrap_or(raw::RawBridge {
+            queue_url: None,
+            queue_token: None,
             poll_minutes: None,
             github_identity: None,
             sweep_hours: None,
         });
+        if let Some(url) = &raw.queue_url {
+            if !crate::relay::valid_url(url) {
+                self.err(
+                    "bridge.queue_url",
+                    "must be an HTTPS origin (no credentials, path, query or fragment)",
+                );
+            }
+        }
+        if raw.queue_url.is_some() != raw.queue_token.is_some() {
+            self.err(
+                "bridge.queue_url",
+                "queue_url and queue_token must be configured together",
+            );
+        }
+        let queue_token = raw
+            .queue_token
+            .as_deref()
+            .and_then(|v| self.secret("bridge.queue_token", v));
         let poll_minutes = self.positive("bridge.poll_minutes", raw.poll_minutes, 5);
         let github_identity = self
             .choice(
@@ -1240,6 +1262,8 @@ impl Validator {
             .unwrap_or(GithubIdentity::App);
         let sweep_hours = self.positive("bridge.sweep_hours", raw.sweep_hours, 24);
         Bridge {
+            queue_url: raw.queue_url,
+            queue_token,
             poll_minutes,
             github_identity,
             sweep_hours,

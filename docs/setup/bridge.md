@@ -36,3 +36,6 @@ Secrets come from the environment or from the host's secret store; never from th
 - The log is an audit trail, not the bridge's memory: the bridge decides from what GitHub and the tracker show. Losing the file costs nothing but the history.
 
 **Verify**: `spl-asdlc doctor --file <checkout>/.spl-asdlc/config.toml` reports the identities it writes with, the repository it serves, the instance overlay it read (`instance overlay: ok — <path>`, or `none`), what reviews a PR (`PR review: ok — none — …` for a project with no PR review), and each point of this procedure as `ok`, `missing` or `invalid`; the repository's `.spl-asdlc/config.toml` at the default branch is judged merged with that overlay.
+
+For reactions within seconds without exposing the host, opt in to the
+[webhook relay and `watch` host](webhook-relay.md). Polling stays enabled.
