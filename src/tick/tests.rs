@@ -3540,3 +3540,272 @@ fn a_failed_handback_comment_never_hides_the_pr() {
             .any(|s| s.starts_with("draft-pull"))
     );
 }
+
+// ---- ASDLC-SX97: a box checked after the merge moves the ticket on ----
+
+/// The release tag `acme-v1.0.0` published, holding `merge_sha`.
+fn shipped(w: &World, merge_sha: &str) {
+    use crate::github::{CompareStatus, Comparison, GitRef, ObjectType};
+    let mut s = w.github.state.borrow_mut();
+    s.tags.insert(
+        repo(),
+        vec![GitRef {
+            name: "acme-v1.0.0".into(),
+            sha: "release-1".into(),
+            object_type: ObjectType::Commit,
+        }],
+    );
+    s.compares.insert(
+        (repo(), merge_sha.into(), "acme-v1.0.0".into()),
+        Ok(Comparison {
+            status: CompareStatus::Ahead,
+            ahead_by: 1,
+            behind_by: 0,
+            commits: vec![],
+            files: vec![],
+            base_committed_at: None,
+        }),
+    );
+}
+
+/// The bridge's comments on a ticket that carry `marker`.
+fn said(w: &World, key: &str, marker: &str) -> Vec<String> {
+    crate::tracker::Tracker::comments(&w.tracker, key)
+        .unwrap()
+        .into_iter()
+        .filter(|c| c.by_bridge && texts::has_marker(&c.body, marker))
+        .map(|c| c.body)
+        .collect()
+}
+
+/// PR #7 merged by the bridge while a box of ABC-7 is open: In Progress.
+fn merged_with_a_box_open(w: &World) -> PullRequest {
+    let pr = in_review(w, 7);
+    w.open(approved(w, pr.clone()));
+    w.tick(false);
+    assert_eq!(
+        w.tracker.item("ABC-7").state.status,
+        Some(Status::InProgress)
+    );
+    pr
+}
+
+#[test]
+fn a_box_checked_after_the_merge_moves_the_ticket_to_deploy_at_the_next_tick() {
+    // AGFG-2B5W: merged with a box open, the box checked later.
+    let w = World::new();
+    let pr = merged_with_a_box_open(&w);
+    // The box still open: it stays, and nothing is said.
+    quiet(&w);
+    check_every_box(&w, "ABC-7");
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::ToDeploy));
+    let comments = said(&w, "ABC-7", &texts::settled_marker(&pr.url, "To Deploy"));
+    assert_eq!(comments.len(), 1, "{comments:?}");
+    assert!(
+        comments[0].contains(&format!("after its PR {} was merged", pr.url)),
+        "{}",
+        comments[0]
+    );
+    assert!(comments[0].contains("state: To Deploy"), "{}", comments[0]);
+    assert!(
+        comments[0].contains("next: the release closure moves it to `Done`"),
+        "{}",
+        comments[0]
+    );
+    quiet(&w);
+}
+
+#[test]
+fn a_ticket_whose_merge_already_shipped_goes_to_done_not_to_deploy() {
+    // A release went out while the ticket waited In Progress.
+    let w = World::new();
+    let pr = merged_with_a_box_open(&w);
+    shipped(&w, "merge-of-7");
+    quiet(&w);
+    check_every_box(&w, "ABC-7");
+    w.tick(false);
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::Done));
+    let comments = said(&w, "ABC-7", &texts::settled_marker(&pr.url, "Done"));
+    assert_eq!(comments.len(), 1, "{comments:?}");
+    assert!(
+        comments[0].contains("That PR already shipped in `acme-v1.0.0`."),
+        "{}",
+        comments[0]
+    );
+    quiet(&w);
+}
+
+/// ABC-9 as the closure leaves it: shipped in `acme-v1.0.0`, sent back In
+/// Progress with `description`'s box open.
+fn sent_back_by_the_closure(w: &World, description: &str) -> PullRequest {
+    let mut pr = pull_request(9);
+    pr.state = PrState::Merged;
+    pr.merged_at = crate::github::Timestamp::parse("2026-10-01T10:00:00Z");
+    pr.merge_commit_sha = Some("merge-of-9".into());
+    w.tracker
+        .seed("ABC-9", "A ticket", description, Status::InProgress, &[]);
+    w.tracker.link("ABC-9", &pr.url);
+    for body in [
+        texts::merged_comment(
+            &pr.url,
+            "main",
+            &texts::MergedBy::Bridge {
+                approved_by: None,
+                up_to_date: false,
+            },
+            "To Deploy",
+            "the closure",
+        ),
+        crate::method::done_gate::RETURNED_UNASSIGNED.to_string(),
+    ] {
+        crate::tracker::Tracker::comment(&w.tracker, "ABC-9", &body).unwrap();
+    }
+    w.github
+        .state
+        .borrow_mut()
+        .merged_pulls
+        .insert(repo(), Ok(vec![pr.clone()]));
+    shipped(w, "merge-of-9");
+    quiet(w);
+    pr
+}
+
+#[test]
+fn a_ticket_the_closure_sent_back_goes_to_done_once_its_box_is_checked() {
+    let w = World::new();
+    let pr = sent_back_by_the_closure(&w, COMPLETE);
+    check_every_box(&w, "ABC-9");
+    w.tick(false);
+    assert_eq!(w.tracker.item("ABC-9").state.status, Some(Status::Done));
+    let comments = said(&w, "ABC-9", &texts::settled_marker(&pr.url, "Done"));
+    assert_eq!(comments.len(), 1, "{comments:?}");
+    assert!(
+        comments[0].contains("already shipped in `acme-v1.0.0` and every box"),
+        "{}",
+        comments[0]
+    );
+    quiet(&w);
+}
+
+#[test]
+fn a_ticket_the_closure_sent_back_waits_in_post_deploy_for_its_own_boxes() {
+    let w = World::new();
+    let with_post_deploy = format!("{COMPLETE}\n## Post deploy\n- [ ] it holds in production\n");
+    let pr = sent_back_by_the_closure(&w, &with_post_deploy);
+    let checked = with_post_deploy.replace("- [ ] it is fast", "- [x] it is fast");
+    crate::tracker::Tracker::update_description(&w.tracker, "ABC-9", &checked).unwrap();
+    w.tick(false);
+    assert_eq!(
+        w.tracker.item("ABC-9").state.status,
+        Some(Status::PostDeploy),
+        "never Done before its post-deploy boxes are checked"
+    );
+    assert_eq!(
+        said(&w, "ABC-9", &texts::settled_marker(&pr.url, "Post Deploy")).len(),
+        1
+    );
+    quiet(&w);
+}
+
+#[test]
+fn a_shipped_ticket_citing_an_unknown_rule_stays_in_progress_and_says_so_once() {
+    let w = World::new();
+    let cites = COMPLETE.replace("No new rule.", "BR-ACME-001 applies.");
+    let pr = sent_back_by_the_closure(&w, &cites);
+    rule_at(&w, "acme-v1.0.0", "BR-ACME-002");
+    let checked = cites.replace("- [ ] it is fast", "- [x] it is fast");
+    crate::tracker::Tracker::update_description(&w.tracker, "ABC-9", &checked).unwrap();
+    w.tick(false);
+    assert_eq!(
+        w.tracker.item("ABC-9").state.status,
+        Some(Status::InProgress)
+    );
+    let comments = said(&w, "ABC-9", &texts::settled_marker(&pr.url, "In Progress"));
+    assert_eq!(comments.len(), 1, "{comments:?}");
+    assert!(comments[0].contains("`BR-ACME-001`"), "{}", comments[0]);
+    quiet(&w);
+    // The rule's file at the tag (the id was a typo): Done.
+    rule_at(&w, "acme-v1.0.0", "BR-ACME-001");
+    w.tick(false);
+    assert_eq!(w.tracker.item("ABC-9").state.status, Some(Status::Done));
+}
+
+fn rule_at(w: &World, rev: &str, id: &str) {
+    w.github.state.borrow_mut().files.insert(
+        (
+            repo(),
+            rev.into(),
+            format!(".spl-asdlc/business-rules/{id}.md"),
+        ),
+        Ok(format!("# {id} — A rule.\n")),
+    );
+}
+
+#[test]
+fn a_merged_ticket_with_an_open_pr_is_left_to_the_pr_pass() {
+    let w = World::new();
+    merged_with_a_box_open(&w);
+    // A second PR, sent back by the coordinator: the PR pass keeps the
+    // ticket In Progress, and the settling does not move it past that PR.
+    let mut second = green(pull_request(8));
+    w.tracker.link("ABC-7", &second.url);
+    second.reviews = vec![review(
+        "coordinator-login",
+        "CHANGES_REQUESTED",
+        &second.head_sha,
+        "redo",
+    )];
+    w.open(second);
+    check_every_box(&w, "ABC-7");
+    w.tick(false);
+    assert_eq!(
+        w.tracker.item("ABC-7").state.status,
+        Some(Status::InProgress)
+    );
+    assert!(
+        crate::tracker::Tracker::comments(&w.tracker, "ABC-7")
+            .unwrap()
+            .iter()
+            .all(|c| !c.body.contains("spl-asdlc:settled")),
+        "nothing settled while a PR of it is open"
+    );
+}
+
+#[test]
+fn a_complete_ticket_never_merged_is_left_in_progress() {
+    let w = World::new();
+    let all = COMPLETE.replace("- [ ] it is fast", "- [x] it is fast");
+    w.tracker
+        .seed("ABC-3", "A ticket", &all, Status::InProgress, &[]);
+    quiet(&w);
+    assert_eq!(
+        w.tracker.item("ABC-3").state.status,
+        Some(Status::InProgress)
+    );
+}
+
+#[test]
+fn a_cut_tick_retries_the_status_without_repeating_the_comment() {
+    let w = World::new();
+    let pr = merged_with_a_box_open(&w);
+    check_every_box(&w, "ABC-7");
+    w.tracker
+        .fail_writes_starting_with("status ABC-7 To Deploy");
+    let (report, _) = w.tick(false);
+    assert!(!report.ok());
+    assert_eq!(
+        w.tracker.item("ABC-7").state.status,
+        Some(Status::InProgress)
+    );
+    w.tracker.state.borrow_mut().failing_writes.clear();
+    w.tick(false);
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::ToDeploy));
+    assert_eq!(
+        said(&w, "ABC-7", &texts::settled_marker(&pr.url, "To Deploy")).len(),
+        1,
+        "said once"
+    );
+    quiet(&w);
+}

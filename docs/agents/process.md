@@ -26,7 +26,7 @@ The bridge is a deterministic program that reads GitHub and moves the tickets. Y
 | Ready | A person | When agents may take it. Implementers take work from Ready only. |
 | In Progress | You, the implementer | As you start it. The bridge moves it back there when changes are requested on its PR, or when a merged PR leaves boxes open. |
 | In Review | The bridge | When its PR is opened (not a draft). |
-| To Deploy | The bridge | At the merge, once every box is ticked and no other PR of the ticket is open: the code is on the base branch and waits for the next release. |
+| To Deploy | The bridge | At the merge, once every box is ticked and no other PR of the ticket is open, or at the next tick when the last box is ticked after the merge: the code is on the base branch and waits for the next release. |
 | Done | The bridge | At the closure of the release that ships it. A ticket with nothing to deploy (the no-deploy label) is Done at its merge. |
 | Post Deploy | The bridge | At the closure, when only the boxes under `## Post deploy` remain. The ticket itself is the validation, with no sub-task: an agent verifies what it can in production, then hands the same ticket to the owner for the rest (below, "Validate a ticket in Post Deploy"). |
 
@@ -61,7 +61,7 @@ Never write an acceptance criterion the implementer cannot prove, and never spli
 7. With PR review present, the review starts once CI is green: angle reviewers post findings on the PR, and a coordinator answers them, applies the retained fixes on your branch and approves. When the coordinator requests changes, the ticket comes back to you: fix on the same branch, answer the threads, push. With no PR review, the PR merges on its CI.
 8. The bridge merges the PR (squash, unless the configuration says otherwise) once CI is green, the review is done and approved when the PR has one, and the branch is up to date when the project requires it. You never merge it.
 9. One PR per ticket is the default, with as many commits as needed. Open a second PR for the same ticket only for a real reason, typically a deployment that must happen before the rest, and record that reason in a comment on the ticket before you open it. A later PR also starts from the base (step 2), once the earlier one is merged. Every PR must be deployable on its own: once merged it may ship at any time, even if the ticket is not done.
-10. A merged PR that leaves boxes open sends the ticket back to you (In Progress): carry on, tick what each PR delivers, and open the next PR, until every box is ticked.
+10. A merged PR that leaves boxes open sends the ticket back to you (In Progress): carry on, tick what each PR delivers, and open the next PR, until every box is ticked. A box that needs no new PR (its proof is already merged) you just tick: with no PR of the ticket open, the bridge moves the ticket on at its next tick, To Deploy, or Done or Post Deploy when its work already shipped. Never move it yourself.
 
 ## Validate a ticket in Post Deploy
 

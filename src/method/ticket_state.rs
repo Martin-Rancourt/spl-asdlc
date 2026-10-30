@@ -77,6 +77,12 @@ pub enum Why {
     /// Nothing to deploy: delivered, but its own `## Post deploy` boxes wait
     /// to be verified in production.
     AwaitsPostDeploy,
+    /// Its last merged PR already shipped in this release tag and every box
+    /// of its contract is checked: nothing is left to deploy.
+    Shipped(String),
+    /// Shipped in this release tag; its own `## Post deploy` boxes wait to
+    /// be verified in production.
+    ShippedAwaitsPostDeploy(String),
 }
 
 impl Why {
@@ -112,6 +118,12 @@ impl Why {
                 "it has nothing to deploy, so the merge delivered it; its `## Post deploy` boxes are verified in production through its validation sub-task, and the bridge moves it to `Done` once they are all checked."
                     .to_string()
             }
+            Why::Shipped(tag) => format!(
+                "its merged work already shipped in `{tag}` and every box of its contract is checked: nothing is left to do."
+            ),
+            Why::ShippedAwaitsPostDeploy(tag) => format!(
+                "its merged work already shipped in `{tag}`; its `## Post deploy` boxes are verified in production, and the bridge moves it to `Done` once they are all checked."
+            ),
         }
     }
 }

@@ -1484,6 +1484,18 @@ pub fn any_merge_recorded(t: &Tick, key: &str) -> Result<bool, String> {
         .any(|c| c.by_bridge && c.body.lines().any(|l| l.trim().starts_with("merged_pr: "))))
 }
 
+/// The URL of the ticket's latest PR the bridge recorded as merged (its
+/// `merged_pr: <url>` line) among its comments, oldest first.
+pub fn latest_merge(comments: &[crate::tracker::Comment]) -> Option<String> {
+    comments
+        .iter()
+        .filter(|c| c.by_bridge)
+        .flat_map(|c| c.body.lines())
+        .filter_map(|l| l.trim().strip_prefix("merged_pr: "))
+        .map(|url| url.trim().to_string())
+        .next_back()
+}
+
 /// Why a PR In Review waits on its approval (Missing or Stale).
 fn approval_wait(pr: &PullRequest, approval: &Approval) -> String {
     let head = texts::short(&pr.head_sha);
