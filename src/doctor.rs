@@ -119,6 +119,13 @@ fn checks(
         ),
         pr_review(config),
     ];
+    for key in &config.review.retired {
+        out.push(check(
+            key,
+            Verdict::Invalid,
+            format!("read nowhere: {}", crate::config::RETIRED_HUMAN_APPROVAL),
+        ));
+    }
     let Some(repo) = RepoSlug::parse(&config.product.repository) else {
         out.push(check(
             "repository",
@@ -196,8 +203,9 @@ fn pause_check(github: &dyn GitHub, repo: &RepoSlug) -> Check {
     }
 }
 
-/// What reviews a PR (spec 04 §11): its angles on every PR and what can add one,
-/// or none, when no PR can get an angle and a PR merges on its CI.
+/// What reviews a PR (spec 04 §11): the angles a ticket's label asks for,
+/// those its paths bring and what else can add one, or none, when no PR can
+/// get an angle and a PR merges on its CI.
 fn pr_review(config: &Config) -> Check {
     let r = &config.review;
     if !r.angle_possible() {
@@ -208,19 +216,17 @@ fn pr_review(config: &Config) -> Check {
         );
     }
     let mut parts = Vec::new();
-    let every: Vec<&str> = r
+    let by_label: Vec<&str> = r
         .angles
         .iter()
         .filter(|a| a.paths.is_empty())
         .map(|a| a.key.as_str())
         .collect();
-    parts.push(if every.is_empty() {
-        "no angle on every PR".to_string()
-    } else {
-        format!("on every PR: {}", every.join(", "))
-    });
+    if !by_label.is_empty() {
+        parts.push(format!("by its ticket label only: {}", by_label.join(", ")));
+    }
     for a in r.angles.iter().filter(|a| !a.paths.is_empty()) {
-        parts.push(format!("{} on its paths", a.key));
+        parts.push(format!("{} on its paths or its label", a.key));
     }
     if let (true, Some(angle)) = (r.diff_size_extra_angle > 0, &r.diff_size_angle) {
         parts.push(format!(
@@ -228,15 +234,14 @@ fn pr_review(config: &Config) -> Check {
             r.diff_size_extra_angle
         ));
     }
-    let detail = if every.is_empty() {
+    check(
+        "PR review",
+        Verdict::Ok,
         format!(
-            "{}; a PR that gets no angle merges on its CI with no round",
+            "{}; a ticket asks for an angle with its label `angle/<key>`, and a PR that gets no angle merges on its CI with no round",
             parts.join("; ")
-        )
-    } else {
-        parts.join("; ")
-    };
-    check("PR review", Verdict::Ok, detail)
+        ),
+    )
 }
 
 /// What a required ruleset must enforce on a ref.
@@ -1275,6 +1280,28 @@ fn tracker_checks(config: &Config, tracker: &dyn Tracker) -> Vec<Check> {
             format!("{label}: {does}; whether the tracker has it could not be read ({e}), and it is never required"),
         ),
     });
+    // The labels that ask for a review angle on a ticket: absent is fine,
+    // the bridge creates them at its next tick.
+    for a in &config.review.angles {
+        let label = crate::method::vocabulary::angle_label(&a.key);
+        let name = format!("angle label {label}");
+        out.push(match tracker.label_exists(&label) {
+            Ok(true) => check(
+                &name,
+                Verdict::Ok,
+                format!(
+                    "{label} exists in the tracker: on a ticket, it asks for the `{}` review",
+                    a.key
+                ),
+            ),
+            Ok(false) => check(
+                &name,
+                Verdict::Ok,
+                format!("{label} does not exist yet: the bridge creates it at its next tick"),
+            ),
+            Err(e) => check(&name, Verdict::Missing, e.to_string()),
+        });
+    }
     // The participants the bridge assigns items to: an unknown one leaves
     // its items unassigned, so it is reported here rather than at a tick.
     for (key, name) in participants(config) {
@@ -1424,6 +1451,14 @@ fn fix_of(name: &str, config: &Config) -> Fix {
         "release.escalation_label" => (
             "Let the bridge's identity read the tracker's labels.",
             tracker,
+        ),
+        n if n.starts_with("angle label ") => (
+            "Let the bridge's identity read the tracker's labels.",
+            tracker,
+        ),
+        "review.human_approval" | "review.human_reviewer" => (
+            "Remove the key from the configuration (or the instance overlay); to have a person review, add a `[[review.angles]]` table assigned to that person.",
+            "docs/reference/08-configuration.md",
         ),
         n if n.ends_with(".assignee")
             || n.ends_with(".coordinator_assignee")
@@ -1835,6 +1870,7 @@ mod tests {
                 "method texts: ok — read at example-org/spl-asdlc@v1 with the token of example-org/acme",
                 "angle maintainability: ok — the method's angle at example-org/spl-asdlc@v1",
                 "angle security: ok — the method's angle at example-org/spl-asdlc@v1",
+                "angle design: ok — the method's angle at example-org/spl-asdlc@v1",
                 "angle product: ok — the project's own angle: the method has no text for it at example-org/spl-asdlc@v1; project notes: none",
             ]
         );
@@ -2440,13 +2476,17 @@ mod tests {
         let mut c = config();
         let line = pr_review(&c).to_string();
         assert!(
-            line.starts_with("PR review: ok — on every PR: maintainability; security on its paths"),
+            line.starts_with("PR review: ok — by its ticket label only: design; maintainability on its paths or its label; security on its paths or its label"),
             "{line}"
         );
+        assert!(line.contains("`angle/<key>`"), "{line}");
         c.review.angles.retain(|a| !a.paths.is_empty());
         let line = pr_review(&c).to_string();
-        assert!(line.contains("no angle on every PR"), "{line}");
-        assert!(line.contains("security on its paths"), "{line}");
+        assert!(!line.contains("label only"), "{line}");
+        assert!(
+            line.contains("security on its paths or its label"),
+            "{line}"
+        );
         c.review.angles.clear();
         c.review.diff_size_extra_angle = 0;
         c.review.coordinators.clear();
@@ -2461,6 +2501,68 @@ mod tests {
                 .iter()
                 .any(|x| x.name == "PR review" && x.detail.starts_with("none")),
             "{checks:#?}"
+        );
+    }
+
+    #[test]
+    fn a_retired_human_approval_key_is_reported_with_the_angle_that_replaces_it() {
+        let mut c = config();
+        c.review.retired = vec!["review.human_reviewer".into()];
+        let checks = run(
+            &c,
+            None,
+            &FakeGitHub::new(),
+            &FakeTracker::default(),
+            "workstation",
+        );
+        let retired = checks
+            .iter()
+            .find(|x| x.name == "review.human_reviewer")
+            .expect("the retired key is reported");
+        assert_eq!(retired.verdict, Verdict::Invalid, "{retired}");
+        assert!(
+            retired
+                .detail
+                .contains("a human review is a review angle assigned to a person"),
+            "{retired}"
+        );
+        assert!(
+            retired
+                .fix
+                .as_ref()
+                .unwrap()
+                .gesture
+                .starts_with("Remove the key"),
+            "{retired:?}"
+        );
+        c.review.retired.clear();
+        let checks = run(
+            &c,
+            None,
+            &FakeGitHub::new(),
+            &FakeTracker::default(),
+            "workstation",
+        );
+        assert!(!checks.iter().any(|x| x.name.starts_with("review.human")));
+    }
+
+    #[test]
+    fn each_angle_label_is_listed_and_one_missing_is_left_to_the_next_tick() {
+        let c = config();
+        let t = FakeTracker::default();
+        t.seed_label("angle/security");
+        let checks = tracker_checks(&c, &t);
+        let line = |label: &str| {
+            checks
+                .iter()
+                .find(|x| x.name == format!("angle label {label}"))
+                .unwrap_or_else(|| panic!("{label}: {checks:#?}"))
+                .to_string()
+        };
+        assert!(line("angle/security").contains("exists in the tracker"));
+        assert_eq!(
+            line("angle/design"),
+            "angle label angle/design: ok — angle/design does not exist yet: the bridge creates it at its next tick"
         );
     }
 

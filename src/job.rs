@@ -305,6 +305,7 @@ mod tests {
         let log = path.with_file_name("quiet.jsonl");
         let _ = std::fs::remove_file(&log);
         let tracker = FakeTracker::default();
+        tracker.seed_angle_labels(&config);
         let host = Host {
             config_path: &path,
             tracker: &tracker,
@@ -530,6 +531,7 @@ mod tests {
         let github = quiet_github();
         with_file(&github, crate::config::spec_example::repository());
         let tracker = FakeTracker::default();
+        tracker.seed_angle_labels(&crate::config::spec_example::config());
         let out = pass_from_repository(&repository_host(&tracker), &github);
         assert!(out.ok, "{out:?}");
         assert!(tracker.writes().is_empty());

@@ -71,8 +71,11 @@ fn a_minimal_file_gets_every_documented_default() {
     assert_eq!(c.review.merge_method, MergeMethod::Squash);
     assert!(!c.review.require_up_to_date);
     assert_eq!(c.review.diff_size_extra_angle, 0, "no size trigger");
-    assert_eq!(c.review.human_approval, HumanApproval::Never);
-    assert!(c.review.angles[0].paths.is_empty(), "on every PR");
+    assert!(c.review.retired.is_empty());
+    assert!(
+        c.review.angles[0].paths.is_empty(),
+        "by its ticket label only"
+    );
     assert_eq!(c.bridge.poll_minutes, 5);
     assert_eq!(c.bridge.github_identity, GithubIdentity::App);
     assert_eq!(c.bridge.sweep_hours, 24);
@@ -422,15 +425,33 @@ fn the_coordinators_are_required_while_some_angle_can_be_added() {
     }
 }
 
+/// `review.human_approval` and `review.human_reviewer` are retired
+/// (ASDLC-DZ96): a value that asked for nothing is accepted and reported by
+/// `doctor`; one that asked for a human approval is refused.
 #[test]
-fn a_human_approval_with_no_possible_angle_is_accepted() {
-    let text = no_review().replace(
-        "angles = []\n",
-        "angles = []\nhuman_approval = \"always\"\n",
+fn the_retired_human_approval_keys_are_accepted_harmless_and_refused_otherwise() {
+    let text = MINIMAL.replace(
+        "[review]\n",
+        "[review]\nhuman_approval = \"never\"\nhuman_reviewer = \"owner-login\"\n",
     );
-    let c = Config::parse(&text).expect("a human approval is then the only one");
-    assert_eq!(c.review.human_approval, HumanApproval::Always);
-    assert!(!c.review.angle_possible());
+    assert_ne!(text, MINIMAL);
+    let c = Config::parse(&text).expect("harmless retired keys stop no bridge");
+    assert_eq!(
+        c.review.retired,
+        vec!["review.human_approval", "review.human_reviewer"]
+    );
+    for value in ["always", "sensitive-paths"] {
+        let text = MINIMAL.replace(
+            "[review]\n",
+            &format!("[review]\nhuman_approval = \"{value}\"\n"),
+        );
+        assert_refused_with(
+            &text,
+            &format!(
+                "review.human_approval: \"{value}\": review.human_approval and review.human_reviewer are retired: a human review is a review angle assigned to a person"
+            ),
+        );
+    }
 }
 
 #[test]
@@ -572,10 +593,7 @@ fn the_sensitive_paths_mode_and_its_keys_are_refused() {
         "[review]\n",
         "[review]\nhuman_approval = \"sensitive-paths\"\n",
     );
-    assert_refused_with(
-        &text,
-        "review.human_approval: \"sensitive-paths\" is not one of \"never\", \"always\"",
-    );
+    assert_refused_with(&text, "review.human_approval: \"sensitive-paths\": ");
     for key in [
         "sensitive_paths = \".github/review-paths.json\"",
         "sensitive_angle = \"security\"",

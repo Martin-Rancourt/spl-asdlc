@@ -171,8 +171,9 @@ pub struct Angle {
     pub title: String,
     pub assignee: Option<String>,
     pub notes: Option<String>,
-    /// A review angle's paths (globs, `*` crossing `/`): it applies only to a
-    /// PR that touches one. Empty for an angle on every PR, and always for a
+    /// A review angle's paths (globs, `*` crossing `/`): it applies to a PR
+    /// that touches one, and to every PR of a ticket labelled `angle/<key>`.
+    /// Empty for a review angle asked by its label alone, and always for a
     /// release angle, which reviews the whole candidate.
     pub paths: Vec<String>,
 }
@@ -281,12 +282,6 @@ impl From<MergeMethod> for crate::github::MergeMethod {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HumanApproval {
-    Never,
-    Always,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Review {
     pub merge_method: MergeMethod,
@@ -295,24 +290,27 @@ pub struct Review {
     /// default) disables it.
     pub diff_size_extra_angle: u32,
     pub diff_size_angle: Option<String>,
-    pub human_approval: HumanApproval,
     pub coordinators: Vec<String>,
     /// The tracker participant who receives the consolidation item of a PR
     /// round; `None` leaves it unassigned.
     pub coordinator_assignee: Option<String>,
-    pub human_reviewer: Option<String>,
     /// Apps whose PRs need no ticket: the bridge opens one for each.
     pub ticketless_authors: Vec<String>,
-    /// The review angles, each on every PR or on the PRs that touch its
-    /// paths ([`Angle::paths`]).
+    /// The review angles, each asked by its ticket label (`angle/<key>`) or
+    /// brought by the paths a PR touches ([`Angle::paths`]).
     pub angles: Vec<Angle>,
+    /// The retired keys the configuration still writes with a harmless
+    /// value (`review.human_approval = "never"`, `review.human_reviewer`):
+    /// read nowhere, reported by `doctor` (a human review is an angle
+    /// assigned to a person).
+    pub retired: Vec<String>,
 }
 
 impl Review {
-    /// Whether some PR can get an angle (spec 04 §11): an angle, on every PR
-    /// or on its paths, or a size threshold. When none can, the project has
-    /// no PR review: a PR merges on its CI and the other merge conditions,
-    /// with no round and no approval.
+    /// Whether some PR can get an angle (spec 04 §11): an angle, asked by its
+    /// ticket label or brought by its paths, or a size threshold. When none
+    /// can, the project has no PR review: a PR merges on its CI and the
+    /// other merge conditions, with no round and no approval.
     pub fn angle_possible(&self) -> bool {
         angle_possible(!self.angles.is_empty(), self.diff_size_extra_angle)
     }
@@ -924,13 +922,13 @@ impl Validator {
                 .unwrap_or_else(|| default_title(&k));
             let assignee = self.optional(&format!("{at}.assignee"), assignee);
             let notes = self.optional(&format!("{at}.notes"), notes);
-            // Given, `paths` names at least one glob: an angle on every PR
-            // leaves the key out.
+            // Given, `paths` names at least one glob: an angle asked by its
+            // ticket label alone leaves the key out.
             let paths = match paths {
                 Some(p) if p.is_empty() => {
                     self.err(
                         &format!("{at}.paths"),
-                        "must name at least one glob (leave the key out for an angle on every PR)",
+                        "must name at least one glob (leave the key out for an angle asked by its ticket label alone, or write [\"*\"] for every PR)",
                     );
                     Vec::new()
                 }
@@ -1149,15 +1147,19 @@ impl Validator {
                 ),
             );
         }
-        let human_approval = self.choice(
-            "review.human_approval",
-            raw.human_approval,
-            Some(HumanApproval::Never),
-            &[
-                ("never", HumanApproval::Never),
-                ("always", HumanApproval::Always),
-            ],
-        );
+        // Retired (a human review is an angle assigned to a person): a
+        // value that asked for nothing is still accepted, so that no running
+        // bridge stops, and `doctor` reports it; one that asked for a human
+        // approval is refused, never read as none.
+        let mut retired = Vec::new();
+        match raw.human_approval.as_deref().map(str::trim) {
+            None => {}
+            Some("never") => retired.push("review.human_approval".to_string()),
+            Some(other) => self.err(
+                "review.human_approval",
+                format!("\"{other}\": {RETIRED_HUMAN_APPROVAL}"),
+            ),
+        }
         if let Some(a) = &diff_size_angle {
             if !is_angle_key(a) {
                 self.err(
@@ -1168,7 +1170,9 @@ impl Validator {
         }
         let coordinator_assignee =
             self.optional("review.coordinator_assignee", raw.coordinator_assignee);
-        let human_reviewer = self.optional("review.human_reviewer", raw.human_reviewer);
+        if raw.human_reviewer.is_some() {
+            retired.push("review.human_reviewer".to_string());
+        }
         let ticketless_authors = self.list(
             "review.ticketless_authors",
             raw.ticketless_authors,
@@ -1208,12 +1212,11 @@ impl Validator {
             require_up_to_date,
             diff_size_extra_angle,
             diff_size_angle,
-            human_approval: human_approval?,
             coordinators,
             coordinator_assignee,
-            human_reviewer,
             ticketless_authors,
             angles,
+            retired,
         })
     }
 
@@ -1442,7 +1445,11 @@ pub(crate) fn is_product_name(s: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
-/// Whether some PR can get an angle: a review angle (on every PR or on its
+/// What replaces `review.human_approval` and `review.human_reviewer`
+/// (spec 08), said by the configuration and by `doctor`.
+pub const RETIRED_HUMAN_APPROVAL: &str = "review.human_approval and review.human_reviewer are retired: a human review is a review angle assigned to a person (a `[[review.angles]]` table whose `assignee` is that person), asked by its paths or by its `angle/<key>` label on the ticket";
+
+/// Whether some PR can get an angle: a review angle (by its label or its
 /// paths) or a size threshold. Without one, no PR is reviewed.
 fn angle_possible(angles: bool, diff_size_extra_angle: u32) -> bool {
     angles || diff_size_extra_angle > 0

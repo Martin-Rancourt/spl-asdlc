@@ -103,8 +103,8 @@ fn each_layer_of_the_configuration_template_is_valid() {
         .collect();
     assert_eq!(
         angles,
-        [("maintainability", 0), ("security", 2)],
-        "one angle on every PR, one on its paths"
+        [("maintainability", 1), ("security", 2), ("design", 0)],
+        "one angle on every PR (`*`), one on its paths, one by its ticket label only"
     );
     assert!(c.release.angles.is_empty(), "the layers are independent");
 

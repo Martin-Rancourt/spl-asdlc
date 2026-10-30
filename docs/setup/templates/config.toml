@@ -21,8 +21,10 @@
 #
 # 1. PR review (docs/reference/04-pr-review.md), under [review]: remove
 #    `angles = []` there, uncomment `coordinators`, and uncomment or write
-#    one `[[review.angles]]` table per angle. An angle without `paths` runs
-#    on every PR; one with `paths` only on a PR that touches them.
+#    one `[[review.angles]]` table per angle. An angle runs on the PRs of a
+#    ticket labelled `angle/<key>` (the bridge creates the label), and, with
+#    `paths`, on a PR that touches them (`paths = ["*"]` for every PR). A
+#    human review is an angle whose `assignee` is that person.
 # 2. Release QA angles (docs/reference/05-release-cycle.md §3), under [release]:
 #    replace `angles = []` there with the `coordinators` line and the
 #    `[[release.angles]]` tables below it, and list the same keys in the
@@ -57,9 +59,7 @@ require_up_to_date = false
 # An angle by size is off by default: set both keys to add one above a threshold.
 # diff_size_extra_angle = 0            # changed lines above which diff_size_angle is added; 0 adds none
 # diff_size_angle = "maintainability"  # required while diff_size_extra_angle is above 0
-# human_approval = "never"             # "never" | "always"
 # coordinator_assignee = "coordinator-handle" # tracker participant who receives each PR round's consolidation item
-# human_reviewer = "owner-login"       # asked to look at a green PR stuck on a human
 # ticketless_authors = []              # Apps whose PRs need no ticket, e.g. ["dependabot"]
 
 # No PR review (docs/reference/04-pr-review.md §11), an explicit choice: no PR
@@ -69,11 +69,15 @@ require_up_to_date = false
 angles = []                            # no review angle: layer 1 replaces it
 # coordinators = ["coordinator-login"] # layer 1: GitHub logins whose approval at the head SHA merges a reviewed PR
 
-# [[review.angles]]                    # layer 1; no paths: on every PR
+# [[review.angles]]                    # layer 1; "*" crosses "/": on every PR
 # key = "maintainability"
-# [[review.angles]]                    # paths: only on a PR that touches one
+# paths = ["*"]
+# [[review.angles]]                    # paths: on a PR that touches one, or labelled angle/security
 # key = "security"
 # paths = [".github/workflows/**", "**/auth/**"]
+# [[review.angles]]                    # no paths: only on a ticket labelled angle/design
+# key = "design"
+# assignee = "owner-handle"            # a person: a human review
 
 [release]
 # Every project has the release cycle (docs/reference/05-release-cycle.md): merged

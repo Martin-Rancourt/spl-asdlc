@@ -27,7 +27,8 @@ pub struct Answers {
     /// The project's repository, `<owner>/<repo>`.
     pub repository: String,
     pub tracker: TrackerKind,
-    /// The PR review layer: its angles, each on every PR or on its paths;
+    /// The PR review layer: its angles, each asked by its ticket label or
+    /// brought by its paths;
     /// empty for no PR review.
     pub review_angles: Vec<ReviewAngle>,
     /// The release QA layer: the keys of the release's angles; empty for
@@ -44,7 +45,8 @@ pub struct Answers {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewAngle {
     pub key: String,
-    /// Empty: on every PR; else only on a PR that touches one of them.
+    /// Empty: only on a ticket labelled `angle/<key>`; else also on a PR
+    /// that touches one of them (`*` for every PR).
     pub paths: Vec<String>,
 }
 

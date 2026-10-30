@@ -58,7 +58,9 @@ flowchart LR
 ## PR review (optional)
 
 Review is configured by angle: security, maintainability, design, or any angle the project defines. Each angle is reviewed by an agent or a person.
-- An angle can run on every PR, or only on PRs that touch its paths. For example, a security angle runs on the workflows and the authentication code, and a design angle only on the front end.
+- An angle runs on the PRs that touch its paths, or on every PR. For example, a security angle runs on the workflows and the authentication code.
+- An angle can also be asked by hand, ticket by ticket: its label `angle/<key>` on the ticket (a design pass, a security check) adds it to every PR of that ticket, on top of the angles the paths bring. Removing the label removes an angle only the label asked for. An angle with no paths runs only so.
+- A human review is an angle assigned to a person, who closes its sub-ticket when the pass is done.
 - Each angle that applies gets a sub-ticket, served to its reviewer.
 - A coordinator consolidates the findings and approves the PR. The bridge merges after that approval.
 
