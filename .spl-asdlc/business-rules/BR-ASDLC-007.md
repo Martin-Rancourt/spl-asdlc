@@ -12,4 +12,4 @@ Owner's decision on several PRs per ticket (2026-10-07): a round left open after
 
 ## Test
 
-`tick::tests::a_rounds_items_close_when_its_pr_merges_while_the_ticket_stays_open`, `tick::tests::a_rounds_items_are_canceled_when_its_pr_is_closed_unmerged_while_the_ticket_stays_open`, `tick::tests::while_another_pr_is_in_review_the_ticket_stays_in_review`, `tick::tests::a_pr_closed_unmerged_leaves_the_ticket_in_review_while_another_is_reviewed`
+`tick::tests::a_rounds_items_close_when_its_pr_merges_to_deploy`, `tick::tests::a_rounds_items_are_canceled_when_its_pr_is_closed_unmerged_while_the_ticket_stays_open`, `tick::tests::while_another_pr_is_in_review_the_ticket_stays_in_review`, `tick::tests::a_pr_closed_unmerged_leaves_the_ticket_in_review_while_another_is_reviewed`

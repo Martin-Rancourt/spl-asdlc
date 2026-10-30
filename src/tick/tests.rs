@@ -116,7 +116,13 @@ impl World {
     }
 
     fn ticket(&self, key: &str, status: Status, pr: &PullRequest) {
-        self.tracker.seed(key, "A ticket", COMPLETE, status, &[]);
+        self.tracker.seed(
+            key,
+            "A ticket",
+            &COMPLETE.replace("[ ]", "[x]"),
+            status,
+            &[],
+        );
         self.tracker.link(key, &pr.url);
     }
 
@@ -874,8 +880,13 @@ fn a_pr_without_a_ticket_is_told_once_and_left_alone() {
 #[test]
 fn a_pr_named_by_its_branch_is_linked_and_its_ticket_goes_in_review() {
     let w = World::new();
-    w.tracker
-        .seed("ABC-12", "A ticket", COMPLETE, Status::InProgress, &[]);
+    w.tracker.seed(
+        "ABC-12",
+        "A ticket",
+        &COMPLETE.replace("[ ]", "[x]"),
+        Status::InProgress,
+        &[],
+    );
     let mut pr = pull_request(7);
     pr.head_ref = "fix/abc-12-mcp-settings".into();
     pr.title = "fix(mcp): settings (ABC-12)".into();
@@ -1307,6 +1318,7 @@ fn a_ticket_the_closure_sent_back_is_not_swept_forward_again() {
         .borrow_mut()
         .merged_pulls
         .insert(repo(), Ok(vec![pr]));
+    crate::tracker::Tracker::update_description(&w.tracker, "ABC-9", COMPLETE).unwrap();
     let before = w.tracker.writes().len();
     w.tick(false);
     assert_eq!(w.tracker.writes().len(), before);
@@ -1700,23 +1712,17 @@ fn close_unmerged(w: &World, pr: &PullRequest) {
 }
 
 #[test]
-fn a_merge_that_leaves_a_box_open_sends_the_ticket_back_to_work() {
+fn a_ready_pr_with_a_box_reopened_during_review_returns_to_work() {
     let w = World::new();
     let pr = in_review(&w, 7);
-    w.open(approved(&w, pr.clone()));
+    crate::tracker::Tracker::update_description(&w.tracker, "ABC-7", COMPLETE).unwrap();
+    w.open(approved(&w, pr));
     let (report, _) = w.tick(false);
     assert!(report.ok(), "{report:?}");
-    assert!(w.github_writes().iter().any(|l| l.starts_with("merge")));
+    assert!(!merged(&w));
     assert_eq!(
         w.tracker.item("ABC-7").state.status,
-        Some(Status::InProgress),
-        "the completeness rule: a box is open"
-    );
-    let comment = merge_comment(&w, "ABC-7", &pr);
-    assert!(comment.contains("state: In Progress"), "{comment}");
-    assert!(
-        comment.contains("1 box(es) of its contract remain open"),
-        "{comment}"
+        Some(Status::InProgress)
     );
     quiet(&w);
 }
@@ -1787,6 +1793,7 @@ fn a_ticket_with_nothing_to_deploy_and_a_box_open_goes_back_to_work() {
     let w = World::new();
     let pr = in_review(&w, 7);
     crate::tracker::Tracker::add_label(&w.tracker, "ABC-7", "no-deploy").unwrap();
+    crate::tracker::Tracker::update_description(&w.tracker, "ABC-7", COMPLETE).unwrap();
     w.open(approved(&w, pr));
     w.tick(false);
     assert_eq!(
@@ -1819,7 +1826,7 @@ fn a_ticket_with_nothing_to_deploy_merged_outside_the_bridge_is_swept_to_done_on
 }
 
 #[test]
-fn a_rounds_items_close_when_its_pr_merges_while_the_ticket_stays_open() {
+fn a_rounds_items_close_when_its_pr_merges_to_deploy() {
     let w = World::new();
     let pr = in_review(&w, 7);
     assert!(all_in(&round(&w, "ABC-7", &pr), Status::Ready));
@@ -1827,8 +1834,8 @@ fn a_rounds_items_close_when_its_pr_merges_while_the_ticket_stays_open() {
     w.tick(false);
     assert_eq!(
         w.tracker.item("ABC-7").state.status,
-        Some(Status::InProgress),
-        "the ticket stays open for a later PR"
+        Some(Status::ToDeploy),
+        "the completed ticket waits for deployment"
     );
     assert!(
         all_in(&round(&w, "ABC-7", &pr), Status::Done),
@@ -1930,10 +1937,7 @@ fn while_another_pr_is_in_review_the_ticket_stays_in_review() {
     // The last PR merges: the completeness rule decides.
     w.open(approved(&w, b.clone()));
     w.tick(false);
-    assert_eq!(
-        w.tracker.item("ABC-7").state.status,
-        Some(Status::InProgress)
-    );
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::ToDeploy));
     assert!(all_in(&round(&w, "ABC-7", &b), Status::Done));
     quiet(&w);
 }
@@ -2026,10 +2030,7 @@ fn an_unreadable_ticket_of_another_pr_holds_the_state_after_a_merge() {
     // Readable again: the sweep settles it.
     w.tracker.state.borrow_mut().unreadable.clear();
     w.tick(false);
-    assert_eq!(
-        w.tracker.item("ABC-7").state.status,
-        Some(Status::InProgress)
-    );
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::ToDeploy));
 }
 
 // ---- SID-1008: an App's login, never a person's; why a PR waits ----
@@ -2882,8 +2883,13 @@ fn round_angles(w: &World, ticket: &str, pr: &PullRequest) -> Vec<(String, Strin
 /// A green PR whose ticket carries `labels`, In Progress.
 fn labelled_pr(w: &World, labels: &[&str]) -> PullRequest {
     let pr = green(pull_request(7));
-    w.tracker
-        .seed("ABC-7", "A ticket", COMPLETE, Status::InProgress, labels);
+    w.tracker.seed(
+        "ABC-7",
+        "A ticket",
+        &COMPLETE.replace("[ ]", "[x]"),
+        Status::InProgress,
+        labels,
+    );
     w.tracker.link("ABC-7", &pr.url);
     w.open(pr.clone());
     pr
@@ -3713,6 +3719,9 @@ fn merged_with_a_box_open(w: &World) -> PullRequest {
     let pr = in_review(w, 7);
     w.open(approved(w, pr.clone()));
     w.tick(false);
+    // A contract edited after merge (or a historical merge before the ready gate).
+    crate::tracker::Tracker::update_description(&w.tracker, "ABC-7", COMPLETE).unwrap();
+    crate::tracker::Tracker::set_status(&w.tracker, "ABC-7", Status::InProgress, None).unwrap();
     assert_eq!(
         w.tracker.item("ABC-7").state.status,
         Some(Status::InProgress)
@@ -3938,4 +3947,150 @@ fn a_cut_tick_retries_the_status_without_repeating_the_comment() {
         "said once"
     );
     quiet(&w);
+}
+
+#[test]
+fn ready_requires_every_box_and_retries_on_the_same_head() {
+    use crate::tracker::Tracker;
+    let w = World::new();
+    let mut pr = green(pull_request(7));
+    w.ticket("ABC-7", Status::InReview, &pr);
+    let partial = COMPLETE.replace("[x] it is fast", "[ ] it is fast");
+    w.tracker.update_description("ABC-7", &partial).unwrap();
+    pr.checks.clear(); // feedback must not wait for CI
+    w.open(pr.clone());
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(
+        w.tracker.item("ABC-7").state.status,
+        Some(Status::InProgress)
+    );
+    assert!(
+        w.github_writes()
+            .iter()
+            .any(|s| s == "draft-pull example-org/acme#7")
+    );
+    assert!(
+        w.tracker
+            .comments("ABC-7")
+            .unwrap()
+            .iter()
+            .any(|c| c.body.contains("- [ ] it is fast"))
+    );
+    quiet(&w);
+    // Re-ready without fixing the ticket is rejected again, without a push.
+    w.open(pr.clone());
+    w.tick(false);
+    assert_eq!(
+        w.github_writes()
+            .iter()
+            .filter(|s| *s == "draft-pull example-org/acme#7")
+            .count(),
+        2
+    );
+    check_every_box(&w, "ABC-7");
+    w.open(green(pr));
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::InReview));
+    assert!(!children_of(&w, "ABC-7").is_empty());
+}
+
+#[test]
+fn ready_counts_unfinished_linked_children_but_exempts_post_deploy_and_fences() {
+    use crate::tracker::Tracker;
+    let w = World::new();
+    let pr = green(pull_request(7));
+    w.ticket("ABC-7", Status::InProgress, &pr);
+    w.tracker
+        .seed("ABC-8", "Task child", "", Status::InProgress, &[]);
+    w.tracker.state.borrow_mut().set_parent("ABC-8", "ABC-7");
+    let complete = COMPLETE.replace("[ ]", "[x]");
+    let linked = format!("{complete}\n- [x] [task](https://tracker.test/ABC-8)\n");
+    w.tracker.update_description("ABC-7", &linked).unwrap();
+    let t = Tick {
+        config: &w.config,
+        repo: repo(),
+        github: &w.github,
+        tracker: &w.tracker,
+        signal: &w.signal,
+        github_login: bot("spl-asdlc"),
+        now: crate::github::Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
+        deadline: None,
+        dry_run: false,
+        method_texts: Default::default(),
+        low_quota: false,
+    };
+    assert_eq!(
+        merge::ready_missing(&t, &w.tracker.item("ABC-7")).unwrap(),
+        vec!["- [x] [task](https://tracker.test/ABC-8)"]
+    );
+    w.tracker.set_status("ABC-8", Status::Done, None).unwrap();
+    assert!(
+        merge::ready_missing(&t, &w.tracker.item("ABC-7"))
+            .unwrap()
+            .is_empty()
+    );
+    w.tracker
+        .set_status("ABC-8", Status::InProgress, None)
+        .unwrap();
+    let exempt = format!(
+        "{complete}\n```md\n- [ ] example\n```\n## Post deploy\n- [x] [task](https://tracker.test/ABC-8)\n### Verify\n- [ ] later\n"
+    );
+    w.tracker.update_description("ABC-7", &exempt).unwrap();
+    assert!(
+        merge::ready_missing(&t, &w.tracker.item("ABC-7"))
+            .unwrap()
+            .is_empty()
+    );
+    w.tracker
+        .update_description(
+            "ABC-7",
+            &format!("{exempt}\n## Other\n- [ ] still required"),
+        )
+        .unwrap();
+    assert_eq!(
+        merge::ready_missing(&t, &w.tracker.item("ABC-7")).unwrap(),
+        vec!["- [ ] still required"]
+    );
+}
+
+#[test]
+fn unchecked_ready_contract_returns_unstarted_tickets_and_preserves_feedback_on_failure() {
+    use crate::tracker::Tracker;
+    for status in [
+        Status::Backlog,
+        Status::Ready,
+        Status::InProgress,
+        Status::InReview,
+    ] {
+        let w = World::new();
+        let pr = green(pull_request(7));
+        w.ticket("ABC-7", status, &pr);
+        w.tracker
+            .update_description("ABC-7", &COMPLETE.replace("[x]", "[ ]"))
+            .unwrap();
+        w.open(pr);
+        w.tracker.fail_writes_starting_with("comment ABC-7");
+        w.tick(false);
+        assert!(
+            !w.github_writes()
+                .iter()
+                .any(|s| s.starts_with("draft-pull")),
+            "do not hide missing feedback"
+        );
+        w.tracker.state.borrow_mut().failing_writes.clear();
+        let (report, _) = w.tick(false);
+        assert!(report.ok(), "{report:?}");
+        assert_eq!(
+            w.tracker.item("ABC-7").state.status,
+            Some(Status::InProgress)
+        );
+        assert!(
+            w.github_writes()
+                .iter()
+                .any(|s| s.starts_with("draft-pull"))
+        );
+        quiet(&w);
+    }
 }

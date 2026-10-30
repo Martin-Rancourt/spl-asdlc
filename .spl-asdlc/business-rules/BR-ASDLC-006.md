@@ -1,15 +1,15 @@
-# BR-ASDLC-006 — One PR per ticket by default.
+# BR-ASDLC-006 — One ticket ships in one PR.
 
-Status: Proposed
+Status: Enforced
 
 ## Rule
 
-A ticket has as many commits as needed and one PR; a second PR needs a real reason, which its implementer records in the ticket's comments (`docs/reference/00-overview.md` invariant 2, `docs/reference/01-ticket-contract.md` §7). A PR is linked to exactly one ticket.
+A ticket ships in one PR, with as many commits as needed. A technical split uses sibling tickets linked through `blocked by`, each with its own PR. Every ticket box outside `## Post deploy` must be checked before ready; an unfinished linked task child counts as unchecked. A PR is linked to exactly one ticket.
 
 ## Evidence
 
-Owner's decision on several PRs per ticket (2026-10-07), reconciling spec 00 §2 and spec 01 §7.
+Owner's decision of 2026-10-29: all ticket work is declared complete at ready, with feedback before review, and technical splits use sibling tickets.
 
 ## Test
 
-Enforced by the agent protocols, not by code: the implementer records the reason (`docs/agents/process.md`, "Implement a ticket" step 9); the reviewer reads it and, when everything should have been one PR, records why on the ticket and the coordinator requests changes (`docs/agents/review-pr.md` step 3). The bridge's side, a ticket with several PRs handled per PR, is tested by `tick::tests::while_another_pr_is_in_review_the_ticket_stays_in_review`.
+`tick::tests::ready_requires_every_box_and_retries_on_the_same_head`, `tick::tests::ready_counts_unfinished_linked_children_but_exempts_post_deploy_and_fences`, `tick::tests::unchecked_ready_contract_returns_unstarted_tickets_and_preserves_feedback_on_failure`. The one-PR rule is also required by `docs/agents/process.md` and `docs/agents/review-pr.md`.

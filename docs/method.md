@@ -47,7 +47,7 @@ flowchart LR
 - Once CI is green, the configured reviews start, if any (below).
 - The author ticks the boxes the PR delivers.
 
-**One PR per ticket, by default.** A ticket gets a second PR only for a real reason, typically a deployment that must happen before the rest can go on; the implementer records the reason on the ticket. Every PR stands alone: once merged, it can be deployed at any time. Its branch starts from `main` and is never stacked on another PR.
+**One ticket ships in one PR.** If a technical constraint requires splitting the work, use sibling tickets linked through `blocked by`, each with its own PR. Every box outside `## Post deploy` must be checked before ready; the bridge sends a PR with unfinished work back to draft and lists what is missing on the ticket. Every PR stands alone and starts from `main`.
 
 **A draft PR is out of the flow.** The bridge ignores it entirely: it moves no ticket for it, opens no review for it, never merges it, does not read its CI, and counts it for nothing among the ticket's PRs. No CI runs on a draft, so a draft costs no runner minute; marking it ready starts its CI. A person takes a PR out of the flow by putting it in draft, and back in by marking it ready; a review already open stays as it is and goes on once the PR is ready again.
 
