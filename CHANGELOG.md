@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.8.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.7.0...v1.8.0) (2026-10-30)
+
+
+### Features
+
+* **review:** ask for a PR review angle with a ticket label (ASDLC-DZ96) ([#141](https://github.com/Martin-Rancourt/spl-asdlc/issues/141)) ([126a9af](https://github.com/Martin-Rancourt/spl-asdlc/commit/126a9af79b4301694502b097cc0f2ba5abf0bf59))
+* **sweep:** settle a merged ticket whose last box is checked after the merge (ASDLC-SX97) ([#137](https://github.com/Martin-Rancourt/spl-asdlc/issues/137)) ([a1f6870](https://github.com/Martin-Rancourt/spl-asdlc/commit/a1f6870969faa1bbd20d9ec3a7abf71080af62b3))
+
+
+### Bug Fixes
+
+* **ci:** check an edited PR in a workflow of its own, so a body edit never hides the required checks (ASDLC-76ZK) ([#140](https://github.com/Martin-Rancourt/spl-asdlc/issues/140)) ([14cbc69](https://github.com/Martin-Rancourt/spl-asdlc/commit/14cbc69f4f38cd65809bcd5b9315eb7616eefaf8))
+
 ## [1.7.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.6.1...v1.7.0) (2026-10-29)
 
 
