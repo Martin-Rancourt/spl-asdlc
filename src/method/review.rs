@@ -4,7 +4,7 @@
 //! coordinator's approval qualifies, and whether the branch is up to date.
 
 use super::glob;
-use super::vocabulary::NEEDS_REVIEW_LABEL;
+use super::vocabulary::{ANGLE_LABEL_PREFIX, angle_label};
 use crate::config;
 use crate::github::{Mergeable, PullRequest, Review, login_key, same_login};
 
@@ -64,6 +64,8 @@ pub fn branch_state(pr: &PullRequest) -> BranchState {
 /// The facts a review round is planned from.
 #[derive(Debug, Clone)]
 pub struct ReviewFacts<'a> {
+    /// The labels of the PR's ticket: an `angle/<key>` among them asks for
+    /// that angle by hand.
     pub labels: &'a [String],
     /// `None` when the file list could not be read.
     pub changed_paths: Option<&'a [String]>,
@@ -77,8 +79,8 @@ pub struct ReviewFacts<'a> {
 /// holds the merge whatever the approval says.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ReviewPlan {
-    /// The angles on every PR first, then the ones the triggers add (the
-    /// paths an angle carries, the size), each once.
+    /// The angles the ticket's labels ask for first, then the ones the
+    /// triggers add (the paths an angle carries, the size), each once.
     pub angles: Vec<String>,
     /// Every trigger that matched, in order of certainty.
     pub reasons: Vec<String>,
@@ -97,19 +99,50 @@ fn push_unique(list: &mut Vec<String>, item: &str) {
     }
 }
 
-/// Plan a review round (REQ-MERGE-044..052 as the target defines them).
+/// Whether the labels carry `angle/<key>` (labels compare trimmed and
+/// without case, as the trackers compare them).
+fn labelled(labels: &[String], key: &str) -> bool {
+    let label = angle_label(key);
+    labels.iter().any(|l| l.trim().eq_ignore_ascii_case(&label))
+}
+
+/// The ticket's `angle/<key>` labels whose key names no configured review
+/// angle: reported once on the ticket, they ask for nothing (spec 04 §3).
+pub fn unknown_angle_labels(labels: &[String], review: &config::Review) -> Vec<String> {
+    let mut unknown = Vec::new();
+    for l in labels {
+        let label = l.trim();
+        let Some((prefix, key)) = label.split_at_checked(ANGLE_LABEL_PREFIX.len()) else {
+            continue;
+        };
+        if prefix.eq_ignore_ascii_case(ANGLE_LABEL_PREFIX)
+            && !review
+                .angles
+                .iter()
+                .any(|a| a.key.eq_ignore_ascii_case(key))
+        {
+            push_unique(&mut unknown, label);
+        }
+    }
+    unknown
+}
+
+/// Plan a review round (REQ-MERGE-044..052 as the target defines them). An
+/// angle applies when the ticket carries its label (asked by hand) or when
+/// the PR touches its paths; an angle with no paths applies only by hand.
 pub fn plan(facts: &ReviewFacts<'_>, review: &config::Review) -> ReviewPlan {
     let mut plan = ReviewPlan::default();
-    for a in review.angles.iter().filter(|a| a.paths.is_empty()) {
-        push_unique(&mut plan.angles, &a.key);
-    }
-    if facts
-        .labels
+    for a in review
+        .angles
         .iter()
-        .any(|l| l.trim().eq_ignore_ascii_case(NEEDS_REVIEW_LABEL))
+        .filter(|a| labelled(facts.labels, &a.key))
     {
-        plan.reasons
-            .push(format!("the author flagged it (`{NEEDS_REVIEW_LABEL}`)"));
+        plan.reasons.push(format!(
+            "its ticket asks for the `{}` angle (`{}`)",
+            a.key,
+            angle_label(&a.key)
+        ));
+        push_unique(&mut plan.angles, &a.key);
     }
     // A file list that names nothing while the PR changes lines is two reads
     // that contradict each other: not an answer.
@@ -180,12 +213,6 @@ impl ReviewPlan {
     pub fn unreviewed(&self) -> bool {
         self.angles.is_empty()
     }
-}
-
-/// Whether a human must approve besides the coordinator, or alone when the
-/// PR has no angle (spec 04): `review.human_approval = "always"`.
-pub fn needs_human_approval(review: &config::Review) -> bool {
-    review.human_approval == config::HumanApproval::Always
 }
 
 /// Where the approvals of a PR stand at its head.

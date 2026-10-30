@@ -29,7 +29,7 @@ use crate::method::release::prs::trusted_author;
 use crate::method::review::{self, Approval, BranchState, ReviewFacts};
 use crate::method::texts::{self, BridgeItem, protocol};
 use crate::method::ticket_state::{self, Facts, OpenPr};
-use crate::method::vocabulary::{Status, TICKETLESS_LABEL};
+use crate::method::vocabulary::{Status, TICKETLESS_LABEL, angle_label};
 use crate::tracker::{Item, NewItem, RelationKind};
 
 use super::identity;
@@ -232,9 +232,34 @@ pub fn round_of(item: &Item, pr_url: &str) -> bool {
     }
 }
 
+/// One label per configured review angle, `angle/<key>`, so that a person
+/// can put it on a ticket at refinement (spec 04 §3): created when the
+/// tracker lacks it. A tracker whose labels exist by being used has them
+/// all and is written nothing.
+fn angle_labels(t: &Tick, log: &mut ActionLog, report: &mut Report) {
+    for a in &t.config.review.angles {
+        let label = angle_label(&a.key);
+        match t.tracker.label_exists(&label) {
+            Ok(true) => {}
+            Ok(false) => {
+                t.act(
+                    log,
+                    report,
+                    &label,
+                    "create label",
+                    json!({"angle": a.key}),
+                    || t.tracker.ensure_label(&label).map_err(|e| e.to_string()),
+                );
+            }
+            Err(e) => t.unreadable(report, &label, format!("the angle's label: {e}")),
+        }
+    }
+}
+
 /// Run the pass. The tickets of every open PR are read first: the state of a
 /// ticket depends on all its PRs.
 pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> Pass {
+    angle_labels(t, log, report);
     let mut prs = match t.github.open_pulls(&t.repo, None) {
         Ok(p) => p,
         Err(e) => {
@@ -791,9 +816,26 @@ fn one(
 
     // ---- the review round ----
     let skipped = checks::skipped_required(&pr.checks, &required.contexts);
+    // An `angle/<key>` label naming no configured angle asks for nothing:
+    // the ticket is told once, and the PR is not held for it (spec 04 §3).
+    for label in review::unknown_angle_labels(&ticket.labels, &t.config.review) {
+        say_once_on_item(
+            t,
+            log,
+            report,
+            &ticket.key,
+            "unknown-angle-label",
+            &[("label", &label)],
+            &format!(
+                "The label `{label}` asks for a PR review angle this project does not configure \
+                 (`[[review.angles]]` in `.spl-asdlc/config.toml`), so it asks for nothing: \
+                 remove it, or add the angle to the configuration."
+            ),
+        );
+    }
     let plan = review::plan(
         &ReviewFacts {
-            labels: &pr.labels,
+            labels: &ticket.labels,
             changed_paths: files.as_deref(),
             additions: pr.additions,
             deletions: pr.deletions,
@@ -848,7 +890,7 @@ fn one(
         if !drop_unasked(t, log, report, &pr, &children, &plan).1 {
             return None;
         }
-        return unreviewed(t, log, report, pr, ticket, &plan, branch);
+        return unreviewed(t, report, pr, ticket, &plan, branch);
     }
     // A ticket In Review for another of its PRs: this PR gets its own round
     // (a round is scoped to its PR, BR-ASDLC-007).
@@ -956,17 +998,6 @@ fn one(
         t.wait(report, &pr, format!("it is behind {}", pr.base_ref));
         return None;
     }
-    if review::needs_human_approval(&t.config.review) {
-        t.wait(
-            report,
-            &pr,
-            "it needs a human approval besides the coordinator's",
-        );
-        // Whose approval counts as the human one is the owner's to say
-        // (`.spl-asdlc/open-points.md` #4); until then the PR waits and a human is asked once.
-        ask_human(t, log, report, &pr, true);
-        return None;
-    }
     Some(Candidate {
         pr,
         ticket,
@@ -1017,11 +1048,9 @@ fn send_back(
 /// with a box ticked, the business-rule guard), once nothing holds it, no
 /// thread is open and its branch is current; its ticket went In Review when
 /// the PR was opened, as any. A coordinator's standing request for changes
-/// still holds it, and a human approval, when the project asks for one, is
-/// then the only approval required.
+/// still holds it.
 fn unreviewed(
     t: &Tick,
-    log: &mut ActionLog,
     report: &mut Report,
     pr: PullRequest,
     ticket: Item,
@@ -1058,10 +1087,6 @@ fn unreviewed(
         }
     }
     if branch != BranchState::Current {
-        return None;
-    }
-    if review::needs_human_approval(&t.config.review) {
-        ask_human(t, log, report, &pr, false);
         return None;
     }
     Some(Candidate {
@@ -1124,8 +1149,9 @@ fn drop_unasked(
                 let body = for_tracker(
                     t,
                     &format!(
-                        "The configuration no longer asks for {what} of {}: it now gives this PR {asked}. \
-                         The bridge cancels this item (`docs/reference/04-pr-review.md` §11).\n\n{marker}",
+                        "Neither the configuration nor the ticket's `angle/` labels ask for {what} of {} any more: \
+                         they now give this PR {asked}. The bridge cancels this item \
+                         (`docs/reference/04-pr-review.md` §11).\n\n{marker}",
                         pr.url
                     ),
                 );
@@ -2385,60 +2411,6 @@ fn hand_back(
         },
     );
     t.wait(report, pr, why);
-}
-
-/// Ask a human to approve, once per head. `reviewed`: the PR has a round,
-/// so the human approves besides the coordinator; otherwise the human's is
-/// the only approval it needs.
-fn ask_human(t: &Tick, log: &mut ActionLog, report: &mut Report, pr: &PullRequest, reviewed: bool) {
-    let who = t.config.review.human_reviewer.clone();
-    let needs = if reviewed {
-        "a human approval besides the coordinator's"
-    } else {
-        "a human approval, the only one it needs: it has no review angle"
-    };
-    let text = match &who {
-        Some(login) => format!(
-            "This PR needs {needs} (`human_approval = {:?}`); @{login} is asked to look.",
-            t.config.review.human_approval
-        ),
-        None => format!(
-            "This PR needs {needs}; no `human_reviewer` is configured, so a reviewer must be assigned by hand."
-        ),
-    };
-    let fields = [("head", texts::short(&pr.head_sha))];
-    match pr_said(t, pr.number, &texts::marker("human-approval", &fields)) {
-        Ok(false) => {}
-        Ok(true) => return,
-        Err(e) => {
-            t.unreadable(
-                report,
-                &format!("pr#{}", pr.number),
-                format!("the PR's comments: {e}"),
-            );
-            return;
-        }
-    }
-    // The request first, the comment (and its marker) after: a failed
-    // request is retried at the next tick.
-    if let Some(login) = &who {
-        let asked = t.act(
-            log,
-            report,
-            &format!("pr#{}", pr.number),
-            &format!("request review from {login}"),
-            json!({}),
-            || {
-                t.github
-                    .request_reviewers(&t.repo, pr.number, std::slice::from_ref(login))
-                    .map_err(|e| e.to_string())
-            },
-        );
-        if asked.is_none() {
-            return;
-        }
-    }
-    say_once(t, log, report, pr, "human-approval", &fields, &text);
 }
 
 /// Post `text` on the PR once per marker; returns whether it was posted now.

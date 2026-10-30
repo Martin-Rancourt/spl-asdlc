@@ -131,8 +131,8 @@ pub(super) struct RawReviewAngle {
     pub key: Option<String>,
     pub assignee: Option<String>,
     pub notes: Option<String>,
-    /// The globs whose change brings the angle to a PR; absent, it is on
-    /// every PR.
+    /// The globs whose change brings the angle to a PR; absent, only its
+    /// ticket label (`angle/<key>`) asks for it.
     pub paths: Option<Vec<String>>,
 }
 

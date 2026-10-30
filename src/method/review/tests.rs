@@ -119,19 +119,21 @@ fn an_angle_on_paths_comes_only_with_a_pr_that_touches_one() {
     assert_eq!(plan.angles, s(&["maintainability", "security"]));
     assert_eq!(
         plan.reasons,
-        vec!["it touches the paths of the `security` angle: `src/auth/login.rs`"]
+        vec![
+            "it touches the paths of the `maintainability` angle: `src/auth/login.rs`",
+            "it touches the paths of the `security` angle: `src/auth/login.rs`"
+        ]
     );
     assert!(plan.holds.is_empty());
     let docs = s(&["docs/readme.md"]);
     let plan = super::plan(&facts(Some(&docs), &[]), &config);
-    assert_eq!(plan.angles, s(&["maintainability"]), "on every PR only");
-    assert!(plan.reasons.is_empty());
+    assert_eq!(plan.angles, s(&["maintainability"]), "`*` only");
 }
 
 #[test]
 fn angles_on_paths_alone_review_only_the_prs_that_touch_them() {
     let mut config = review_config();
-    config.angles.retain(|a| !a.paths.is_empty());
+    config.angles.retain(|a| a.key == "security");
     let docs = s(&["docs/readme.md"]);
     let plan = super::plan(&facts(Some(&docs), &[]), &config);
     assert!(plan.unreviewed(), "{plan:?}");
@@ -144,21 +146,114 @@ fn angles_on_paths_alone_review_only_the_prs_that_touch_them() {
 // ---- triggers (REQ-MERGE-044..050) ----
 
 #[test]
-fn every_round_carries_the_base_angles() {
+fn an_angle_on_every_path_carries_every_round() {
     let config = review_config();
     let paths = s(&["src/x.rs"]);
     let plan = plan(&facts(Some(&paths), &[]), &config);
     assert_eq!(plan.angles, s(&["maintainability"]));
-    assert!(plan.reasons.is_empty());
+}
+
+// ---- manual angles: the ticket's labels (spec 04 §3, ASDLC-DZ96) ----
+
+#[test]
+fn a_ticket_label_adds_its_angle_even_when_no_file_matches() {
+    let config = review_config();
+    let docs = s(&["docs/readme.md"]);
+    let labels = s(&["bug", "angle/security", "angle/design"]);
+    let plan = plan(&facts(Some(&docs), &labels), &config);
+    assert_eq!(plan.angles, s(&["security", "design", "maintainability"]));
+    assert_eq!(
+        &plan.reasons[..2],
+        [
+            "its ticket asks for the `security` angle (`angle/security`)",
+            "its ticket asks for the `design` angle (`angle/design`)"
+        ]
+    );
+    assert!(plan.diff_read && plan.holds.is_empty());
 }
 
 #[test]
-fn the_authors_flag_is_a_reason() {
+fn an_angle_without_paths_never_applies_on_its_own() {
     let config = review_config();
-    let paths = s(&["src/x.rs"]);
-    let labels = s(&[" Needs-Review "]);
-    let plan = plan(&facts(Some(&paths), &labels), &config);
-    assert_eq!(plan.reasons[0], "the author flagged it (`needs-review`)");
+    assert!(
+        config
+            .angles
+            .iter()
+            .any(|a| a.key == "design" && a.paths.is_empty())
+    );
+    let front = s(&["web/src/App.tsx"]);
+    assert!(
+        !plan(&facts(Some(&front), &[]), &config)
+            .angles
+            .contains(&"design".to_string())
+    );
+    // Nor on an unread diff: only the angles on paths are bought by it.
+    assert!(
+        !plan(&facts(None, &[]), &config)
+            .angles
+            .contains(&"design".to_string())
+    );
+    let labels = s(&["angle/design"]);
+    assert!(
+        plan(&facts(None, &labels), &config)
+            .angles
+            .contains(&"design".to_string())
+    );
+}
+
+#[test]
+fn a_label_removed_leaves_the_angles_the_paths_bring() {
+    let config = review_config();
+    let auth = s(&["src/auth/login.rs"]);
+    let labelled = plan(
+        &facts(Some(&auth), &s(&["angle/security", "angle/design"])),
+        &config,
+    );
+    assert_eq!(
+        labelled.angles,
+        s(&["security", "design", "maintainability"])
+    );
+    let removed = plan(&facts(Some(&auth), &[]), &config);
+    assert_eq!(removed.angles, s(&["maintainability", "security"]));
+    assert!(
+        removed.diff_read,
+        "a read diff: the missing design angle is no longer asked"
+    );
+}
+
+#[test]
+fn angle_labels_compare_trimmed_and_without_case() {
+    let config = review_config();
+    let docs = s(&["docs/readme.md"]);
+    let labels = s(&[" Angle/Design "]);
+    assert!(
+        plan(&facts(Some(&docs), &labels), &config)
+            .angles
+            .contains(&"design".to_string())
+    );
+    assert!(unknown_angle_labels(&labels, &config).is_empty());
+}
+
+#[test]
+fn only_an_angle_label_naming_no_configured_angle_is_unknown() {
+    let config = review_config();
+    let labels = s(&[
+        "bug",
+        "no-deploy",
+        "release/acme-v1.2.0",
+        "angle/design",
+        "Angle/Visual-QA",
+        "angle/",
+    ]);
+    assert_eq!(
+        unknown_angle_labels(&labels, &config),
+        s(&["Angle/Visual-QA", "angle/"])
+    );
+    // It asks for nothing and holds nothing.
+    let docs = s(&["docs/readme.md"]);
+    let plan = plan(&facts(Some(&docs), &labels), &config);
+    assert_eq!(plan.angles, s(&["design", "maintainability"]));
+    assert!(plan.holds.is_empty());
 }
 
 #[test]
@@ -385,15 +480,6 @@ fn unresolved_threads_are_counted_outdated_or_not() {
         None,
         "a cut thread list is not read as resolved"
     );
-}
-
-#[test]
-fn human_approval_follows_the_policy() {
-    let mut config = review_config();
-    config.human_approval = config::HumanApproval::Never;
-    assert!(!needs_human_approval(&config));
-    config.human_approval = config::HumanApproval::Always;
-    assert!(needs_human_approval(&config));
 }
 
 // ---- an App's login against a person's (SID-1008) ----

@@ -66,10 +66,12 @@ impl World {
                 }),
             );
         }
+        let tracker = FakeTracker::new("ABC");
+        tracker.seed_angle_labels(&config());
         World {
             config: config(),
             github,
-            tracker: FakeTracker::new("ABC"),
+            tracker,
             signal: Recorder::default(),
             log_path: log_file(),
         }
@@ -2666,25 +2668,6 @@ fn a_pr_with_no_angle_waits_for_its_branch_its_threads_and_a_request_for_changes
 }
 
 #[test]
-fn a_pr_with_no_angle_under_a_human_policy_waits_for_the_human_alone() {
-    let mut w = World::new();
-    no_review(&mut w);
-    w.config.review.human_approval = crate::config::HumanApproval::Always;
-    ready_pr(&w);
-    w.tick(false);
-    let writes = w.github_writes();
-    assert!(!merged(&w), "{writes:?}");
-    assert!(
-        writes
-            .iter()
-            .any(|l| l.contains("the only one it needs: it has no review angle")),
-        "{writes:?}"
-    );
-    assert!(children_of(&w, "ABC-7").is_empty());
-    quiet(&w);
-}
-
-#[test]
 fn a_dry_run_shows_a_merge_with_no_pr_review() {
     let mut w = World::new();
     no_review(&mut w);
@@ -2740,13 +2723,17 @@ fn a_dry_run_shows_a_merge_with_no_pr_review() {
     );
 }
 
-/// The bridge's comments on an item saying the configuration no longer asks
-/// for it.
+/// The bridge's comments on an item saying neither the configuration nor
+/// the ticket's labels ask for it any more.
 fn not_asked(w: &World, key: &str) -> usize {
     crate::tracker::Tracker::comments(&w.tracker, key)
         .unwrap()
         .iter()
-        .filter(|c| c.by_bridge && c.body.contains("The configuration no longer asks for"))
+        .filter(|c| {
+            c.by_bridge
+                && c.body
+                    .contains("Neither the configuration nor the ticket's `angle/` labels ask for")
+        })
         .count()
 }
 
@@ -2873,6 +2860,149 @@ fn a_round_keeps_the_angles_still_asked_for_and_cancels_the_others() {
         w.tracker.item(&dropped[0]).state.status,
         Some(Status::Canceled)
     );
+}
+
+// ---- spec 04 §3, §11: manual angles, asked by the ticket's labels (ASDLC-DZ96) ----
+
+/// The angle of each angle sub-item of the PR's round, by item key.
+fn round_angles(w: &World, ticket: &str, pr: &PullRequest) -> Vec<(String, String)> {
+    let mut angles: Vec<(String, String)> = round(w, ticket, pr)
+        .into_iter()
+        .filter_map(
+            |c| match texts::bridge_item(&c.description, c.parent.as_deref()) {
+                Some(BridgeItem::Angle { angle, .. }) => Some((angle, c.key)),
+                _ => None,
+            },
+        )
+        .collect();
+    angles.sort();
+    angles
+}
+
+/// A green PR whose ticket carries `labels`, In Progress.
+fn labelled_pr(w: &World, labels: &[&str]) -> PullRequest {
+    let pr = green(pull_request(7));
+    w.tracker
+        .seed("ABC-7", "A ticket", COMPLETE, Status::InProgress, labels);
+    w.tracker.link("ABC-7", &pr.url);
+    w.open(pr.clone());
+    pr
+}
+
+#[test]
+fn a_ticket_label_adds_its_angle_to_the_round_though_no_file_matches_it() {
+    let w = World::new();
+    // `src/lib.rs` touches only the `*` of maintainability; design has no
+    // paths at all.
+    let pr = labelled_pr(&w, &["angle/design"]);
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    let angles: Vec<String> = round_angles(&w, "ABC-7", &pr)
+        .into_iter()
+        .map(|(a, _)| a)
+        .collect();
+    assert_eq!(angles, vec!["design", "maintainability"]);
+    quiet(&w);
+}
+
+#[test]
+fn an_angle_without_paths_opens_no_round_item_without_its_label() {
+    let w = World::new();
+    let pr = labelled_pr(&w, &[]);
+    w.tick(false);
+    let angles: Vec<String> = round_angles(&w, "ABC-7", &pr)
+        .into_iter()
+        .map(|(a, _)| a)
+        .collect();
+    assert_eq!(angles, vec!["maintainability"], "design only by hand");
+}
+
+#[test]
+fn removing_a_label_cancels_the_manual_angle_and_never_a_path_triggered_one() {
+    let w = World::new();
+    let pr = labelled_pr(&w, &["angle/design", "angle/maintainability"]);
+    w.tick(false);
+    let angles = round_angles(&w, "ABC-7", &pr);
+    let key = |angle: &str| {
+        angles
+            .iter()
+            .find(|(a, _)| a == angle)
+            .map(|(_, k)| k.clone())
+            .unwrap()
+    };
+    let (design, maintainability) = (key("design"), key("maintainability"));
+    for label in ["angle/design", "angle/maintainability"] {
+        crate::tracker::Tracker::remove_label(&w.tracker, "ABC-7", label).unwrap();
+    }
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(w.tracker.item(&design).state.status, Some(Status::Canceled));
+    assert_eq!(not_asked(&w, &design), 1);
+    // Its paths still bring maintainability: the label never removes it.
+    assert_eq!(
+        w.tracker.item(&maintainability).state.status,
+        Some(Status::Ready)
+    );
+    assert_eq!(not_asked(&w, &maintainability), 0);
+    quiet(&w);
+}
+
+/// The bridge's comments on the ticket about an unknown angle label.
+fn unknown_label_comments(w: &World, key: &str) -> Vec<String> {
+    crate::tracker::Tracker::comments(&w.tracker, key)
+        .unwrap()
+        .into_iter()
+        .filter(|c| c.by_bridge && c.body.contains("spl-asdlc:unknown-angle-label"))
+        .map(|c| c.body)
+        .collect()
+}
+
+#[test]
+fn an_unknown_angle_label_is_told_once_on_the_ticket_and_holds_nothing() {
+    let w = World::new();
+    let pr = labelled_pr(&w, &["angle/visual-qa", "bug"]);
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    let said = unknown_label_comments(&w, "ABC-7");
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0].contains(
+            "The label `angle/visual-qa` asks for a PR review angle this project does not configure"
+        ),
+        "{}",
+        said[0]
+    );
+    // The PR goes on as if the label were not there.
+    let angles: Vec<String> = round_angles(&w, "ABC-7", &pr)
+        .into_iter()
+        .map(|(a, _)| a)
+        .collect();
+    assert_eq!(angles, vec!["maintainability"]);
+    quiet(&w);
+    assert_eq!(unknown_label_comments(&w, "ABC-7").len(), 1);
+}
+
+#[test]
+fn the_bridge_creates_the_label_of_each_angle_the_tracker_lacks_once() {
+    let mut w = World::new();
+    w.tracker = FakeTracker::new("ABC");
+    w.tracker.seed_label("angle/security");
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    let created: Vec<String> = w
+        .tracker
+        .writes()
+        .into_iter()
+        .filter(|l| l.starts_with("ensure-label "))
+        .collect();
+    assert_eq!(
+        created,
+        vec![
+            "ensure-label angle/maintainability",
+            "ensure-label angle/design"
+        ]
+    );
+    quiet(&w);
 }
 
 /// No angle on every PR, but one on its paths: a coordinator approves.

@@ -214,6 +214,7 @@ impl World {
             }
         }
         let tracker = FakeTracker::new("ABC");
+        tracker.seed_angle_labels(&config());
         tracker.seed(
             "ABC-5",
             "Shipped",

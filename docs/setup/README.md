@@ -18,7 +18,7 @@ The method has one procedure (`docs/agents/process.md`, BR-ASDLC-027). A project
 | Step | Configuration | What the method does |
 |---|---|---|
 | The core (the template as written) | `angles = []` under `[review]`, and the `[release]` section with `angles = []` | Tickets with their contract, PRs, CI and the bridge. No PR review: a PR merges on its CI, with no round and no approval (`docs/reference/04-pr-review.md` §11). Merged tickets wait To Deploy; a release is cut, its CI runs, and its GO rests on that CI (no QA angle). |
-| PR review | `[[review.angles]]` tables with `review.coordinators` | Each PR gets a review round on the angles that apply to it and merges on a coordinator's approval. An angle runs on every PR, or only on PRs that touch its paths (its `paths`, `docs/reference/08-configuration.md`). |
+| PR review | `[[review.angles]]` tables with `review.coordinators` | Each PR gets a review round on the angles that apply to it and merges on a coordinator's approval. An angle runs on the PRs of a ticket that carries its label `angle/<key>` (asked by hand at refinement; the bridge creates the label), and on PRs that touch its paths (its `paths`, `["*"]` for every PR, `docs/reference/08-configuration.md`). A human review is an angle assigned to that person. |
 | Release QA | `[[release.angles]]` tables with `release.coordinators` | Each candidate is reviewed on its QA angles before the GO. |
 
 In every configuration, `release.fix_assignee` names the tracker participant who fixes release problems: the bridge assigns them the urgent fix ticket of a red release CI and, with QA angles, that of each blocking finding. Left unset, those tickets are unassigned, taken by role.

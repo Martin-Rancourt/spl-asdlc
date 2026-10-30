@@ -82,6 +82,22 @@ impl FakeTracker {
         }
     }
 
+    /// Create a label as if a person had: no write is recorded.
+    pub fn seed_label(&self, name: &str) {
+        let mut s = self.state.borrow_mut();
+        if !s.labels.iter().any(|l| l == name) {
+            s.labels.push(name.to_string());
+        }
+    }
+
+    /// The angle labels of a configuration, as its bridge's first tick
+    /// leaves them (spec 04 §3): a test of a later tick starts with them.
+    pub fn seed_angle_labels(&self, config: &crate::config::Config) {
+        for a in &config.review.angles {
+            self.seed_label(&crate::method::vocabulary::angle_label(&a.key));
+        }
+    }
+
     /// Put an item in the tracker as if a person had created it.
     pub fn seed(&self, key: &str, title: &str, description: &str, status: Status, labels: &[&str]) {
         let item = Item {

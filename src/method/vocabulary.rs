@@ -153,8 +153,13 @@ impl Verdict {
 
 /// Label on finding tickets.
 pub const QA_FINDING_LABEL: &str = "qa-finding";
-/// Label a PR author adds to ask for a review whatever the paths say.
-pub const NEEDS_REVIEW_LABEL: &str = "needs-review";
+/// The prefix of the ticket labels that ask for a PR review angle by hand
+/// (spec 04 §3): `angle/<key>`.
+pub const ANGLE_LABEL_PREFIX: &str = "angle/";
+/// The label that asks for the review angle `key` on a ticket's PRs.
+pub fn angle_label(key: &str) -> String {
+    format!("{ANGLE_LABEL_PREFIX}{key}")
+}
 /// The tickets the bridge opens for PRs of `review.ticketless_authors`.
 pub const TICKETLESS_LABEL: &str = "ticketless-pr";
 /// The label on a ticket waiting in Post Deploy for its validation, per
