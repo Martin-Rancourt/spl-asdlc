@@ -15,6 +15,8 @@ mod own;
 #[cfg(unix)]
 mod pr_checks;
 #[cfg(unix)]
+mod pr_edit;
+#[cfg(unix)]
 mod pr_guards;
 #[cfg(unix)]
 mod pr_title;

@@ -16,8 +16,9 @@ name: asdlc-pr-checks
 # refused. No `if:` on either: a refused title always turns the job red.
 #
 # The caller owns the trigger (pull_request on main and release/**, no path
-# filter, `edited` included so that a new title is checked again), the
-# concurrency group keyed on the ref and the draft state, its test jobs gated
+# filter, no `edited`: an edit is checked by asdlc-pr-edit.yml, whose caller
+# reports the same title context for the title the PR has after the edit),
+# the concurrency group keyed on the ref and the draft state, its test jobs gated
 # on this job's `code` output, and the `required-check` aggregator
 # (actions/required-check), of which this job is a need: a refused title
 # fails `required-check`. The job is named `conventional-title`, the title
@@ -567,7 +568,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$OUTCOME" != success ]; then
-            echo "::error title=PR title is not a Conventional Commit::the first step refused the title (outcome: ${OUTCOME:-none}); its log says why. Edit the PR title: the checks re-run on the edit."
+            echo "::error title=PR title is not a Conventional Commit::the first step refused the title (outcome: ${OUTCOME:-none}); its log says why. Edit the PR title, then push a commit or close and reopen the PR: this job checks the title its run started with."
             exit 1
           fi
           echo "The title check passed."

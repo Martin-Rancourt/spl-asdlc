@@ -266,6 +266,20 @@ fn the_title_check_has_no_if_anywhere() {
     for (_, s) in steps(&doc) {
         assert!(s["if"].is_badvalue(), "a step has an if: (REQ-CI-018)");
     }
+    // In asdlc-pr-edit.yml, no step has one, and the job's only condition is
+    // the draft's: leaving a draft fires `ready_for_review`, which runs it.
+    let doc = crate::harness::workflow(".github/workflows/asdlc-pr-edit.yml");
+    for (id, job) in doc["jobs"].as_hash().unwrap() {
+        assert_eq!(
+            job["if"].as_str(),
+            Some("github.event.pull_request.draft != true"),
+            "job {:?} (REQ-CI-018)",
+            id.as_str()
+        );
+    }
+    for (_, s) in steps(&doc) {
+        assert!(s["if"].is_badvalue(), "a step has an if: (REQ-CI-018)");
+    }
     // In asdlc-pr-checks.yml, neither the title check nor its verdict has
     // one; the job's only condition is the draft's, which the guards had.
     let doc = crate::harness::workflow(".github/workflows/asdlc-pr-checks.yml");

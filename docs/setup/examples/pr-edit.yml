@@ -1,0 +1,50 @@
+name: pr-edit
+
+# Example caller of asdlc-pr-edit.yml, beside pr.yml: copy it to
+# .github/workflows/ with pr.yml and replace <owner>. It checks a PR on the
+# events that keep its head: an edit (`edited`), a reopen, a PR marked ready.
+# Its one job is named `title`, so it reports `title / conventional-title`,
+# the context the rulesets require, for the title the PR has now; and it
+# holds the PR while its base changed after the newest run of pr.yml on the
+# head, until a push or a reopen runs pr.yml on the new base.
+#
+# pr.yml has no `edited` trigger: GitHub reads a required context in the
+# newest check suite of each workflow on the head, and a run of pr.yml on an
+# edit of the body, whose jobs would be skipped, would hide its last full
+# run and block the PR. This workflow's run on such an edit checks the title
+# again, in one short job. Where two workflows report the same context, the
+# newest suite of each counts and a red in either blocks: a title refused by
+# pr.yml's run stays red there until pr.yml runs again (a push, a reopen),
+# even once an edit fixed it here.
+#
+# No path filter: a required check that never reports can never be satisfied
+# (REQ-CI-022). The job does not run on a draft, as no job of pr.yml does:
+# marking the PR ready fires `ready_for_review`, which runs both workflows.
+# `pr-workflow` names pr.yml, whose runs the base is checked against: pass
+# it if the PR workflow has another file name.
+
+on:
+  pull_request:
+    types: [edited, reopened, ready_for_review]
+    branches: [main, 'release/**']
+
+concurrency:
+  group: pr-edit-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  title:
+    name: title
+    if: github.event.pull_request.draft == false
+    permissions:
+      actions: read
+      pull-requests: read
+    uses: <owner>/spl-asdlc/.github/workflows/asdlc-pr-edit.yml@v1
+    with:
+      title: ${{ github.event.pull_request.title }}
+      head-ref: ${{ github.event.pull_request.head.ref }}
+      base-ref: ${{ github.event.pull_request.base.ref }}
+      head-sha: ${{ github.event.pull_request.head.sha }}

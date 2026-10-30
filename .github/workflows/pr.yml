@@ -18,12 +18,11 @@ name: pr
 # PR ready fires `ready_for_review`, whose run reports the check on the same
 # head. A job added here gets the same condition.
 #
-# `edited` is a trigger so that a new title, or a new base, is checked again
-# without a push, in a full run. An edit of anything else runs nothing: every
-# job that does not need `guards` is skipped by its `if:`, the others with
-# `guards`; the run has a concurrency group of its own, so it cancels no run
-# in progress, and its `required-check` is reported under another name, so
-# its skip never replaces the check the last full run reported on the head.
+# No `edited` trigger: GitHub reads a required context in the newest check
+# suite of each workflow on the head, so a run on an edit of the body, whose
+# jobs would be skipped, would hide the last full run and block the PR
+# (ASDLC-76ZK). An edit is checked by pr-edit.yml: the new title, and a new
+# base, which holds the PR until a push or a reopen runs this workflow on it.
 #
 # GitHub Flow: every change reaches main through a PR to main, so the PR is
 # the only trigger. No run on a push to main: the PR already ran on its merge
@@ -45,11 +44,11 @@ name: pr
 
 on:
   pull_request:
-    types: [opened, edited, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review]
     branches: [main]
 
 concurrency:
-  group: pr-${{ github.ref }}-${{ github.event.pull_request.draft }}${{ github.event.action == 'edited' && !github.event.changes.title && !github.event.changes.base && format('-edit-{0}', github.run_id) || '' }}
+  group: pr-${{ github.ref }}-${{ github.event.pull_request.draft }}
   cancel-in-progress: true
 
 permissions:
@@ -58,7 +57,7 @@ permissions:
 jobs:
   guards:
     name: title
-    if: github.event.pull_request.draft == false && (github.event.action != 'edited' || github.event.changes.title || github.event.changes.base)
+    if: github.event.pull_request.draft == false
     permissions:
       contents: read
     uses: ./.github/workflows/asdlc-pr-checks.yml
@@ -88,7 +87,7 @@ jobs:
   # reads every tracked file and costs seconds.
   rule-zero:
     name: BR-ASDLC-001 — no instance data
-    if: github.event.pull_request.draft == false && (github.event.action != 'edited' || github.event.changes.title || github.event.changes.base)
+    if: github.event.pull_request.draft == false
     runs-on: ${{ fromJSON(github.event.pull_request.head.repo.full_name == github.repository && vars.SPL_ASDLC_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 10
     permissions:
@@ -173,11 +172,10 @@ jobs:
       - run: cargo test --locked
 
   # The action is this commit's, so it is checked out first. always(): it
-  # runs whatever its needs gave, but never on a draft, nor on an edit that
-  # changes neither the title nor the base.
+  # runs whatever its needs gave, but never on a draft.
   required-check:
-    name: ${{ (github.event.action != 'edited' || github.event.changes.title || github.event.changes.base) && 'required-check' || 'required-check (edit, not checked)' }}
-    if: always() && github.event.pull_request.draft == false && (github.event.action != 'edited' || github.event.changes.title || github.event.changes.base)
+    name: required-check
+    if: always() && github.event.pull_request.draft == false
     needs: [guards, rule-zero, fmt, clippy, test]
     runs-on: ${{ fromJSON(github.event.pull_request.head.repo.full_name == github.repository && vars.SPL_ASDLC_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 5
