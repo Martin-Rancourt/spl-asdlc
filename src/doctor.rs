@@ -118,6 +118,7 @@ fn checks(
             instance.map_or("none", |i| i.label.as_str()),
         ),
         pr_review(config),
+        webhook_queue(config),
     ];
     for key in &config.review.retired {
         out.push(check(
@@ -1404,6 +1405,10 @@ fn fix_of(name: &str, config: &Config) -> Fix {
             "Give the bridge's host the App's id and private key (SPL_ASDLC_APP_ID, SPL_ASDLC_APP_PRIVATE_KEY), or the token of the fallback identity.",
             APP,
         ),
+        "webhook queue" => (
+            "Check queue_url, the queue_token environment variable, the repository allowlist and the deployed relay.",
+            "docs/setup/webhook-relay.md",
+        ),
         "pause" => (
             "Set the repository variable SPL_ASDLC_PAUSED to `true` or unset it, and give the App Variables: read.",
             "docs/setup/manual-gestures.md",
@@ -1501,6 +1506,24 @@ fn fix_of(name: &str, config: &Config) -> Fix {
     }
 }
 
+fn webhook_queue(config: &Config) -> Check {
+    if config.bridge.queue_url.is_none() {
+        return check(
+            "webhook queue",
+            Verdict::Ok,
+            "disabled; periodic polling only",
+        );
+    }
+    match crate::relay::health(
+        &config.bridge,
+        &config.product.repository,
+        &crate::host::process_env,
+    ) {
+        Ok(()) => check("webhook queue", Verdict::Ok, "authenticated; reachable"),
+        Err(e) => check("webhook queue", Verdict::Missing, e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1511,6 +1534,18 @@ mod tests {
 
     fn config() -> Config {
         crate::config::spec_example::config()
+    }
+
+    #[test]
+    fn optional_queue_reports_disabled_and_links_its_own_setup_page() {
+        let c = config();
+        let result = webhook_queue(&c);
+        assert_eq!(result.verdict, Verdict::Ok);
+        assert!(result.detail.contains("disabled"));
+        assert_eq!(
+            fix_of("webhook queue", &c).page,
+            "docs/setup/webhook-relay.md"
+        );
     }
 
     #[test]

@@ -1,0 +1,14 @@
+name = "spl-asdlc-relay"
+main = "worker.mjs"
+compatibility_date = "2025-10-01"
+
+[vars]
+REPOSITORIES = "example-org/acme"
+
+[[durable_objects.bindings]]
+name = "QUEUE"
+class_name = "WakeQueue"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["WakeQueue"]

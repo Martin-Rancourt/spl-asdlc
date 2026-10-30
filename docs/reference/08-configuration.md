@@ -269,7 +269,7 @@ The section is required: every project has the release cycle (rule 11). One of i
 
 | Key | Default | Meaning | Fail-closed |
 |---|---|---|---|
-| `bridge.poll_minutes` | `5` | A hint for the host: the interval between ticks is the host's choice (Livela runs the bridge on its own; with another tracker, a timer on the host does, `docs/setup/bridge.md`), and the bridge itself never reads it. | Not a positive integer: file invalid. |
+| `bridge.poll_minutes` | `5` | A hint for the host: the interval between ticks is the host's choice (Livela runs the bridge on its own; with another tracker, a timer on the host does, `docs/setup/bridge.md`), `watch` uses this interval; single-pass ticks do not schedule themselves. | Not a positive integer: file invalid. |
 | `bridge.github_identity` | `"app"` | Write as the GitHub App, or as a personal token where an App is not allowed. | Credentials missing on the host: the bridge refuses to start and names them. |
 | `bridge.sweep_hours` | `24` | Window of the sweep of PRs merged outside the bridge. | Not a positive integer: file invalid. |
 
@@ -281,3 +281,9 @@ The section is required: every project has the release cycle (rule 11). One of i
 | `notify.target` | required | Reference to the destination (chat id, address, webhook). | Not a reference: file invalid; unset on the host: the notice is not sent, logged as an error, retried. |
 | `notify.token` | required for `telegram` | Reference to the channel's credential. | As `target`. |
 | `notify.events` | required | Any of `release-note`, `escalation`, `stagnation`, `stuck-pr`, `blind-pass`. An event no channel takes has nothing to send: its comment is the notice, never a failure (spec 07, "What it sends"). | Unknown event: file invalid. |
+
+Optional bridge keys (normally in the instance overlay): `queue_url`, the relay's
+HTTPS origin without path, credentials, query or fragment, and `queue_token`, an
+`env:<VARIABLE>` secret reference. Both must be present together. They are absent
+by default. Only an opted-in continuous host consumes them; see
+`docs/setup/webhook-relay.md`.

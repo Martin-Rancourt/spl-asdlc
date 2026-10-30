@@ -71,3 +71,26 @@ Notices are in English, as everything the bridge writes, with no message catalog
 | `ticket check <item>` | Contract judgement |
 | `config check` | Validate `.spl-asdlc/config.toml` (the default of every `--file`), merged with its instance overlay (spec 08) |
 | `doctor` | Verify the setup of a repository (App, secrets, rulesets, tracker identity, config and its instance overlay); `business-rules`, each rule file whose format is wrong, and `business-rule tests`, invalid when a test an `Enforced` rule cites is not in the repository (`02-business-rules.md`, "The rule file"); `method checks`, missing when no workflow job calls `asdlc-pr-checks.yml`, nor both `asdlc-pr-guards.yml` and `asdlc-pr-title.yml` (BR-ASDLC-024); `release cycle` (its QA angles, or none), each workflow job that calls `asdlc-release-publish.yml` or `asdlc-release-cut.yml` (`caller <file> job <job>`, invalid when it passes a `gate-workflow` other than `release.gate_workflow`), `release base`: the published release the next candidate is measured from, or none yet, the first release being measured from the repository's root; `branches and PRs`, invalid when a branch under the release prefix is no release branch of the method or has every commit in the default branch, or an open PR's title is one the title check refuses: what would block the method once the rulesets are on (BR-ASDLC-039); `method version`, `method texts` and `angle <key>`: the version of spl-asdlc the workflow callers pin, whether its texts can be read, and each configured angle against it (`08-configuration.md`, "Angles"); for a host that embeds the crate, `embedded version`: whether the callers name the minor line `vX.Y` of the embedded version. Each check not `ok` names the gesture that fixes it and its page of `docs/setup/`; `--json` prints the checks as a JSON array (`name`, `state`, `detail`, `fix`) |
+
+## Optional relay and continuous host
+
+`spl-asdlc watch --file <config>` hosts one repository: a startup tick, periodic
+polling at `bridge.poll_minutes`, and an optional outgoing long poll. Existing
+single-pass ticks and embedded hosts keep their current behavior.
+
+The reference relay runs on Cloudflare Workers, with one SQLite-backed Durable
+Object per allowlisted repository. It verifies GitHub's raw-body HMAC-SHA256
+signature, discards the payload and coalesces pending deliveries into a durable
+`repository` + `kind` hint. The bridge authenticates with an independent bearer
+token over HTTPS and pulls `/events?repository=<owner/repo>&wait=25`; the response
+is a JSON array (zero or one hint), consumed on read. A pending request returns
+immediately on enqueue, otherwise after at most 25 seconds. `/health` checks
+storage without consuming hints. Setup: `docs/setup/webhook-relay.md`.
+
+Only a hint matching the configured repository wakes a full tick; no event data
+is passed into a tick. Periodic deadlines are independent of wakes, so dropped,
+forged, duplicate or consumed-before-crash hints affect latency only. Errors back
+off and do not stop polling. Each request has a bounded timeout, redirects are
+refused, secrets are environment references and errors never print response
+bodies or credentials. A host that embeds the crate opts in by integrating the
+same `relay::pull` and `relay::Schedule`; its existing scheduler is unchanged.

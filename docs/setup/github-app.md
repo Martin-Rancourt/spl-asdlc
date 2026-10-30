@@ -3,7 +3,7 @@
 One App per organisation or account, named after the product's service identity (the reference installation names it `spl-asdlc`). Both the CI workflows and the bridge mint tokens from it; it is the only identity that may bypass the rulesets.
 
 **Create** (Settings → Developer settings → GitHub Apps → New):
-- Name: the service identity. Homepage: the product's repository. Webhook: off (the bridge polls).
+- Name: the service identity. Homepage: the product's repository. Webhook: off by default (the bridge polls); optionally enable the [webhook relay](webhook-relay.md).
 - Repository permissions: Contents **read and write** (branches, tags, merges, files), Pull requests **read and write** (reviews, comments, labels, merges, and the dismissal of an App's request for changes the coordinator's approval supersedes), Checks **read**, Commit statuses **read**, Actions **read and write** (dispatch the cut, read runs and artifacts), Administration **read** (the required status checks of classic branch protection: without it the bridge cannot tell which checks are required and merges nothing), Variables **read** (the pause switch `SPL_ASDLC_PAUSED`, `docs/reference/07-the-bridge.md`: without it the switch cannot be read, and the bridge acts as not paused and says so at each tick), Metadata **read**, Workflows **read and write** only if the App must push workflow files (the bootstrap does; a running installation does not).
 - Where can it be installed: only this account.
 - If a branch protection restricts who may dismiss pull request reviews, list the App there: otherwise an App's superseded request for changes cannot be dismissed and the PR waits (`docs/reference/04-pr-review.md` §6).
