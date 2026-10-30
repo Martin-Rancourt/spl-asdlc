@@ -1,0 +1,15 @@
+name: exp-edit
+# Throwaway experiment (ASDLC-76ZK): an edit workflow that reports the
+# context `title / conventional-title` beside pr.yml's.
+on:
+  pull_request:
+    types: [edited]
+    branches: [main]
+permissions: {}
+jobs:
+  title:
+    name: title
+    permissions: {}
+    uses: ./.github/workflows/exp-red.yml
+    with:
+      body: ${{ github.event.pull_request.body }}

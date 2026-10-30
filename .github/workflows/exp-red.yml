@@ -1,0 +1,21 @@
+name: exp-red
+# Throwaway experiment (ASDLC-76ZK): fails when the body holds the marker.
+on:
+  workflow_call:
+    inputs:
+      body:
+        type: string
+        required: true
+permissions: {}
+jobs:
+  conventional-title:
+    name: conventional-title
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - env:
+          BODY: ${{ inputs.body }}
+        run: |
+          if [[ "$BODY" == *EXP-RED* ]]; then echo "marker found"; exit 1; fi
+          echo "no marker"
