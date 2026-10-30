@@ -74,8 +74,12 @@ pub fn method_repository() -> String {
 
 const PROCESS: &str = include_str!("../docs/agents/process.md");
 const AGENTS: &str = include_str!("../docs/setup/templates/AGENTS.md");
-const EXAMPLES: [(&str, &str); 5] = [
+const EXAMPLES: [(&str, &str); 6] = [
     ("pr.yml", include_str!("../docs/setup/examples/pr.yml")),
+    (
+        "pr-edit.yml",
+        include_str!("../docs/setup/examples/pr-edit.yml"),
+    ),
     (
         "release-cut.yml",
         include_str!("../docs/setup/examples/release-cut.yml"),

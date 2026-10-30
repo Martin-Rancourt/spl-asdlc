@@ -428,7 +428,7 @@ fn generated() -> Vec<PathBuf> {
         std::fs::write(&path, text).unwrap();
         out.push(path);
     }
-    assert_eq!(out.len(), 5);
+    assert_eq!(out.len(), 6);
     out
 }
 
@@ -455,36 +455,33 @@ fn the_generated_setup_callers_pass_the_checks_of_an_example() {
 /// The condition of a job that never runs on a draft PR.
 pub(crate) const NOT_A_DRAFT: &str = "github.event.pull_request.draft == false";
 
-/// The condition of a run that checks the PR: any event but an edit that
-/// changes neither the title nor the base.
-pub(crate) const CHECKED: &str =
-    "(github.event.action != 'edited' || github.event.changes.title || github.event.changes.base)";
+/// The events of the PR workflow: never `edited`. GitHub reads a required
+/// context in the newest check suite of each workflow on the head, so a run
+/// on an edit of the body, whose jobs would be skipped, would hide the last
+/// full run and block the PR (ASDLC-76ZK): the edit workflow checks an edit.
+pub(crate) const PR_EVENTS: [&str; 4] = ["opened", "synchronize", "reopened", "ready_for_review"];
 
-/// `required-check`'s name: its own on a run that checks, another one on an
-/// edit that checks nothing, so that the skipped job of such a run never
-/// replaces the check the last full run reported on the head. GitHub does
-/// not evaluate the name of a skipped job: its check carries this text,
-/// which is not `required-check` either.
-pub(crate) const AGGREGATOR_NAME: &str = "${{ (github.event.action != 'edited' || github.event.changes.title || github.event.changes.base) && 'required-check' || 'required-check (edit, not checked)' }}";
+/// The events of the edit workflow: those that keep the head. An edit is
+/// checked there; a reopen and a PR marked ready refresh its verdict on the
+/// head, where the PR workflow ran again.
+pub(crate) const EDIT_EVENTS: [&str; 3] = ["edited", "reopened", "ready_for_review"];
 
-/// The end of the concurrency group: an edit that checks nothing has a group
-/// of its own, so it cancels no run in progress.
-pub(crate) const EDIT_GROUP: &str = "${{ github.event.action == 'edited' && !github.event.changes.title && !github.event.changes.base && format('-edit-{0}', github.run_id) || '' }}";
-
-/// One job of a PR workflow runs every method check (asdlc-pr-checks.yml):
-/// its id is `guards`, its name `title`, so that it reports the title
-/// context the rulesets require, `title / conventional-title`, and it
-/// re-runs on an edit of the title or the base. An edit of anything else
-/// starts no runner: every job is skipped by its `if:`, or by `guards`, its
-/// need; the run cancels nothing, and its `required-check` has another name.
-pub(crate) fn check_the_method_checks_and_an_edit(doc: &Yaml, uses: &str, what: &str) {
-    let types: Vec<&str> = doc["on"]["pull_request"]["types"]
+fn types(doc: &Yaml) -> Vec<&str> {
+    doc["on"]["pull_request"]["types"]
         .as_vec()
         .unwrap()
         .iter()
         .filter_map(Yaml::as_str)
-        .collect();
-    assert!(types.contains(&"edited"), "{what}: a new title is checked");
+        .collect()
+}
+
+/// One job of a PR workflow runs every method check (asdlc-pr-checks.yml):
+/// its id is `guards`, its name `title`, so that it reports the title
+/// context the rulesets require, `title / conventional-title`. The workflow
+/// never runs on an edit, and its concurrency group is the ref's and the
+/// draft state's, nothing else: no run of its own for an edit.
+pub(crate) fn check_the_method_checks(doc: &Yaml, uses: &str, what: &str) {
+    assert_eq!(types(doc), PR_EVENTS, "{what}: no run on an edit");
     let guards = &doc["jobs"]["guards"];
     assert_eq!(guards["uses"].as_str(), Some(uses), "{what}");
     assert_eq!(guards["name"].as_str(), Some("title"), "{what}");
@@ -493,45 +490,100 @@ pub(crate) fn check_the_method_checks_and_an_edit(doc: &Yaml, uses: &str, what: 
         Some("${{ github.event.pull_request.title }}"),
         "{what}"
     );
+    assert_eq!(guards["if"].as_str(), Some(NOT_A_DRAFT), "{what}");
     for (id, job) in jobs(doc) {
-        if id == "guards" {
-            assert_eq!(
-                job["if"].as_str(),
-                Some(format!("{NOT_A_DRAFT} && {CHECKED}").as_str()),
-                "{what}: {id}"
-            );
-            continue;
-        }
-        let needs_guards = job["needs"].as_str() == Some("guards")
-            || job["needs"]
-                .as_vec()
-                .is_some_and(|n| n.iter().any(|n| n.as_str() == Some("guards")));
         let cond = job["if"].as_str().unwrap_or_default();
         assert!(
-            cond.contains(CHECKED) || (needs_guards && !cond.contains("always()")),
-            "{what}: job {id} runs on an edit that changes neither the title nor the base: if: {cond:?}"
+            !cond.contains("github.event.action") && !cond.contains("github.event.changes"),
+            "{what}: job {id} reads the event's action: if: {cond:?}"
         );
     }
-    assert_eq!(
-        doc["jobs"]["required-check"]["name"].as_str(),
-        Some(AGGREGATOR_NAME),
-        "{what}"
+    let aggregator = &doc["jobs"]["required-check"];
+    assert!(
+        aggregator["name"].is_badvalue() || aggregator["name"].as_str() == Some("required-check"),
+        "{what}: required-check is reported under its own name"
     );
-    let group = doc["concurrency"]["group"].as_str().unwrap();
-    assert!(group.ends_with(EDIT_GROUP), "{what}: {group}");
+    assert_eq!(
+        doc["concurrency"]["group"].as_str(),
+        Some("pr-${{ github.ref }}-${{ github.event.pull_request.draft }}"),
+        "{what}: REQ-CI-023"
+    );
     assert_eq!(
         doc["concurrency"]["cancel-in-progress"].as_bool(),
         Some(true)
     );
 }
 
+/// The edit workflow beside it: one job, `title`, calling asdlc-pr-edit.yml
+/// with the title the PR has now, on the bases of the PR workflow, on the
+/// events that keep the head, never on a draft and on no other condition.
+/// It reports no `required-check`: that one is the PR workflow's alone.
+pub(crate) fn check_the_edit_workflow(edit: &Yaml, pr: &Yaml, uses: &str, what: &str) {
+    assert_eq!(
+        keys(&edit["on"]),
+        BTreeSet::from(["pull_request".to_string()]),
+        "{what}"
+    );
+    let trigger = &edit["on"]["pull_request"];
+    assert!(
+        trigger["paths"].is_badvalue() && trigger["paths-ignore"].is_badvalue(),
+        "{what}: REQ-CI-022"
+    );
+    assert_eq!(
+        trigger["branches"], pr["on"]["pull_request"]["branches"],
+        "{what}"
+    );
+    assert_eq!(types(edit), EDIT_EVENTS, "{what}");
+    assert_eq!(
+        keys(&edit["jobs"]),
+        BTreeSet::from(["title".to_string()]),
+        "{what}"
+    );
+    let job = &edit["jobs"]["title"];
+    assert_eq!(job["name"].as_str(), Some("title"), "{what}");
+    assert_eq!(job["uses"].as_str(), Some(uses), "{what}");
+    assert_eq!(job["if"].as_str(), Some(NOT_A_DRAFT), "{what}");
+    for (input, value) in [
+        ("title", "${{ github.event.pull_request.title }}"),
+        ("head-ref", "${{ github.event.pull_request.head.ref }}"),
+        ("base-ref", "${{ github.event.pull_request.base.ref }}"),
+        ("head-sha", "${{ github.event.pull_request.head.sha }}"),
+    ] {
+        assert_eq!(job["with"][input].as_str(), Some(value), "{what}: {input}");
+    }
+    // Its title check takes the PR workflow's types.
+    assert_eq!(
+        job["with"]["allowed-types"], pr["jobs"]["guards"]["with"]["allowed-types"],
+        "{what}"
+    );
+    assert!(
+        job["with"]["pr-workflow"].is_badvalue(),
+        "{what}: pr.yml, the default"
+    );
+    assert_eq!(
+        edit["concurrency"]["group"].as_str(),
+        Some("pr-edit-${{ github.ref }}"),
+        "{what}"
+    );
+    assert_eq!(
+        edit["concurrency"]["cancel-in-progress"].as_bool(),
+        Some(true)
+    );
+}
+
 #[test]
-fn one_job_runs_the_method_checks_and_a_mere_edit_runs_nothing() {
+fn one_job_runs_the_method_checks_and_an_edit_runs_the_edit_workflow() {
     let pr = example("pr.yml");
-    check_the_method_checks_and_an_edit(
+    check_the_method_checks(
         &pr,
         "<owner>/spl-asdlc/.github/workflows/asdlc-pr-checks.yml@v1",
         "the example pr.yml",
+    );
+    check_the_edit_workflow(
+        &example("pr-edit.yml"),
+        &pr,
+        "<owner>/spl-asdlc/.github/workflows/asdlc-pr-edit.yml@v1",
+        "the example pr-edit.yml",
     );
     // No example calls the two workflows it replaced, nor has a title
     // workflow of its own.
@@ -553,22 +605,14 @@ pub(crate) fn check_no_job_runs_on_a_draft(doc: &Yaml, what: &str) {
     for (id, job) in jobs(doc) {
         let cond = job["if"].as_str().unwrap_or_default();
         if id == "required-check" {
-            assert_eq!(
-                cond,
-                format!("always() && {NOT_A_DRAFT} && {CHECKED}"),
-                "{what}: {id}"
-            );
+            assert_eq!(cond, format!("always() && {NOT_A_DRAFT}"), "{what}: {id}");
             continue;
         }
         assert!(
             cond == NOT_A_DRAFT || cond.starts_with(&format!("{NOT_A_DRAFT} && ")),
             "{what}: job {id} runs on a draft: if: {cond:?}"
         );
-        // The one `||` allowed is the edit condition's, in its parentheses.
-        assert!(
-            !cond.replace(CHECKED, "").contains("||"),
-            "{what}: job {id}: if: {cond:?}"
-        );
+        assert!(!cond.contains("||"), "{what}: job {id}: if: {cond:?}");
     }
 }
 
@@ -605,7 +649,6 @@ fn the_pr_workflow_is_unfiltered_and_aggregates_every_job() {
     check_no_job_runs_on_a_draft(&pr, "the example pr.yml");
 
     let aggregator = &pr["jobs"]["required-check"];
-    assert_eq!(aggregator["name"].as_str(), Some(AGGREGATOR_NAME));
     assert_eq!(aggregator["runs-on"].as_str(), Some("ubuntu-latest"));
     let needs: BTreeSet<String> = aggregator["needs"]
         .as_vec()

@@ -1,0 +1,284 @@
+name: asdlc-pr-edit
+
+# The method's check of an edited pull request (REQ-CI-018): the
+# Conventional Commit title it has now, and the base its checks ran against.
+# Called from a job named `title` of the project's edit workflow
+# (docs/setup/examples/pr-edit.yml), it reports the context the rulesets
+# require, `title / conventional-title`, beside the one the PR workflow's
+# job of asdlc-pr-checks.yml reports.
+#
+# Why a workflow of its own: GitHub reads a required context in the newest
+# check suite of each workflow on the head, and only there. A run of the PR
+# workflow on `edited` whose jobs are skipped is that newest suite, and it
+# hides the green suite of the last full run: `required-check` and the title
+# show "Expected" and the PR is blocked. So the PR workflow never runs on an
+# edit, and this one does. Where two workflows report the same context, the
+# newest suite of each counts, and a red in either blocks the merge: this one
+# speaks for the title the PR has now; the PR workflow's, for the title of
+# its run's event.
+#
+# The caller runs it on `edited`, `reopened` and `ready_for_review`, the
+# events that keep the head: its newest verdict is the one of the title the
+# PR has now, and a hold it put on the head is lifted by the full run of the
+# PR workflow that a reopen or a ready PR starts. Its only condition is the
+# draft's: a draft is out of the flow, and leaving the draft fires
+# `ready_for_review`, which runs both workflows again. No step has an `if:`:
+# a skipped check must never turn a red title green.
+#
+# The base: the PR workflow does not run on an edit, so a new base is not
+# checked by an edit. The second step holds the PR while the base changed
+# after the newest run of the PR workflow on the head (the PR's timeline
+# says when the base changed; the runs API, when that run was created), so a
+# PR is never green on a base its checks did not run against. A push or a
+# reopen runs the checks on the new base and lifts the hold.
+
+on:
+  workflow_call:
+    inputs:
+      title:
+        description: The PR title.
+        type: string
+        required: true
+      head-ref:
+        description: The PR's head branch.
+        type: string
+        required: true
+      base-ref:
+        description: The PR's base branch.
+        type: string
+        required: true
+      head-sha:
+        description: The PR's head commit.
+        type: string
+        required: true
+      pr-workflow:
+        description: The file name of the PR workflow, the caller of asdlc-pr-checks.yml, whose runs the base is checked against.
+        type: string
+        default: pr.yml
+      allowed-types:
+        description: Comma list of types; equal to the CHANGELOG sections `release prepare` writes (spec 08 `release.changelog_sections`).
+        type: string
+        default: build,chore,ci,docs,feat,fix,perf,refactor,revert,style,test
+      default-branch:
+        description: The base of a merge-back.
+        type: string
+        default: main
+      release-branch-prefix:
+        description: Head prefix of release branches.
+        type: string
+        default: release/
+      release-please-head-prefix:
+        description: Head prefix of the release PRs of a project that runs a release tool of its own (release-please's by default); empty for none.
+        type: string
+        default: release-please--
+      default-branch-exempt-heads:
+        description: >-
+          Comma list of head prefixes exempt when the base is the default branch
+          (a PR merged as a merge commit, whose title never becomes a commit).
+        type: string
+        default: chore/merge-back-
+      release-branch-exempt-heads:
+        description: >-
+          Comma list of head prefixes exempt when the base is a release branch:
+          the angle PRs, merged as merge commits.
+        type: string
+        default: qa/
+      runs-on:
+        description: A runner label, or a JSON array of labels.
+        type: string
+        default: ubuntu-latest
+    outputs:
+      exempt:
+        description: '`true` when the PR is one the release chain opens itself.'
+        value: ${{ jobs.conventional-title.outputs.exempt }}
+
+permissions: {}
+
+jobs:
+  conventional-title:
+    name: conventional-title
+    if: github.event.pull_request.draft != true
+    runs-on: ${{ startsWith(inputs.runs-on, '[') && fromJSON(inputs.runs-on) || inputs.runs-on }}
+    timeout-minutes: 5
+    # The runs of the PR workflow and the PR's timeline, read for the base.
+    permissions:
+      actions: read
+      pull-requests: read
+    outputs:
+      exempt: ${{ steps.title.outputs.exempt }}
+    steps:
+      - name: Refuse a PR title that is not a Conventional Commit
+        id: title
+        # Author-controlled text reaches the script through the environment,
+        # never as an expression expanded into it (REQ-CI-003).
+        env:
+          TITLE: ${{ inputs.title }}
+          HEAD_REF: ${{ inputs.head-ref }}
+          BASE_REF: ${{ inputs.base-ref }}
+          ALLOWED_TYPES: ${{ inputs.allowed-types }}
+          DEFAULT_BRANCH: ${{ inputs.default-branch }}
+          RELEASE_PREFIX: ${{ inputs.release-branch-prefix }}
+          RELEASE_PLEASE_PREFIX: ${{ inputs.release-please-head-prefix }}
+          DEFAULT_EXEMPT: ${{ inputs.default-branch-exempt-heads }}
+          RELEASE_EXEMPT: ${{ inputs.release-branch-exempt-heads }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${GITHUB_OUTPUT:-/dev/null}"
+
+          exempt() {
+            echo "Exempt: $1"
+            echo 'exempt=true' >> "$out"
+            exit 0
+          }
+          # A head that starts with one of the comma-listed prefixes.
+          starts_with_one_of() {
+            local list="$1" prefix
+            IFS=',' read -r -a prefixes <<< "$list"
+            for prefix in ${prefixes[@]+"${prefixes[@]}"}; do
+              prefix="${prefix#"${prefix%%[![:space:]]*}"}"
+              prefix="${prefix%"${prefix##*[![:space:]]}"}"
+              if [ -n "$prefix" ] && [[ "$HEAD_REF" == "$prefix"* ]]; then
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          # Exemptions are keyed on the branches the release chain owns, never
+          # on the identity that opens the PR (REQ-CI-017).
+          if [ -n "$RELEASE_PLEASE_PREFIX" ] && [[ "$HEAD_REF" == "$RELEASE_PLEASE_PREFIX"* ]]; then
+            exempt "release-please's own release PR (head '$HEAD_REF')."
+          fi
+          if [ "$BASE_REF" = "$DEFAULT_BRANCH" ]; then
+            if [[ "$HEAD_REF" == "$RELEASE_PREFIX"* ]]; then
+              exempt "merge-back of '$HEAD_REF' into $DEFAULT_BRANCH."
+            fi
+            if starts_with_one_of "$DEFAULT_EXEMPT"; then
+              exempt "'$HEAD_REF' into $DEFAULT_BRANCH is merged as a merge commit."
+            fi
+          fi
+          if [[ "$BASE_REF" == "$RELEASE_PREFIX"* ]] && starts_with_one_of "$RELEASE_EXEMPT"; then
+            exempt "'$HEAD_REF' into the release branch is merged as a merge commit."
+          fi
+          echo 'exempt=false' >> "$out"
+
+          # The allowed types: lower-case words, joined into an alternation.
+          types=""
+          IFS=',' read -r -a list <<< "$ALLOWED_TYPES"
+          for t in ${list[@]+"${list[@]}"}; do
+            t="${t//[[:space:]]/}"
+            if [ -z "$t" ]; then
+              continue
+            fi
+            if ! [[ "$t" =~ ^[a-z]+$ ]]; then
+              echo "::error title=Invalid allowed-types::'$t' is not a lower-case type."
+              exit 1
+            fi
+            types="${types:+$types|}$t"
+          done
+          if [ -z "$types" ]; then
+            echo "::error title=Invalid allowed-types::no type is allowed."
+            exit 1
+          fi
+
+          # type, optional (scope) with no space or parenthesis, optional `!`,
+          # then ": " and a subject that neither starts nor ends with a space.
+          pattern="^(${types})(\([^()[:space:]]+\))?!?: [^[:space:]](.*[^[:space:]])?$"
+          if [[ "$TITLE" =~ $pattern ]]; then
+            echo "Conventional Commit title: $TITLE"
+            exit 0
+          fi
+
+          # Refused: say what is wrong in a way the author can act on.
+          shown="${types//|/, }"
+          head="${TITLE%%:*}"
+          lead="${TITLE%%[(:!]*}"
+          lead_lower="$(tr '[:upper:]' '[:lower:]' <<< "$lead")"
+          type_re="^(${types})$"
+          header_re="^(${types})(\([^()[:space:]]+\))?!?$"
+          empty_scope_re="^(${types})\(\)!?$"
+          spaced_scope_re="^(${types})\([^()]*[[:space:]][^()]*\)!?$"
+          hint="Expected 'type(scope): subject' or 'type: subject', e.g. 'fix(merge): subject'."
+          if [[ "$TITLE" =~ ^[A-Za-z]+-[0-9] ]]; then
+            hint="The title starts with a ticket id. Put the type first and the id at the end: 'fix(scope): subject (ABC-123)'."
+          elif [[ "$TITLE" != *:* ]]; then
+            hint="The title has no 'type: ' prefix. Start it with one of ${shown}, e.g. 'fix(scope): subject'."
+          elif [[ "$lead_lower" =~ $type_re && "$lead" != "$lead_lower" ]]; then
+            hint="The type is lower-case: '${lead_lower}', not '${lead}'."
+          elif [[ "$head" =~ $header_re ]]; then
+            hint="After the colon comes exactly one space, then a subject that does not end with a space: 'type(scope): subject'."
+          elif [[ "$head" =~ $empty_scope_re ]]; then
+            hint="The scope is empty: drop the '()' or name the part of the code, e.g. 'fix(merge): subject'."
+          elif [[ "$head" =~ $spaced_scope_re ]]; then
+            hint="The scope holds no space: 'fix(pr-merge): subject', not 'fix(pr merge): subject'."
+          elif ! [[ "$lead_lower" =~ $type_re ]]; then
+            hint="'${lead}' is not an allowed type. Allowed: ${shown}."
+          fi
+          echo "::error title=PR title is not a Conventional Commit::${hint}"
+          echo "Title:  $TITLE"
+          echo "Why:    the squash commit's message is this title; the release cut reads it to pick the version bump and the release-note section, and lists no title it cannot parse."
+          echo "Rule:   type(scope)?!?: subject, with the types ${shown}."
+          echo "Fix:    edit the PR title; this check re-runs on the edit."
+          exit 1
+
+      - name: The base is the one the checks ran against
+        id: base
+        # Author-controlled text reaches the script through the environment,
+        # never as an expression expanded into it (REQ-CI-003).
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ inputs.head-sha }}
+          BASE_REF: ${{ inputs.base-ref }}
+          BASE_FROM: ${{ github.event.changes.base.ref.from }}
+          PR_WORKFLOW: ${{ inputs.pr-workflow }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          hold() {
+            echo "::error title=The base changed::$1"
+            echo "Why:    the checks of $PR_WORKFLOW ran against the base the PR had then; a PR is never green on a base its checks did not run against."
+            echo "Fix:    push a commit (merging '$BASE_REF' into the branch, for instance), or close and reopen the PR: $PR_WORKFLOW then runs on the new base."
+            exit 1
+          }
+          unreadable() {
+            echo "::error title=The base history is unreadable::$1 The PR is held until it can be read: edit the PR again, or close and reopen it."
+            exit 1
+          }
+
+          if ! [[ "$PR_WORKFLOW" =~ ^[A-Za-z0-9._-]+\.ya?ml$ ]]; then
+            echo "::error title=Invalid pr-workflow::'$PR_WORKFLOW' is not the file name of a workflow."
+            exit 1
+          fi
+          # This very edit moved the base.
+          if [ -n "$BASE_FROM" ]; then
+            hold "this edit moved the base from '$BASE_FROM' to '$BASE_REF'; $PR_WORKFLOW has not run on it."
+          fi
+
+          # When the base last changed, by hand or when GitHub retargeted the
+          # PR after its base branch was deleted.
+          query='query($owner: String!, $name: String!, $number: Int!) {
+            repository(owner: $owner, name: $name) { pullRequest(number: $number) {
+              timelineItems(itemTypes: [BASE_REF_CHANGED_EVENT, AUTOMATIC_BASE_CHANGE_SUCCEEDED_EVENT], last: 1) {
+                nodes { ... on BaseRefChangedEvent { createdAt } ... on AutomaticBaseChangeSucceededEvent { createdAt } }
+              } } } }'
+          if ! changed="$(gh api graphql -f query="$query" -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F number="$NUMBER" --jq '.data.repository.pullRequest.timelineItems.nodes[0].createdAt // ""')"; then
+            unreadable "The PR's timeline could not be read."
+          fi
+          if [ -z "$changed" ]; then
+            echo "The base never changed: $BASE_REF."
+            exit 0
+          fi
+
+          # The newest run of the PR workflow on this head.
+          if ! last="$(gh api "repos/$REPO/actions/workflows/$PR_WORKFLOW/runs?head_sha=$HEAD_SHA&event=pull_request&per_page=1" --jq '.workflow_runs[0].created_at // ""')"; then
+            unreadable "The runs of $PR_WORKFLOW could not be read."
+          fi
+          # Both are UTC timestamps of the same form: they compare as text.
+          if [ -z "$last" ] || [[ "$last" < "$changed" ]]; then
+            hold "the base moved to '$BASE_REF' at $changed, after the newest run of $PR_WORKFLOW on this head (${last:-none})."
+          fi
+          echo "The base moved to '$BASE_REF' at $changed; $PR_WORKFLOW ran on this head since, at $last."

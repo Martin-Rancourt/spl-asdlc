@@ -1,0 +1,48 @@
+name: pr-edit
+
+# This repository's check of an edited pull request: the caller of
+# asdlc-pr-edit.yml, as docs/setup/examples/pr-edit.yml shows it, called
+# from this commit (`./`). Its one job, named `title`, reports
+# `title / conventional-title` for the title the PR has now, and holds the
+# PR while its base changed after the newest run of pr.yml on the head.
+#
+# pr.yml has no `edited` trigger: GitHub reads a required context in the
+# newest check suite of each workflow on the head, and a run of pr.yml on an
+# edit of the body, whose jobs would be skipped, would hide its last full
+# run and block the PR (ASDLC-76ZK). This workflow runs on the events that
+# keep the head: an edit, a reopen, a PR marked ready. Where two workflows
+# report the same context, the newest suite of each counts and a red in
+# either blocks: a title refused by pr.yml's run stays red there until
+# pr.yml runs again (a push, a reopen), even once an edit fixed it here.
+#
+# No path filter (REQ-CI-022); no run on a draft, as in pr.yml. The runner
+# is pr.yml's: SPL_ASDLC_RUNS_ON, never for a PR from a fork (ASDLC-3RQQ).
+
+on:
+  pull_request:
+    types: [edited, reopened, ready_for_review]
+    branches: [main]
+
+concurrency:
+  group: pr-edit-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  title:
+    name: title
+    if: github.event.pull_request.draft == false
+    permissions:
+      actions: read
+      pull-requests: read
+    uses: ./.github/workflows/asdlc-pr-edit.yml
+    with:
+      title: ${{ github.event.pull_request.title }}
+      head-ref: ${{ github.event.pull_request.head.ref }}
+      base-ref: ${{ github.event.pull_request.base.ref }}
+      head-sha: ${{ github.event.pull_request.head.sha }}
+      # The types of pr.yml's title check (REQ-CI-016).
+      allowed-types: build,chore,ci,docs,feat,fix,perf,refactor,revert,style,test
+      runs-on: ${{ github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || startsWith(vars.SPL_ASDLC_RUNS_ON, '"') && fromJSON(vars.SPL_ASDLC_RUNS_ON) || vars.SPL_ASDLC_RUNS_ON || 'ubuntu-latest' }}
