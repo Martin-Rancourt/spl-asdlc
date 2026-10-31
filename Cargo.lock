@@ -1107,7 +1107,7 @@ dependencies = [
 
 [[package]]
 name = "spl-asdlc"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "base64 0.23.1",
  "clap",
