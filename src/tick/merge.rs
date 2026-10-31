@@ -543,6 +543,32 @@ fn one(
     let head = texts::short(&pr.head_sha);
     let changes_at_head = review::changes_requested_at_head(&pr, &t.config.review.coordinators);
 
+    // Ready is the implementer's declaration that the entire ticket is done.
+    // Check before CI or review: returning to ready on the same head retries it.
+    let missing = match ready_missing(t, &ticket) {
+        Ok(missing) => missing,
+        Err(e) => {
+            t.unreadable(report, &ticket.key, e);
+            return None;
+        }
+    };
+    if !missing.is_empty() {
+        hand_back(
+            t,
+            log,
+            report,
+            &pr,
+            &ticket,
+            status,
+            open,
+            ReturnReason::Contract(format!(
+                "Complete every ticket box before marking this PR ready (except `## Post deploy`):\n\n{}",
+                missing.join("\n")
+            )),
+        );
+        return None;
+    }
+
     // ---- the PR is opened: In Review at once, before CI (spec 03) ----
     // A PR with a round of its own that is In Progress was sent back (spec
     // 04 §5): its next round, on a new head, brings the ticket back.
@@ -711,31 +737,6 @@ fn one(
                     .collect::<Vec<_>>()
                     .join("\n"),
                 ticket.key
-            ),
-        );
-        return None;
-    }
-    if contract::declares_nothing(&ticket.description) {
-        t.wait(
-            report,
-            &pr,
-            format!("{} checks none of its boxes", ticket.key),
-        );
-        say_once(
-            t,
-            log,
-            report,
-            &pr,
-            "nothing-declared",
-            &[
-                ("ticket", &ticket.key),
-                ("head", texts::short(&pr.head_sha)),
-            ],
-            &format!(
-                "{} checks none of its boxes at this head (`{}`): tick the acceptance criteria this PR \
-                 meets before it is reviewed.",
-                ticket.key,
-                texts::short(&pr.head_sha)
             ),
         );
         return None;
@@ -2276,11 +2277,40 @@ fn refresh_or_return(
     }
 }
 
-#[derive(Clone, Copy)]
+/// Missing own boxes and lines linked to unfinished children. Only actual
+/// markdown links count, so a mention of a child in prose is not work.
+pub(super) fn ready_missing(t: &Tick, ticket: &Item) -> Result<Vec<String>, String> {
+    use crate::method::markdown;
+    let post = markdown::sections(&ticket.description, contract::is_post_deploy_heading);
+    let children = t.tracker.children(&ticket.key).map_err(|e| e.to_string())?;
+    let boxes = markdown::checkboxes(&ticket.description);
+    let mut missing = Vec::new();
+    for (n, line) in markdown::without_fences(&ticket.description)
+        .iter()
+        .enumerate()
+    {
+        if post.iter().any(|s| n >= s.start && n < s.end) {
+            continue;
+        }
+        let unchecked = boxes.iter().any(|b| b.line_no == n && !b.checked);
+        let unfinished_link = children.iter().any(|c| {
+            !c.state.status.is_some_and(Status::is_resolved)
+                && [c.url.as_str(), c.key.as_str(), c.id.as_str()]
+                    .iter()
+                    .any(|target| !target.is_empty() && line.contains(&format!("]({target})")))
+        });
+        if unchecked || unfinished_link {
+            missing.push(line.clone());
+        }
+    }
+    Ok(missing)
+}
+
 enum ReturnReason {
     Conflict,
     Checks,
     RefreshLimit,
+    Contract(String),
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2294,7 +2324,9 @@ fn hand_back(
     open: &OpenPrs,
     reason: ReturnReason,
 ) {
-    let why = if matches!(reason, ReturnReason::Conflict) {
+    let why = if let ReturnReason::Contract(missing) = &reason {
+        missing.clone()
+    } else if matches!(reason, ReturnReason::Conflict) {
         let files = match t.github.conflict_files(&t.repo, pr) {
             Ok(f) if !f.is_empty() => f,
             Ok(_) => {
@@ -2342,7 +2374,8 @@ fn hand_back(
         "PR #{} returns to its implementer as a draft. {why}\n\nRun the local build, lint and unit tests, then mark the PR ready. CI and QA own the integration, UI and database tests.",
         pr.number
     );
-    let fields = [("head", pr.head_sha.as_str())];
+    let digest = texts::digest(&why);
+    let fields = [("head", pr.head_sha.as_str()), ("reason", digest.as_str())];
     let marker = texts::marker("implementation-failed", &fields);
     say_once_on_item(
         t,
@@ -2350,7 +2383,7 @@ fn hand_back(
         report,
         &ticket.key,
         "implementation-failed",
-        &[("pr", &pr.url), ("head", &pr.head_sha)],
+        &[("pr", &pr.url), ("head", &pr.head_sha), ("reason", &digest)],
         &message,
     );
     say_once(
@@ -2365,7 +2398,7 @@ fn hand_back(
     // Do not hide the PR until both explanations are visible at source.
     let item_marker = texts::marker(
         "implementation-failed",
-        &[("pr", &pr.url), ("head", &pr.head_sha)],
+        &[("pr", &pr.url), ("head", &pr.head_sha), ("reason", &digest)],
     );
     if !t.dry_run
         && (!matches!(pr_said(t, pr.number, &marker), Ok(true))
@@ -2373,16 +2406,30 @@ fn hand_back(
     {
         return;
     }
-    send_back(
-        t,
-        log,
-        report,
-        pr,
-        ticket,
-        status,
-        open,
-        "CI or merge conflicts",
-    );
+    if matches!(reason, ReturnReason::Contract(_)) && status != Some(Status::InProgress) {
+        if !set_state(
+            t,
+            log,
+            report,
+            &ticket.key,
+            ticket,
+            Status::InProgress,
+            json!({"pr": pr.url, "reason": "unchecked ticket boxes"}),
+        ) {
+            return;
+        }
+    } else {
+        send_back(
+            t,
+            log,
+            report,
+            pr,
+            ticket,
+            status,
+            open,
+            "implementation incomplete",
+        );
+    }
     if !t.dry_run
         && status == Some(Status::InReview)
         && !open_prs_of(open, &ticket.key, Some(pr.number))
