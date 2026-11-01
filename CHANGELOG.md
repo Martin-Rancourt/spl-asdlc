@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.1](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.9.0...v1.9.1) (2026-11-01)
+
+
+### Documentation
+
+* **process:** implement duplicate contracts (LVL-H23U) ([#145](https://github.com/Martin-Rancourt/spl-asdlc/issues/145)) ([f913a33](https://github.com/Martin-Rancourt/spl-asdlc/commit/f913a33dfb09db41a517fd9611f62613b2701975))
+
 ## [1.9.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.8.0...v1.9.0) (2026-10-31)
 
 
