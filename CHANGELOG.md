@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.9.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.8.0...v1.9.0) (2026-10-31)
+
+
+### Features
+
+* **bridge:** add optional webhook relay and watch host ASDLC-5Q4V ([#142](https://github.com/Martin-Rancourt/spl-asdlc/issues/142)) ([3bfd85a](https://github.com/Martin-Rancourt/spl-asdlc/commit/3bfd85a05bfff6d620662f3c44ad858ccf351ce5))
+* **bridge:** require all ticket boxes at ready (ASDLC-AJNE) ([#144](https://github.com/Martin-Rancourt/spl-asdlc/issues/144)) ([06c6fbc](https://github.com/Martin-Rancourt/spl-asdlc/commit/06c6fbc0d661c5fe193118db26d02636aa31bd45))
+
 ## [1.8.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.7.0...v1.8.0) (2026-10-30)
 
 
