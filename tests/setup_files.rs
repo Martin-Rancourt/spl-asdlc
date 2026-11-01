@@ -209,6 +209,17 @@ const PROCESS: &str = "docs/agents/process.md";
 const AGENTS: &str = "docs/setup/templates/AGENTS.md";
 
 #[test]
+fn implementation_carries_the_complete_contracts_of_duplicates() {
+    let page = read(PROCESS);
+    for requirement in [
+        "every item marked as a duplicate",
+        "description, acceptance criteria and business rules",
+    ] {
+        assert!(page.contains(requirement), "{PROCESS} says {requirement:?}");
+    }
+}
+
+#[test]
 fn the_agent_file_template_points_to_the_process_page_and_lets_it_win() {
     let agents = read(AGENTS);
     assert!(agents.contains("`.spl-asdlc/process.md`"), "{agents}");
