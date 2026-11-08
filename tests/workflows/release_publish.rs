@@ -96,13 +96,23 @@ fn each_job_runs_for_its_own_stage_and_the_guard_on_every_call() {
     );
     // The close job outlasts its poll.
     assert!(jobs["close"]["timeout-minutes"].as_i64().unwrap() >= 40);
+    // The ids are what `needs` and the callers read; the names are what
+    // GitHub shows (`<caller job> / <name>`) and the bridge reads: the merge
+    // back is `merge-back`, `close` up to 1.9.1 (both read, publication.rs).
+    let ids: Vec<&str> = jobs
+        .as_hash()
+        .unwrap()
+        .keys()
+        .map(|k| k.as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec!["verify", "close", "closing-guard"]);
     let names: Vec<&str> = jobs
         .as_hash()
         .unwrap()
         .values()
         .map(|j| j["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, vec!["verify", "close", "closing-guard"]);
+    assert_eq!(names, vec!["verify", "merge-back", "closing-guard"]);
 }
 
 #[test]

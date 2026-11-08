@@ -7,9 +7,12 @@
 //! The run is the project's caller of `asdlc-release-publish.yml`, called
 //! twice: `verify`, the project's own publication and deployment jobs (which
 //! `needs` the verify call), then `close`. GitHub names a job of a called
-//! workflow `<caller job> / <called job>`; the called jobs of
-//! `asdlc-release-publish.yml` are `verify`, `close` and `closing-guard`.
-//! Every other job is the project's. Nothing was deployed when a verify job
+//! workflow `<caller job name> / <called job name>`, the called job's `name:`
+//! when it has one, its id otherwise. The called jobs of
+//! `asdlc-release-publish.yml` are `verify`, the merge back (id `close`, named
+//! `merge-back`; named `close` up to 1.9.1, still read so that a project
+//! pinned on an earlier tag, or whose two calls pin different tags, is
+//! judged the same) and `closing-guard`. Every other job is the project's. Nothing was deployed when a verify job
 //! concluded red and every job of the project, and every merge back, was
 //! skipped; `closing-guard` deploys nothing, whatever it concluded.
 
@@ -27,14 +30,19 @@ pub enum Publication {
     Kept { why: String },
 }
 
-/// The called job of `asdlc-release-publish.yml` a job is, by the last
-/// segment of its name (`<caller job> / <called job>`); `None` for a job of
-/// the project's own.
-fn stage_job(name: &str) -> Option<&str> {
+/// The called job of `asdlc-release-publish.yml` a job is, by its id
+/// (`verify`, `close`, `closing-guard`), read from the last segment of its
+/// name (`<caller job> / <called job>`): the merge back is `close` under
+/// either of its names, `merge-back` or `close`. `None` for a job of the
+/// project's own.
+fn stage_job(name: &str) -> Option<&'static str> {
     let (_, called) = name.rsplit_once(" / ")?;
-    ["verify", "close", "closing-guard"]
-        .into_iter()
-        .find(|j| *j == called)
+    match called {
+        "verify" => Some("verify"),
+        "merge-back" | "close" => Some("close"),
+        "closing-guard" => Some("closing-guard"),
+        _ => None,
+    }
 }
 
 /// Judge a publication run from its jobs (those of its latest attempt).
@@ -136,18 +144,34 @@ mod tests {
         }
     }
 
-    /// The jobs of a run whose verify stage refused: as GitHub lists them.
-    fn refused(publish: &str) -> Vec<Job> {
+    /// The name GitHub gives the merge back: `merge-back` since it is named,
+    /// `close` (its id) on an earlier tag of the workflow.
+    const NEW: &str = "merge-back";
+    const OLD: &str = "close";
+
+    /// The jobs of a run whose verify stage refused: as GitHub lists them,
+    /// with the merge back of the verify call and of the close call named
+    /// as given (each call pins its own tag of the workflow).
+    fn refused_named(publish: &str, in_verify: &str, in_close: &str) -> Vec<Job> {
         vec![
             job("verify / verify", Some("failure")),
-            job("verify / close", Some("skipped")),
+            job(&format!("verify / {in_verify}"), Some("skipped")),
             job("verify / closing-guard", Some("success")),
             job("publish", Some(publish)),
             job("close / verify", Some("skipped")),
-            job("close / close", Some("skipped")),
+            job(&format!("close / {in_close}"), Some("skipped")),
             job("close / closing-guard", Some("failure")),
         ]
     }
+
+    /// The same, from an earlier tag of the workflow.
+    fn refused(publish: &str) -> Vec<Job> {
+        refused_named(publish, OLD, OLD)
+    }
+
+    /// Every way a run can name its two merge backs: both calls on an
+    /// earlier tag, both on this one, or one of each.
+    const SHAPES: [(&str, &str); 4] = [(OLD, OLD), (NEW, NEW), (OLD, NEW), (NEW, OLD)];
 
     #[test]
     fn a_refused_verification_deployed_nothing() {
@@ -201,6 +225,64 @@ mod tests {
             judge(&run("completed", Some("failure")), &jobs),
             Publication::Kept { .. }
         ));
+    }
+
+    #[test]
+    fn a_refused_verification_deployed_nothing_under_either_name_of_the_merge_back() {
+        for (in_verify, in_close) in SHAPES {
+            let p = judge(
+                &run("completed", Some("failure")),
+                &refused_named("skipped", in_verify, in_close),
+            );
+            assert!(
+                matches!(&p, Publication::Undeployed { why } if why.contains("`verify / verify` concluded `failure`")),
+                "{in_verify}/{in_close}: {p:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_merge_back_that_ran_is_kept_as_a_merge_back_under_either_name() {
+        for (in_verify, in_close) in SHAPES {
+            for c in ["success", "failure", "cancelled"] {
+                let mut jobs = refused_named("skipped", in_verify, in_close);
+                jobs[5] = job(&format!("close / {in_close}"), Some(c));
+                let p = judge(&run("completed", Some("failure")), &jobs);
+                assert!(
+                    matches!(&p, Publication::Kept { why }
+                        if why == &format!("its merge back `close / {in_close}` ran (`{c}`)")),
+                    "{in_verify}/{in_close} {c}: {p:?}"
+                );
+            }
+        }
+        // A merge back that ran in the verify call (a caller wired wrong)
+        // is a merge back too, whatever its name.
+        for name in [OLD, NEW] {
+            let mut jobs = refused_named("skipped", name, NEW);
+            jobs[1] = job(&format!("verify / {name}"), Some("success"));
+            let p = judge(&run("completed", Some("failure")), &jobs);
+            assert!(
+                matches!(&p, Publication::Kept { why } if why.contains("its merge back")),
+                "{name}: {p:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_merge_back_is_the_stages_only_under_a_caller_job() {
+        assert_eq!(stage_job("close / merge-back"), Some("close"));
+        assert_eq!(stage_job("close / close"), Some("close"));
+        assert_eq!(stage_job("finish / merge-back"), Some("close"));
+        assert_eq!(stage_job("verify / closing-guard"), Some("closing-guard"));
+        // Bare, or a segment that is neither name: the project's own job.
+        for name in [
+            "merge-back",
+            "close",
+            "close / merge back",
+            "close / merge-backs",
+        ] {
+            assert_eq!(stage_job(name), None, "{name}");
+        }
     }
 
     #[test]

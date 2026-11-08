@@ -5130,25 +5130,37 @@ fn publication_run(id: u64, sha: &str, conclusion: Option<&str>) -> WorkflowRun 
 }
 
 /// The jobs of a publication run, as GitHub names them: the two calls of
-/// `asdlc-release-publish.yml` around the project's `publish` job.
+/// `asdlc-release-publish.yml` around the project's `publish` job, on an
+/// earlier tag of the workflow (its merge back named `close`).
 fn publication_jobs(verify: &str, publish: &str) -> Vec<crate::github::Job> {
+    publication_jobs_named(verify, publish, "close", "close")
+}
+
+/// The same, with the merge back of the verify call and of the close call
+/// named as given: `merge-back` since the job is named, `close` before.
+fn publication_jobs_named(
+    verify: &str,
+    publish: &str,
+    in_verify: &str,
+    in_close: &str,
+) -> Vec<crate::github::Job> {
     let close = if publish == "success" {
         "success"
     } else {
         "skipped"
     };
     [
-        ("verify / verify", verify),
-        ("verify / close", "skipped"),
-        ("verify / closing-guard", "success"),
-        ("publish", publish),
-        ("close / verify", "skipped"),
-        ("close / close", close),
-        ("close / closing-guard", "failure"),
+        ("verify / verify".to_string(), verify),
+        (format!("verify / {in_verify}"), "skipped"),
+        ("verify / closing-guard".to_string(), "success"),
+        ("publish".to_string(), publish),
+        ("close / verify".to_string(), "skipped"),
+        (format!("close / {in_close}"), close),
+        ("close / closing-guard".to_string(), "failure"),
     ]
     .into_iter()
     .map(|(name, c)| crate::github::Job {
-        name: name.into(),
+        name,
         conclusion: Some(c.into()),
     })
     .collect()
@@ -5250,6 +5262,39 @@ fn a_release_whose_verification_refused_is_retracted_once_and_awaits_its_go() {
         "{:?}",
         d.reasons
     );
+}
+
+#[test]
+fn the_merge_back_is_read_under_either_name_and_a_run_may_mix_them() {
+    let shapes = [
+        ("close", "close"),
+        ("merge-back", "merge-back"),
+        ("close", "merge-back"),
+        ("merge-back", "close"),
+    ];
+    for (in_verify, in_close) in shapes {
+        let what = format!("{in_verify}/{in_close}");
+        // A refused verification, every merge back skipped: retracted.
+        let w = World::published_then(
+            publication_run(50, "c1", Some("failure")),
+            Ok(publication_jobs_named(
+                "failure", "skipped", in_verify, in_close,
+            )),
+        );
+        let r = w.tick();
+        assert!(r.ok(), "{what}: {r:?}");
+        assert_eq!(w.retract_writes().len(), 2, "{what}");
+        assert_eq!(w.retraction_comments().len(), 1, "{what}");
+        // A merge back that ran beside a red verification: never retracted.
+        let mut jobs = publication_jobs_named("failure", "skipped", in_verify, in_close);
+        jobs[5].conclusion = Some("failure".into());
+        let w = World::published_then(publication_run(50, "c1", Some("failure")), Ok(jobs));
+        let r = w.tick();
+        assert!(r.ok(), "{what}: {r:?}");
+        assert!(w.retract_writes().is_empty(), "{what}");
+        assert!(w.retraction_comments().is_empty(), "{what}");
+        assert!(w.github.release(&repo(), RELEASE_TAG).is_ok(), "{what}");
+    }
 }
 
 #[test]

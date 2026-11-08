@@ -58,7 +58,11 @@ name: asdlc-release-publish
 #         publish-result: ${{ needs.publish.result }}
 #       secrets: {SPL_ASDLC_APP_ID: ..., SPL_ASDLC_APP_PRIVATE_KEY: ...}
 #
-# Called job names: `verify`, `close`, `closing-guard`.
+# Called job names: `verify`, `merge-back`, `closing-guard`. GitHub names a
+# called job `<caller job> / <its name:>`. The merge back's id stays `close`
+# (every `needs` and the `close` stage are unchanged); it was named `close`
+# up to 1.9.1, and the bridge reads both `<caller job> / close` and
+# `<caller job> / merge-back`.
 # CI writes no tracker, chat or task: a failure is a red run, the outputs and
 # the step summary, which carries the recovery recipe.
 
@@ -575,7 +579,8 @@ jobs:
           printf -- '- GO: `%s` published by `%s` (%s).\n' "$RELEASE_TAG" "$author" "$who" >> "$summary"
 
   close:
-    name: close
+    # The merge back: shown as `<caller job> / merge-back` (see the header).
+    name: merge-back
     # Never skipped after a publication: `closing-guard` turns a skip red.
     if: >-
       inputs.stage == 'close' &&

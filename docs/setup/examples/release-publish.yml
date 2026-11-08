@@ -87,7 +87,8 @@ jobs:
         run: make deploy
 
   # Always called: its `closing-guard` turns a close that did not run after a
-  # publication into a red run.
+  # publication into a red run. Its merge back shows as `close / merge-back`
+  # (`close / close` on a tag up to 1.9.1; the bridge reads both).
   close:
     needs: [verify, publish]
     if: ${{ always() }}
