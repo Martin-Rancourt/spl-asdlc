@@ -139,6 +139,30 @@ pub trait LivelaStore {
     /// [`PrStatus::code`] (the GitHub sync, `crate::sync`).
     fn set_pr_status(&mut self, id: &str, url: &str, code: &str) -> Result<(), String>;
 
+    /// Whether this store creates a `task` ([`Self::create_task`]): until it
+    /// does, an item the bridge asks as a task is created as a ticket
+    /// (ASDLC-TDXM).
+    fn creates_tasks(&self) -> bool {
+        false
+    }
+    /// A new `task` of `project` (its id) in `status` (Ready, In Progress,
+    /// Done or Canceled), as [`Self::create_ticket`] does for a ticket.
+    /// Returns its id.
+    #[allow(clippy::too_many_arguments)]
+    fn create_task(
+        &mut self,
+        _project: &str,
+        title: &str,
+        _description: &str,
+        _tags: &[String],
+        _assignee: Option<&str>,
+        _parent: Option<&str>,
+        _priority: Option<u8>,
+        _status: &str,
+    ) -> Result<String, String> {
+        Err(format!("this Livela creates no task (\"{title}\")"))
+    }
+
     /// Whether this store creates a milestone under a release item
     /// ([`Self::create_milestone`]): until it does, a candidate's QA items
     /// are the release item's own children (BR-ASDLC-038).
@@ -542,7 +566,8 @@ impl<S: LivelaStore> Tracker for Livela<S> {
         Ok(())
     }
 
-    /// In the project, a sub-item too.
+    /// In the project, a sub-item too; a task when the bridge asks one and
+    /// the store creates tasks, a ticket otherwise.
     fn create_item(&self, new: &NewItem) -> TResult<Item> {
         // Every check before the first write: a refused creation leaves nothing.
         let project = self.scope()?;
@@ -552,7 +577,13 @@ impl<S: LivelaStore> Tracker for Livela<S> {
             None => None,
         };
         let id = self.as_bridge(format!("creation of \"{}\"", new.title), |s, _| {
-            s.create_ticket(
+            let create = if new.kind == ItemKind::Task && s.creates_tasks() {
+                S::create_task
+            } else {
+                S::create_ticket
+            };
+            create(
+                s,
                 &project.id,
                 &new.title,
                 &new.description,

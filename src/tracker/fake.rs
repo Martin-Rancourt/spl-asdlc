@@ -20,6 +20,8 @@ struct Stored {
     pr_reviews: BTreeMap<String, PrReviews>,
     /// The priority it was created with.
     priority: Option<Priority>,
+    /// The kind it was created as (a ticket for a seeded item).
+    kind: ItemKind,
 }
 
 #[derive(Default)]
@@ -121,12 +123,18 @@ impl FakeTracker {
                 pr_statuses: BTreeMap::new(),
                 pr_reviews: BTreeMap::new(),
                 priority: None,
+                kind: ItemKind::Ticket,
             },
         );
     }
 
     pub fn item(&self, key: &str) -> Item {
         self.state.borrow().items[key].item.clone()
+    }
+
+    /// The kind the item was created as (a ticket for a seeded item).
+    pub fn kind(&self, key: &str) -> ItemKind {
+        self.state.borrow().items[key].kind
     }
 
     /// The priority the item was created with (`None` for a seeded item).
@@ -388,6 +396,7 @@ impl Tracker for FakeTracker {
             st.item.assignee = new.assignee.clone();
             st.item.parent = new.parent.clone();
             st.priority = new.priority;
+            st.kind = new.kind;
         })?;
         Ok(self.item(&key))
     }
@@ -455,6 +464,12 @@ impl Tracker for FakeTracker {
         assignee: Option<Option<&User>>,
     ) -> TResult<()> {
         let current = self.read(key)?.item;
+        if self.kind(key) == ItemKind::Task && !ItemKind::Task.holds(status) {
+            return Err(TrackerError::refused(
+                key,
+                format!("a task has no status {status}"),
+            ));
+        }
         let assignee =
             assignee.filter(|a| a.map(|u| &u.id) != current.assignee.as_ref().map(|u| &u.id));
         if current.state.status == Some(status) && assignee.is_none() {

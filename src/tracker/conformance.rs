@@ -150,6 +150,7 @@ fn suite(
             priority: Some(Priority::Urgent),
             assignee: None,
             parent: None,
+            kind: ItemKind::Ticket,
         }),
     )?;
     r.created.push(release.key.clone());
@@ -177,6 +178,7 @@ fn suite(
                 priority: Some(Priority::Normal),
                 assignee: None,
                 parent: Some(release.key.clone()),
+                kind: ItemKind::Ticket,
             }),
         )?;
         r.created.push(child.key.clone());

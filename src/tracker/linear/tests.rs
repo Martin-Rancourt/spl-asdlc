@@ -341,6 +341,7 @@ fn an_item_is_created_with_its_state_labels_parent_and_priority() {
             priority: Some(Priority::Urgent),
             assignee: None,
             parent: Some("ABC-1".into()),
+            kind: ItemKind::Ticket,
         })
         .unwrap();
     assert_eq!(created.key, "ABC-5");
@@ -399,6 +400,7 @@ fn new_item(parent: Option<&str>) -> NewItem {
         priority: None,
         assignee: None,
         parent: parent.map(str::to_string),
+        kind: ItemKind::Ticket,
     }
 }
 
@@ -439,6 +441,7 @@ fn a_post_deploy_validation_is_created_in_post_deploy_assigned_with_no_label() {
                 name: "operator".into(),
             }),
             parent: Some("ABC-1".into()),
+            kind: ItemKind::Ticket,
         })
         .unwrap();
     assert_eq!(created.key, "ABC-5");
@@ -664,6 +667,7 @@ fn a_creation_whose_answer_is_lost_is_looked_up_by_the_id_it_chose() {
             priority: None,
             assignee: None,
             parent: None,
+            kind: ItemKind::Ticket,
         })
         .unwrap();
     assert_eq!(created.key, "ABC-7", "found, not created twice");

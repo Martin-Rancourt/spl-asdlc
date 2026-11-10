@@ -543,6 +543,7 @@ impl Signal for DrySignal<'_> {
 mod tests {
     use super::*;
     use crate::github::fake::FakeGitHub;
+    use crate::tracker::ItemKind;
     use crate::tracker::fake::FakeTracker;
 
     #[test]
@@ -609,6 +610,7 @@ mod tests {
                 priority: None,
                 assignee: None,
                 parent: None,
+                kind: ItemKind::Ticket,
             })
             .unwrap();
         assert!(dry.comments(&new.key).unwrap().is_empty());

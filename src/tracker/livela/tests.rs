@@ -36,6 +36,9 @@ struct MemStore {
     lacks: Option<&'static str>,
     /// Whether it creates milestones and keeps PR reviews (LVL-TCAY).
     milestones: bool,
+    /// Whether it creates tasks (ASDLC-TDXM), and the ids of those it did.
+    tasks: bool,
+    created_tasks: Vec<String>,
     /// The reviews recorded for each `(item id, PR url)`.
     reviews: BTreeMap<(String, String), String>,
 }
@@ -57,6 +60,8 @@ impl Default for MemStore {
             priorities: BTreeMap::new(),
             lacks: None,
             milestones: false,
+            tasks: false,
+            created_tasks: Vec::new(),
             reviews: BTreeMap::new(),
         }
     }
@@ -294,6 +299,37 @@ impl LivelaStore for MemStore {
     fn creates_milestones(&self) -> bool {
         self.milestones
     }
+    fn creates_tasks(&self) -> bool {
+        self.tasks
+    }
+    fn create_task(
+        &mut self,
+        project: &str,
+        title: &str,
+        description: &str,
+        tags: &[String],
+        assignee: Option<&str>,
+        parent: Option<&str>,
+        priority: Option<u8>,
+        status: &str,
+    ) -> Result<String, String> {
+        // The task type's statuses: no Backlog, no validation group.
+        if !["Ready", "In Progress", "Done", "Canceled"].contains(&status) {
+            return Err(format!("task has no status {status}"));
+        }
+        let id = self.create_ticket(
+            project,
+            title,
+            description,
+            tags,
+            assignee,
+            parent,
+            priority,
+            status,
+        )?;
+        self.created_tasks.push(id.clone());
+        Ok(id)
+    }
     fn create_milestone(
         &mut self,
         project: &str,
@@ -454,6 +490,7 @@ fn new_item(title: &str, status: Status) -> NewItem {
         priority: None,
         assignee: None,
         parent: None,
+        kind: ItemKind::Ticket,
     }
 }
 
@@ -745,6 +782,7 @@ fn a_post_deploy_validation_is_created_in_post_deploy_assigned_with_no_label() {
         priority: Some(Priority::Urgent),
         assignee: Some(owner.clone()),
         parent: None,
+        kind: ItemKind::Ticket,
     };
     let created = t.create_item(&item).unwrap();
     assert_eq!(created.state.status, Some(Status::PostDeploy));
@@ -796,6 +834,7 @@ fn a_blocks_relation_reads_from_both_ends_and_unrelates_by_its_id() {
             priority: None,
             assignee: None,
             parent: None,
+            kind: ItemKind::Ticket,
         })
         .unwrap()
     };
@@ -826,6 +865,7 @@ fn duplicates_are_read_in_both_directions() {
             priority: None,
             assignee: None,
             parent: None,
+            kind: ItemKind::Ticket,
         })
         .unwrap()
     };
@@ -1079,6 +1119,52 @@ fn a_pr_names_its_livela_ticket_by_branch_title_or_either_address() {
         ),
         None
     );
+}
+
+#[test]
+fn a_task_the_bridge_asks_is_a_task_signed_and_reads_like_a_ticket() {
+    let t = td(MemStore {
+        tasks: true,
+        ..MemStore::default()
+    });
+    let parent = t
+        .create_item(&new_item("ticket", Status::InProgress))
+        .unwrap();
+    let step = NewItem {
+        parent: Some(parent.key.clone()),
+        kind: ItemKind::Task,
+        ..new_item("Review", Status::Ready)
+    };
+    let task = t.create_item(&step).unwrap();
+    let ticket = t.create_item(&new_item("other", Status::Ready)).unwrap();
+    assert_eq!(task.state.status, Some(Status::Ready));
+    assert_eq!(task.parent.as_deref(), Some(parent.key.as_str()));
+    t.set_status(&task.key, Status::Done, None).unwrap();
+    assert_eq!(t.get(&task.key).unwrap().state.status, Some(Status::Done));
+    let me = t.identity().unwrap().id;
+    let store = t.into_store();
+    assert_eq!(store.created_tasks, vec![task.id.clone()]);
+    assert!(!store.created_tasks.contains(&ticket.id));
+    let unsigned: Vec<_> = store
+        .facts
+        .iter()
+        .filter(|(by, what)| *by != me && !what.starts_with("participant"))
+        .collect();
+    assert!(unsigned.is_empty(), "{unsigned:?}");
+}
+
+#[test]
+fn a_store_without_tasks_creates_the_task_as_a_ticket() {
+    let t = td(MemStore::default());
+    let step = NewItem {
+        kind: ItemKind::Task,
+        ..new_item("Review", Status::Ready)
+    };
+    let item = t.create_item(&step).unwrap();
+    assert_eq!(item.state.status, Some(Status::Ready));
+    let store = t.into_store();
+    assert!(store.created_tasks.is_empty());
+    assert!(store.items.contains_key(&item.id));
 }
 
 #[test]
