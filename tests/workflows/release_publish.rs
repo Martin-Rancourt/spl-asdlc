@@ -112,7 +112,10 @@ fn each_job_runs_for_its_own_stage_and_the_guard_on_every_call() {
         .values()
         .map(|j| j["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, vec!["verify", "merge-back", "closing-guard"]);
+    assert_eq!(
+        names,
+        vec!["verify", "merge back into main branch", "closing-guard"]
+    );
 }
 
 #[test]
