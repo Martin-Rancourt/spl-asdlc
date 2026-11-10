@@ -1490,12 +1490,30 @@ fn a_dry_run_creates_and_pushes_nothing() {
         step(&doc, "cut", "tag")["if"].as_str(),
         Some("!inputs.dry-run && steps.candidate.outputs.proceed == 'true'")
     );
-    // The job outputs come from the tag step, skipped on a dry run: empty
-    // then.
-    for (k, v) in doc["jobs"]["cut"]["outputs"].as_hash().unwrap() {
-        let v = v.as_str().unwrap();
-        let k = k.as_str().unwrap();
-        assert!(v.contains("steps.tag.") || k == "dry-run", "{k}: {v}");
+    let outputs = &doc["jobs"]["cut"]["outputs"];
+    for key in ["branch", "tag"] {
+        assert_eq!(
+            outputs[key].as_str(),
+            Some(format!("${{{{ steps.tag.outputs.{key} }}}}").as_str())
+        );
+    }
+    for (key, source) in [
+        (
+            "version",
+            "steps.open.outputs.version || steps.version.outputs.version",
+        ),
+        ("round", "steps.candidate.outputs.round"),
+        ("class", "steps.candidate.outputs.class"),
+        ("class-reason", "steps.candidate.outputs.class-reason"),
+        ("previous-tag", "steps.candidate.outputs.previous-tag"),
+    ] {
+        assert_eq!(
+            outputs[key].as_str(),
+            Some(
+                format!("${{{{ inputs.dry-run && ({source}) || steps.tag.outputs.{key} }}}}")
+                    .as_str()
+            )
+        );
     }
     let (repo, _o) = delta("docs/a.md");
     let r = compute(&repo, &[("DRY_RUN", "true")]);
