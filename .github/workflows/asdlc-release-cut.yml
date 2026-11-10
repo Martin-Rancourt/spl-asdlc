@@ -286,11 +286,11 @@ jobs:
     outputs:
       branch: ${{ steps.tag.outputs.branch }}
       tag: ${{ steps.tag.outputs.tag }}
-      version: ${{ steps.tag.outputs.version }}
-      round: ${{ steps.tag.outputs.round }}
-      class: ${{ steps.tag.outputs.class }}
-      class-reason: ${{ steps.tag.outputs.class-reason }}
-      previous-tag: ${{ steps.tag.outputs.previous-tag }}
+      version: ${{ inputs.dry-run && (steps.open.outputs.version || steps.version.outputs.version) || steps.tag.outputs.version }}
+      round: ${{ inputs.dry-run && (steps.candidate.outputs.round) || steps.tag.outputs.round }}
+      class: ${{ inputs.dry-run && (steps.candidate.outputs.class) || steps.tag.outputs.class }}
+      class-reason: ${{ inputs.dry-run && (steps.candidate.outputs.class-reason) || steps.tag.outputs.class-reason }}
+      previous-tag: ${{ inputs.dry-run && (steps.candidate.outputs.previous-tag) || steps.tag.outputs.previous-tag }}
       dry-run: ${{ inputs.dry-run && 'true' || 'false' }}
     env:
       ACTION: ${{ inputs.action }}
