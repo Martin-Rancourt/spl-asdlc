@@ -30,7 +30,7 @@ use crate::method::review::{self, Approval, BranchState, ReviewFacts};
 use crate::method::texts::{self, BridgeItem, protocol};
 use crate::method::ticket_state::{self, Facts, OpenPr};
 use crate::method::vocabulary::{Status, TICKETLESS_LABEL, angle_label};
-use crate::tracker::{Item, NewItem, RelationKind};
+use crate::tracker::{Item, ItemKind, NewItem, RelationKind};
 
 use super::identity;
 use super::link::{self, Linked};
@@ -1822,6 +1822,9 @@ fn create(
             priority: None,
             assignee,
             parent: Some(parent.to_string()),
+            // A step of the PR's review, not a piece of the product: no
+            // release note, no refinement (ASDLC-TDXM).
+            kind: ItemKind::Task,
         },
     )?;
     t.act(
@@ -1942,6 +1945,7 @@ fn open_pr_ticket(t: &Tick, log: &mut ActionLog, report: &mut Report, pr: &PullR
                     priority: None,
                     assignee: None,
                     parent: None,
+                    kind: ItemKind::Ticket,
                 },
             );
             match created {

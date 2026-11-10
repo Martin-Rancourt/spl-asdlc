@@ -43,7 +43,7 @@ use crate::method::release::shape::{Shape, Version};
 use crate::method::review::{self, Approval, BranchState};
 use crate::method::texts::{self, AngleLine, AngleScope, BridgeItem, protocol};
 use crate::method::vocabulary::{self, Status};
-use crate::tracker::{Item, NewItem, Priority, RelationKind};
+use crate::tracker::{Item, ItemKind, NewItem, Priority, RelationKind};
 
 use super::merge::{for_tracker, tracker_said};
 use super::{Report, Tick, closure, identity, method_texts};
@@ -581,6 +581,7 @@ fn release_item(
             priority: Some(Priority::Urgent),
             assignee,
             parent: None,
+            kind: ItemKind::Ticket,
         },
     )
 }
@@ -1352,6 +1353,7 @@ fn create_child(
             priority: Some(Priority::Urgent),
             assignee,
             parent: Some(parent.to_string()),
+            kind: ItemKind::Ticket,
         },
     )
 }
@@ -1628,6 +1630,7 @@ fn gate_fix(
             priority: Some(Priority::Urgent),
             assignee,
             parent: Some(item.key.clone()),
+            kind: ItemKind::Ticket,
         },
     );
 }
@@ -2219,6 +2222,7 @@ fn file_findings(
                 None
             },
             parent: None,
+            kind: ItemKind::Ticket,
         };
         let created = identity::create(
             t,

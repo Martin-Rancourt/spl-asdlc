@@ -13,6 +13,7 @@ use crate::github::{
 use crate::method::texts::{self, BridgeItem};
 use crate::method::vocabulary::Status;
 use crate::notify::Recorder;
+use crate::tracker::ItemKind;
 use crate::tracker::fake::FakeTracker;
 
 const COMPLETE: &str = "## Goal\nIt works.\n\n## Acceptance criteria\n- [x] it works\n- [ ] it is fast\n\n## Business rules\nNo new rule.\n";
@@ -1841,6 +1842,25 @@ fn a_rounds_items_close_when_its_pr_merges_to_deploy() {
         all_in(&round(&w, "ABC-7", &pr), Status::Done),
         "the angle sub-items and the consolidation item close with their PR"
     );
+    quiet(&w);
+}
+
+#[test]
+fn a_prs_round_items_are_tasks_that_block_and_close_as_before() {
+    // ASDLC-TDXM: a review step is work, not a piece of the product.
+    let w = World::new();
+    let pr = in_review(&w, 7);
+    let (consolidation, mut angles) = round_keys(&w, "ABC-7", &pr);
+    angles.sort();
+    for key in angles.iter().chain([&consolidation]) {
+        assert_eq!(w.tracker.kind(key), ItemKind::Task, "{key}");
+    }
+    assert_eq!(w.tracker.kind("ABC-7"), ItemKind::Ticket);
+    assert_eq!(blockers(&w, &consolidation), angles);
+    w.open(approved(&w, pr.clone()));
+    w.tick(false);
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::ToDeploy));
+    assert!(all_in(&round(&w, "ABC-7", &pr), Status::Done));
     quiet(&w);
 }
 

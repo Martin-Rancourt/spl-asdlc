@@ -351,6 +351,33 @@ impl PrReviews {
     }
 }
 
+/// The kind of item the bridge creates. A tracker with a single kind (Linear
+/// issues) creates every item the same way; Livela tells a ticket (a piece of
+/// the product, refined and released) from a task (a step of work).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ItemKind {
+    #[default]
+    Ticket,
+    /// A step of work with no release note and no refinement: the review
+    /// and consolidation sub-items of a PR (ASDLC-TDXM); its statuses are
+    /// [`ItemKind::holds`]'s.
+    Task,
+}
+
+impl ItemKind {
+    /// Whether an item of this kind can be in `status`: a task only goes
+    /// Ready, In Progress, Done or Canceled.
+    pub fn holds(self, status: Status) -> bool {
+        match self {
+            ItemKind::Ticket => true,
+            ItemKind::Task => matches!(
+                status,
+                Status::Ready | Status::InProgress | Status::Done | Status::Canceled
+            ),
+        }
+    }
+}
+
 /// What the bridge creates: a release item, an angle sub-item, a
 /// consolidation item, a finding ticket, the nits ticket, a gate-fix
 /// ticket, a validation sub-task.
@@ -365,6 +392,7 @@ pub struct NewItem {
     pub assignee: Option<User>,
     /// Identifier of the parent.
     pub parent: Option<String>,
+    pub kind: ItemKind,
 }
 
 /// The tracker operations the bridge needs.

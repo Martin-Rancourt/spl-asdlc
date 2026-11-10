@@ -4018,6 +4018,15 @@ fn the_release_consolidation_item_is_blocked_by_every_angle_of_its_candidate_onc
     let angles = w.angle_keys(CAND);
     assert_eq!(angles.len(), 2);
     assert_eq!(w.blockers(&consolidation.key), angles);
+    // A candidate's QA items stay tickets: its angles go In Review and back
+    // In Progress, statuses a task lacks (ASDLC-TDXM).
+    for key in angles.iter().chain([&consolidation.key]) {
+        assert_eq!(
+            w.tracker.kind(key),
+            crate::tracker::ItemKind::Ticket,
+            "{key}"
+        );
+    }
     assert!(
         consolidation
             .description
