@@ -799,6 +799,8 @@ Corrected 2026-10-07: the merged release PRs are listed per release-please label
 **Outputs:** `branch`, `number` (merge-back PR number), `merged` (`'true'` when the branch is in `main` at the end), `last-state` (last `mergeStateStatus`, set on a poll timeout), `held` (`''|'open-release-pr'|'undeployed'|'unknown'`). Corrected 2026-10-07: no `rc-tag` (verify's output).
 **Called job names (stable):** `close` (the merge back; corrected 2026-10-07 from `merge-back`), `closing-guard`.
 
+Corrected 2026-11-07: the merge back's job id stays `close` (every `needs`, the `close` stage and the callers are unchanged), and its `name:` is `merge-back`, so GitHub shows it as `<caller job> / merge-back`: « close » did not say what the job does. GitHub names a called job by its `name:` when it has one, its id otherwise. Up to 1.9.1 it was named `close`; the bridge still reads `<caller job> / close`, so a project pinned on an earlier tag, or whose two calls pin different tags, is judged as before (`src/method/release/publication.rs`). No ruleset requires a context of the publication: it runs on the `release` event, never on a pull request.
+
 **Stays in the caller.** The publication/deploy jobs (`needs: verify`), the `publish-result` plumbing, replay triggers (`workflow_dispatch` inputs `close_tag` / `merge_back_only`), and — with no tracker in CI — nothing that "closes" anything: **the bridge closes the cycle in the tracker when it sees the merge-back merged (branch deleted / tag ancestor of `main`) and the `deployed` labels** (REQ-CI-096).
 
 Superseded 2026-10-12: gone with the multi-component shape.
