@@ -5997,8 +5997,19 @@ fn a_note_reviewer_gets_a_review_task_blocked_by_the_writing_that_blocks_the_rel
     );
     assert_eq!(w.blocked_by(&review.key), vec![write.key.clone()]);
     let release = w.release_item().key;
-    assert_eq!(w.blocked_by(&release), vec![review.key.clone()]);
+    let mut blockers = w.blocked_by(&release);
+    blockers.sort();
+    let mut both = vec![write.key.clone(), review.key.clone()];
+    both.sort();
+    assert_eq!(blockers, both, "each note task blocks the release");
     all_angles_merged(&w);
+    // A review closed before the writing holds nothing back by itself.
+    w.done(&review.key);
+    w.tick();
+    assert!(w.go_writes().is_empty(), "the writing still holds the GO");
+    w.tracker
+        .set_status(&review.key, Status::Ready, None)
+        .unwrap();
     w.done(&write.key);
     w.tick();
     assert!(w.go_writes().is_empty(), "the review still holds the GO");
@@ -6006,6 +6017,30 @@ fn a_note_reviewer_gets_a_review_task_blocked_by_the_writing_that_blocks_the_rel
     // No note written on the branch: the candidate is tagged as before.
     let r = w.tick();
     assert_eq!(w.go_writes(), go_lines("c1"), "{r:?}");
+}
+
+#[test]
+fn a_unified_note_beside_another_change_is_not_tagged_on_the_tip() {
+    use super::release_note::Step;
+    let mut w = World::new();
+    w.note_people(false);
+    w.tick();
+    all_angles_merged(&w);
+    {
+        let mut s = w.github.state.borrow_mut();
+        s.compares.insert(
+            (repo(), "c1".into(), BRANCH.into()),
+            cmp(
+                CompareStatus::Ahead,
+                &["n1"],
+                &["CHANGELOG.md", "release-bookkeeping.json"],
+            ),
+        );
+    }
+    w.config.release.bookkeeping_paths = vec!["release-bookkeeping.json".into()];
+    w.done(&w.note_task(Step::Write).unwrap().key);
+    let r = w.tick();
+    assert!(w.go_writes().is_empty(), "{r:?}");
 }
 
 #[test]

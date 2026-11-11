@@ -154,16 +154,19 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
     if recorded || label_embarked(t, log, report, &shape, &candidate, &label) {
         record_candidate(t, log, report, &item, &candidate, previous.as_deref());
     }
-    // The unified release note's tasks, from the first candidate on: the
-    // last of them blocks the release item, so the GO waits for it.
-    if release.note_writer.is_some() {
-        match release_children(t, &item) {
+    // The unified release note's tasks, from the first candidate on: each
+    // blocks the release item, so the GO waits for them; tasks not in place
+    // with their relations hold the GO this tick, fail-closed.
+    let notes_ready = release.note_writer.is_none()
+        || match release_children(t, &item) {
             Ok(children) => {
                 super::release_note::ensure(t, log, report, &item, &children, &candidate, &branch)
             }
-            Err(e) => t.unreadable(report, &item.key, format!("children: {e}")),
-        }
-    }
+            Err(e) => {
+                t.unreadable(report, &item.key, format!("children: {e}"));
+                false
+            }
+        };
     if !t.in_time() {
         report.out_of_time = true;
         return false;
@@ -325,7 +328,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
     ) else {
         return false;
     };
-    if decision.go {
+    if decision.go && notes_ready {
         on_go(t, log, report, &shape, &item, &candidate, &branch);
         return false;
     }
@@ -2373,14 +2376,19 @@ pub fn decide(
     // A candidate whose release was retracted (its publication failed before
     // deploying) gets no second GO: the next candidate takes the version.
     let release_tag = Shape::of(&cfg.product.name, release).release_tag(c.version);
+    // The commit the GO would tag; one it cannot tag is a tip gap, said.
+    let mut tip_gaps = tip_gaps;
     let target = match go_target(t, c, branch) {
         Ok(sha) => sha,
         Err(e) => {
-            t.unreadable(report, &item.key, e);
-            return None;
+            tip_gaps.push(e);
+            c.sha.clone()
         }
     };
-    let retracted = match super::retract::retracted(t, &item.key, &release_tag, &target) {
+    let retracted_at = |sha: &str| super::retract::retracted(t, &item.key, &release_tag, sha);
+    let retracted = match retracted_at(&c.sha)
+        .and_then(|on_candidate| Ok(on_candidate || (target != c.sha && retracted_at(&target)?)))
+    {
         Ok(true) => Some(release_tag),
         Ok(false) => None,
         Err(e) => {
@@ -2638,22 +2646,46 @@ fn go_target(t: &Tick, c: &Candidate, branch: &str) -> Result<String, String> {
     if release.note_writer.is_none() {
         return Ok(c.sha.clone());
     }
-    let paths = super::release_note::note_paths(release, &c.version.to_string());
+    let notes = super::release_note::note_paths(release, &c.version.to_string());
     let cmp = t
         .github
         .compare(&t.repo, &c.sha, branch)
         .map_err(|e| format!("{branch} could not be compared with {}: {e}", c.tag))?;
-    if !cmp.files.iter().any(|f| paths.contains(f)) {
+    if !cmp.files.iter().any(|f| notes.contains(f)) {
         return Ok(c.sha.clone());
     }
-    let tip = t
-        .github
-        .branches(&t.repo, branch)
-        .map_err(|e| format!("the branch {branch}: {e}"))?
-        .into_iter()
-        .find(|b| b.name == branch)
-        .ok_or_else(|| format!("the branch {branch} is gone"))?;
-    Ok(tip.sha)
+    // The tip is tagged only when it differs from the candidate by what the
+    // publication's guard lets follow it: the note files and this
+    // candidate's own angle reports. The commit tagged is the one this
+    // comparison read, never a tip read again later.
+    let others: Vec<&String> = cmp
+        .files
+        .iter()
+        .filter(|f| !notes.contains(f))
+        .filter(|f| {
+            !release
+                .angles
+                .iter()
+                .any(|a| report::report_path(&release.record, &c.tag, &a.key) == **f)
+        })
+        .collect();
+    if !others.is_empty() {
+        return Err(format!(
+            "{branch} carries the unified release note and {} other file(s) since {}: the release cannot be tagged on its tip; tag the next candidate",
+            others.len(),
+            c.tag
+        ));
+    }
+    if cmp.status != CompareStatus::Ahead {
+        return Err(format!(
+            "{branch} is not ahead of {}: the unified release note cannot be tagged",
+            c.tag
+        ));
+    }
+    cmp.commits
+        .last()
+        .map(|commit| commit.sha.clone())
+        .ok_or_else(|| format!("{branch} lists no commit since {}", c.tag))
 }
 
 /// The commit the release tag names, or `None` when it does not exist.

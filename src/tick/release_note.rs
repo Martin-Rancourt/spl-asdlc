@@ -103,7 +103,9 @@ pub fn body(step: Step, release: &str, version: &str, branch: &str, paths: &[Str
 }
 
 /// The note tasks of the release, created at its first candidate, then
-/// related: writing blocks review, the last one blocks the release item.
+/// related: writing blocks review, and each blocks the release item, so
+/// neither can be closed around the other. Whether every task found is in
+/// place with its relations: `false` holds the GO this tick.
 /// A task found again by its marker is never created twice; a relation
 /// already there is not written again. Tasks are created at the first
 /// candidate only (`create`): a writer configured while a release is in
@@ -117,11 +119,11 @@ pub fn ensure(
     children: &[Item],
     c: &Candidate,
     branch: &str,
-) {
+) -> bool {
     let create = c.rc == 1;
     let release = section(t);
     let Some(writer) = &release.note_writer else {
-        return;
+        return true;
     };
     let version = c.version.to_string();
     let paths = note_paths(release, &version);
@@ -138,12 +140,12 @@ pub fn ensure(
             Ok(f) => f,
             Err(e) => {
                 t.unreadable(report, &item.key, e);
-                return;
+                return false;
             }
         };
         let key = match found.as_slice() {
             [one] => one.key.clone(),
-            [] if !create => return,
+            [] if !create => return true,
             [] => {
                 let assignee = t.tracker.user(who).ok();
                 let made = identity::create(
@@ -169,7 +171,7 @@ pub fn ensure(
                 );
                 match made {
                     Some(i) => i.key,
-                    None => return,
+                    None => return false,
                 }
             }
             many => {
@@ -183,19 +185,23 @@ pub fn ensure(
                         keys.join(", ")
                     ),
                 );
-                return;
+                return false;
             }
         };
         keys.push(key);
     }
-    keys.push(item.key.clone());
-    for pair in keys.windows(2) {
-        block(t, log, report, &pair[0], &pair[1]);
+    let mut ok = true;
+    if let [write, review] = keys.as_slice() {
+        ok &= block(t, log, report, write, review);
     }
+    for key in &keys {
+        ok &= block(t, log, report, key, &item.key);
+    }
+    ok
 }
 
-/// `a` blocks `b`, unless it already does.
-fn block(t: &Tick, log: &mut ActionLog, report: &mut Report, a: &str, b: &str) {
+/// `a` blocks `b`, unless it already does; whether it does now.
+fn block(t: &Tick, log: &mut ActionLog, report: &mut Report, a: &str, b: &str) -> bool {
     let present = match t.tracker.relations(b) {
         Ok(r) if r.cut => {
             t.unreadable(
@@ -203,7 +209,7 @@ fn block(t: &Tick, log: &mut ActionLog, report: &mut Report, a: &str, b: &str) {
                 b,
                 "the relation list is cut: whether the note task blocks it cannot be told",
             );
-            return;
+            return false;
         }
         Ok(r) => r
             .blocked_by
@@ -211,11 +217,11 @@ fn block(t: &Tick, log: &mut ActionLog, report: &mut Report, a: &str, b: &str) {
             .any(|r| r.other.eq_ignore_ascii_case(a)),
         Err(e) => {
             t.unreadable(report, b, format!("relations: {e}"));
-            return;
+            return false;
         }
     };
     if present {
-        return;
+        return true;
     }
     let mut blockers_of = |x: &str| -> Result<Vec<String>, String> {
         t.tracker
@@ -225,7 +231,7 @@ fn block(t: &Tick, log: &mut ActionLog, report: &mut Report, a: &str, b: &str) {
     };
     if let Err(e) = findings::may_block(a, b, &mut blockers_of) {
         t.unreadable(report, a, format!("{a} cannot block {b}: {e}"));
-        return;
+        return false;
     }
     t.act(
         log,
@@ -238,5 +244,6 @@ fn block(t: &Tick, log: &mut ActionLog, report: &mut Report, a: &str, b: &str) {
                 .relate(a, b, RelationKind::Blocks)
                 .map_err(|e| e.to_string())
         },
-    );
+    )
+    .is_some()
 }
