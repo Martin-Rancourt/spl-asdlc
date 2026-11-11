@@ -5146,7 +5146,8 @@ fn publication_jobs(verify: &str, publish: &str) -> Vec<crate::github::Job> {
 }
 
 /// The same, with the merge back of the verify call and of the close call
-/// named as given: `merge-back` since the job is named, `close` before.
+/// named as given: the current explicit name, `merge-back` previously, or
+/// `close` before that.
 fn publication_jobs_named(
     verify: &str,
     publish: &str,
@@ -5274,12 +5275,17 @@ fn a_release_whose_verification_refused_is_retracted_once_and_awaits_its_go() {
 }
 
 #[test]
-fn the_merge_back_is_read_under_either_name_and_a_run_may_mix_them() {
+fn the_merge_back_is_read_under_every_name_and_a_run_may_mix_them() {
     let shapes = [
         ("close", "close"),
         ("merge-back", "merge-back"),
         ("close", "merge-back"),
         ("merge-back", "close"),
+        ("close", "merge back into main branch"),
+        ("merge back into main branch", "close"),
+        ("merge back into main branch", "merge-back"),
+        ("merge-back", "merge back into main branch"),
+        ("merge back into main branch", "merge back into main branch"),
     ];
     for (in_verify, in_close) in shapes {
         let what = format!("{in_verify}/{in_close}");

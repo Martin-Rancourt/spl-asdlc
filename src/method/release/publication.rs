@@ -10,7 +10,8 @@
 //! workflow `<caller job name> / <called job name>`, the called job's `name:`
 //! when it has one, its id otherwise. The called jobs of
 //! `asdlc-release-publish.yml` are `verify`, the merge back (id `close`, named
-//! `merge-back`; named `close` up to 1.9.1, still read so that a project
+//! `merge back into main branch`; formerly named `merge-back`, and named
+//! `close` up to 1.9.1, all still read so that a project
 //! pinned on an earlier tag, or whose two calls pin different tags, is
 //! judged the same) and `closing-guard`. Every other job is the project's. Nothing was deployed when a verify job
 //! concluded red and every job of the project, and every merge back, was
@@ -33,13 +34,14 @@ pub enum Publication {
 /// The called job of `asdlc-release-publish.yml` a job is, by its id
 /// (`verify`, `close`, `closing-guard`), read from the last segment of its
 /// name (`<caller job> / <called job>`): the merge back is `close` under
-/// either of its names, `merge-back` or `close`. `None` for a job of the
+/// any of its names, `merge back into main branch`, `merge-back` or `close`.
+/// `None` for a job of the
 /// project's own.
 fn stage_job(name: &str) -> Option<&'static str> {
     let (_, called) = name.rsplit_once(" / ")?;
     match called {
         "verify" => Some("verify"),
-        "merge-back" | "close" => Some("close"),
+        "merge back into main branch" | "merge-back" | "close" => Some("close"),
         "closing-guard" => Some("closing-guard"),
         _ => None,
     }
@@ -144,9 +146,10 @@ mod tests {
         }
     }
 
-    /// The name GitHub gives the merge back: `merge-back` since it is named,
-    /// `close` (its id) on an earlier tag of the workflow.
-    const NEW: &str = "merge-back";
+    /// The names GitHub gives the merge back: the explicit current name,
+    /// `merge-back` on the preceding version, or `close` (its id) before that.
+    const NEW: &str = "merge back into main branch";
+    const PREVIOUS: &str = "merge-back";
     const OLD: &str = "close";
 
     /// The jobs of a run whose verify stage refused: as GitHub lists them,
@@ -171,7 +174,17 @@ mod tests {
 
     /// Every way a run can name its two merge backs: both calls on an
     /// earlier tag, both on this one, or one of each.
-    const SHAPES: [(&str, &str); 4] = [(OLD, OLD), (NEW, NEW), (OLD, NEW), (NEW, OLD)];
+    const SHAPES: [(&str, &str); 9] = [
+        (OLD, OLD),
+        (OLD, PREVIOUS),
+        (OLD, NEW),
+        (PREVIOUS, OLD),
+        (PREVIOUS, PREVIOUS),
+        (PREVIOUS, NEW),
+        (NEW, OLD),
+        (NEW, PREVIOUS),
+        (NEW, NEW),
+    ];
 
     #[test]
     fn a_refused_verification_deployed_nothing() {
@@ -271,6 +284,10 @@ mod tests {
     #[test]
     fn the_merge_back_is_the_stages_only_under_a_caller_job() {
         assert_eq!(stage_job("close / merge-back"), Some("close"));
+        assert_eq!(
+            stage_job("close / merge back into main branch"),
+            Some("close")
+        );
         assert_eq!(stage_job("close / close"), Some("close"));
         assert_eq!(stage_job("finish / merge-back"), Some("close"));
         assert_eq!(stage_job("verify / closing-guard"), Some("closing-guard"));
