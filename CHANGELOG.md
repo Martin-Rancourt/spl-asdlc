@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.10.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.9.1...v1.10.0) (2026-11-11)
+
+
+### Features
+
+* **bridge:** report business-rule blocks on tickets ([#153](https://github.com/Martin-Rancourt/spl-asdlc/issues/153)) ([90758fc](https://github.com/Martin-Rancourt/spl-asdlc/commit/90758fc77baa9df56e4c1acb243b77b33fcb47c8))
+* **release:** name the publication's merge back job merge-back (ASDLC-UZ6M) ([#147](https://github.com/Martin-Rancourt/spl-asdlc/issues/147)) ([e77a1a0](https://github.com/Martin-Rancourt/spl-asdlc/commit/e77a1a02f52fddd96d8b9a82f7fd174c1a2bab16))
+* **release:** one unified release note per release, by a configured writer and reviewer (ASDLC-4TQN) ([#152](https://github.com/Martin-Rancourt/spl-asdlc/issues/152)) ([6dc653d](https://github.com/Martin-Rancourt/spl-asdlc/commit/6dc653d4d58d398f25df192e14e10846b4e4b5e9))
+
+
+### Bug Fixes
+
+* **bridge:** create a PR's review sub-items as tasks (ASDLC-TDXM) ([#150](https://github.com/Martin-Rancourt/spl-asdlc/issues/150)) ([d77b263](https://github.com/Martin-Rancourt/spl-asdlc/commit/d77b2636c449cc4c1229cf7a66fda69cb2e19987))
+* expose release dry-run outputs (ASDLC-7TMT) ([#148](https://github.com/Martin-Rancourt/spl-asdlc/issues/148)) ([8c1e3a9](https://github.com/Martin-Rancourt/spl-asdlc/commit/8c1e3a942f4f8288c0b427e570d4a2fd1c9f2ff7))
+* **release:** name the merge-back job explicitly (ASDLC-UZ6M) ([#151](https://github.com/Martin-Rancourt/spl-asdlc/issues/151)) ([3adf862](https://github.com/Martin-Rancourt/spl-asdlc/commit/3adf8627de86831555793cd5bb61ca37aa0ec6b8))
+
 ## [1.9.1](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.9.0...v1.9.1) (2026-11-01)
 
 
