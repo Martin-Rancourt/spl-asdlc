@@ -5860,3 +5860,171 @@ fn a_closure_the_next_cycle_overtook_is_finished_and_then_left_alone() {
     assert!(touched.is_empty(), "{touched:?}");
     assert_eq!(w.signal.sent.borrow().len(), 1);
 }
+
+// ---- the unified release note (ASDLC-4TQN) ----
+
+impl World {
+    /// The project names a release note writer and, when `reviewer`, a
+    /// reviewer, both known to the tracker.
+    fn note_people(&mut self, reviewer: bool) {
+        self.config.release.note_writer = Some("writer-handle".into());
+        let mut people = vec![("u-writer", "writer-handle")];
+        if reviewer {
+            self.config.release.note_reviewer = Some("reviewer-handle".into());
+            people.push(("u-reviewer", "reviewer-handle"));
+        }
+        for (id, name) in people {
+            self.tracker
+                .state
+                .borrow_mut()
+                .users
+                .push(crate::tracker::User {
+                    id: id.into(),
+                    name: name.into(),
+                });
+        }
+    }
+
+    fn note_task(&self, step: super::release_note::Step) -> Option<crate::tracker::Item> {
+        let marker = super::release_note::marker("1.2.0", step);
+        self.tracker
+            .children(&self.release_item().key)
+            .unwrap()
+            .into_iter()
+            .find(|c| texts::has_marker(&c.description, &marker))
+    }
+
+    fn blocked_by(&self, key: &str) -> Vec<String> {
+        self.tracker
+            .relations(key)
+            .unwrap()
+            .blocked_by
+            .into_iter()
+            .map(|r| r.other)
+            .collect()
+    }
+
+    fn done(&self, key: &str) {
+        self.tracker.set_status(key, Status::Done, None).unwrap();
+    }
+}
+
+#[test]
+fn without_a_note_writer_no_note_task_is_made_and_the_go_reads_the_candidate() {
+    let w = World::new();
+    w.tick();
+    assert!(w.note_task(super::release_note::Step::Write).is_none());
+    all_angles_merged(&w);
+    w.tick();
+    assert_eq!(w.go_writes(), go_lines("c1"));
+}
+
+#[test]
+fn a_note_writer_gets_a_task_at_the_first_candidate_that_holds_the_go_until_done() {
+    use super::release_note::Step;
+    let mut w = World::new();
+    w.note_people(false);
+    w.tick();
+    let write = w.note_task(Step::Write).expect("the writing task");
+    assert_eq!(w.tracker.kind(&write.key), crate::tracker::ItemKind::Task);
+    assert_eq!(
+        write.assignee.as_ref().map(|u| u.name.as_str()),
+        Some("writer-handle")
+    );
+    assert!(write.title.contains("Write the unified release note"));
+    assert!(write.description.contains(BRANCH));
+    assert!(
+        w.note_task(Step::Review).is_none(),
+        "no reviewer, no review"
+    );
+    let release = w.release_item().key;
+    assert_eq!(w.blocked_by(&release), vec![write.key.clone()]);
+    // A second tick makes nothing twice.
+    w.tick();
+    let children = w.tracker.children(&release).unwrap();
+    let marker = super::release_note::marker("1.2.0", Step::Write);
+    assert_eq!(
+        children
+            .iter()
+            .filter(|c| texts::has_marker(&c.description, &marker))
+            .count(),
+        1
+    );
+    // Every angle merged: the open writing task still holds the GO.
+    all_angles_merged(&w);
+    w.tick();
+    assert!(
+        w.go_writes().is_empty(),
+        "no GO while the note is being written"
+    );
+    // The unified note written on the release branch, past the candidate:
+    // bookkeeping, and the published notes are the branch's.
+    let unified = "# Changelog\n\n## [1.2.0](x) (2026-10-05)\n\n### Features\n\n* You can now ship.\n\n## [1.1.0](x) (2026-09-01)\n\n* older\n".to_string();
+    {
+        let mut s = w.github.state.borrow_mut();
+        s.compares.insert(
+            (repo(), "c1".into(), BRANCH.into()),
+            cmp(CompareStatus::Ahead, &["n1"], &["CHANGELOG.md"]),
+        );
+        s.branches.insert(repo(), vec![tag(BRANCH, "n1")]);
+        s.files
+            .insert((repo(), "n1".into(), "CHANGELOG.md".into()), Ok(unified));
+    }
+    w.done(&write.key);
+    let r = w.tick();
+    // The tag carries the unified note: the branch's tip, the candidate's
+    // commit plus the note only.
+    assert_eq!(w.go_writes(), go_lines("n1"), "{r:?}");
+    let published = w.github.release(&repo(), "acme-v1.2.0").unwrap();
+    assert!(
+        published.body.contains("You can now ship."),
+        "{}",
+        published.body
+    );
+}
+
+#[test]
+fn a_note_reviewer_gets_a_review_task_blocked_by_the_writing_that_blocks_the_release() {
+    use super::release_note::Step;
+    let mut w = World::new();
+    w.note_people(true);
+    w.tick();
+    let write = w.note_task(Step::Write).expect("the writing task");
+    let review = w.note_task(Step::Review).expect("the review task");
+    assert_eq!(
+        review.assignee.as_ref().map(|u| u.name.as_str()),
+        Some("reviewer-handle")
+    );
+    assert_eq!(w.blocked_by(&review.key), vec![write.key.clone()]);
+    let release = w.release_item().key;
+    assert_eq!(w.blocked_by(&release), vec![review.key.clone()]);
+    all_angles_merged(&w);
+    w.done(&write.key);
+    w.tick();
+    assert!(w.go_writes().is_empty(), "the review still holds the GO");
+    w.done(&review.key);
+    // No note written on the branch: the candidate is tagged as before.
+    let r = w.tick();
+    assert_eq!(w.go_writes(), go_lines("c1"), "{r:?}");
+}
+
+#[test]
+fn a_note_writer_configured_after_the_first_candidate_waits_for_the_next_release() {
+    let mut w = World::new();
+    w.tick();
+    // rc.2 tagged, then the writer configured.
+    {
+        let mut s = w.github.state.borrow_mut();
+        s.tags.insert(
+            repo(),
+            vec![
+                tag("acme-v1.1.0", "r0"),
+                tag(CAND, "c1"),
+                tag("acme-v1.2.0-rc.2", "c2"),
+            ],
+        );
+    }
+    w.note_people(true);
+    w.tick();
+    assert!(w.note_task(super::release_note::Step::Write).is_none());
+}

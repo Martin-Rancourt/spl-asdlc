@@ -95,6 +95,8 @@ angles = []                            # no review angle: layer 1 replaces it
 candidate_tag = "acme-v{version}-rc.{rc}"    # {version} once, {rc} once (never in release_tag); the callers pass the same patterns
 release_tag = "acme-v{version}"
 # fix_assignee = "fixer-handle"              # tracker participant who fixes release problems: the urgent fix tickets go to them; unset, they are taken by role
+# note_writer = "writer-handle"              # tracker participant who writes each release's unified release note; unset, the notes stay the tickets' notes
+# note_reviewer = "reviewer-handle"          # with a writer: approves the unified release note before publication
 angles = []                                  # no QA angle: layer 2 replaces it
 
 # coordinators = ["coordinator-login"]       # layer 2: GitHub logins whose approval at the head SHA merges an angle PR

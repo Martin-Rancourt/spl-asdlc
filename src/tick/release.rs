@@ -154,6 +154,16 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
     if recorded || label_embarked(t, log, report, &shape, &candidate, &label) {
         record_candidate(t, log, report, &item, &candidate, previous.as_deref());
     }
+    // The unified release note's tasks, from the first candidate on: the
+    // last of them blocks the release item, so the GO waits for it.
+    if release.note_writer.is_some() {
+        match release_children(t, &item) {
+            Ok(children) => {
+                super::release_note::ensure(t, log, report, &item, &children, &candidate, &branch)
+            }
+            Err(e) => t.unreadable(report, &item.key, format!("children: {e}")),
+        }
+    }
     if !t.in_time() {
         report.out_of_time = true;
         return false;
@@ -316,7 +326,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
         return false;
     };
     if decision.go {
-        on_go(t, log, report, &shape, &item, &candidate);
+        on_go(t, log, report, &shape, &item, &candidate, &branch);
         return false;
     }
     hold(t, log, report, &item, &candidate, &decision);
@@ -2343,7 +2353,7 @@ pub fn decide(
             let moved: Vec<String> = cmp
                 .files
                 .into_iter()
-                .filter(|f| !bookkeeping(release, &c.tag, f))
+                .filter(|f| !bookkeeping(release, c, f))
                 .collect();
             if moved.is_empty() {
                 Vec::new()
@@ -2363,7 +2373,14 @@ pub fn decide(
     // A candidate whose release was retracted (its publication failed before
     // deploying) gets no second GO: the next candidate takes the version.
     let release_tag = Shape::of(&cfg.product.name, release).release_tag(c.version);
-    let retracted = match super::retract::retracted(t, &item.key, &release_tag, &c.sha) {
+    let target = match go_target(t, c, branch) {
+        Ok(sha) => sha,
+        Err(e) => {
+            t.unreadable(report, &item.key, e);
+            return None;
+        }
+    };
+    let retracted = match super::retract::retracted(t, &item.key, &release_tag, &target) {
         Ok(true) => Some(release_tag),
         Ok(false) => None,
         Err(e) => {
@@ -2402,13 +2419,18 @@ pub fn decide(
 /// Whether `path` may differ between the candidate and the release branch
 /// tip (REQ-REL-070): a configured bookkeeping path (exact), or the report
 /// of one of the candidate's own angles (`release.record` rendered for
-/// `candidate`).
-fn bookkeeping(release: &Release, candidate: &str, path: &str) -> bool {
+/// `candidate`), and with a release note writer the version's note files,
+/// where the unified note is written after the cut.
+fn bookkeeping(release: &Release, c: &Candidate, path: &str) -> bool {
     release.bookkeeping_paths.iter().any(|b| b == path)
         || release
             .angles
             .iter()
-            .any(|a| report::report_path(&release.record, candidate, &a.key) == path)
+            .any(|a| report::report_path(&release.record, &c.tag, &a.key) == path)
+        || (release.note_writer.is_some()
+            && super::release_note::note_paths(release, &c.version.to_string())
+                .iter()
+                .any(|p| p == path))
 }
 
 /// On GO (spec 05 §9): the release tag on the candidate's commit, then the
@@ -2455,9 +2477,20 @@ fn on_go(
     shape: &Shape,
     item: &Item,
     c: &Candidate,
+    branch: &str,
 ) {
     let tag = shape.release_tag(c.version);
-    let notes = match t.github.file(&t.repo, crate::prepare::CHANGELOG, &c.sha) {
+    // The commit the release tags: the candidate's, or the release branch's
+    // tip when a unified release note was written there (spec 05 §12).
+    let target = match go_target(t, c, branch) {
+        Ok(sha) => sha,
+        Err(e) => {
+            t.unreadable(report, &item.key, e);
+            return;
+        }
+    };
+    let at = target.as_str();
+    let notes = match t.github.file(&t.repo, crate::prepare::CHANGELOG, at) {
         Ok(text) => match prepare::section_of(&text, c.version) {
             Some(n) => n,
             None => {
@@ -2499,7 +2532,7 @@ fn on_go(
     // A tag a retraction left on the retracted candidate (its deletion
     // failed after the release's): the retraction is finished first.
     let existing = match existing {
-        Some(sha) if sha != c.sha => match super::retract::retracted(t, &item.key, &tag, &sha) {
+        Some(sha) if sha != target => match super::retract::retracted(t, &item.key, &tag, &sha) {
             Ok(true) => {
                 if !super::retract::delete_tag(t, log, report, item, &tag, &sha) {
                     return;
@@ -2515,7 +2548,7 @@ fn on_go(
         other => other,
     };
     match existing {
-        Some(sha) if sha == c.sha => {}
+        Some(sha) if sha == target => {}
         Some(sha) => {
             t.unreadable(
                 report,
@@ -2524,7 +2557,7 @@ fn on_go(
                     "{tag} exists on {}, not on the candidate {} ({}): the bridge publishes no release of it",
                     texts::short(&sha),
                     c.tag,
-                    texts::short(&c.sha)
+                    texts::short(&target)
                 ),
             );
             return;
@@ -2536,10 +2569,10 @@ fn on_go(
                 report,
                 &item.key,
                 &format!("tag {tag} (GO)"),
-                json!({"candidate": c.tag, "sha": c.sha}),
+                json!({"candidate": c.tag, "sha": target}),
                 || {
                     t.github
-                        .create_tag(&t.repo, &tag, &c.sha, &message)
+                        .create_tag(&t.repo, &tag, &target, &message)
                         .map_err(|e| e.to_string())
                 },
             );
@@ -2593,6 +2626,34 @@ fn on_go(
                 .map_err(|e| e.to_string())
         });
     }
+}
+
+/// The commit the GO tags (spec 05 §9, §12): the candidate's own, or, with a
+/// release note writer and the version's note files changed on the release
+/// branch since the candidate, the branch's tip, so that the tag carries the
+/// unified note to GitHub and to the apps. The GO already holds unless the
+/// tip differs from the candidate by bookkeeping only (§8).
+fn go_target(t: &Tick, c: &Candidate, branch: &str) -> Result<String, String> {
+    let release = section(t);
+    if release.note_writer.is_none() {
+        return Ok(c.sha.clone());
+    }
+    let paths = super::release_note::note_paths(release, &c.version.to_string());
+    let cmp = t
+        .github
+        .compare(&t.repo, &c.sha, branch)
+        .map_err(|e| format!("{branch} could not be compared with {}: {e}", c.tag))?;
+    if !cmp.files.iter().any(|f| paths.contains(f)) {
+        return Ok(c.sha.clone());
+    }
+    let tip = t
+        .github
+        .branches(&t.repo, branch)
+        .map_err(|e| format!("the branch {branch}: {e}"))?
+        .into_iter()
+        .find(|b| b.name == branch)
+        .ok_or_else(|| format!("the branch {branch} is gone"))?;
+    Ok(tip.sha)
 }
 
 /// The commit the release tag names, or `None` when it does not exist.

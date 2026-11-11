@@ -154,7 +154,7 @@ fn marked_item(description: &str) -> Option<BridgeItem> {
 /// never a fact about it.
 static IDENTITY_MARKER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"spl-asdlc:(release|angle|consolidation|gate-fix|finding|pr-ticket|post-deploy-validation)((?: [a-z]+=[^\s`>]+)*)(?:[\s`]|$)",
+        r"spl-asdlc:(release-note|release|angle|consolidation|gate-fix|finding|pr-ticket|post-deploy-validation)((?: [a-z]+=[^\s`>]+)*)(?:[\s`]|$)",
     )
     .unwrap()
 });

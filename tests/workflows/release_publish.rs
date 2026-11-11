@@ -293,11 +293,11 @@ fn a_release_with_no_candidate_of_its_version_is_refused() {
 
 #[test]
 fn nothing_but_the_candidates_own_reports_may_follow_it() {
-    // The version and the notes are the candidate's: a CHANGELOG or a
-    // version file changed after it is a change no gate saw.
+    // The version and the code are the candidate's: a version file or any
+    // code changed after it is a change no gate saw.
     for files in [
-        vec![("CHANGELOG.md", "## 1.2.0\n")],
         vec![("Cargo.toml", "[package]\n")],
+        vec![("notes/1.2.0.md", "x\n")],
         vec![("src/extra.rs", "x\n")],
     ] {
         let repo = cycle();
@@ -308,6 +308,45 @@ fn nothing_but_the_candidates_own_reports_may_follow_it() {
         assert!(r.log.contains("Cut a new RC"), "{}", r.log);
         assert_eq!(r.output("rc-tag"), None);
     }
+}
+
+/// The unified release note (spec 05 §12) is written on the release branch
+/// after the candidate: the CHANGELOG, and the version's own notes file under
+/// `release.changelog_dir` of the configuration at the candidate, may follow
+/// it; another version's notes file may not.
+#[test]
+fn the_unified_release_note_may_follow_the_candidate() {
+    let repo = cycle();
+    repo.write(
+        ".spl-asdlc/config.toml",
+        "[release]\nchangelog_dir = \"notes/\"\n",
+    );
+    repo.commit("chore: configure");
+    repo.git(&["tag", "-f", "acme-v1.2.0-rc.10"]);
+    release(
+        &repo,
+        "acme-v1.2.0",
+        &[
+            ("CHANGELOG.md", "## 1.2.0\n\nOne note.\n"),
+            ("notes/1.2.0.md", "One note.\n"),
+        ],
+    );
+    let env = [("CONFIG_FILE", ".spl-asdlc/config.toml")];
+    let r = candidate(&repo, &env);
+    assert_eq!(r.code, 0, "{}", r.log);
+    assert_eq!(r.output("rc-tag").as_deref(), Some("acme-v1.2.0-rc.10"));
+
+    let repo = cycle();
+    repo.write(
+        ".spl-asdlc/config.toml",
+        "[release]\nchangelog_dir = \"notes/\"\n",
+    );
+    repo.commit("chore: configure");
+    repo.git(&["tag", "-f", "acme-v1.2.0-rc.10"]);
+    release(&repo, "acme-v1.2.0", &[("notes/1.1.0.md", "Rewritten.\n")]);
+    let r = candidate(&repo, &env);
+    assert_eq!(r.code, 1, "{}", r.log);
+    assert!(r.log.contains("  notes/1.1.0.md"), "{}", r.log);
 }
 
 const ANGLES: &str = r#"["security", "product"]"#;

@@ -1359,7 +1359,8 @@ fn project_check(config: &Config, tracker: &dyn Tracker) -> Check {
 }
 
 /// The configured assignees, named by their key: each angle's `assignee`
-/// each round's `coordinator_assignee`, and the release fixer.
+/// each round's `coordinator_assignee`, the release fixer and the release
+/// note's writer and reviewer.
 fn participants(config: &Config) -> Vec<(String, &str)> {
     let mut out = Vec::new();
     let release = Some((
@@ -1382,8 +1383,14 @@ fn participants(config: &Config) -> Vec<(String, &str)> {
             out.push((format!("{table}.coordinator_assignee"), name.as_str()));
         }
     }
-    if let Some(name) = &config.release.fix_assignee {
-        out.push(("release.fix_assignee".to_string(), name.as_str()));
+    for (key, name) in [
+        ("release.fix_assignee", &config.release.fix_assignee),
+        ("release.note_writer", &config.release.note_writer),
+        ("release.note_reviewer", &config.release.note_reviewer),
+    ] {
+        if let Some(name) = name {
+            out.push((key.to_string(), name.as_str()));
+        }
     }
     out
 }
@@ -1467,7 +1474,9 @@ fn fix_of(name: &str, config: &Config) -> Fix {
         ),
         n if n.ends_with(".assignee")
             || n.ends_with(".coordinator_assignee")
-            || n == "release.fix_assignee" =>
+            || n == "release.fix_assignee"
+            || n == "release.note_writer"
+            || n == "release.note_reviewer" =>
         {
             ("Name a participant the tracker knows.", tracker)
         }

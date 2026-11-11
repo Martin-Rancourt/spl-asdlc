@@ -197,6 +197,14 @@ pub struct Release {
     /// ticket of a blocking QA finding and the gate-fix ticket of a red gate
     /// are assigned to it; `None` leaves them unassigned, taken by role.
     pub fix_assignee: Option<String>,
+    /// The tracker participant who writes the release's unified release
+    /// note: with one, the first candidate of a release gets a task
+    /// « Write the unified release note » assigned to it; `None` creates
+    /// none, and the release note stays the tickets' notes.
+    pub note_writer: Option<String>,
+    /// The tracker participant who reviews the unified release note before
+    /// publication, read only with a `note_writer`; `None` creates no review.
+    pub note_reviewer: Option<String>,
     pub escalation_label: String,
     /// The label a person puts on the release item to hold its GO: while
     /// it is there the bridge neither tags nor publishes the release.
@@ -1053,6 +1061,8 @@ impl Validator {
         let coordinator_assignee =
             self.optional("release.coordinator_assignee", raw.coordinator_assignee);
         let fix_assignee = self.optional("release.fix_assignee", raw.fix_assignee);
+        let note_writer = self.optional("release.note_writer", raw.note_writer);
+        let note_reviewer = self.optional("release.note_reviewer", raw.note_reviewer);
         let escalation_label = self
             .optional("release.escalation_label", raw.escalation_label)
             .unwrap_or_else(|| "blocked-by-human".to_string());
@@ -1106,6 +1116,8 @@ impl Validator {
             coordinators,
             coordinator_assignee,
             fix_assignee,
+            note_writer,
+            note_reviewer,
             escalation_label,
             hold_label,
             auto_candidate,
