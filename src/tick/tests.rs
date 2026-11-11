@@ -3389,6 +3389,85 @@ fn a_pr_citing_a_rule_with_no_file_in_the_registry_is_held_and_told_so() {
 }
 
 #[test]
+fn business_rule_notices_follow_changes_without_duplicates_and_retry_failures() {
+    use crate::tracker::Tracker;
+    let mut w = World::new();
+    citing(&mut w, "BR-ACME-002", &["BR-ACME-001"]);
+    let mut pr = w.github.state.borrow().open_pulls[&repo()]
+        .as_ref()
+        .unwrap()[0]
+        .clone();
+    pr.threads = vec![ReviewThread {
+        resolved: false,
+        outdated: false,
+        path: None,
+    }];
+    w.open(pr);
+    w.tracker.fail_writes_starting_with("comment ABC-7");
+    let (report, _) = w.tick(false);
+    assert!(!report.ok());
+    assert!(!merged(&w));
+    w.tracker.clear_failing_writes();
+    w.tick(false);
+    w.tick(false);
+    let comments = w.tracker.comments("ABC-7").unwrap();
+    assert_eq!(comments.len(), 1);
+    assert!(comments[0].body.contains("BR-ACME-002"));
+    assert!(comments[0].body.contains("/pull/7"));
+    let description = COMPLETE
+        .replace("- [ ] it is fast", "- [x] it is fast")
+        .replace("No new rule.", "- BR-ACME-003 applies.");
+    w.tracker.update_description("ABC-7", &description).unwrap();
+    w.tick(false);
+    assert_eq!(w.tracker.comments("ABC-7").unwrap().len(), 2);
+    w.github.state.borrow_mut().files.insert(
+        (
+            repo(),
+            "head-7".into(),
+            ".spl-asdlc/business-rules/BR-ACME-003.md".into(),
+        ),
+        Ok("# BR-ACME-003 — A rule.\n".into()),
+    );
+    w.tick(false);
+    let comments = w.tracker.comments("ABC-7").unwrap();
+    assert_eq!(comments.len(), 3);
+    assert!(comments[2].body.contains("cleared"));
+    let description = description.replace("BR-ACME-003", "BR-ACME-002");
+    w.tracker.update_description("ABC-7", &description).unwrap();
+    w.tick(false);
+    w.tick(false);
+    let comments = w.tracker.comments("ABC-7").unwrap();
+    assert_eq!(comments.len(), 4);
+    assert!(comments[3].body.contains("BR-ACME-002"));
+}
+
+#[test]
+fn business_rule_notices_are_independent_for_prs_on_the_same_ticket() {
+    use crate::tracker::Tracker;
+    let mut w = World::new();
+    citing(&mut w, "BR-ACME-002", &["BR-ACME-001"]);
+    let mut other = w.github.state.borrow().open_pulls[&repo()]
+        .as_ref()
+        .unwrap()[0]
+        .clone();
+    other.number = 8;
+    other.url = other.url.replace("/pull/7", "/pull/8");
+    w.tracker.link("ABC-7", &other.url);
+    w.open(other);
+    w.tick(false);
+    w.tick(false);
+    let comments = w.tracker.comments("ABC-7").unwrap();
+    let notices: Vec<_> = comments
+        .iter()
+        .filter(|c| c.body.contains("business-rule-notice"))
+        .collect();
+    assert_eq!(notices.len(), 2, "{comments:?}");
+    assert!(notices.iter().any(|c| c.body.contains("/pull/7")));
+    assert!(notices.iter().any(|c| c.body.contains("/pull/8")));
+    assert!(!merged(&w));
+}
+
+#[test]
 fn a_rule_stated_by_the_ticket_merges_once_its_pr_adds_the_rule_file() {
     let mut w = World::new();
     no_review(&mut w);

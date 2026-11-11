@@ -768,8 +768,21 @@ fn one(
                 ],
                 &business_rules::refusal(&gate, &ticket.key),
             );
+            business_rule_notice(
+                t,
+                log,
+                report,
+                &pr,
+                &ticket.key,
+                Some(&business_rules::refusal(&gate, &ticket.key)),
+            );
             return None;
         }
+    }
+    // A previous refusal may have cleared even when the registry is no
+    // longer needed. Notification failures never change the merge decision.
+    if files.is_some() {
+        business_rule_notice(t, log, report, &pr, &ticket.key, None);
     }
 
     // ---- the branch ----
@@ -1005,6 +1018,62 @@ fn one(
         approved_by: Some(by),
         dismiss,
     })
+}
+
+/// The latest bridge comment for this PR is the state: Livela cannot edit
+/// comments, so write only transitions and changed diagnostics.
+fn business_rule_notice(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    pr: &PullRequest,
+    key: &str,
+    refusal: Option<&str>,
+) {
+    let marker = texts::marker("business-rule-notice", &[("pr", &pr.url)]);
+    let comments = match t.tracker.comments(key) {
+        Ok(comments) => comments,
+        Err(e) => {
+            t.unreadable(
+                report,
+                key,
+                format!("business-rule notification comments: {e}"),
+            );
+            return;
+        }
+    };
+    let last = comments
+        .iter()
+        .rev()
+        .find(|c| c.by_bridge && texts::has_marker(&c.body, &marker));
+    let body = match refusal {
+        Some(reason) => format!(
+            "Business-rule merge block for {key}, PR [{}]({}):\n\n{reason}\n\n{marker}",
+            pr.number, pr.url
+        ),
+        None if last.is_some_and(|c| c.body.contains("Business-rule merge block for")) => format!(
+            "Business-rule merge block cleared for {key}, PR [{}]({}).\n\n{marker}",
+            pr.number, pr.url
+        ),
+        None => return,
+    };
+    let body = for_tracker(t, &body);
+    if last.is_some_and(|c| c.body == body) {
+        return;
+    }
+    t.act(
+        log,
+        report,
+        key,
+        "comment business-rule notice",
+        json!({"pr": pr.url}),
+        || {
+            t.tracker
+                .comment(key, &body)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        },
+    );
 }
 
 /// A coordinator requested changes at the head (spec 04 §5): the ticket In
