@@ -821,6 +821,31 @@ fn the_nits_grouping_is_gone_and_refused_as_unknown() {
 }
 
 #[test]
+fn the_release_note_writer_and_reviewer_are_optional_instance_keys_set_in_one_file_only() {
+    let c = Config::parse(MINIMAL).unwrap();
+    assert_eq!(c.release.note_writer, None);
+    assert_eq!(c.release.note_reviewer, None);
+    let keys = "[release]\nnote_writer = \"writer-handle\"\nnote_reviewer = \"reviewer-handle\"\n";
+    let single = MINIMAL.replace("[release]\n", keys);
+    let c = Config::parse(&single).unwrap();
+    assert_eq!(c.release.note_writer.as_deref(), Some("writer-handle"));
+    assert_eq!(c.release.note_reviewer.as_deref(), Some("reviewer-handle"));
+    let overlay = OVERLAY.replace("[release]\n", keys);
+    let c = merged(NEUTRAL, &overlay).unwrap();
+    assert_eq!(c.release.note_writer.as_deref(), Some("writer-handle"));
+    assert_eq!(c.release.note_reviewer.as_deref(), Some("reviewer-handle"));
+    let both = NEUTRAL.replace(
+        "[[release.angles]]\n",
+        "[release]\nnote_writer = \"another-handle\"\n\n[[release.angles]]\n",
+    );
+    assert_merge_refused_with(&both, &overlay, "release.note_writer: is set in both");
+    assert_refused_with(
+        &MINIMAL.replace("[release]\n", "[release]\nnote_writer = \" \"\n"),
+        "release.note_writer",
+    );
+}
+
+#[test]
 fn the_release_fixer_is_an_optional_instance_key_set_in_one_file_only() {
     let single = MINIMAL.replace(
         "[release]\n",

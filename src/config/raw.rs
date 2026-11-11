@@ -66,6 +66,8 @@ pub(super) struct RawRelease {
     pub coordinators: Option<Vec<String>>,
     pub coordinator_assignee: Option<String>,
     pub fix_assignee: Option<String>,
+    pub note_writer: Option<String>,
+    pub note_reviewer: Option<String>,
     pub escalation_label: Option<String>,
     pub hold_label: Option<String>,
     pub auto_candidate: Option<bool>,
@@ -193,6 +195,8 @@ pub(super) struct RawOverlayRelease {
     pub coordinators: Option<Vec<String>>,
     pub coordinator_assignee: Option<String>,
     pub fix_assignee: Option<String>,
+    pub note_writer: Option<String>,
+    pub note_reviewer: Option<String>,
     #[serde(default)]
     pub angles: Vec<RawOverlayAngle>,
 }

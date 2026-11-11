@@ -18,6 +18,7 @@ pub mod method_texts;
 pub mod pause;
 pub mod post_deploy;
 pub mod release;
+pub mod release_note;
 pub mod retract;
 pub mod sweep;
 

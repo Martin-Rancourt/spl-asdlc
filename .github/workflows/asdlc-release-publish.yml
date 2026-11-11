@@ -281,6 +281,7 @@ jobs:
           QA_RECORD: ${{ inputs.qa-record }}
           QA_ANGLES: ${{ inputs.qa-angles }}
           DEFAULT_BRANCH: ${{ inputs.default-branch }}
+          CONFIG_FILE: ${{ inputs.config-file }}
         shell: bash
         run: |
           set -euo pipefail
@@ -372,9 +373,10 @@ jobs:
           fi
 
           # REQ-CI-078: the release is its candidate. The bridge tags the
-          # candidate's own commit on its GO; a person may tag the release
-          # branch's tip instead, which differs from the candidate only by
-          # the latest candidate's report of each angle,
+          # candidate's own commit on its GO, or the release branch's tip
+          # when a unified release note was written there; a person may tag
+          # the tip too, which differs from the candidate only by its note
+          # files and the latest candidate's report of each angle,
           # `<record>/<angle>.json`: the last pass's reports land after its
           # candidate by construction. They are rendered for RC_TAG only, so
           # an earlier candidate's report is a delta like any other.
@@ -385,6 +387,33 @@ jobs:
           while IFS= read -r angle; do
             printf '%s/%s.json\n' "$qa_dir" "$angle" >> "$work/allowed"
           done < "$work/angles"
+          # The unified release note (spec 05 §12): written on the release
+          # branch after the cut, in the CHANGELOG and the version's own
+          # notes file under `release.changelog_dir` (read from the
+          # configuration at the candidate). Text only, no code the gate
+          # did not see.
+          echo CHANGELOG.md >> "$work/allowed"
+          config_file="${CONFIG_FILE:-}"
+          if [ -n "$config_file" ] && [[ "$config_file" != /* ]] && [[ "/$config_file/" != */../* ]] &&
+            git show "$RC_SHA:$config_file" > "$work/rc-config" 2> /dev/null; then
+            notes_dir="$(python3 - "$work/rc-config" << 'PY' || true
+          import sys
+          import tomllib
+
+          try:
+              with open(sys.argv[1], "rb") as f:
+                  release = tomllib.load(f).get("release", {})
+          except (OSError, tomllib.TOMLDecodeError):
+              sys.exit(0)
+          d = release.get("changelog_dir") if isinstance(release, dict) else None
+          if isinstance(d, str) and d.strip() and "\n" not in d:
+              print(d.strip().rstrip("/"))
+          PY
+            )"
+            if [ -n "$notes_dir" ]; then
+              printf '%s/%s.md\n' "$notes_dir" "$RC_VERSION" >> "$work/allowed"
+            fi
+          fi
           if ! git diff --no-renames --name-only "$RC_SHA" "$RELEASE_SHA" > "$work/changed"; then
             refuse "git diff $RC_TAG $RELEASE_TAG failed: what changed since the candidate is not established."
           fi
