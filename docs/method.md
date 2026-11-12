@@ -42,10 +42,12 @@ flowchart LR
 
 **In Progress.** Whoever starts the ticket, agent or person, moves it to In Progress. With Livela, the agent's verb ("implement the next ticket") does it.
 
+**Check as you go.** The implementer checks each box of the ticket as soon as it is done, acceptance criteria and business rules included, never at the merge: the ticket shows its real progress. A box that becomes moot is checked too, with a comment on the ticket saying why. A checked box is the implementer's declaration that it is done; every box checked is the signal that the PR is ready for review. The boxes under `## Post deploy` are the exception: they stay open until they are verified in production.
+
 **In Review.** The ticket moves to In Review as soon as its PR is opened.
 - CI runs first: the project's own checks, plus the method's PR-title and guard checks, gathered in one `required-check`. The guards also refuse a PR whose `.spl-asdlc/process.md` is not the page of the pinned version.
 - Once CI is green, the configured reviews start, if any (below).
-- The author ticks the boxes the PR delivers.
+- The review verifies every checked box. A box checked but not really done is unchecked, with a comment on the ticket saying what is missing; the bridge then sends the PR back to draft and the ticket to its implementer, In Progress.
 
 **One ticket ships in one PR.** If a technical constraint requires splitting the work, use sibling tickets linked through `blocked by`, each with its own PR. Every box outside `## Post deploy` must be checked before ready; the bridge sends a PR with unfinished work back to draft and lists what is missing on the ticket. Every PR stands alone and starts from `main`.
 
