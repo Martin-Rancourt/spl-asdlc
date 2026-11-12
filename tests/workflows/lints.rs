@@ -208,13 +208,17 @@ fn permissions_are_set_at_the_top_and_restated_per_job_of_a_reusable_workflow() 
 #[test]
 fn every_action_is_pinned_by_commit() {
     let pinned = Regex::new(r"^[^@\s]+@[0-9a-f]{40}$").unwrap();
+    // This repository's own callers name this product's actions at its
+    // published minor line (BR-ASDLC-023), as a project's do.
+    let this_product_at_a_line =
+        Regex::new(r"^[A-Za-z0-9-]+/spl-asdlc/actions/[a-z-]+@v[0-9]+\.[0-9]+$").unwrap();
     for f in files() {
         let doc = load(&f);
         for (job, s) in steps(&doc) {
             let Some(uses) = s["uses"].as_str() else {
                 continue;
             };
-            if uses.starts_with("./") {
+            if uses.starts_with("./") || this_product_at_a_line.is_match(uses) {
                 continue;
             }
             assert!(

@@ -1,0 +1,71 @@
+name: release-gate
+
+# This repository's gate: the caller of asdlc-release-gate.yml, as
+# docs/setup/examples/release-gate.yml shows it, pinned at the published
+# minor line the bridge embeds (v1.9), never this commit (BR-ASDLC-023). The
+# push of a candidate tag `v<X.Y.Z>-rc.<N>` is the trigger; the bridge reads
+# this workflow's run on the tag, and only its conclusion `success` is green.
+# A dispatch is for diagnostics only: it certifies nothing.
+#
+# The suites are pr.yml's checks on the candidate's commit, on Linux: format,
+# lints, tests, rule zero. The binaries of every target are built and tested
+# once, by the publication (release-publish.yml), before any is attached.
+
+on:
+  push:
+    tags: ['v*-rc.*']
+  workflow_dispatch:
+    inputs:
+      release_class:
+        description: Diagnostics only; empty reads the class from the tag.
+        type: choice
+        options: ['', routine, sensible]
+        default: ''
+
+concurrency:
+  group: release-gate
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # The build on the exact commit; the gate runs no suite unless it succeeded.
+  preflight:
+    name: preflight
+    runs-on: ${{ fromJSON(vars.SPL_ASDLC_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: stable
+      - run: cargo build --locked
+
+  gate:
+    needs: preflight
+    if: always()
+    permissions:
+      contents: read
+      statuses: write
+    uses: Martin-Rancourt/spl-asdlc/.github/workflows/asdlc-release-gate.yml@v1.9
+    with:
+      candidate-tag: v{version}-rc.{rc}
+      release-tag: v{version}
+      upstream-result: ${{ needs.preflight.result }}
+      dispatch-class: ${{ inputs.release_class }}
+      setup-command: rustup toolchain install stable --profile minimal --component rustfmt,clippy && rustup default stable
+      suites: >-
+        [{"id": "fmt", "run": "cargo fmt --all --check 2>&1 | tee \"$EVIDENCE_DIR/fmt.log\""},
+         {"id": "clippy", "run": "cargo clippy --all-targets --locked -- -D warnings 2>&1 | tee \"$EVIDENCE_DIR/clippy.log\""},
+         {"id": "tests", "run": "cargo test --locked 2>&1 | tee \"$EVIDENCE_DIR/tests.log\"",
+          "expect-nonempty": "tests.log"},
+         {"id": "rule-zero", "run": "bash scripts/check-no-instance-names.sh 2>&1 | tee \"$EVIDENCE_DIR/rule-zero.log\""}]
+      # pr.yml's checks are jobs of their own: no guard command to repeat.
+      guard-commands: '[]'
+      runs-on: ${{ startsWith(vars.SPL_ASDLC_RUNS_ON, '"') && fromJSON(vars.SPL_ASDLC_RUNS_ON) || vars.SPL_ASDLC_RUNS_ON || 'ubuntu-latest' }}

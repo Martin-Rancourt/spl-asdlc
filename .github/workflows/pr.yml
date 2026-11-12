@@ -2,7 +2,10 @@ name: pr
 
 # This repository's own pull request check: the caller of asdlc-pr-checks.yml
 # and of the required-check action, as docs/setup/examples/pr.yml shows them,
-# called from this commit (`./`), so a PR exercises the workflows it changes.
+# pinned at the published minor line the bridge embeds (v1.9), never this
+# commit: the method checks this repository as it checks any project
+# (BR-ASDLC-023). The workflows a PR changes are exercised by the tests
+# (tests/workflows/) and on the sandbox (.spl-asdlc/development.md).
 # The ruleset requires two contexts, `required-check` and `title /
 # conventional-title`: the job `guards`, named `title`, runs the title check
 # with the guards.
@@ -24,8 +27,8 @@ name: pr
 # (ASDLC-76ZK). An edit is checked by pr-edit.yml: the new title, and a new
 # base, which holds the PR until a push or a reopen runs this workflow on it.
 #
-# GitHub Flow: every change reaches main through a PR to main, so the PR is
-# the only trigger. No run on a push to main: the PR already ran on its merge
+# Every change reaches main through a PR to main, and a QA fix reaches a
+# release branch through a PR to it, so the PR is the only trigger. No run on a push to main: the PR already ran on its merge
 # commit, and the hosted minutes are a budget. Linux only: a macOS minute
 # counts ten and a Windows minute two; binaries.yml builds and tests those
 # once per release.
@@ -45,7 +48,7 @@ name: pr
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    branches: [main]
+    branches: [main, 'release/**']
 
 concurrency:
   group: pr-${{ github.ref }}-${{ github.event.pull_request.draft }}
@@ -60,7 +63,7 @@ jobs:
     if: github.event.pull_request.draft == false
     permissions:
       contents: read
-    uses: ./.github/workflows/asdlc-pr-checks.yml
+    uses: Martin-Rancourt/spl-asdlc/.github/workflows/asdlc-pr-checks.yml@v1.9
     with:
       title: ${{ github.event.pull_request.title }}
       base-sha: ${{ github.event.pull_request.base.sha }}
@@ -68,22 +71,20 @@ jobs:
       head-ref: ${{ github.event.pull_request.head.ref }}
       base-ref: ${{ github.event.pull_request.base.ref }}
       head-repo: ${{ github.event.pull_request.head.repo.full_name }}
-      # The types of the changelog sections of release-please-config.json
-      # (REQ-CI-016): a type without a section would ship in silence.
+      # The types the release note sorts (REQ-CI-016).
       allowed-types: build,chore,ci,docs,feat,fix,perf,refactor,revert,style,test
       # Nothing here is prose: the tests read docs/reference/, .spl-asdlc/business-rules/,
       # docs/setup/templates/ and docs/setup/examples/, and rule zero reads
       # every file. Only the licence text, which no test reads, skips the suite.
       prose-regex: '^LICENSE$'
-      # This repository is outside its own method and copies no process
-      # page: the check reads the page's source, which must match the blob
-      # id the workflow carries.
-      process-page: docs/agents/process.md
+      # The copy of the process page at the pinned version, as in any
+      # project; docs/agents/process.md is its source for the next release.
+      process-page: .spl-asdlc/process.md
       # This repository's checks are jobs of their own.
       guard-commands: '[]'
       runs-on: ${{ github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || startsWith(vars.SPL_ASDLC_RUNS_ON, '"') && fromJSON(vars.SPL_ASDLC_RUNS_ON) || vars.SPL_ASDLC_RUNS_ON || 'ubuntu-latest' }}
 
-  # BR-ASDLC-001, on every PR but a draft, release-please's included: it
+  # BR-ASDLC-001, on every PR but a draft, the cut's own included: it
   # reads every tracked file and costs seconds.
   rule-zero:
     name: BR-ASDLC-001 — no instance data
@@ -102,9 +103,7 @@ jobs:
           SPL_ASDLC_FORBIDDEN_WORDS: ${{ secrets.SPL_ASDLC_FORBIDDEN_WORDS || vars.SPL_ASDLC_FORBIDDEN_WORDS }}
         run: bash scripts/check-no-instance-names.sh
 
-  # Skipped on release-please's PRs (guards reports no code): they change
-  # only the version and the changelog, and binaries.yml tests the release on
-  # every target before attaching it.
+  # Skipped on a PR that changes no code (guards reports none).
   fmt:
     name: rustfmt
     needs: guards
@@ -123,7 +122,6 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all --check
 
-  # Not on release-please's PRs either.
   clippy:
     name: clippy
     needs: guards
@@ -171,22 +169,17 @@ jobs:
           cache-bin: "false"
       - run: cargo test --locked
 
-  # The action is this commit's, so it is checked out first. always(): it
-  # runs whatever its needs gave, but never on a draft.
+  # The action of the pinned version. always(): it runs whatever its needs
+  # gave, but never on a draft.
   required-check:
     name: required-check
     if: always() && github.event.pull_request.draft == false
     needs: [guards, rule-zero, fmt, clippy, test]
     runs-on: ${{ fromJSON(github.event.pull_request.head.repo.full_name == github.repository && vars.SPL_ASDLC_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 5
-    permissions:
-      contents: read
+    permissions: {}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          sparse-checkout: actions/required-check
-      - uses: ./actions/required-check
+      - uses: Martin-Rancourt/spl-asdlc/actions/required-check@v1.9
         with:
           needs: ${{ toJSON(needs) }}
           may-skip: fmt,clippy,test

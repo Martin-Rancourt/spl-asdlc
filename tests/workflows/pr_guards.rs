@@ -309,8 +309,8 @@ fn the_guards_carry_the_blob_id_of_this_versions_process_page() {
     let own = workflow(".github/workflows/pr.yml");
     assert_eq!(
         own["jobs"]["guards"]["with"]["process-page"].as_str(),
-        Some(PROCESS),
-        "this repository checks the page's source itself"
+        Some(".spl-asdlc/process.md"),
+        "this repository checks its copy at the pinned version, as any project (BR-ASDLC-023)"
     );
 }
 
