@@ -1,34 +1,81 @@
-name: publish
+name: release-publish
 
-# The publication of a spl-asdlc release: once release-please (running as the
-# App, release-please.yml) has published the GitHub release of a tag
-# `v<X.Y.Z>`, binaries.yml builds and tests the binary on every target from
-# that tag and attaches the archives and their sums to the release; then the
-# minor tag `v<X.Y>` is moved to the release's commit and the crate is
-# published on crates.io. Nothing else: this repository does not run the
-# SPL-ASDLC release cycle on itself.
+# The publication of a spl-asdlc release: the caller of
+# asdlc-release-publish.yml, as docs/setup/examples/release-publish.yml shows
+# it, pinned at the published minor line the bridge embeds (v1.9), never
+# this commit (BR-ASDLC-023), with this repository's own publication between
+# its two stages:
 #
-# Three writes, each in its job: binaries.yml's, which attaches the archives
-# to the release (this caller grants `contents: write`, and binaries.yml
-# keeps it to that one job), the minor tag's, and the crate's, with the
-# crates.io token of the `crates-io` environment. The major tag `v<X>` is
-# never moved here: it stays the owner's gesture
+#   verify -> binaries -> minor-tag, crates-io -> close
+#
+# The trigger is the GitHub release the bridge publishes as its App on its
+# computed GO (the tag `v<X.Y.Z>` on the latest candidate), or that a person
+# publishes by hand. `verify` refuses a release that is not the GO's;
+# binaries.yml then builds and tests the binary on every target from that
+# tag and attaches the archives and their sums to the release; the minor tag
+# `v<X.Y>` moves to the release's commit and the crate is published on
+# crates.io; `close` merges the release branch back into `main`. A dispatch
+# resumes a publication or, with `replay` on the release branch, merges the
+# branch back only.
+#
+# Writes: binaries.yml's, which attaches the archives (this caller grants
+# `contents: write`, and binaries.yml keeps it to that one job), the minor
+# tag's, the crate's, with the crates.io token of the `crates-io`
+# environment, and the merge back's, with the App token. The major tag `v<X>`
+# is never moved here: it stays the owner's gesture
 # (docs/setup/repository.md, "The workflows' tag").
 
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      release-tag:
+        description: The published release tag to resume; empty on a replay.
+        type: string
+        default: ''
+      resume-from:
+        description: The RC tag to redeploy (a resume); empty otherwise.
+        type: string
+        default: ''
+      replay:
+        description: Merge the release branch back only; dispatch on that branch.
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-publish
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
+  verify:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.replay) }}
+    permissions:
+      contents: read
+      actions: read
+    uses: Martin-Rancourt/spl-asdlc/.github/workflows/asdlc-release-publish.yml@v1.9
+    with:
+      stage: verify
+      release-tag: ${{ github.event.release.tag_name || inputs.release-tag }}
+      resume-from: ${{ inputs.resume-from }}
+      candidate-tag: v{version}-rc.{rc}
+      release-tag-pattern: v{version}
+      # No QA angle (`[release] angles = []`).
+      qa-angles: '[]'
+      # The slug of the bridge's App, a repository variable: the release must
+      # have been published by this App or by a person; any other bot is no GO.
+      go-publisher-login: ${{ vars.SPL_ASDLC_APP_SLUG }}
+
   binaries:
+    needs: verify
     permissions:
       contents: write
     uses: ./.github/workflows/binaries.yml
     with:
-      tag: ${{ github.event.release.tag_name }}
+      tag: ${{ github.event.release.tag_name || inputs.release-tag }}
 
   # A caller on `@v<X.Y>` gets every patch of that line. The tag moves only
   # once the binaries are attached: a release whose build or tests failed on
@@ -44,7 +91,7 @@ jobs:
     permissions:
       contents: write
     env:
-      TAG: ${{ github.event.release.tag_name }}
+      TAG: ${{ github.event.release.tag_name || inputs.release-tag }}
       PRERELEASE: ${{ github.event.release.prerelease }}
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -108,7 +155,7 @@ jobs:
     permissions:
       contents: read
     env:
-      TAG: ${{ github.event.release.tag_name }}
+      TAG: ${{ github.event.release.tag_name || inputs.release-tag }}
       PRERELEASE: ${{ github.event.release.prerelease }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -168,3 +215,22 @@ jobs:
             exit 1
           fi
           cargo publish --locked
+
+  # Always called: its `closing-guard` turns a close that did not run after a
+  # publication into a red run. Its merge back shows as `close / merge-back`.
+  close:
+    needs: [verify, binaries, minor-tag, crates-io]
+    if: ${{ always() }}
+    permissions:
+      contents: read
+      actions: read
+    uses: Martin-Rancourt/spl-asdlc/.github/workflows/asdlc-release-publish.yml@v1.9
+    with:
+      stage: close
+      release-tag: ${{ github.event.release.tag_name || inputs.release-tag }}
+      resume-from: ${{ inputs.resume-from }}
+      replay: ${{ inputs.replay || false }}
+      publish-result: ${{ needs.binaries.result }}
+    secrets:
+      SPL_ASDLC_APP_ID: ${{ secrets.SPL_ASDLC_APP_ID }}
+      SPL_ASDLC_APP_PRIVATE_KEY: ${{ secrets.SPL_ASDLC_APP_PRIVATE_KEY }}

@@ -1,0 +1,29 @@
+# .spl-asdlc/config.toml: the configuration of this repository
+# (docs/reference/08-configuration.md). This repository runs its own method,
+# at a published, pinned version (BR-ASDLC-023): the bridge is the one the
+# Livela runner embeds, and every workflow caller names that minor line.
+# The method's shape only: the identities of the installation (the
+# repository, the tracker's team and project, the owner) are in the instance
+# overlay of the host that runs the bridge.
+
+schema = 1
+
+[product]
+name = "spl-asdlc"
+
+[tracker]
+kind = "livela"
+# A PR names its item as livela://item/<id> in its body: the bridge links it.
+link_fallback = "body-url"
+
+[review]
+require_up_to_date = false
+ticketless_authors = ["dependabot"]
+angles = []                            # no PR review: a PR merges on its CI
+
+[release]
+# The tags this repository has always had: `v<X.Y.Z>`, which the minor line
+# `v<X.Y>` and the major tag `v1` follow (.spl-asdlc/development.md).
+candidate_tag = "v{version}-rc.{rc}"
+release_tag = "v{version}"
+angles = []                            # no QA angle: the GO rests on the release CI

@@ -1,12 +1,13 @@
 //! This repository's own CI: every file of `.github/workflows/` that is not
-//! one of the product's `asdlc-*` workflows. Its callers call the product's
-//! workflows from the same commit (`./`), and are checked as the examples
-//! are (`examples.rs`): only declared inputs and secrets, every required one,
-//! the permissions the called jobs ask for, pins. Then what holds for this
-//! repository only: GitHub Flow on `main`, release-please on `main` as the
-//! App, and a publication that builds the binaries. This repository does not
-//! run the SPL-ASDLC release cycle on itself: it has no release-cut, gate or
-//! release-publish caller.
+//! one of the product's `asdlc-*` workflows. This repository runs its own
+//! method at a published, pinned version (BR-ASDLC-023): every call to a
+//! method unit (an `asdlc-*` workflow, an action of `actions/`) names this
+//! product's repository at one minor line `@v<X.Y>`, never this commit; its
+//! own units (binaries.yml) are called from this commit (`./`). The callers
+//! are checked as the examples are (`examples.rs`): only declared inputs and
+//! secrets, every required one, the permissions the called jobs ask for,
+//! pins. Then what holds for this repository only: the PRs to `main` and to
+//! a release branch, and a publication that builds the binaries.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -39,20 +40,48 @@ fn own(name: &str) -> Yaml {
     workflow(&format!(".github/workflows/{name}"))
 }
 
-/// `./<path>` of this commit -> `<path>`, refusing any other reference: this
-/// repository's PRs and releases exercise the workflows they carry.
+/// A method unit at the pinned line, `<owner>/spl-asdlc/<path>@v<X.Y>`, or
+/// one of this repository's own units of this commit, `./<path>` ->
+/// `<path>`, refusing any other reference (BR-ASDLC-023). A pinned unit is
+/// checked against this commit's copy, which carries the same inputs or
+/// more.
 fn local(uses: &str, what: &str) -> String {
-    let shape = Regex::new(r"^\./(\.github/workflows/[a-z-]+\.yml|actions/[a-z-]+)$").unwrap();
-    let caps = shape
-        .captures(uses)
-        .unwrap_or_else(|| panic!("{what}: `{uses}` is not a unit of this commit (./<path>)"));
-    let path = caps[1].to_string();
+    let pinned = Regex::new(
+        r"^[A-Za-z0-9-]+/spl-asdlc/(\.github/workflows/asdlc-[a-z-]+\.yml|actions/[a-z-]+)@v[0-9]+\.[0-9]+$",
+    )
+    .unwrap();
+    let own = Regex::new(r"^\./(\.github/workflows/[a-z-]+\.yml)$").unwrap();
+    let path = match (pinned.captures(uses), own.captures(uses)) {
+        (Some(caps), _) => caps[1].to_string(),
+        (None, Some(caps)) if !caps[1].contains("/asdlc-") => caps[1].to_string(),
+        _ => panic!(
+            "{what}: `{uses}` is neither a method unit at a pinned line (<owner>/spl-asdlc/<path>@v<X.Y>) nor one of this repository's own workflows (./<path>)"
+        ),
+    };
     assert!(root().join(&path).exists(), "{what}: {path} does not exist");
     path
 }
 
 fn ours(uses: &str) -> bool {
     uses.starts_with("./")
+        || Regex::new(r"^[A-Za-z0-9-]+/spl-asdlc/")
+            .unwrap()
+            .is_match(uses)
+}
+
+/// Every `uses:` of this repository's workflows that names a method unit.
+fn method_calls() -> Vec<(String, String)> {
+    let re =
+        Regex::new(r"uses:\s*(\S*spl-asdlc/\S+|\./\.github/workflows/asdlc-\S+|\./actions/\S+)")
+            .unwrap();
+    let mut out = Vec::new();
+    for f in own_workflows() {
+        let text = std::fs::read_to_string(&f).unwrap();
+        for c in re.captures_iter(&text) {
+            out.push((relative(&f), c[1].to_string()));
+        }
+    }
+    out
 }
 
 fn strings(y: &Yaml) -> Vec<&str> {
@@ -76,14 +105,6 @@ fn needs(job: &Yaml) -> BTreeSet<String> {
     }
 }
 
-fn json(text: &str, what: &str) -> serde_json::Value {
-    serde_json::from_str(text).unwrap_or_else(|e| panic!("{what}: {e}: {text}"))
-}
-
-fn file_json(rel: &str) -> serde_json::Value {
-    json(&std::fs::read_to_string(root().join(rel)).unwrap(), rel)
-}
-
 #[test]
 fn this_repositorys_workflows_are_its_callers_and_binaries() {
     let names: BTreeSet<String> = own_workflows()
@@ -94,8 +115,10 @@ fn this_repositorys_workflows_are_its_callers_and_binaries() {
         "binaries.yml",
         "pr-edit.yml",
         "pr.yml",
-        "publish.yml",
-        "release-please.yml",
+        "release-cut.yml",
+        "release-gate-auto-rerun.yml",
+        "release-gate.yml",
+        "release-publish.yml",
         "staging.yml",
     ]
     .into_iter()
@@ -109,25 +132,40 @@ fn this_repositorys_workflows_are_its_callers_and_binaries() {
             "{}: secrets: inherit (REQ-CI-002)",
             relative(&f)
         );
-        // The release cycle is the product's, exercised on a separate
-        // repository: no caller of the release workflows here.
-        assert!(
-            !text.contains("asdlc-release-"),
-            "{}: this repository does not run its own release cycle",
-            relative(&f)
-        );
     }
 }
 
-/// BR-ASDLC-023: this repository is the one project outside its own method.
-/// It has no method configuration, so no bridge can take it on, and its
-/// releases are release-please's (`release_please_runs_on_main_as_the_app_with_this_repositorys_files`).
+/// BR-ASDLC-023: this repository runs its own method, at a published,
+/// pinned version: a configuration the bridge reads, the process page copied
+/// as in any project, and every method unit called at one minor line, never
+/// this commit, so that a change to the method never checks itself.
 #[test]
-fn this_repository_has_no_method_configuration() {
-    assert!(
-        !root().join(".spl-asdlc/config.toml").exists(),
-        ".spl-asdlc/config.toml: this repository does not run the method on itself (BR-ASDLC-023)"
+fn this_repository_runs_the_method_at_one_pinned_line() {
+    assert!(root().join(".spl-asdlc/config.toml").is_file());
+    assert!(root().join(".spl-asdlc/process.md").is_file());
+    let calls = method_calls();
+    assert!(!calls.is_empty());
+    let line = Regex::new(r"@(v[0-9]+\.[0-9]+)$").unwrap();
+    let lines: BTreeSet<String> = calls
+        .iter()
+        .map(|(f, uses)| {
+            line.captures(uses).unwrap_or_else(|| {
+                panic!("{f}: `{uses}` is not pinned at a minor line (BR-ASDLC-023)")
+            })[1]
+                .to_string()
+        })
+        .collect();
+    assert_eq!(lines.len(), 1, "one pinned line for every call: {lines:?}");
+    // The cut runs the published binary of the same line.
+    let cut = own("release-cut.yml");
+    let with = &cut["jobs"]["release"]["with"];
+    assert_eq!(
+        with["spl-asdlc-version"].as_str(),
+        lines.iter().next().map(String::as_str)
     );
+    // The tags this repository has always had.
+    assert_eq!(with["release-tag"].as_str(), Some("v{version}"));
+    assert_eq!(with["candidate-tag"].as_str(), Some("v{version}-rc.{rc}"));
 }
 
 #[test]
@@ -197,7 +235,7 @@ fn the_pr_workflow_is_unfiltered_runs_on_prs_only_and_aggregates_every_job() {
     assert!(trigger["paths"].is_badvalue() && trigger["paths-ignore"].is_badvalue());
     assert_eq!(
         strings(&trigger["branches"]),
-        ["main"],
+        ["main", "release/**"],
         "GitHub Flow: every PR targets main (REQ-CI-022)"
     );
     assert!(
@@ -213,14 +251,25 @@ fn the_pr_workflow_is_unfiltered_runs_on_prs_only_and_aggregates_every_job() {
     );
 
     check_no_job_runs_on_a_draft(&pr, "pr.yml");
-    check_the_method_checks(&pr, "./.github/workflows/asdlc-pr-checks.yml", "pr.yml");
-    // An edit is checked by pr-edit.yml, from this commit too.
-    check_the_edit_workflow(
-        &own("pr-edit.yml"),
-        &pr,
-        "./.github/workflows/asdlc-pr-edit.yml",
-        "pr-edit.yml",
+    // The method's checks at the pinned line (BR-ASDLC-023).
+    let checks = pr["jobs"]["guards"]["uses"].as_str().unwrap();
+    assert_eq!(
+        local(checks, "pr.yml"),
+        ".github/workflows/asdlc-pr-checks.yml"
     );
+    assert!(
+        !checks.starts_with("./"),
+        "pr.yml: the checks are the pinned version's"
+    );
+    check_the_method_checks(&pr, checks, "pr.yml");
+    // An edit is checked by pr-edit.yml, at the same line.
+    let edit = own("pr-edit.yml");
+    let edit_uses = edit["jobs"]["title"]["uses"].as_str().unwrap();
+    assert_eq!(
+        local(edit_uses, "pr-edit.yml"),
+        ".github/workflows/asdlc-pr-edit.yml"
+    );
+    check_the_edit_workflow(&edit, &pr, edit_uses, "pr-edit.yml");
 
     let aggregator = &pr["jobs"]["required-check"];
     assert_eq!(aggregator["name"].as_str(), Some("required-check"));
@@ -235,14 +284,13 @@ fn the_pr_workflow_is_unfiltered_runs_on_prs_only_and_aggregates_every_job() {
         "every job is a need of required-check (REQ-CI-025)"
     );
     let steps = aggregator["steps"].as_vec().unwrap();
-    assert!(
-        steps[0]["uses"]
-            .as_str()
-            .is_some_and(|u| u.starts_with("actions/checkout@")),
-        "the action of this commit is checked out first"
-    );
+    // The action of the pinned line: nothing to check out (BR-ASDLC-023).
+    assert_eq!(steps.len(), 1);
     let step = steps.last().unwrap();
-    assert_eq!(step["uses"].as_str(), Some("./actions/required-check"));
+    assert_eq!(
+        local(step["uses"].as_str().unwrap(), "pr.yml required-check"),
+        "actions/required-check"
+    );
     assert_eq!(step["with"]["needs"].as_str(), Some("${{ toJSON(needs) }}"));
     // Exactly the jobs an `if:` may skip on a PR that is not a draft.
     let may_skip: BTreeSet<String> = step["with"]["may-skip"]
@@ -328,12 +376,11 @@ fn the_title_check_allows_the_changelog_types() {
         .split(',')
         .map(|t| t.trim().to_string())
         .collect();
-    let config = file_json("release-please-config.json");
-    let sections: BTreeSet<String> = config["packages"]["."]["changelog-sections"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|s| s["type"].as_str().unwrap().to_string())
+    // The types the cut's CHANGELOG sorts (REQ-CI-016): this repository
+    // keeps the default sections.
+    let sections: BTreeSet<String> = spl_asdlc::config::default_changelog_sections()
+        .into_iter()
+        .map(|s| s.kind)
         .collect();
     assert_eq!(allowed, sections, "REQ-CI-016");
 }
@@ -341,47 +388,11 @@ fn the_title_check_allows_the_changelog_types() {
 // ---- the releases of spl-asdlc itself ----
 
 #[test]
-fn release_please_runs_on_main_as_the_app_with_this_repositorys_files() {
-    let rp = own("release-please.yml");
-    assert_eq!(keys(&rp["on"]), BTreeSet::from(["push".to_string()]));
-    assert_eq!(strings(&rp["on"]["push"]["branches"]), ["main"]);
-    let steps = rp["jobs"]["release-please"]["steps"].as_vec().unwrap();
-    let uses = |prefix: &str| {
-        steps
-            .iter()
-            .find(|s| s["uses"].as_str().is_some_and(|u| u.starts_with(prefix)))
-            .unwrap_or_else(|| panic!("no step uses {prefix}"))
-            .clone()
-    };
-    // The App token: a release PR opened with GITHUB_TOKEN would get no
-    // checks, and its release would start no publication.
-    let mint = uses("actions/create-github-app-token@");
-    assert_eq!(mint["id"].as_str(), Some("app-token"));
-    assert_eq!(
-        keys(&mint["with"]),
-        BTreeSet::from(["app-id".to_string(), "private-key".to_string()])
-    );
-    let step = uses("googleapis/release-please-action@");
-    assert_eq!(
-        step["with"]["token"].as_str(),
-        Some("${{ steps.app-token.outputs.token }}")
-    );
-    assert_eq!(step["with"]["target-branch"].as_str(), Some("main"));
-    for (input, file) in [
-        ("config-file", "release-please-config.json"),
-        ("manifest-file", ".release-please-manifest.json"),
-    ] {
-        assert_eq!(step["with"][input].as_str(), Some(file));
-        assert!(root().join(file).is_file(), "{file}");
-    }
-}
-
-#[test]
 fn the_publication_builds_the_binaries_of_the_published_release_then_moves_its_minor_tag() {
-    let publish = own("publish.yml");
+    let publish = own("release-publish.yml");
     assert_eq!(
         keys(&publish["on"]),
-        BTreeSet::from(["release".to_string()])
+        BTreeSet::from(["release".to_string(), "workflow_dispatch".to_string()])
     );
     assert_eq!(strings(&publish["on"]["release"]["types"]), ["published"]);
     let all = jobs(&publish);
@@ -392,9 +403,15 @@ fn the_publication_builds_the_binaries_of_the_published_release_then_moves_its_m
         BTreeSet::from([
             "binaries".to_string(),
             "minor-tag".to_string(),
-            "crates-io".to_string()
+            "crates-io".to_string(),
+            "verify".to_string(),
+            "close".to_string()
         ]),
-        "no verify, no merge-back, no closing-guard"
+        "the method's two stages around this repository's publication"
+    );
+    assert_eq!(
+        needs(&publish["jobs"]["binaries"]),
+        BTreeSet::from(["verify".to_string()])
     );
     // The crate is published once the binaries are built and tested, from
     // the environment that holds the token, which only its publish step
@@ -409,11 +426,12 @@ fn the_publication_builds_the_binaries_of_the_published_release_then_moves_its_m
     assert_eq!(crate_job["permissions"]["contents"].as_str(), Some("read"));
     assert_eq!(
         crate_job["env"]["TAG"].as_str(),
-        Some("${{ github.event.release.tag_name }}")
+        Some("${{ github.event.release.tag_name || inputs.release-tag }}")
     );
-    let text =
-        std::fs::read_to_string(crate::harness::root().join(".github/workflows/publish.yml"))
-            .unwrap();
+    let text = std::fs::read_to_string(
+        crate::harness::root().join(".github/workflows/release-publish.yml"),
+    )
+    .unwrap();
     assert_eq!(text.matches("secrets.CARGO_REGISTRY_TOKEN").count(), 1);
     let publish_step = crate::harness::step(&publish, "crates-io", "Publish");
     assert_eq!(
@@ -436,7 +454,7 @@ fn the_publication_builds_the_binaries_of_the_published_release_then_moves_its_m
     assert_eq!(tag["permissions"]["contents"].as_str(), Some("write"));
     assert_eq!(
         tag["env"]["TAG"].as_str(),
-        Some("${{ github.event.release.tag_name }}")
+        Some("${{ github.event.release.tag_name || inputs.release-tag }}")
     );
     assert_eq!(
         tag["env"]["PRERELEASE"].as_str(),
@@ -450,16 +468,13 @@ fn the_publication_builds_the_binaries_of_the_published_release_then_moves_its_m
     );
     assert_eq!(
         call["with"]["tag"].as_str(),
-        Some("${{ github.event.release.tag_name }}")
+        Some("${{ github.event.release.tag_name || inputs.release-tag }}")
     );
     assert_eq!(
         keys(&call["permissions"]),
         BTreeSet::from(["contents".to_string()])
     );
     assert_eq!(call["permissions"]["contents"].as_str(), Some("write"));
-    // The release tags release-please makes: `v<X.Y.Z>`, no component.
-    let config = file_json("release-please-config.json");
-    assert_eq!(config["packages"]["."]["include-component-in-tag"], false);
 }
 
 /// The minor tag's step, run as shipped with `gh` stubbed.
@@ -507,7 +522,7 @@ esac"#,
 
     fn move_tag(stubs: &Path, tag: &str, prerelease: bool) -> Ran {
         let script = run_body(&step(
-            &crate::harness::workflow(".github/workflows/publish.yml"),
+            &crate::harness::workflow(".github/workflows/release-publish.yml"),
             "minor-tag",
             "Move the minor tag",
         ));
@@ -633,7 +648,7 @@ esac"#,
 #[test]
 fn the_binaries_are_built_once_per_release_by_the_publication() {
     let binaries = own("binaries.yml");
-    // No tag push: the release-please tag would start a second, duplicate
+    // No tag push: the release tag would start a second, duplicate
     // build of every target, macOS included.
     assert!(
         binaries["on"]["push"].is_badvalue(),
@@ -674,8 +689,8 @@ fn every_job_of_the_release_workflows_has_a_bound() {
     // minute counts ten. A job that calls a workflow takes its jobs' bounds.
     for name in [
         "binaries.yml",
-        "publish.yml",
-        "release-please.yml",
+        "release-gate.yml",
+        "release-publish.yml",
         "staging.yml",
     ] {
         for (id, job) in jobs(&own(name)) {
@@ -738,7 +753,7 @@ mod crates_io {
 
     fn version(stubs: &Path, tag: &str, prerelease: bool, cargo_version: &str) -> Ran {
         let script = run_body(&step(
-            &crate::harness::workflow(".github/workflows/publish.yml"),
+            &crate::harness::workflow(".github/workflows/release-publish.yml"),
             "crates-io",
             "The version to publish",
         ));

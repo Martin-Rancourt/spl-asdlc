@@ -1,0 +1,70 @@
+name: release-cut
+
+# This repository's cut: the caller of asdlc-release-cut.yml, as
+# docs/setup/examples/release-cut.yml shows it, pinned at the published minor
+# line the bridge embeds (v1.9), never this commit (BR-ASDLC-023). The bridge
+# dispatches it, or a person does: `open` on `main`, `candidate` on the
+# release branch in flight. `open` writes the version in Cargo.toml and
+# Cargo.lock and the CHANGELOG section, from the commits since the last
+# release, with the published binary of the same line.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: '`open` a cycle from the default branch, or cut the next `candidate` on the release branch.'
+        type: choice
+        options: [open, candidate]
+        default: open
+        required: true
+      class:
+        description: '`routine` or `sensible`; empty computes it from the paths of the review angles.'
+        type: choice
+        options: ['', routine, sensible]
+        default: ''
+      routine_because:
+        description: Why `routine` holds on a delta that touches a reviewed path (recorded in the tag).
+        type: string
+        default: ''
+      main_merge_because:
+        description: Why a candidate is cut over commits the default branch handed the cycle (recorded in the tag).
+        type: string
+        default: ''
+      version:
+        description: '`open` only: the version `X.Y.Z` to force; empty computes it from the commits since the last release.'
+        type: string
+        default: ''
+      dry_run:
+        description: Print the plan; create, commit, tag and push nothing.
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-cut
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    permissions:
+      contents: read
+    uses: Martin-Rancourt/spl-asdlc/.github/workflows/asdlc-release-cut.yml@v1.9
+    with:
+      action: ${{ inputs.action }}
+      class: ${{ inputs.class }}
+      routine-because: ${{ inputs.routine_because }}
+      main-merge-because: ${{ inputs.main_merge_because }}
+      version: ${{ inputs.version }}
+      dry-run: ${{ inputs.dry_run == true }}
+      candidate-tag: v{version}-rc.{rc}
+      release-tag: v{version}
+      spl-asdlc-repository: Martin-Rancourt/spl-asdlc
+      spl-asdlc-version: v1.9
+      # The summary names the gate `[release] gate_workflow` of this file
+      # sets: no `gate-workflow` to repeat (`doctor` flags one that differs).
+      config-file: .spl-asdlc/config.toml
+    secrets:
+      SPL_ASDLC_APP_ID: ${{ secrets.SPL_ASDLC_APP_ID }}
+      SPL_ASDLC_APP_PRIVATE_KEY: ${{ secrets.SPL_ASDLC_APP_PRIVATE_KEY }}

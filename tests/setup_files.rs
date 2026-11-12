@@ -1,5 +1,5 @@
 //! The setup files a project copies (`docs/setup/templates/`) and this
-//! repository's own (the release-please configuration and manifest): each is
+//! repository's own (its method configuration): each is
 //! read by the parser that reads it in production, never by a copy of its
 //! rules.
 
@@ -7,7 +7,6 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::Command;
 
-use serde_json::Value;
 use spl_asdlc::config::Config;
 use spl_asdlc::method::{business_rules, contract};
 use yaml_rust2::YamlLoader;
@@ -21,10 +20,6 @@ fn root() -> PathBuf {
 
 fn read(rel: &str) -> String {
     std::fs::read_to_string(root().join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"))
-}
-
-fn json(rel: &str) -> Value {
-    serde_json::from_str(&read(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"))
 }
 
 fn cli(args: &[&str]) -> std::process::Output {
@@ -316,55 +311,24 @@ fn no_page_of_the_method_speaks_of_flows_or_levels() {
 // ---- this repository's own files ----
 
 #[test]
-fn this_repositorys_release_please_files_make_the_existing_tags() {
-    let config = json("release-please-config.json");
-    let package = &config["packages"]["."];
-    assert_eq!(package["release-type"], "rust");
-    assert_eq!(package["component"], "spl-asdlc");
+fn this_repositorys_release_tags_are_the_existing_ones() {
     // Tags are `v<X.Y.Z>` (the existing ones, and the tag binaries.yml
-    // builds), so the component stays out of the tag.
-    assert_eq!(package["include-component-in-tag"], false);
+    // builds), and its candidates `v<X.Y.Z>-rc.<N>` (BR-ASDLC-023).
+    let config: toml::Value = toml::from_str(&read(".spl-asdlc/config.toml")).unwrap();
+    assert_eq!(
+        config["release"]["release_tag"].as_str(),
+        Some("v{version}")
+    );
+    assert_eq!(
+        config["release"]["candidate_tag"].as_str(),
+        Some("v{version}-rc.{rc}")
+    );
+    assert_eq!(config["tracker"]["kind"].as_str(), Some("livela"));
     let binaries = read(".github/workflows/binaries.yml");
     assert!(
         binaries.contains(r#"test "v$version" = "$TAG""#),
         "binaries.yml builds v<X.Y.Z> tags"
     );
-    // Without the component in the tag release-please leaves it out of its
-    // PR title too: the title pattern names the product. release-please runs
-    // on main, where the scope is empty.
-    let title = package["pull-request-title-pattern"].as_str().unwrap();
-    assert_eq!(title, "chore: release spl-asdlc ${version}");
-
-    let manifest = json(".release-please-manifest.json");
-    let cargo: toml::Value = toml::from_str(&read("Cargo.toml")).unwrap();
-    let version = cargo["package"]["version"].as_str().unwrap();
-    assert_eq!(manifest, serde_json::json!({ ".": version }));
-}
-
-#[test]
-fn this_repositorys_changelog_sections_are_the_allowed_title_types() {
-    // REQ-CI-016: a type the changelog has no visible section for would ship
-    // in silence.
-    let text = read(".github/workflows/asdlc-pr-title.yml");
-    let doc = YamlLoader::load_from_str(&text).unwrap().remove(0);
-    let allowed: BTreeSet<String> =
-        doc["on"]["workflow_call"]["inputs"]["allowed-types"]["default"]
-            .as_str()
-            .unwrap()
-            .split(',')
-            .map(|t| t.trim().to_string())
-            .collect();
-    let config = json("release-please-config.json");
-    let sections = config["packages"]["."]["changelog-sections"]
-        .as_array()
-        .unwrap();
-    let written: BTreeSet<String> = sections
-        .iter()
-        .filter(|s| !s["hidden"].as_bool().unwrap_or(false))
-        .map(|s| s["type"].as_str().unwrap().to_string())
-        .collect();
-    assert_eq!(written, allowed);
-    assert_eq!(sections.len(), allowed.len(), "no type twice, none hidden");
 }
 
 #[test]
