@@ -1,8 +1,8 @@
 name: pr-edit
 
 # This repository's check of an edited pull request: the caller of
-# asdlc-pr-edit.yml, as docs/setup/examples/pr-edit.yml shows it, called
-# from this commit (`./`). Its one job, named `title`, reports
+# asdlc-pr-edit.yml, as docs/setup/examples/pr-edit.yml shows it, pinned at
+# the published minor line the bridge embeds (v1.9) (BR-ASDLC-023). Its one job, named `title`, reports
 # `title / conventional-title` for the title the PR has now, and holds the
 # PR while its base changed after the newest run of pr.yml on the head.
 #
@@ -21,7 +21,7 @@ name: pr-edit
 on:
   pull_request:
     types: [edited, reopened, ready_for_review]
-    branches: [main]
+    branches: [main, 'release/**']
 
 concurrency:
   group: pr-edit-${{ github.ref }}
@@ -37,7 +37,7 @@ jobs:
     permissions:
       actions: read
       pull-requests: read
-    uses: ./.github/workflows/asdlc-pr-edit.yml
+    uses: Martin-Rancourt/spl-asdlc/.github/workflows/asdlc-pr-edit.yml@v1.9
     with:
       title: ${{ github.event.pull_request.title }}
       head-ref: ${{ github.event.pull_request.head.ref }}

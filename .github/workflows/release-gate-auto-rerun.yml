@@ -1,0 +1,23 @@
+name: release-gate-auto-rerun
+
+# The caller of asdlc-release-gate-auto-rerun.yml, as
+# docs/setup/examples/release-gate-auto-rerun.yml shows it, pinned at the
+# published minor line the bridge embeds (v1.9) (BR-ASDLC-023). GitHub runs
+# it from the default branch: it reruns a red gate run once, at its first
+# attempt, when its suites never reported or every failed suite is an
+# unexpired known flake (.github/release-gate/known-flakes.json).
+
+on:
+  workflow_run:
+    workflows: [release-gate]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  rerun:
+    permissions:
+      contents: read
+      actions: write
+    uses: Martin-Rancourt/spl-asdlc/.github/workflows/asdlc-release-gate-auto-rerun.yml@v1.9
