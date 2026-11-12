@@ -57,12 +57,22 @@ flowchart LR
 
 **Business rules.** A rule that holds for the whole product is one file in `.spl-asdlc/business-rules/`, with the name of the test that proves it. One file per rule means two PRs that touch different rules never conflict. A ticket that introduces a rule says so in its contract.
 
+## A ticket that needs design
+
+A ticket whose interface a person designs carries the label `angle/design`, set at refinement or later. Its design is a step inside the implementation, never a review at the end: no PR waits on a person while `main` moves.
+
+1. **First draft.** The implementer does the back end and a first draft of the interface on a plain branch, with no PR, draft or ready: the bridge does not see it, so it opens no review and sends nothing back. The tracker shows the branch linked to the ticket.
+2. **The design task.** The implementer pushes the branch, then creates a design task, a child of the ticket, assigned to the owner (the person who designs), naming the branch and what the draft covers. The ticket stays In Progress and is blocked by that task (`blocked by`), so the ticket shows that it waits for the person, and the task is in what waits for them.
+3. **Design.** The person works on the design on the same branch, alone or in a design session with an agent, and closes the design task when it is done.
+4. **Resume.** Closing the task unblocks the ticket, and it is served again to its implementer, who brings the branch up to date with `main`, finishes the work and opens the PR. The normal cycle follows: CI, then the review, where the `design` angle is reviewed by the designer agent like any angle. No design review task goes to a person on a PR.
+
 ## PR review (optional)
 
 Review is configured by angle: security, maintainability, design, or any angle the project defines. Each angle is reviewed by an agent or a person.
 - An angle runs on the PRs that touch its paths, or on every PR. For example, a security angle runs on the workflows and the authentication code.
 - An angle can also be asked by hand, ticket by ticket: its label `angle/<key>` on the ticket (a design pass, a security check) adds it to every PR of that ticket, on top of the angles the paths bring. Removing the label removes an angle only the label asked for. An angle with no paths runs only so.
 - A human review is an angle assigned to a person, who closes its sub-ticket when the pass is done.
+- The `design` angle is reviewed by the designer agent: a person's design work is the design step, before the PR (above), never a review round on it.
 - Each angle that applies gets a sub-ticket, served to its reviewer.
 - A coordinator consolidates the findings and approves the PR. The bridge merges after that approval.
 
