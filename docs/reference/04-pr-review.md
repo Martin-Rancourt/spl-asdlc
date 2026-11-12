@@ -15,13 +15,16 @@ In Progress and the PR to draft. Complete the work, check its boxes and mark
 the PR ready again: the gate reads the ticket again, even on the same head.
 
 The implementer checks each box as it is done, never at the merge, so every
-box checked is the implementer's declaration that the work is done. The review
-verifies every checked box: a reviewer or the coordinator who finds one checked
+box checked is the implementer's declaration that the PR's code delivers the
+criterion, not that it is already in effect: no box waits for this PR, another
+PR or a release to be merged or deployed. The review verifies every checked box
+against the diff: a reviewer or the coordinator who finds one checked
 but not really done unchecks it in the ticket, with a comment on the ticket
 naming the box and what is missing. The gate applies on every pass, during the
 review too: the next tick returns the PR to draft and the ticket to its
-implementer, In Progress. Boxes under `## Post deploy` stay open until they are
-verified in production.
+implementer, In Progress. What can only be observed in production is written
+under `## Post deploy`: those boxes stay open until they are verified in
+production, and the review does not verify them.
 
 ## Invariants
 
