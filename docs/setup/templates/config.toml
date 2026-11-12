@@ -77,7 +77,7 @@ angles = []                            # no review angle: layer 1 replaces it
 # paths = [".github/workflows/**", "**/auth/**"]
 # [[review.angles]]                    # no paths: only on a ticket labelled angle/design
 # key = "design"
-# assignee = "owner-handle"            # a person: a human review
+# assignee = "designer-handle"         # the designer agent: the person's design work is the design step, before the PR
 
 [release]
 # Every project has the release cycle (docs/reference/05-release-cycle.md): merged
