@@ -4,7 +4,7 @@
 
 ## For a PR review
 
-1. Read every review thread of the PR, from every angle and from humans. Verify every checked box of the ticket outside `## Post deploy` against the diff, as the angle reviewers do (`review-pr.md`, step 3): a box checked but not really done is unchecked in the ticket, with a comment naming the box and what is missing; the bridge then returns the PR to draft and the ticket to its implementer.
+1. Read every review thread of the PR, from every angle and from humans. Verify every checked box of the ticket outside `## Post deploy` against the diff (the code delivers the criterion; it need not be in effect yet), as the angle reviewers do (`review-pr.md`, step 3): a box checked but not really done is unchecked in the ticket, with a comment naming the box and what is missing; the bridge then returns the PR to draft and the ticket to its implementer.
 2. For each finding, decide once: **confirm** (fix it) or **reject** (answer in the thread with the reason). You may change a severity, with the reason. Never leave a thread unanswered.
 3. Apply the retained fixes as commits on the PR branch. Keep them small and attributable to their thread. Resolve the threads you handled.
 4. If a retained fix is beyond a consolidation (a design change, a missing piece of the contract, a PR that is not deployable on its own or should have been one PR with another, BR-ASDLC-005/006), request changes: the ticket goes back to the implementer, with the list in your review. For a PR that is not self-standing or a split without reason, record the reason in a comment on the ticket too.
