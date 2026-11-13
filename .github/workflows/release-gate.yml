@@ -65,7 +65,7 @@ jobs:
          {"id": "clippy", "run": "cargo clippy --all-targets --locked -- -D warnings 2>&1 | tee \"$EVIDENCE_DIR/clippy.log\""},
          {"id": "tests", "run": "cargo test --locked 2>&1 | tee \"$EVIDENCE_DIR/tests.log\"",
           "expect-nonempty": "tests.log"},
-         {"id": "rule-zero", "run": "bash scripts/check-no-instance-names.sh 2>&1 | tee \"$EVIDENCE_DIR/rule-zero.log\""}]
+         {"id": "rule_zero", "run": "bash scripts/check-no-instance-names.sh 2>&1 | tee \"$EVIDENCE_DIR/rule-zero.log\""}]
       # pr.yml's checks are jobs of their own: no guard command to repeat.
       guard-commands: '[]'
       runs-on: ${{ startsWith(vars.SPL_ASDLC_RUNS_ON, '"') && fromJSON(vars.SPL_ASDLC_RUNS_ON) || vars.SPL_ASDLC_RUNS_ON || 'ubuntu-latest' }}
