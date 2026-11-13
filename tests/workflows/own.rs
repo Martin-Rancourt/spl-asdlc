@@ -710,6 +710,18 @@ fn every_job_of_the_release_workflows_has_a_bound() {
 }
 
 #[test]
+fn release_gate_suite_ids_are_valid() {
+    let gate = own("release-gate.yml");
+    let suites = gate["jobs"]["gate"]["with"]["suites"].as_str().unwrap();
+    let suites: serde_json::Value = serde_json::from_str(suites).unwrap();
+    let valid = Regex::new(r"^[a-z][a-z0-9_]*$").unwrap();
+    for suite in suites.as_array().unwrap() {
+        let id = suite["id"].as_str().unwrap();
+        assert!(valid.is_match(id), "invalid release gate suite id: {id}");
+    }
+}
+
+#[test]
 fn staging_rebuilds_the_rolling_prerelease_on_every_push_to_main() {
     let staging = own("staging.yml");
     assert_eq!(keys(&staging["on"]), BTreeSet::from(["push".to_string()]));

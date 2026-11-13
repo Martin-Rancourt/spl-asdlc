@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.11.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.10.0...v1.11.0) (2026-11-13)
+
+
+### Documentation
+
+* a checked box means the PR's code delivers the criterion (ASDLC-YKDU) ([#157](https://github.com/Martin-Rancourt/spl-asdlc/issues/157)) ([4f65750](https://github.com/Martin-Rancourt/spl-asdlc/commit/4f657502032d473b86298db361e554032e78f47c))
+* check boxes as the work is done; the review verifies them (ASDLC-HKWG) ([#156](https://github.com/Martin-Rancourt/spl-asdlc/issues/156)) ([8ef87b6](https://github.com/Martin-Rancourt/spl-asdlc/commit/8ef87b6bda1732b8bb568aa42a2626469b95d688))
+* **method:** design is a step inside implementation, reviewed by the designer agent (ASDLC-VKWN) ([#154](https://github.com/Martin-Rancourt/spl-asdlc/issues/154)) ([e1b0c16](https://github.com/Martin-Rancourt/spl-asdlc/commit/e1b0c16381a358f2bcc03141912f6ae535c37c95))
+
+
+### Continuous Integration
+
+* run spl-asdlc on itself at a pinned version (ASDLC-VSYK) ([#155](https://github.com/Martin-Rancourt/spl-asdlc/issues/155)) ([dc48680](https://github.com/Martin-Rancourt/spl-asdlc/commit/dc48680849c3afe81a984d6c39d1fbb210fc903f))
+
 ## [1.10.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.9.1...v1.10.0) (2026-11-11)
 
 
