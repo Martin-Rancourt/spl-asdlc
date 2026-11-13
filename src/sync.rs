@@ -66,6 +66,7 @@ pub fn pass_from_repository(host: &RepositoryHost, github: &dyn GitHub) -> PassO
         host.budget,
         host.log_path.clone(),
         host.env,
+        &Instant::now,
     )
 }
 
@@ -91,6 +92,18 @@ pub fn pass(host: &Host) -> PassOutcome {
 /// One pass with a given configuration and GitHub client (tests, and hosts
 /// that build their own). `host.config_path` is not read.
 pub fn pass_with(host: &Host, config: &Config, github: &dyn GitHub) -> PassOutcome {
+    pass_with_clock(host, config, github, &Instant::now)
+}
+
+/// [`pass_with`] reading the time from `now`: the tests give it a clock the
+/// fake GitHub advances, so a time budget never depends on the runner's
+/// speed (ASDLC-HVUN).
+pub(crate) fn pass_with_clock(
+    host: &Host,
+    config: &Config,
+    github: &dyn GitHub,
+    now: &dyn Fn() -> Instant,
+) -> PassOutcome {
     run(
         config,
         host.tracker,
@@ -98,6 +111,7 @@ pub fn pass_with(host: &Host, config: &Config, github: &dyn GitHub) -> PassOutco
         host.budget,
         host.log_path.clone(),
         host.env,
+        now,
     )
 }
 
@@ -168,8 +182,9 @@ fn run(
     budget: Option<Duration>,
     log_path: Option<PathBuf>,
     env: &dyn Fn(&str) -> Option<String>,
+    now: &dyn Fn() -> Instant,
 ) -> PassOutcome {
-    let started = Instant::now();
+    let started = now();
     let deadline = budget.map(|b| started + b);
     let Some(repo) = RepoSlug::parse(&config.product.repository) else {
         return PassOutcome::failed("product.repository is not <owner>/<repo>");
@@ -240,7 +255,7 @@ fn run(
         Ok(r) => r,
         Err(e) => return PassOutcome::failed(format!("{repo}: the PRs after the checkpoint: {e}")),
     };
-    let over = || deadline.is_some_and(|d| Instant::now() >= d);
+    let over = || deadline.is_some_and(|d| now() >= d);
     let mut tally = Tally::default();
     let mut releases = Releases::new(config, &repo, github);
     let mut stop = None;

@@ -59,8 +59,12 @@ pub struct FakeState {
     /// A `sync_pulls` batch asking for one of these numbers fails so.
     pub failing_sync_reads: BTreeMap<u64, ReadError>,
     /// A `sync_pulls` batch asking for one of these numbers takes this long
-    /// (a slow GitHub, for a pass's time budget).
+    /// (a slow GitHub, for a pass's time budget): it advances `elapsed`, it
+    /// never sleeps.
     pub slow_sync_reads: BTreeMap<u64, std::time::Duration>,
+    /// The time this fake has spent answering: the clock a test gives a
+    /// pass reads it, so a budget never depends on the runner's speed.
+    pub elapsed: std::time::Duration,
     pub pull_files: HashMap<(RepoSlug, u64), Read<Vec<String>>>,
     pub commit_pulls: HashMap<(RepoSlug, String), Read<Vec<CommitPull>>>,
     pub required_checks: HashMap<(RepoSlug, String), Read<RequiredChecks>>,
@@ -438,8 +442,11 @@ impl GitHub for FakeGitHub {
     fn sync_pulls(&self, repo: &RepoSlug, numbers: &[u64]) -> Read<Vec<PullRequest>> {
         let mut s = self.state.borrow_mut();
         s.sync_reads.push(numbers.to_vec());
-        if let Some(d) = numbers.iter().find_map(|n| s.slow_sync_reads.get(n)) {
-            std::thread::sleep(*d);
+        if let Some(d) = numbers
+            .iter()
+            .find_map(|n| s.slow_sync_reads.get(n).copied())
+        {
+            s.elapsed += d;
         }
         if let Some(e) = numbers.iter().find_map(|n| s.failing_sync_reads.get(n)) {
             return Err(e.clone());
