@@ -37,7 +37,7 @@ jobs:
     permissions:
       actions: read
       pull-requests: read
-    uses: Martin-Rancourt/spl-asdlc/.github/workflows/asdlc-pr-edit.yml@v1.9
+    uses: Martin-Rancourt/spl-asdlc/.github/workflows/asdlc-pr-edit.yml@v1.11
     with:
       title: ${{ github.event.pull_request.title }}
       head-ref: ${{ github.event.pull_request.head.ref }}

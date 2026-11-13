@@ -50,7 +50,7 @@ jobs:
   release:
     permissions:
       contents: read
-    uses: Martin-Rancourt/spl-asdlc/.github/workflows/asdlc-release-cut.yml@v1.9
+    uses: Martin-Rancourt/spl-asdlc/.github/workflows/asdlc-release-cut.yml@v1.11
     with:
       action: ${{ inputs.action }}
       class: ${{ inputs.class }}
@@ -61,7 +61,7 @@ jobs:
       candidate-tag: v{version}-rc.{rc}
       release-tag: v{version}
       spl-asdlc-repository: Martin-Rancourt/spl-asdlc
-      spl-asdlc-version: v1.9
+      spl-asdlc-version: v1.11
       # The summary names the gate `[release] gate_workflow` of this file
       # sets: no `gate-workflow` to repeat (`doctor` flags one that differs).
       config-file: .spl-asdlc/config.toml

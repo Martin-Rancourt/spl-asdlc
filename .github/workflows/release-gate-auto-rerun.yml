@@ -20,4 +20,4 @@ jobs:
     permissions:
       contents: read
       actions: write
-    uses: Martin-Rancourt/spl-asdlc/.github/workflows/asdlc-release-gate-auto-rerun.yml@v1.9
+    uses: Martin-Rancourt/spl-asdlc/.github/workflows/asdlc-release-gate-auto-rerun.yml@v1.11

@@ -53,7 +53,7 @@ jobs:
     permissions:
       contents: read
       statuses: write
-    uses: Martin-Rancourt/spl-asdlc/.github/workflows/asdlc-release-gate.yml@v1.9
+    uses: Martin-Rancourt/spl-asdlc/.github/workflows/asdlc-release-gate.yml@v1.11
     with:
       candidate-tag: v{version}-rc.{rc}
       release-tag: v{version}

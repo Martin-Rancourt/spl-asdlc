@@ -63,7 +63,7 @@ jobs:
     if: github.event.pull_request.draft == false
     permissions:
       contents: read
-    uses: Martin-Rancourt/spl-asdlc/.github/workflows/asdlc-pr-checks.yml@v1.9
+    uses: Martin-Rancourt/spl-asdlc/.github/workflows/asdlc-pr-checks.yml@v1.11
     with:
       title: ${{ github.event.pull_request.title }}
       base-sha: ${{ github.event.pull_request.base.sha }}
@@ -179,7 +179,7 @@ jobs:
     timeout-minutes: 5
     permissions: {}
     steps:
-      - uses: Martin-Rancourt/spl-asdlc/actions/required-check@v1.9
+      - uses: Martin-Rancourt/spl-asdlc/actions/required-check@v1.11
         with:
           needs: ${{ toJSON(needs) }}
           may-skip: fmt,clippy,test
