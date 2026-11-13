@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.12.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.11.0...v1.12.0) (2026-11-13)
+
+
+### Bug Fixes
+
+* **doctor:** a tag ruleset on refs/tags/v*.*.* covers the release and candidate templates (ASDLC-GZ23) ([#161](https://github.com/Martin-Rancourt/spl-asdlc/issues/161)) ([f8cdfd2](https://github.com/Martin-Rancourt/spl-asdlc/commit/f8cdfd2bc2044c5e4d3c86894216c467e8966113))
+* **guards:** refuse a changed business-rule file without a valid Status line (ASDLC-R8WY) ([#162](https://github.com/Martin-Rancourt/spl-asdlc/issues/162)) ([a3d13e3](https://github.com/Martin-Rancourt/spl-asdlc/commit/a3d13e3efb569e350b43c5c7ca3c6bae10a8ac5c))
+* **sync:** the sync tests read the fake's clock, not the wall clock (ASDLC-HVUN) ([#160](https://github.com/Martin-Rancourt/spl-asdlc/issues/160)) ([a19ef1b](https://github.com/Martin-Rancourt/spl-asdlc/commit/a19ef1b42531415c854f47e0ee91faceed86e8f9))
+
+
+### Documentation
+
+* **method:** a Post deploy box is the exception, for what cannot be checked before the merge (ASDLC-JEVD) ([#164](https://github.com/Martin-Rancourt/spl-asdlc/issues/164)) ([2589943](https://github.com/Martin-Rancourt/spl-asdlc/commit/25899437d139f5c9e68c16d7810f43a72e084e4e))
+
+
+### Chores
+
+* move SPL-ASDLC to v1.11 (ASDLC-RPEE) ([#166](https://github.com/Martin-Rancourt/spl-asdlc/issues/166)) ([57904e7](https://github.com/Martin-Rancourt/spl-asdlc/commit/57904e72fcd9000a8b77434160e9ed71a0344211))
+* **config:** the bridge cuts spl-asdlc's next release candidate itself (ASDLC-R5JK) ([#165](https://github.com/Martin-Rancourt/spl-asdlc/issues/165)) ([1e07447](https://github.com/Martin-Rancourt/spl-asdlc/commit/1e074477b9539b3115cba108e689e9375434c9f9))
+
 ## [1.11.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.10.0...v1.11.0) (2026-11-13)
 
 
