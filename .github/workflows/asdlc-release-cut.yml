@@ -54,7 +54,7 @@ name: asdlc-release-cut
 #         candidate-tag: acme-v{version}-rc.{rc}
 #         release-tag: acme-v{version}
 #         spl-asdlc-repository: <owner>/spl-asdlc
-#         spl-asdlc-version: latest
+#         spl-asdlc-version: v1.11
 #       secrets:
 #         SPL_ASDLC_APP_ID: ${{ secrets.SPL_ASDLC_APP_ID }}
 #         SPL_ASDLC_APP_PRIVATE_KEY: ${{ secrets.SPL_ASDLC_APP_PRIVATE_KEY }}
