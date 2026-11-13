@@ -4,7 +4,8 @@ name: asdlc-pr-guards
 # test suite, and nothing that can release or deploy
 # (.spl-asdlc/requirements/ci.md, REQ-CI-022..034): the "does anything beyond prose
 # change?" detector, the project's extra detectors, the method check of the
-# process page, the check of the branch's name, and its guard commands.
+# process page, the check of the branch's name, the status line of the
+# business-rule files the PR changes, and its guard commands.
 #
 # The process page (docs/agents/process.md) is copied into the project at
 # `process-page` and never edited there (BR-ASDLC-028): the check refuses a PR
@@ -338,6 +339,88 @@ jobs:
             exit 1
           fi
           echo "::warning title=Branch name::$message A warning only on this version: a later minor version refuses it."
+
+      - name: The business rules the PR changes have a status
+        id: rules
+        if: steps.skip.outputs.skipped != 'true'
+        env:
+          BASE_SHA: ${{ inputs.base-sha }}
+          HEAD_SHA: ${{ inputs.head-sha }}
+          RULES_DIR: .spl-asdlc/business-rules
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The doctor refuses a rule file without a `Status: Proposed` or
+          # `Status: Enforced` line (`parse_rule_file`), and the bridge then
+          # stops serving the repository: refuse it at the PR instead, prose
+          # or not. Only the files the PR adds or modifies; the same reading
+          # as the doctor (the first `Status:` line outside a closed code
+          # fence, bold markers allowed), which tests/workflows/pr_guards.rs
+          # keeps in step with it.
+          if [ -z "$BASE_SHA" ] || [ -z "$HEAD_SHA" ]; then
+            echo "No base or head commit: the business rules' statuses are not checked."
+            exit 0
+          fi
+          list="$(mktemp)"
+          trap 'rm -f "$list"' EXIT
+          if ! git diff --no-renames --name-only -z --diff-filter=AM "$BASE_SHA" "$HEAD_SHA" -- "$RULES_DIR" > "$list"; then
+            echo "::error title=Business rule status::git diff $BASE_SHA $HEAD_SHA failed: the changed business rules cannot be listed."
+            exit 1
+          fi
+          status_of() {
+            awk '
+              { sub(/\r$/, ""); line[NR] = $0 }
+              END {
+                open = 0
+                for (i = 1; i <= NR; i++) {
+                  if (line[i] ~ /^[ \t]?[ \t]?[ \t]?(```|~~~)/) {
+                    if (!open) { open = i } else { for (j = open; j <= i; j++) line[j] = ""; open = 0 }
+                  }
+                }
+                for (i = 1; i <= NR; i++) {
+                  if (line[i] ~ /^(\*\*)?Status(\*\*)?[ \t]*:[ \t]*(\*\*)?[ \t]*[^[:space:]]+[ \t]*$/) {
+                    if (line[i] ~ /^(\*\*)?Status(\*\*)?[ \t]*:[ \t]*(\*\*)?[ \t]*(Enforced|Proposed)(\*\*)?[ \t]*$/) {
+                      print "ok"
+                    } else {
+                      print "invalid " line[i]
+                    }
+                    exit
+                  }
+                }
+                print "missing"
+              }'
+          }
+          failed=0
+          checked=0
+          while IFS= read -r -d '' file; do
+            name="${file##*/}"
+            # The registry's own files, as parse_registry reads them: one
+            # level, `*.md`, not the index nor a dot-file.
+            if [ "$file" != "$RULES_DIR/$name" ] || [ "${name%.md}" = "$name" ] \
+              || [ "$name" = "README.md" ] || [ "${name#.}" != "$name" ]; then
+              continue
+            fi
+            checked=$((checked + 1))
+            verdict="$(git show "$HEAD_SHA:$file" | status_of)"
+            at="${file//%/%25}"
+            case "$verdict" in
+              ok) ;;
+              missing)
+                echo "::error file=$at,title=Business rule status::$at has no \`Status: Proposed\` or \`Status: Enforced\` line outside a code fence: add one under its title. The doctor refuses the file, and the bridge stops serving the repository."
+                failed=1
+                ;;
+              *)
+                seen="${verdict#invalid }"
+                seen="${seen//%/%25}"
+                echo "::error file=$at,title=Business rule status::$at: its status line \`$seen\` is not \`Status: Proposed\` nor \`Status: Enforced\`. The doctor refuses the file, and the bridge stops serving the repository."
+                failed=1
+                ;;
+            esac
+          done < "$list"
+          if [ "$failed" -ne 0 ]; then
+            exit 1
+          fi
+          echo "$checked changed business rule(s), each with a status."
 
       - name: Set up the guard commands
         if: steps.skip.outputs.skipped != 'true' && inputs.setup-command != ''

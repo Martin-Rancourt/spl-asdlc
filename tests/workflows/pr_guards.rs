@@ -483,3 +483,232 @@ fn the_branch_check_warns_by_default_on_this_minor_line_and_rejects_a_bad_value(
     assert_eq!(r.code, 1, "{}", r.log);
     assert!(r.log.contains("Invalid branch-name-check"), "{}", r.log);
 }
+
+// ---- the status of the business rules a PR changes (ASDLC-R8WY) ----
+
+/// The rules step's script and the registry it reads.
+fn rules_step() -> (String, String) {
+    let s = step(
+        &workflow(".github/workflows/asdlc-pr-guards.yml"),
+        "guards",
+        "rules",
+    );
+    let dir = s["env"]["RULES_DIR"]
+        .as_str()
+        .expect("the step names the registry")
+        .to_string();
+    (run_body(&s), dir)
+}
+
+fn check_rules(repo: &Repo, base: &str, head: &str) -> Ran {
+    let (body, dir) = rules_step();
+    run(
+        &body,
+        &[("BASE_SHA", base), ("HEAD_SHA", head), ("RULES_DIR", &dir)],
+        &repo.dir.0,
+    )
+}
+
+/// A rule file, valid but for what `status` puts under its title.
+fn rule_file(id: &str, status: &str) -> String {
+    format!(
+        "# {id} — A rule.\n\n{status}\n\n## Rule\n\nThe rule.\n\n## Evidence\n\nA decision.\n\n## Test\n\n`a_test`.\n"
+    )
+}
+
+/// `(file name, its status block, whether the doctor accepts it)`: the
+/// fixtures the step and `parse_rule_file` must judge alike.
+const STATUS_FIXTURES: &[(&str, &str, bool)] = &[
+    ("K7QF-enforced.md", "Status: Enforced", true),
+    ("M3TX-proposed.md", "Status: Proposed", true),
+    ("P8WZ-bold-label.md", "**Status:** Enforced", true),
+    ("R4HN-bold-word.md", "**Status**: Proposed", true),
+    ("T9JD-bold-value.md", "Status:   **Enforced**  ", true),
+    ("V2LS-missing.md", "No status here.", false),
+    ("W5CE-draft.md", "Status: Draft", false),
+    ("X6GB-lowercase.md", "Status: enforced", false),
+    ("Y3KM-two-words.md", "Status: Enforced now", false),
+    ("Z8PR-indented.md", "  Status: Enforced", false),
+    ("A4TW-fenced.md", "```\nStatus: Enforced\n```", false),
+    ("B7NX-tilde-fence.md", "~~~md\nStatus: Enforced\n```", false),
+    ("C2QH-unclosed-fence.md", "```\nStatus: Enforced", true),
+    (
+        "D9VF-first-wins.md",
+        "Status: Draft\nStatus: Enforced",
+        false,
+    ),
+    (
+        "E5JR-after-fence.md",
+        "```\nStatus: Draft\n```\nStatus: Proposed",
+        true,
+    ),
+];
+
+const CRLF_RULE: &str = "F3MZ-crlf.md";
+
+fn crlf_rule() -> String {
+    rule_file("F3MZ", "Status: Enforced").replace('\n', "\r\n")
+}
+
+fn error_names(log: &str, path: &str) -> bool {
+    log.contains(&format!("::error file={path},title=Business rule status::"))
+}
+
+#[test]
+fn the_rules_step_reads_the_doctors_registry_on_every_pr() {
+    let (_, dir) = rules_step();
+    assert_eq!(dir, spl_asdlc::method::business_rules::REGISTRY_DIR);
+    let s = step(
+        &workflow(".github/workflows/asdlc-pr-guards.yml"),
+        "guards",
+        "rules",
+    );
+    // Prose-only diffs included: only the release chain's own heads skip it.
+    assert_eq!(
+        s["if"].as_str(),
+        Some("steps.skip.outputs.skipped != 'true'")
+    );
+    assert!(s["continue-on-error"].is_badvalue());
+}
+
+#[test]
+fn a_changed_rule_file_without_a_valid_status_fails_the_guards() {
+    let repo = Repo::new();
+    let dir = rules_step().1;
+    // Before the PR: an invalid rule nobody touches, and one the PR deletes.
+    repo.write(
+        &format!("{dir}/G6HT-untouched.md"),
+        &rule_file("G6HT", "Status: Draft"),
+    );
+    repo.write(
+        &format!("{dir}/H8LW-deleted.md"),
+        &rule_file("H8LW", "Status: Draft"),
+    );
+    repo.write(
+        &format!("{dir}/J2CS-modified.md"),
+        &rule_file("J2CS", "Status: Enforced"),
+    );
+    let base = repo.commit("the registry before the PR");
+
+    // The PR: every fixture, a modified rule that loses its status, the
+    // deleted one, and files that are not the registry's rules.
+    for (name, status, _) in STATUS_FIXTURES {
+        let id = &name[..4];
+        repo.write(&format!("{dir}/{name}"), &rule_file(id, status));
+    }
+    repo.write(&format!("{dir}/{CRLF_RULE}"), &crlf_rule());
+    repo.write(
+        &format!("{dir}/J2CS-modified.md"),
+        &rule_file("J2CS", "Status: Retired"),
+    );
+    repo.git(&["rm", "-q", &format!("{dir}/H8LW-deleted.md")]);
+    repo.write(&format!("{dir}/README.md"), "# The registry\n");
+    repo.write(&format!("{dir}/.draft.md"), "# Not a rule\n");
+    repo.write(&format!("{dir}/sub/K3PD-nested.md"), "# Not read\n");
+    repo.write(&format!("{dir}/notes.txt"), "Status: none\n");
+    let head = repo.commit("the PR");
+
+    let r = check_rules(&repo, &base, &head);
+    assert_eq!(r.code, 1, "{}", r.log);
+    for (name, _, valid) in STATUS_FIXTURES {
+        let path = format!("{dir}/{name}");
+        assert_eq!(error_names(&r.log, &path), !valid, "{name}: {}", r.log);
+    }
+    assert!(
+        !error_names(&r.log, &format!("{dir}/{CRLF_RULE}")),
+        "{}",
+        r.log
+    );
+    let modified = format!("{dir}/J2CS-modified.md");
+    assert!(error_names(&r.log, &modified), "{}", r.log);
+    assert!(r.log.contains("`Status: Retired`"), "{}", r.log);
+    assert!(
+        r.log.contains(&format!(
+            "{dir}/V2LS-missing.md has no `Status: Proposed` or `Status: Enforced` line"
+        )),
+        "{}",
+        r.log
+    );
+    for ignored in [
+        "G6HT-untouched.md",
+        "H8LW-deleted.md",
+        "README.md",
+        ".draft.md",
+        "sub/K3PD-nested.md",
+        "notes.txt",
+    ] {
+        assert!(
+            !error_names(&r.log, &format!("{dir}/{ignored}")),
+            "{ignored}: {}",
+            r.log
+        );
+    }
+
+    // Valid rules only, the untouched invalid one still there: it passes.
+    let repo = Repo::new();
+    repo.write(
+        &format!("{dir}/G6HT-untouched.md"),
+        &rule_file("G6HT", "Status: Draft"),
+    );
+    let base = repo.commit("the registry before the PR");
+    repo.write(
+        &format!("{dir}/K7QF-enforced.md"),
+        &rule_file("K7QF", "Status: Enforced"),
+    );
+    repo.write(
+        &format!("{dir}/M3TX-proposed.md"),
+        &rule_file("M3TX", "**Status:** Proposed"),
+    );
+    repo.write("docs/guide.md", "Prose only.\n");
+    let head = repo.commit("two valid rules");
+    let r = check_rules(&repo, &base, &head);
+    assert_eq!(r.code, 0, "{}", r.log);
+    assert!(
+        r.log
+            .contains("2 changed business rule(s), each with a status."),
+        "{}",
+        r.log
+    );
+
+    // Outside a pull request, there is no diff to judge.
+    let r = check_rules(&repo, "", &head);
+    assert_eq!(r.code, 0, "{}", r.log);
+    assert!(r.log.contains("are not checked"), "{}", r.log);
+}
+
+#[test]
+fn the_rules_step_and_the_doctor_read_a_status_alike() {
+    // Drift guard: the step's verdict on each fixture is the doctor's
+    // (`parse_rule_file`), file by file.
+    let repo = Repo::new();
+    let dir = rules_step().1;
+    let base = repo.git(&["rev-parse", "HEAD"]);
+    let mut fixtures: Vec<(String, String)> = STATUS_FIXTURES
+        .iter()
+        .map(|(name, status, _)| (name.to_string(), rule_file(&name[..4], status)))
+        .collect();
+    fixtures.push((CRLF_RULE.to_string(), crlf_rule()));
+    for (name, text) in &fixtures {
+        repo.write(&format!("{dir}/{name}"), text);
+    }
+    let head = repo.commit("the fixtures");
+    let r = check_rules(&repo, &base, &head);
+    for (name, text) in &fixtures {
+        let doctor = spl_asdlc::method::business_rules::parse_rule_file(name, text);
+        let guard_refuses = error_names(&r.log, &format!("{dir}/{name}"));
+        assert_eq!(
+            guard_refuses,
+            doctor.is_err(),
+            "{name}: the doctor says {doctor:?}, the guard log:\n{}",
+            r.log
+        );
+    }
+    for (name, status, valid) in STATUS_FIXTURES {
+        let text = rule_file(&name[..4], status);
+        assert_eq!(
+            spl_asdlc::method::business_rules::parse_rule_file(name, &text).is_ok(),
+            *valid,
+            "{name}: the fixture's expectation is the doctor's"
+        );
+    }
+}
