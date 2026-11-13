@@ -28,7 +28,9 @@
 # 2. Release QA angles (docs/reference/05-release-cycle.md §3), under [release]:
 #    replace `angles = []` there with the `coordinators` line and the
 #    `[[release.angles]]` tables below it, and list the same keys in the
-#    publication caller's `qa-angles`. Angles apply from the next candidate.
+#    publication caller's `qa-angles`. An angle's reviewer is its `assignee`,
+#    in its table here or in the overlay, never both. Angles apply from the
+#    next candidate (docs/agents/angles/README.md, "Turning an angle on").
 
 schema = 1
 
@@ -102,6 +104,7 @@ angles = []                                  # no QA angle: layer 2 replaces it
 # coordinators = ["coordinator-login"]       # layer 2: GitHub logins whose approval at the head SHA merges an angle PR
 # [[release.angles]]
 # key = "security"
+# assignee = "reviewer-handle"               # tracker participant who reviews this angle at each candidate
 # [[release.angles]]
 # key = "product"
 
