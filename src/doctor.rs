@@ -544,10 +544,11 @@ fn judge(req: &Required, all: &[Ruleset], default_ref: &str) -> Check {
 /// Whether a ruleset demonstrably covers every tag made by a configured
 /// template. GitHub ruleset patterns are globs, whereas a template contains
 /// unbounded decimal fields; testing representative versions cannot establish
-/// containment. We therefore accept only forms whose containment is obvious:
-/// `~ALL`, the template's own wildcard form, or its literal prefix followed by
-/// one terminal `*`. Exclusions are conservatively not accepted, because an
-/// arbitrary glob exclusion can remove a future version.
+/// containment. We therefore accept `~ALL`, the template's own wildcard form,
+/// its literal prefix followed by one terminal `*`, and any pattern that
+/// contains the template's shape ([`contains_shape`]: `refs/tags/v*.*.*`
+/// covers `v{version}`, ASDLC-GZ23). Exclusions are conservatively not
+/// accepted, because an arbitrary glob exclusion can remove a future version.
 fn covers_tag_template(r: &Ruleset, template: &str) -> bool {
     if !r.exclude.is_empty() {
         return false;
@@ -563,7 +564,75 @@ fn covers_tag_template(r: &Ruleset, template: &str) -> bool {
             || pattern
                 .strip_suffix('*')
                 .is_some_and(|prefix| !prefix.contains('*') && literal_prefix.starts_with(prefix))
+            || contains_shape(
+                &pattern.chars().collect::<Vec<_>>(),
+                &template_shape(template),
+            )
     })
+}
+
+/// A piece of a tag template's shape: a literal character, or a field whose
+/// value varies (a run of digits, never empty, never a `/`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Piece {
+    Literal(char),
+    Field,
+}
+
+/// The shape of every tag a template makes: `{version}` is always `X.Y.Z`
+/// (three fields and two dots), `{rc}` one field.
+fn template_shape(template: &str) -> Vec<Piece> {
+    let mut shape = Vec::new();
+    let mut rest = template;
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix("{version}") {
+            shape.extend([
+                Piece::Field,
+                Piece::Literal('.'),
+                Piece::Field,
+                Piece::Literal('.'),
+                Piece::Field,
+            ]);
+            rest = after;
+        } else if let Some(after) = rest.strip_prefix("{rc}") {
+            shape.push(Piece::Field);
+            rest = after;
+        } else {
+            let c = rest.chars().next().unwrap_or_default();
+            shape.push(Piece::Literal(c));
+            rest = &rest[c.len_utf8()..];
+        }
+    }
+    shape
+}
+
+/// Whether the glob `p` matches every tag of `shape`, with GitHub's fnmatch
+/// semantics: a literal matches only the same literal (never a field, whose
+/// value varies), a `*` takes in any run of pieces without a `/`. Anything
+/// else (`?`, a class, an escape) is not proved: an unknown syntax can only
+/// make a template look uncovered, never covered.
+fn contains_shape(p: &[char], shape: &[Piece]) -> bool {
+    match p.first() {
+        None => shape.is_empty(),
+        Some('*') => {
+            // `**/` matches at least what `*/` does: reading it as `*` is
+            // stricter, so what it proves holds.
+            let rest = &p[p.iter().take_while(|c| **c == '*').count()..];
+            for i in 0..=shape.len() {
+                if contains_shape(rest, &shape[i..]) {
+                    return true;
+                }
+                if shape.get(i) == Some(&Piece::Literal('/')) {
+                    break;
+                }
+            }
+            false
+        }
+        Some('?' | '[' | '\\') => false,
+        Some(c) => {
+            shape.first() == Some(&Piece::Literal(*c)) && contains_shape(&p[1..], &shape[1..])
+        }
+    }
 }
 
 /// Whether a ruleset's `ref_name` condition takes in `git_ref` (GitHub's
@@ -2926,6 +2995,56 @@ mod tests {
                 .contains("refs/tags/acme-v{version}: no tag ruleset covers it"),
             "{line}"
         );
+    }
+
+    #[test]
+    fn a_tag_ruleset_on_the_exact_release_tags_covers_both_templates() {
+        // ASDLC-GZ23: the ruleset `docs/setup/repository.md` prescribes for
+        // spl-asdlc, on its own templates.
+        let tag = |include: &str| Ruleset {
+            include: vec![include.into()],
+            ..procedure_rulesets().remove(2)
+        };
+        let release = "refs/tags/v{version}";
+        let candidate = "refs/tags/v{version}-rc.{rc}";
+        for pattern in ["refs/tags/v*.*.*", "refs/tags/v*.*", "refs/tags/v*"] {
+            assert!(covers_tag_template(&tag(pattern), release), "{pattern}");
+            assert!(covers_tag_template(&tag(pattern), candidate), "{pattern}");
+        }
+        for pattern in [
+            "refs/tags/v*.*.*.*",
+            "refs/tags/v1.*",
+            "refs/tags/w*",
+            "refs/tags/v?.*",
+            "refs/tags/v[0-9]*",
+        ] {
+            assert!(!covers_tag_template(&tag(pattern), release), "{pattern}");
+        }
+        // In the containment, a `*` never crosses a `/`.
+        let glob = |p: &str| p.chars().collect::<Vec<_>>();
+        assert!(!contains_shape(
+            &glob("refs/tags/v*"),
+            &template_shape("refs/tags/v/{version}")
+        ));
+        assert!(contains_shape(
+            &glob("refs/tags/v/*.*.*"),
+            &template_shape("refs/tags/v/{version}")
+        ));
+
+        // The doctor's line, on the fixture's templates.
+        for (pattern, verdict) in [
+            ("refs/tags/acme-v*.*.*", Verdict::Ok),
+            ("refs/tags/acme-v*.*", Verdict::Ok),
+            ("refs/tags/acme-v*", Verdict::Ok),
+            ("refs/tags/acme-v*.*.*.*", Verdict::Missing),
+            ("refs/tags/acme-v1.*", Verdict::Missing),
+            ("refs/tags/acme-w*", Verdict::Missing),
+        ] {
+            let mut r = procedure_rulesets();
+            r[2].include = vec![pattern.into()];
+            let line = ruleset_lines(Ok(r)).remove(2);
+            assert_eq!(line.verdict, verdict, "{pattern}: {line}");
+        }
     }
 
     #[test]
