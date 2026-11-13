@@ -58,7 +58,10 @@ fn sync_within(
     budget: Option<Duration>,
 ) -> PassOutcome {
     let config = crate::config::spec_example::config();
-    pass_with(
+    // The pass reads the fake's clock: only the time the fake GitHub says it
+    // spent counts, never the runner's speed (ASDLC-HVUN).
+    let start = Instant::now();
+    pass_with_clock(
         &Host {
             config_path: Path::new(crate::config::DEFAULT_PATH),
             tracker,
@@ -68,6 +71,7 @@ fn sync_within(
         },
         &config,
         github,
+        &|| start + github.state.borrow().elapsed,
     )
 }
 
@@ -459,13 +463,13 @@ fn an_over_budget_pass_keeps_its_progress_and_the_next_resumes_after_it() {
     let g = github();
     open(&g, unrelated(40));
     // GitHub is slow on the second batch: the budget is spent when it answers.
+    // The time is the fake's clock, so the first batch costs nothing however
+    // loaded the runner is (ASDLC-HVUN).
     g.state
         .borrow_mut()
         .slow_sync_reads
         .insert(30, Duration::from_millis(1200));
     let log = log("over-budget");
-    // A budget wide enough for the first batch on a loaded runner, the
-    // slow answer past it (ASDLC-PQ7Q).
     let out = sync_within(&t, &g, &log, Some(Duration::from_millis(1000)));
     assert!(out.ok, "a step of a catch-up, not a failure: {out:?}");
     assert!(out.message.contains("25 PR(s) read"), "{}", out.message);
