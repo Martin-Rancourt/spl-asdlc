@@ -10,7 +10,7 @@ Every change is a pull request to `main`, or a fix to the release branch in flig
 
 The method's release cycle (`.spl-asdlc/process.md`, "The release cycle"): `release-cut.yml` opens the release branch and its first candidate `v<X.Y.Z>-rc.<N>` (the version in `Cargo.toml` and `Cargo.lock`, the CHANGELOG section, from the commits since the last release); `release-gate.yml` runs `pr.yml`'s checks on the candidate; the bridge computes the GO and publishes the GitHub release `v<X.Y.Z>`; `release-publish.yml` verifies it, builds the binaries of every target (`binaries.yml`) and attaches them with their `SHA256SUMS`, moves the minor tag `v<X.Y>` to the release, publishes the crate on crates.io (the `crates-io` job), and merges the release branch back into `main`. The reusable `asdlc-*` workflows are released with the bridge under the same version; callers pin a major tag (`@v1`), moved by the owner, or a minor line (`@v<X.Y>`), moved by the publication. Releases until 1.10.0 were release-please's.
 
-Publishing a release is still the owner's go: the bridges of real projects install it within minutes. A person dispatches the cut; nothing else is done by hand.
+Publishing a release is still the owner's go: the bridges of real projects install it within minutes. A person dispatches the cut, which launches the release; nothing else is done by hand. Each fix merged to the release branch (a gate-fix ticket, a blocking finding's fix) makes the next candidate, and the bridge cuts it itself (`release.auto_candidate = true` in `.spl-asdlc/config.toml`): a cycle never waits on a person between two candidates.
 
 ## Updating the bridge that serves this repository
 

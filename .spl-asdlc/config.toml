@@ -27,3 +27,7 @@ angles = []                            # no PR review: a PR merges on its CI
 candidate_tag = "v{version}-rc.{rc}"
 release_tag = "v{version}"
 angles = []                            # no QA angle: the GO rests on the release CI
+# A fix merged to the release branch (a gate-fix, a blocking finding's
+# fix) makes the next candidate: the bridge cuts it itself, so a cycle needs
+# no human between two candidates (ASDLC-R5JK).
+auto_candidate = true
