@@ -690,57 +690,9 @@ fn one(
     }
 
     // ---- the ticket's contract gates the review (spec 04 §2) ----
-    let missing = contract::missing_from_contract(&ticket.description);
-    if !missing.is_empty() {
-        t.wait(
-            report,
-            &pr,
-            format!("the contract of {} is incomplete", ticket.key),
-        );
-        let digest = texts::digest(&missing.join("\n"));
-        say_once(
-            t,
-            log,
-            report,
-            &pr,
-            "contract-incomplete",
-            &[("ticket", &ticket.key), ("missing", &digest)],
-            &format!(
-                "The contract of {} is incomplete, so this PR is not reviewed yet \
-                 (`docs/reference/01-ticket-contract.md`):\n\n{}\n\n`spl-asdlc ticket check {}` says the same.",
-                ticket.key,
-                missing
-                    .iter()
-                    .map(|m| format!("- {m}"))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                ticket.key
-            ),
-        );
-        // Said on the ticket too, where people and agents look: a PR held
-        // for its contract never waits unseen (SID-1222).
-        say_once_on_item(
-            t,
-            log,
-            report,
-            &ticket.key,
-            "contract-incomplete",
-            &[("pr", &pr.number.to_string()), ("missing", &digest)],
-            &format!(
-                "PR #{} is held: the contract of this ticket is incomplete \
-                 (`docs/reference/01-ticket-contract.md`):\n\n{}\n\nComplete it here; the PR goes on \
-                 at the next tick. `spl-asdlc ticket check {}` says the same.",
-                pr.number,
-                missing
-                    .iter()
-                    .map(|m| format!("- {m}"))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                ticket.key
-            ),
-        );
-        return None;
-    }
+    // A held PR asks its owner on the ticket (ASDLC-G8M2): a decision
+    // request where the tracker has them, a comment elsewhere.
+    let ticket = super::contract_decision::gate(t, log, report, &pr, ticket)?;
 
     // ---- the diff and the business-rule guard ----
     let files = match t.github.pull_files(&t.repo, pr.number) {

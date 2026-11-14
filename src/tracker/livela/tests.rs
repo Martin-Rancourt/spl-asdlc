@@ -41,6 +41,10 @@ struct MemStore {
     created_tasks: Vec<String>,
     /// The reviews recorded for each `(item id, PR url)`.
     reviews: BTreeMap<(String, String), String>,
+    /// Whether it raises decision requests (ASDLC-G8M2), and those raised,
+    /// by item id.
+    decides: bool,
+    decisions: Vec<(String, LivelaDecision)>,
 }
 
 impl Default for MemStore {
@@ -63,6 +67,8 @@ impl Default for MemStore {
             tasks: false,
             created_tasks: Vec::new(),
             reviews: BTreeMap::new(),
+            decides: false,
+            decisions: Vec::new(),
         }
     }
 }
@@ -375,6 +381,62 @@ impl LivelaStore for MemStore {
             .insert((id.to_string(), url.to_string()), code.to_string());
         Ok(())
     }
+    fn holds_decisions(&self) -> bool {
+        self.decides
+    }
+    fn decisions(&self, id: &str) -> Result<Vec<LivelaDecision>, String> {
+        Ok(self
+            .decisions
+            .iter()
+            .filter(|(item, _)| item == id)
+            .map(|(_, d)| d.clone())
+            .collect())
+    }
+    fn request_decision(
+        &mut self,
+        id: &str,
+        author: &str,
+        question: &str,
+    ) -> Result<String, String> {
+        if !self.items.contains_key(id) {
+            return Err("no item".into());
+        }
+        // The core signs the request with the author it is given.
+        assert_eq!(
+            author, self.author,
+            "a request is signed by the current author"
+        );
+        self.fact(format!("decision {id}"));
+        let rid = format!("c-{}", self.id());
+        self.decisions.push((
+            id.to_string(),
+            LivelaDecision {
+                id: rid.clone(),
+                author: author.into(),
+                question: question.into(),
+                answer: None,
+                withdrawn: false,
+            },
+        ));
+        Ok(rid)
+    }
+    fn withdraw_decision(&mut self, request: &str, by: &str) -> Result<(), String> {
+        let d = self
+            .decisions
+            .iter_mut()
+            .map(|(_, d)| d)
+            .find(|d| d.id == request)
+            .ok_or("no such decision request")?;
+        if d.answer.is_some() || d.withdrawn {
+            return Err("this decision request is already answered or withdrawn".into());
+        }
+        if d.author != by {
+            return Err("only the participant that raised a decision request withdraws it".into());
+        }
+        d.withdrawn = true;
+        self.fact(format!("withdraw {request}"));
+        Ok(())
+    }
 }
 
 /// One store shared by the adapters of its two projects.
@@ -507,8 +569,8 @@ fn the_livela_adapter_passes_the_conformance_suite_on_two_projects_of_one_store(
             conformance::run_with(&t, &StatusTable::identity(), "1", Some(&facts)).unwrap();
         assert_eq!(
             report.not_offered,
-            vec!["comment edit"],
-            "the one missing point of the contract"
+            vec!["comment edit", "decision request"],
+            "the missing point of the contract, and decisions a store without them does not raise"
         );
         assert!(
             report
@@ -1240,5 +1302,79 @@ fn pr_reviews_are_mirrored_on_a_linked_item_once() {
     assert_eq!(t.pr_reviews(&a.key, url).unwrap(), Some(reviews.clone()));
     let before = t.store.borrow().facts.len();
     t.record_pr_reviews(&a.key, url, &reviews).unwrap();
+    assert_eq!(t.store.borrow().facts.len(), before);
+}
+
+/// ASDLC-G8M2: a store that raises decision requests passes the suite with
+/// them, each signed by `spl-asdlc`, and the runner's author restored.
+#[test]
+fn a_store_with_decisions_passes_the_suite_and_signs_each_request() {
+    let t = td(MemStore {
+        decides: true,
+        ..MemStore::default()
+    });
+    let facts = || t.store.borrow().facts.len() as u64;
+    let report = conformance::run_with(&t, &StatusTable::identity(), "1", Some(&facts)).unwrap();
+    assert!(report.passed.contains(&"withdraw decision".to_string()));
+    let store = t.into_store();
+    let me = store.existing_bridge_participant().unwrap();
+    let signed: Vec<_> = store
+        .facts
+        .iter()
+        .filter(|(_, w)| w.starts_with("decision") || w.starts_with("withdraw"))
+        .collect();
+    assert_eq!(signed.len(), 2, "{signed:?}");
+    assert!(signed.iter().all(|(a, _)| *a == me), "{signed:?}");
+    assert_eq!(store.author, "runner", "the previous author is restored");
+}
+
+/// The answer a person gave reads back on the request; a request someone
+/// else raised is not the bridge's, and an answered one withdraws nothing.
+#[test]
+fn a_decision_reads_its_answer_and_whose_it_is() {
+    let t = td(MemStore {
+        decides: true,
+        ..MemStore::default()
+    });
+    let a = t.create_item(&new_item("a", Status::InReview)).unwrap();
+    let mine = t.request_decision(&a.key, "Which?").unwrap();
+    {
+        let mut s = t.store.borrow_mut();
+        let id = s.items.values().next().unwrap().id.clone();
+        s.decisions.push((
+            id,
+            LivelaDecision {
+                id: "c-other".into(),
+                author: "someone".into(),
+                question: "Theirs?".into(),
+                answer: None,
+                withdrawn: false,
+            },
+        ));
+        s.decisions[0].1.answer = Some("No new rule.".into());
+    }
+    let ds = t.decisions(&a.key).unwrap();
+    assert_eq!(ds.len(), 2);
+    assert!(ds[0].by_bridge && ds[0].answer.as_deref() == Some("No new rule."));
+    assert!(!ds[0].is_open());
+    assert!(!ds[1].by_bridge && ds[1].is_open());
+    let before = t.store.borrow().facts.len();
+    t.withdraw_decision(&a.key, &mine).unwrap();
+    assert_eq!(
+        t.store.borrow().facts.len(),
+        before,
+        "an answered request records nothing"
+    );
+}
+
+/// A store without decisions refuses a request, before any write.
+#[test]
+fn a_store_without_decisions_refuses_a_request() {
+    let t = td(MemStore::default());
+    let a = t.create_item(&new_item("a", Status::InReview)).unwrap();
+    let before = t.store.borrow().facts.len();
+    assert!(!t.holds_decisions());
+    assert!(t.request_decision(&a.key, "Which?").is_err());
+    assert!(t.decisions(&a.key).unwrap().is_empty());
     assert_eq!(t.store.borrow().facts.len(), before);
 }

@@ -487,6 +487,30 @@ impl Tracker for DryTracker<'_> {
             .push(format!("tracker: link {key} to {pr_url}"));
         Ok(())
     }
+    fn holds_decisions(&self) -> bool {
+        self.inner.holds_decisions()
+    }
+    fn decisions(&self, key: &str) -> TResult<Vec<crate::tracker::Decision>> {
+        if would_create(key) {
+            return Ok(Vec::new());
+        }
+        self.inner.decisions(key)
+    }
+    fn request_decision(&self, key: &str, question: &str) -> TResult<String> {
+        if !self.inner.holds_decisions() {
+            return self.inner.request_decision(key, question);
+        }
+        self.intents.push(format!(
+            "tracker: decision request on {key}: {}",
+            first_line(question)
+        ));
+        Ok(String::new())
+    }
+    fn withdraw_decision(&self, key: &str, request: &str) -> TResult<()> {
+        self.intents
+            .push(format!("tracker: withdraw decision {request} on {key}"));
+        Ok(())
+    }
     fn candidate_milestones(&self) -> bool {
         self.inner.candidate_milestones()
     }

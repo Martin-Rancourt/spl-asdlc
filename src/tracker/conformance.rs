@@ -5,7 +5,8 @@
 //! relation and read it back from both ends (and only there), record the
 //! linked PR's status where the tracker holds one, comment twice
 //! as the service identity and read the thread oldest first, edit a comment
-//! where the tracker can, describe, label, unlabel, assign and unassign with
+//! where the tracker can, raise, read back and withdraw a decision request
+//! where the tracker holds them (refused elsewhere), describe, label, unlabel, assign and unassign with
 //! a read-back after each write, repeat every write and check that the
 //! repetition leaves no trace, list by label, then cancel everything it
 //! created, on success and on failure alike.
@@ -388,6 +389,64 @@ fn suite(
         "the comment edit did not land",
     )?;
 
+    // A decision request where the tracker holds them: raised, read back
+    // open and signed, withdrawn once. Elsewhere it is refused, and the
+    // bridge asks in a comment (ASDLC-G8M2).
+    if tracker.holds_decisions() {
+        let question = format!("Conformance decision, run {run_id}.");
+        let id = step(
+            r,
+            "request decision",
+            tracker.request_decision(&release.key, &question),
+        )?;
+        let found = step(r, "read decisions", tracker.decisions(&release.key))?;
+        check(
+            found
+                .iter()
+                .any(|d| d.id == id && d.is_open() && d.by_bridge && d.question == question),
+            "the decision request does not read back open, signed by the service identity",
+        )?;
+        step(
+            r,
+            "withdraw decision",
+            tracker.withdraw_decision(&release.key, &id),
+        )?;
+        let before = changes.map(|c| c());
+        step(
+            r,
+            "repeat: withdraw decision",
+            tracker.withdraw_decision(&release.key, &id),
+        )?;
+        if let (Some(count), Some(before)) = (changes, before) {
+            check(
+                count() == before,
+                "withdrawing a withdrawn request recorded a change",
+            )?;
+        }
+        let after = step(
+            r,
+            "read decisions after withdrawal",
+            tracker.decisions(&release.key),
+        )?;
+        check(
+            after
+                .iter()
+                .any(|d| d.id == id && d.withdrawn && !d.is_open()),
+            "the withdrawal did not land",
+        )?;
+    } else {
+        check(
+            tracker.request_decision(&release.key, "x").is_err(),
+            "a tracker without decision requests accepted one",
+        )?;
+        let none = step(r, "read decisions", tracker.decisions(&release.key))?;
+        check(
+            none.is_empty(),
+            "a tracker without decision requests reads one",
+        )?;
+        r.not_offered.push("decision request".to_string());
+    }
+
     // Description and labels, each read back.
     let description = format!("Edited by conformance run {run_id}.");
     step(
@@ -538,6 +597,23 @@ mod tests {
                 .contains(&"unchanged writes record nothing".to_string())
         );
         assert!(report.passed.contains(&"find by PR URL".to_string()));
+        assert!(report.not_offered.contains(&"decision request".to_string()));
+    }
+
+    #[test]
+    fn a_tracker_with_decisions_raises_reads_and_withdraws_one_in_the_suite() {
+        let mut t = FakeTracker::new("ABC");
+        t.decisions = true;
+        let count = || t.writes().len() as u64;
+        let report = run_with(&t, &StatusTable::identity(), "3", Some(&count)).unwrap();
+        for s in [
+            "request decision",
+            "withdraw decision",
+            "read decisions after withdrawal",
+        ] {
+            assert!(report.passed.contains(&s.to_string()), "{s}");
+        }
+        assert!(!report.not_offered.contains(&"decision request".to_string()));
     }
 
     #[test]
