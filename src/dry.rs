@@ -129,6 +129,14 @@ impl GitHub for DryGitHub<'_> {
     fn issue_comments(&self, repo: &RepoSlug, number: u64) -> Read<Vec<github::Comment>> {
         self.inner.issue_comments(repo, number)
     }
+    fn check_runs(
+        &self,
+        repo: &RepoSlug,
+        sha: &str,
+        name: &str,
+    ) -> Read<Vec<github::CheckRunInfo>> {
+        self.inner.check_runs(repo, sha, name)
+    }
     fn release(&self, repo: &RepoSlug, tag: &str) -> Read<github::Release> {
         self.inner.release(repo, tag)
     }
@@ -243,6 +251,20 @@ impl GitHub for DryGitHub<'_> {
             created_at: None,
             url: String::new(),
         })
+    }
+    fn create_check_run(&self, repo: &RepoSlug, run: &github::NewCheckRun) -> Write<u64> {
+        self.intents.push(format!(
+            "github {repo}: check run {} {} on {}",
+            run.name, run.conclusion, run.head_sha
+        ));
+        Ok(0)
+    }
+    fn update_check_run(&self, repo: &RepoSlug, id: u64, run: &github::NewCheckRun) -> Write<()> {
+        self.intents.push(format!(
+            "github {repo}: check run {id} {} {}",
+            run.name, run.conclusion
+        ));
+        Ok(())
     }
     fn update_comment(&self, repo: &RepoSlug, comment_id: u64, body: &str) -> Write<()> {
         self.intents.push(format!(

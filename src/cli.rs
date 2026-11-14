@@ -819,6 +819,12 @@ fn ticket_check(
             };
             match crate::tracker::Tracker::get(&tracker, &key) {
                 Ok(item) => (format!("{} {}", item.key, item.title), item.description),
+                Err(e) if e.is_not_found() => {
+                    let (text, code) =
+                        crate::method::contract::Verdict::NoTicket.ticket_check(&key);
+                    let _ = write!(err, "{text}");
+                    return ExitCode::from(code);
+                }
                 Err(e) => {
                     let _ = writeln!(err, "{e}");
                     return ExitCode::from(2);
@@ -830,17 +836,10 @@ fn ticket_check(
             return ExitCode::from(2);
         }
     };
-    let missing = crate::method::contract::missing_from_contract(&text);
-    if missing.is_empty() {
-        let _ = writeln!(out, "{name}: the contract is complete");
-        ExitCode::SUCCESS
-    } else {
-        let _ = writeln!(out, "{name}: the contract is incomplete");
-        for m in &missing {
-            let _ = writeln!(out, "  - {m}");
-        }
-        ExitCode::from(1)
-    }
+    // The one verdict (rule C9VD): the bridge's gate, comment and check read it too.
+    let (report, code) = crate::method::contract::Verdict::of(Some(&text)).ticket_check(&name);
+    let _ = write!(out, "{report}");
+    ExitCode::from(code)
 }
 
 fn config_check(

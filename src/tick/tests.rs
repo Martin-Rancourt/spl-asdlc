@@ -127,6 +127,15 @@ impl World {
         self.tracker.link(key, &pr.url);
     }
 
+    /// The open PR `number` as GitHub has it now (the checks the bridge
+    /// published on its head included).
+    fn open_pr(&self, number: u64) -> Option<PullRequest> {
+        match self.github.state.borrow().open_pulls.get(&repo()) {
+            Some(Ok(list)) => list.iter().find(|p| p.number == number).cloned(),
+            _ => None,
+        }
+    }
+
     fn github_writes(&self) -> Vec<String> {
         self.github.writes()
     }
@@ -946,7 +955,8 @@ fn in_review(w: &World, number: u64) -> PullRequest {
         w.tracker.item(&format!("ABC-{number}")).state.status,
         Some(Status::InReview)
     );
-    pr
+    // As GitHub has it now: its head carries the contract check.
+    w.open_pr(number).unwrap_or(pr)
 }
 
 #[test]
@@ -4396,4 +4406,267 @@ fn an_answer_to_earlier_gaps_is_not_applied_again() {
     assert_eq!(describes(&w), 1, "{:?}", w.tracker.writes());
     assert!(!w.tracker.item("ABC-7").description.contains("No new rule."));
     assert!(requests(&w).last().unwrap().is_open(), "asked anew");
+}
+
+// ---- the contract check (ASDLC-57KZ, rules C9VD and M6TQ) ----
+
+/// What the bridge last wrote to its contract check at `sha`.
+fn contract_run(w: &World, sha: &str) -> Option<crate::github::NewCheckRun> {
+    w.github
+        .state
+        .borrow()
+        .check_runs
+        .get(&(repo(), sha.to_string()))
+        .and_then(|runs| runs.last().map(|(_, r)| r.clone()))
+}
+
+fn pr_said(w: &World, number: u64, text: &str) -> bool {
+    w.github
+        .state
+        .borrow()
+        .comments
+        .get(&(repo(), number))
+        .and_then(|c| c.as_ref().ok())
+        .is_some_and(|c| c.iter().any(|c| c.body.contains(text)))
+}
+
+/// The contract variants of the conformance: a complete ticket, then one
+/// gap each (every box ticked, so only the contract can hold the PR).
+fn contract_variants() -> Vec<(&'static str, String)> {
+    let all = COMPLETE.replace("- [ ] it is fast", "- [x] it is fast");
+    vec![
+        ("complete", all.clone()),
+        ("no goal", all.replace("## Goal", "## Context")),
+        (
+            "empty goal",
+            all.replace("## Goal\nIt works.\n", "## Goal\n"),
+        ),
+        (
+            "no acceptance criteria",
+            all.replace("## Acceptance criteria", "## Notes"),
+        ),
+        (
+            "no acceptance box",
+            all.replace("- [x] it works\n- [x] it is fast", "- it works"),
+        ),
+        (
+            "no business rules",
+            all.replace("## Business rules\nNo new rule.\n", ""),
+        ),
+        ("empty business rules", all.replace("No new rule.\n", "")),
+    ]
+}
+
+/// One verdict (rule C9VD): for a complete ticket, each missing section and
+/// a ticket not found, the check, the hold comment, the merge decision and
+/// `ticket check` say the same thing.
+#[test]
+fn the_check_the_comment_the_merge_and_ticket_check_never_disagree() {
+    use crate::method::contract::Verdict;
+    for (case, description) in contract_variants() {
+        let mut w = World::new();
+        no_review(&mut w);
+        ready_pr(&w);
+        w.tracker.restyle("ABC-7", |_| description.clone());
+        let (report, _) = w.tick(false);
+        assert!(report.ok(), "{case}: {report:?}");
+
+        let verdict = Verdict::of(Some(&description));
+        let (cli, code) = verdict.ticket_check("ABC-7");
+        let run = contract_run(&w, "head-7").unwrap_or_else(|| panic!("{case}: no check"));
+        let held = !merged(&w);
+        assert_eq!(held, verdict.holds(), "{case}: the merge decision");
+        assert_eq!(code == 1, held, "{case}: ticket check exits {code}");
+        assert_eq!(
+            run.conclusion,
+            if held { "failure" } else { "success" },
+            "{case}"
+        );
+        assert_eq!(
+            pr_said(&w, 7, "The contract of ABC-7 is incomplete"),
+            held,
+            "{case}: the hold comment"
+        );
+        for m in verdict.missing() {
+            assert!(run.summary.contains(m), "{case}: the check lacks {m}");
+            assert!(cli.contains(m), "{case}: ticket check lacks {m}");
+            assert!(pr_said(&w, 7, m), "{case}: the comment lacks {m}");
+        }
+        if held {
+            assert!(run.summary.contains("https://tracker.test/ABC-7"), "{case}");
+            assert!(
+                run.summary.contains("docs/reference/01-ticket-contract.md"),
+                "{case}"
+            );
+        }
+    }
+
+    // A ticket not found: no check, no hold for the contract, and
+    // `ticket check` exits 2.
+    let mut w = World::new();
+    no_review(&mut w);
+    w.open(green(pull_request(7)));
+    w.tick(false);
+    assert!(contract_run(&w, "head-7").is_none());
+    assert!(w.github.check_run_writes().is_empty());
+    assert!(!pr_said(&w, 7, "The contract of"));
+    assert!(pr_said(&w, 7, "No ticket is linked to this PR"));
+    assert_eq!(Verdict::of(None).ticket_check("ABC-99").1, 2);
+    assert!(!Verdict::of(None).holds());
+}
+
+#[test]
+fn a_held_contract_turns_green_at_the_next_pass_once_the_ticket_is_completed() {
+    let mut w = World::new();
+    no_review(&mut w);
+    ready_pr(&w);
+    w.tracker.restyle("ABC-7", |d| {
+        d.replace("## Business rules\nNo new rule.\n", "")
+    });
+    w.tick(false);
+    assert!(!merged(&w));
+    let run = contract_run(&w, "head-7").unwrap();
+    assert_eq!(run.conclusion, "failure");
+    assert!(run.summary.contains("no `## Business rules` section"));
+    assert_eq!(
+        w.github.check_run_writes(),
+        vec!["create example-org/acme@head-7 spl-asdlc / contract failure"]
+    );
+
+    // Nothing changed: nothing written again.
+    w.tick(false);
+    assert_eq!(w.github.check_run_writes().len(), 1);
+
+    // The ticket is completed, no new commit: green at the next pass, and
+    // the PR goes on.
+    check_every_box(&w, "ABC-7");
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    let writes = w.github.check_run_writes();
+    assert_eq!(writes.len(), 2, "{writes:?}");
+    assert!(
+        writes[1].starts_with("update example-org/acme "),
+        "{writes:?}"
+    );
+    assert!(
+        writes[1].ends_with("spl-asdlc / contract success"),
+        "{writes:?}"
+    );
+    assert_eq!(contract_run(&w, "head-7").unwrap().conclusion, "success");
+    assert!(merged(&w), "{:?}", w.github_writes());
+}
+
+#[test]
+fn a_new_head_commit_gets_the_contract_check_again() {
+    let w = World::new();
+    let pr = in_review(&w, 7);
+    assert_eq!(contract_run(&w, "head-7").unwrap().conclusion, "success");
+    w.tick(false);
+    assert_eq!(
+        w.github.check_run_writes().len(),
+        1,
+        "unchanged: written once"
+    );
+    let mut moved = green(pr);
+    moved.head_sha = "head-8".into();
+    w.open(moved);
+    w.tick(false);
+    assert_eq!(
+        w.github.check_run_writes().last().unwrap(),
+        "create example-org/acme@head-8 spl-asdlc / contract success"
+    );
+}
+
+/// Rule M6TQ: the check informs, it never gates alone. A red contract check
+/// left on a head whose ticket is complete holds nothing: the bridge reads
+/// the contract itself, and turns the check green.
+#[test]
+fn a_red_contract_check_never_holds_a_pr_alone() {
+    let mut w = World::new();
+    no_review(&mut w);
+    let mut pr = ready_pr(&w);
+    pr.checks.push(CheckEntry {
+        kind: CheckKind::Run,
+        name: crate::method::contract::CONTRACT_CHECK.into(),
+        workflow: None,
+        status: Some("COMPLETED".into()),
+        conclusion: Some("FAILURE".into()),
+        started_at: None,
+        details_url: None,
+    });
+    w.open(pr);
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert!(merged(&w), "{:?}", w.github_writes());
+    assert_eq!(
+        w.github.check_run_writes(),
+        vec!["create example-org/acme@head-7 spl-asdlc / contract success"]
+    );
+}
+
+/// Without Checks: write, GitHub answers 403: the hold comment stays as it
+/// was, no check is published, the pass says so once and does not fail.
+#[test]
+fn without_the_checks_permission_the_hold_comment_stays_and_the_pass_goes_on() {
+    let mut w = World::new();
+    no_review(&mut w);
+    ready_pr(&w);
+    w.tracker.restyle("ABC-7", |d| {
+        d.replace("## Business rules\nNo new rule.\n", "")
+    });
+    let other = green(pull_request(8));
+    w.ticket("ABC-8", Status::InProgress, &other);
+    w.tracker
+        .restyle("ABC-8", |d| d.replace("## Goal", "## Context"));
+    w.open(other);
+    w.github
+        .fail_check_runs(Some(403), "Resource not accessible by integration");
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    let denied: Vec<_> = report
+        .notes
+        .iter()
+        .filter(|n| n.contains("spl-asdlc / contract"))
+        .collect();
+    assert_eq!(denied.len(), 1, "said once: {:?}", report.notes);
+    assert!(denied[0].contains("Checks: read and write"), "{denied:?}");
+    assert!(
+        w.github
+            .check_run_writes()
+            .iter()
+            .all(|l| l.starts_with("REFUSED ")),
+        "{:?}",
+        w.github.check_run_writes()
+    );
+    assert_eq!(
+        w.github.check_run_writes().len(),
+        1,
+        "not tried again in the pass"
+    );
+    assert!(contract_run(&w, "head-7").is_none());
+    assert!(pr_said(&w, 7, "The contract of ABC-7 is incomplete"));
+    assert!(pr_said(&w, 8, "The contract of ABC-8 is incomplete"));
+    assert!(!merged(&w));
+}
+
+/// Another refusal is a failure like any write's: logged, retried at the
+/// next tick.
+#[test]
+fn a_check_refused_for_another_reason_is_a_failure_retried_next_tick() {
+    let mut w = World::new();
+    no_review(&mut w);
+    ready_pr(&w);
+    w.tracker
+        .restyle("ABC-7", |d| d.replace("## Goal", "## Context"));
+    w.github.fail_check_runs(Some(502), "bad gateway");
+    let (report, _) = w.tick(false);
+    assert!(!report.ok());
+    assert!(
+        report
+            .failures
+            .iter()
+            .any(|f| f.contains("create contract check")),
+        "{report:?}"
+    );
+    assert!(pr_said(&w, 7, "The contract of ABC-7 is incomplete"));
 }

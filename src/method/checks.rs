@@ -46,10 +46,28 @@ pub enum CheckState {
     Unreadable,
 }
 
+/// The bridge's own contract check (`spl-asdlc / contract`, ASDLC-57KZ): a
+/// check run outside any workflow. It informs and never gates alone (rule
+/// M6TQ): the bridge's merge rule reads the ticket's contract itself, so its
+/// reading of a PR's checks leaves this one out. A workflow job of the same
+/// name is a check like any other.
+pub fn is_contract_check(c: &CheckEntry) -> bool {
+    c.kind == CheckKind::Run
+        && c.workflow.is_none()
+        && c.name == crate::method::contract::CONTRACT_CHECK
+}
+
 /// The latest run of each check, identified by (workflow, name); a run not
 /// started yet is newer than any started run; runs the timestamps cannot
-/// order are all kept; entries without a name are kept as they are.
+/// order are all kept; entries without a name are kept as they are. The
+/// bridge's own contract check is left out ([`is_contract_check`]).
 pub fn latest_runs(checks: &[CheckEntry]) -> Vec<CheckEntry> {
+    let checks: Vec<CheckEntry> = checks
+        .iter()
+        .filter(|c| !is_contract_check(c))
+        .cloned()
+        .collect();
+    let checks = checks.as_slice();
     let key = |c: &CheckEntry| match c.kind {
         CheckKind::Run => (Some(c.workflow.clone().unwrap_or_default()), c.name.clone()),
         CheckKind::Status => (None, c.name.clone()),
@@ -241,6 +259,43 @@ mod tests {
 
     fn none() -> BTreeSet<String> {
         BTreeSet::new()
+    }
+
+    /// Rule M6TQ: the bridge's own contract check (a run outside any
+    /// workflow) never colours a PR's checks; a workflow job of that name
+    /// is a check like any other.
+    #[test]
+    fn the_bridges_contract_check_never_colours_the_checks() {
+        let ours = CheckEntry {
+            workflow: None,
+            ..run(
+                "",
+                crate::method::contract::CONTRACT_CHECK,
+                "COMPLETED",
+                "FAILURE",
+                T1,
+            )
+        };
+        let ci = run("CI", "required-check", "COMPLETED", "SUCCESS", T1);
+        assert!(is_contract_check(&ours));
+        assert_eq!(
+            state(&[ci.clone(), ours.clone()], &none()),
+            CheckState::Green
+        );
+        assert_eq!(
+            state(std::slice::from_ref(&ours), &none()),
+            CheckState::None
+        );
+        assert!(failures(&[ci.clone(), ours]).is_empty());
+        let job = run(
+            "CI",
+            crate::method::contract::CONTRACT_CHECK,
+            "COMPLETED",
+            "FAILURE",
+            T1,
+        );
+        assert!(!is_contract_check(&job));
+        assert_eq!(state(&[ci, job], &none()), CheckState::Red);
     }
 
     #[test]

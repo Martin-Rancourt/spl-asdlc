@@ -781,6 +781,25 @@ fn matching_refs(repo: &RepoSlug, kind: &str, prefix: &str) -> String {
     }
 }
 
+/// The body of a check run's creation (`create`) or update: a completed
+/// run with its output.
+fn check_run_body(run: &NewCheckRun, create: bool) -> Value {
+    let mut body = json!({
+        "name": run.name,
+        "status": "completed",
+        "conclusion": run.conclusion,
+        "external_id": run.external_id,
+        "output": {"title": run.title, "summary": run.summary},
+    });
+    if create {
+        body["head_sha"] = json!(run.head_sha);
+    }
+    if let Some(url) = &run.details_url {
+        body["details_url"] = json!(url);
+    }
+    body
+}
+
 fn git_ref(v: &Value, prefix: &str) -> Option<GitRef> {
     let full = v.get("ref")?.as_str()?;
     Some(GitRef {
@@ -1554,6 +1573,30 @@ impl GitHub for RestGitHub {
         })
     }
 
+    fn check_runs(&self, repo: &RepoSlug, sha: &str, name: &str) -> Read<Vec<CheckRunInfo>> {
+        let what = format!("check runs {name} of {sha} in {repo}");
+        let items = self.get_pages(
+            repo,
+            &what,
+            &format!(
+                "/repos/{repo}/commits/{}/check-runs?check_name={}&filter=latest&per_page=100",
+                encode(sha, false),
+                encode(name, false)
+            ),
+            Some("check_runs"),
+            1_000,
+        )?;
+        all(&what, &items, |r| {
+            Some(CheckRunInfo {
+                id: r["id"].as_u64()?,
+                name: str_of(r, "name"),
+                app: r["app"]["slug"].as_str().map(str::to_string),
+                conclusion: opt_str(r, "conclusion"),
+                external_id: opt_str(r, "external_id"),
+            })
+        })
+    }
+
     fn release(&self, repo: &RepoSlug, tag: &str) -> Read<Release> {
         let what = format!("release {tag} of {repo}");
         let (v, _) = self.get_json(
@@ -1923,6 +1966,35 @@ impl GitHub for RestGitHub {
             created_at: time_of(&v, "created_at"),
             url: str_of(&v, "html_url"),
         })
+    }
+
+    fn create_check_run(&self, repo: &RepoSlug, run: &NewCheckRun) -> Write<u64> {
+        let what = format!("check run {} on {}", run.name, run.head_sha);
+        let v = self.write(
+            repo,
+            &what,
+            "POST",
+            &format!("/repos/{repo}/check-runs"),
+            Some(check_run_body(run, true)),
+            &[201],
+        )?;
+        v["id"].as_u64().ok_or_else(|| WriteError {
+            what,
+            status: Some(201),
+            detail: "GitHub answered no check run id".into(),
+        })
+    }
+
+    fn update_check_run(&self, repo: &RepoSlug, id: u64, run: &NewCheckRun) -> Write<()> {
+        self.write(
+            repo,
+            &format!("update of check run {id} ({})", run.name),
+            "PATCH",
+            &format!("/repos/{repo}/check-runs/{id}"),
+            Some(check_run_body(run, false)),
+            &[200],
+        )
+        .map(|_| ())
     }
 
     fn update_comment(&self, repo: &RepoSlug, comment_id: u64, body: &str) -> Write<()> {
