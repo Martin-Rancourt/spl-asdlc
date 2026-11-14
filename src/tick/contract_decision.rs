@@ -84,6 +84,14 @@ pub fn question(pr: &PullRequest, key: &str, missing: &[String], rules_missing: 
     text
 }
 
+/// The PR's latest request, withdrawn ones included, when it still stands
+/// and names these gaps: a request withdrawn or for other gaps is never
+/// read again, so a gap that comes back is asked anew.
+fn standing<'a>(ours: &'a [Decision], asked: &str) -> Option<&'a Decision> {
+    ours.last()
+        .filter(|d| !d.withdrawn && texts::has_marker(&d.question, asked))
+}
+
 /// Gate the PR on its ticket's contract: `Some(ticket)` to go on (its
 /// description completed when the owner answered « No new rule. »), `None`
 /// to hold it.
@@ -112,35 +120,39 @@ pub fn gate(
                     &object,
                     format!("the decision requests of {}: {e}", ticket.key),
                 );
-                return None;
+                // A complete contract does not need them: only a stale
+                // request stays open until a later tick withdraws it.
+                return missing.is_empty().then_some(ticket);
             }
         }
     } else {
         Vec::new()
     };
 
-    // The owner's latest answer is « No new rule. »: the bridge writes the
-    // declaration, and nothing else.
-    let latest_answer = ours.iter().rev().find_map(|d| d.answer.as_deref());
-    if !missing.is_empty()
-        && contract::lacks_business_rules(&ticket.description)
-        && latest_answer.is_some_and(contract::says_no_new_rule)
-    {
+    // The owner answered « No new rule. » to the PR's latest request, and it
+    // names the current gaps: the bridge writes the declaration, and nothing
+    // else. Once a later request is raised, that answer is never applied
+    // again.
+    let asked = marker(pr.number, &texts::digest(&missing.join("\n")));
+    let answer = standing(&ours, &asked).and_then(|d| d.answer.as_deref());
+    if !missing.is_empty() && answer.is_some_and(contract::says_no_new_rule) {
         let text = contract::with_no_new_rule(&ticket.description);
-        t.act(
-            log,
-            report,
-            &ticket.key,
-            "declare no new rule",
-            json!({"pr": pr.number}),
-            || {
-                t.tracker
-                    .update_description(&ticket.key, &text)
-                    .map_err(|e| e.to_string())
-            },
-        )?;
-        ticket.description = text;
-        missing = contract::missing_from_contract(&ticket.description);
+        if text != ticket.description {
+            t.act(
+                log,
+                report,
+                &ticket.key,
+                "declare no new rule",
+                json!({"pr": pr.number}),
+                || {
+                    t.tracker
+                        .update_description(&ticket.key, &text)
+                        .map_err(|e| e.to_string())
+                },
+            )?;
+            ticket.description = text;
+            missing = contract::missing_from_contract(&ticket.description);
+        }
     }
 
     // A request that no longer matches the contract's gaps is withdrawn.
@@ -188,10 +200,7 @@ pub fn gate(
     );
     if decides {
         let rules_missing = contract::lacks_business_rules(&ticket.description);
-        match ours
-            .iter()
-            .rfind(|d| !d.withdrawn && texts::has_marker(&d.question, &current))
-        {
+        match standing(&ours, &current) {
             None => {
                 let q = for_tracker(
                     t,

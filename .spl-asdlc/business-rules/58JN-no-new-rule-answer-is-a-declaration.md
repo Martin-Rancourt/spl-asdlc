@@ -12,4 +12,4 @@ Owner's decision of 2026-11-13, ASDLC-G8M2.
 
 ## Test
 
-`tick::tests::the_answer_no_new_rule_writes_the_declaration_and_the_pr_goes_on_at_the_same_tick`, `tick::tests::another_answer_writes_nothing_and_says_once_that_the_pr_waits`, `tick::tests::a_missing_goal_is_only_asked_for`, `method::contract::tests::no_new_rule_is_the_answer_case_and_final_period_aside` (unit test job).
+`tick::tests::the_answer_no_new_rule_writes_the_declaration_and_the_pr_goes_on_at_the_same_tick`, `tick::tests::another_answer_writes_nothing_and_says_once_that_the_pr_waits`, `tick::tests::a_missing_goal_is_only_asked_for`, `tick::tests::an_answer_to_earlier_gaps_is_not_applied_again`, `method::contract::tests::no_new_rule_is_the_answer_case_and_final_period_aside` (unit test job).

@@ -122,7 +122,8 @@ pub fn says_no_new_rule(answer: &str) -> bool {
 /// The description with `## Business rules` declaring « No new rule. »: the
 /// first empty section filled, or, with none, the section added before
 /// `## Release note` (at the end without one). A description whose section
-/// already says something is returned unchanged.
+/// already says something, even only in a fenced block, is returned
+/// unchanged.
 pub fn with_no_new_rule(description: &str) -> String {
     if !lacks_business_rules(description) {
         return description.to_string();
@@ -138,6 +139,11 @@ pub fn with_no_new_rule(description: &str) -> String {
         b
     };
     if let Some(s) = markdown::sections_of(&fenced, is_business_rules_heading).first() {
+        // Only a body blank as written is filled: one whose text sits in a
+        // fenced block is a person's, never overwritten.
+        if lines[s.start..s.end].iter().any(|l| !l.trim().is_empty()) {
+            return description.to_string();
+        }
         let at_end = s.end >= lines.len();
         lines.splice(s.start..s.end, block(at_end));
     } else if let Some(note) = markdown::sections_of(&fenced, is_release_note_heading).first() {
@@ -349,6 +355,16 @@ mod tests {
     fn no_new_rule_leaves_a_stated_rule_alone() {
         assert!(!lacks_business_rules(COMPLETE));
         assert_eq!(with_no_new_rule(COMPLETE), COMPLETE);
+        let fenced = COMPLETE.replace(
+            "## Business rules\nNone.\n",
+            "## Business rules\n```\nrule\n```\n",
+        );
+        assert!(lacks_business_rules(&fenced));
+        assert_eq!(
+            with_no_new_rule(&fenced),
+            fenced,
+            "a fenced body is a person's"
+        );
     }
 
     #[test]

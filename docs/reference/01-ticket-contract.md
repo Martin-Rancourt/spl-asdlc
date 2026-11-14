@@ -38,7 +38,7 @@ On the ticket, the bridge asks the owner (ASDLC-G8M2, H4NC, 58JN):
 - On a tracker with decision requests (Livela), it raises one decision request on the ticket, once per PR and per set of missing elements. The request names the PR, each missing element and how to answer, and waits in the owner's decisions queue. When the only gap is `## Business rules`, it offers « No new rule. » as the default answer.
 - The answer « No new rule. » (the case and a final period ignored, « None » accepted), while `## Business rules` is missing or empty, is a declaration: the bridge writes `## Business rules` with `No new rule.` into the description (adding the section before `## Release note`, or filling the empty one), and nothing else. The PR goes on at the same tick when nothing else is missing; otherwise a new request asks for what remains.
 - Any other answer is left to people: the bridge says once on the ticket that the PR waits for the contract to be completed. It never writes a goal or acceptance criteria.
-- Once the contract is complete by any other way, or its missing elements change, the bridge withdraws its open request.
+- Once the contract is complete by any other way, or its missing elements change, the bridge withdraws its open request. Only the PR's latest request is read: an answer is applied once, and a gap that comes back is asked anew.
 - On a tracker without decision requests (Linear), it says it in a comment on the ticket, once per set of missing elements. The judgement is deterministic: it reads headings and checkboxes, never the quality of the prose.
 
 ## Vocabulary

@@ -4361,3 +4361,39 @@ fn a_tracker_without_decisions_keeps_the_comment() {
             .any(|c| c.body.contains("PR #7 is held"))
     );
 }
+
+/// An answer « No new rule. » to an earlier set of gaps is never applied
+/// again: a section a person empties later is asked anew.
+#[test]
+fn an_answer_to_earlier_gaps_is_not_applied_again() {
+    let w = held_for_rules();
+    w.tracker
+        .restyle("ABC-7", |d| d.replace("## Goal", "## Context"));
+    w.tick(false);
+    let first = requests(&w)[0].id.clone();
+    w.tracker.answer_decision("ABC-7", &first, "No new rule.");
+    w.tick(false);
+    assert!(w.tracker.item("ABC-7").description.contains("No new rule."));
+    // A person removes the section again, the goal still missing: the
+    // same gaps as the answered request.
+    w.tracker.restyle("ABC-7", |d| {
+        d.replace("## Business rules\n\nNo new rule.\n", "")
+    });
+    assert!(
+        !w.tracker
+            .item("ABC-7")
+            .description
+            .contains("Business rules")
+    );
+    let describes = |w: &World| {
+        w.tracker
+            .writes()
+            .iter()
+            .filter(|x| *x == "describe ABC-7")
+            .count()
+    };
+    w.tick(false);
+    assert_eq!(describes(&w), 1, "{:?}", w.tracker.writes());
+    assert!(!w.tracker.item("ABC-7").description.contains("No new rule."));
+    assert!(requests(&w).last().unwrap().is_open(), "asked anew");
+}
