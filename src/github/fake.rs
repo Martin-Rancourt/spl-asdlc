@@ -77,6 +77,18 @@ pub struct FakeState {
     pub artifacts: HashMap<(RepoSlug, u64), Read<Vec<Artifact>>>,
     /// `(repo, artifact id, path)`: a file inside an artifact's zip.
     pub artifact_files: HashMap<(RepoSlug, u64, String), Read<String>>,
+    /// The check runs of each `(repo, sha)`, with what was last written to
+    /// them: only the bridge creates check runs here, so an unscripted
+    /// commit has none (never `Unreadable`).
+    pub check_runs: HashMap<(RepoSlug, String), Vec<(CheckRunInfo, NewCheckRun)>>,
+    /// Every check-run write, as one line (`create <repo>@<sha> <name>
+    /// <conclusion>`, `update <repo> <id> …`): apart from `writes`, which
+    /// they would crowd in every test of a linked PR.
+    pub check_run_writes: Vec<String>,
+    /// Every check-run read, as `<repo>@<sha> <name>`.
+    pub check_run_reads: Vec<String>,
+    /// Check-run writes fail so (a missing permission).
+    pub failing_check_runs: Option<WriteError>,
     /// Every write, as one line (`merge acme#12 at <sha> squash`, …).
     pub writes: Vec<String>,
     /// Writes whose line starts with a key here fail with that error.
@@ -167,6 +179,52 @@ impl FakeGitHub {
         }
         s.writes.push(line);
         Ok(())
+    }
+
+    fn check_run_written(&self, line: String) -> Write<()> {
+        let mut s = self.state.borrow_mut();
+        if let Some(e) = s.failing_check_runs.clone() {
+            s.check_run_writes.push(format!("REFUSED {line}"));
+            return Err(e);
+        }
+        s.check_run_writes.push(line);
+        Ok(())
+    }
+
+    /// A check run written at `sha` shows in the rollup of the open PRs
+    /// whose head it is, as GitHub's GraphQL gives it (uppercase, no
+    /// workflow): the run replaces the previous one of its name.
+    fn roll_up(&self, repo: &RepoSlug, sha: &str, name: &str, conclusion: &str) {
+        if let Some(Ok(list)) = self.state.borrow_mut().open_pulls.get_mut(repo) {
+            for p in list.iter_mut().filter(|p| p.head_sha == sha) {
+                p.checks.retain(|c| {
+                    !(c.kind == CheckKind::Run && c.workflow.is_none() && c.name == name)
+                });
+                p.checks.push(CheckEntry {
+                    kind: CheckKind::Run,
+                    name: name.to_string(),
+                    workflow: None,
+                    status: Some("COMPLETED".into()),
+                    conclusion: Some(conclusion.to_ascii_uppercase()),
+                    started_at: None,
+                    details_url: None,
+                });
+            }
+        }
+    }
+
+    /// Check-run writes are refused with this status (a 403: the App lacks
+    /// Checks: write).
+    pub fn fail_check_runs(&self, status: Option<u16>, detail: &str) {
+        self.state.borrow_mut().failing_check_runs = Some(WriteError {
+            what: "check run".into(),
+            status,
+            detail: detail.to_string(),
+        });
+    }
+
+    pub fn check_run_writes(&self) -> Vec<String> {
+        self.state.borrow().check_run_writes.clone()
     }
 
     fn with_open_pull(&self, repo: &RepoSlug, number: u64, f: impl FnOnce(&mut PullRequest)) {
@@ -581,6 +639,20 @@ impl GitHub for FakeGitHub {
         }
     }
 
+    fn check_runs(&self, repo: &RepoSlug, sha: &str, name: &str) -> Read<Vec<CheckRunInfo>> {
+        let mut s = self.state.borrow_mut();
+        s.check_run_reads.push(format!("{repo}@{sha} {name}"));
+        Ok(s.check_runs
+            .get(&(repo.clone(), sha.to_string()))
+            .map(|runs| {
+                runs.iter()
+                    .filter(|(r, _)| r.name == name)
+                    .map(|(r, _)| r.clone())
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
     fn release(&self, repo: &RepoSlug, tag: &str) -> Read<Release> {
         match self
             .state
@@ -833,6 +905,57 @@ impl GitHub for FakeGitHub {
             list.push(comment.clone());
         }
         Ok(comment)
+    }
+
+    fn create_check_run(&self, repo: &RepoSlug, run: &NewCheckRun) -> Write<u64> {
+        let line = format!(
+            "create {repo}@{} {} {}",
+            run.head_sha, run.name, run.conclusion
+        );
+        self.check_run_written(line)?;
+        let id = self.id();
+        let identity = self.state.borrow().identity.clone();
+        let app = match identity {
+            Some(Identity::App { slug, .. }) => Some(slug),
+            _ => None,
+        };
+        self.state
+            .borrow_mut()
+            .check_runs
+            .entry((repo.clone(), run.head_sha.clone()))
+            .or_default()
+            .push((
+                CheckRunInfo {
+                    id,
+                    name: run.name.clone(),
+                    app,
+                    conclusion: Some(run.conclusion.clone()),
+                    external_id: Some(run.external_id.clone()),
+                },
+                run.clone(),
+            ));
+        self.roll_up(repo, &run.head_sha, &run.name, &run.conclusion);
+        Ok(id)
+    }
+
+    fn update_check_run(&self, repo: &RepoSlug, id: u64, run: &NewCheckRun) -> Write<()> {
+        self.check_run_written(format!(
+            "update {repo} {id} {} {}",
+            run.name, run.conclusion
+        ))?;
+        let mut sha = None;
+        for ((_, at), runs) in self.state.borrow_mut().check_runs.iter_mut() {
+            if let Some((info, written)) = runs.iter_mut().find(|(r, _)| r.id == id) {
+                info.conclusion = Some(run.conclusion.clone());
+                info.external_id = Some(run.external_id.clone());
+                *written = run.clone();
+                sha = Some(at.clone());
+            }
+        }
+        if let Some(sha) = sha {
+            self.roll_up(repo, &sha, &run.name, &run.conclusion);
+        }
+        Ok(())
     }
 
     fn update_comment(&self, repo: &RepoSlug, comment_id: u64, body: &str) -> Write<()> {

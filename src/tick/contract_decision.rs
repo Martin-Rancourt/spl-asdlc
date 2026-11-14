@@ -25,7 +25,7 @@ use serde_json::json;
 
 use crate::action_log::ActionLog;
 use crate::github::PullRequest;
-use crate::method::contract;
+use crate::method::contract::{self, Verdict};
 use crate::method::texts;
 use crate::tracker::{Decision, Item};
 
@@ -46,12 +46,19 @@ fn of_pr(question: &str, pr: u64) -> bool {
     question.contains(&format!("spl-asdlc:{KIND} pr={pr} "))
 }
 
+/// The missing parts as a list: [`Verdict::listed`], the same list as the
+/// contract check and `ticket check` (rule C9VD).
 fn listed(missing: &[String]) -> String {
-    missing
-        .iter()
-        .map(|m| format!("- {m}"))
-        .collect::<Vec<_>>()
-        .join("\n")
+    Verdict::Incomplete(missing.to_vec()).listed()
+}
+
+/// The bridge's hold comment on the PR: the verdict's list.
+pub fn hold_comment(key: &str, verdict: &Verdict) -> String {
+    format!(
+        "The contract of {key} is incomplete, so this PR is not reviewed yet \
+         (`docs/reference/01-ticket-contract.md`):\n\n{}\n\n`spl-asdlc ticket check {key}` says the same.",
+        verdict.listed()
+    )
 }
 
 /// The question the bridge asks the owner: the PR, each missing element, and
@@ -103,7 +110,8 @@ pub fn gate(
     mut ticket: Item,
 ) -> Option<Item> {
     let decides = t.tracker.holds_decisions();
-    let mut missing = contract::missing_from_contract(&ticket.description);
+    let mut verdict = Verdict::of(Some(&ticket.description));
+    let mut missing = verdict.missing().to_vec();
     if missing.is_empty() && !decides {
         return Some(ticket);
     }
@@ -151,7 +159,10 @@ pub fn gate(
                 },
             )?;
             ticket.description = text;
-            missing = contract::missing_from_contract(&ticket.description);
+            verdict = Verdict::of(Some(&ticket.description));
+            missing = verdict.missing().to_vec();
+            // The check said the old verdict at the start of this pass.
+            super::contract_check::publish(t, log, report, pr, &ticket, &verdict, true);
         }
     }
 
@@ -174,7 +185,7 @@ pub fn gate(
             },
         );
     }
-    if missing.is_empty() {
+    if !verdict.holds() {
         return Some(ticket);
     }
 
@@ -190,13 +201,7 @@ pub fn gate(
         pr,
         "contract-incomplete",
         &[("ticket", &ticket.key), ("missing", &digest)],
-        &format!(
-            "The contract of {} is incomplete, so this PR is not reviewed yet \
-             (`docs/reference/01-ticket-contract.md`):\n\n{}\n\n`spl-asdlc ticket check {}` says the same.",
-            ticket.key,
-            listed(&missing),
-            ticket.key
-        ),
+        &hold_comment(&ticket.key, &verdict),
     );
     if decides {
         let rules_missing = contract::lacks_business_rules(&ticket.description);

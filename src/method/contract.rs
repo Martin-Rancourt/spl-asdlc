@@ -63,7 +63,91 @@ pub fn is_release_note_heading(text: &str) -> bool {
 /// A ticket "has a contract" iff `ticket check` finds nothing missing: one
 /// judgement, never two readings (spec 01, REQ-MERGE-032).
 pub fn has_contract(description: &str) -> bool {
-    missing_from_contract(description).is_empty()
+    Verdict::of(Some(description)) == Verdict::Complete
+}
+
+/// The name of the check run the bridge publishes on a linked PR's head
+/// (ASDLC-57KZ). It informs; no ruleset requires it, and the bridge's own
+/// reading of a PR's checks leaves it out (rule M6TQ).
+pub const CONTRACT_CHECK: &str = "spl-asdlc / contract";
+
+/// The one verdict on a ticket's contract (rule C9VD): the contract check
+/// on GitHub, the bridge's hold comment, its merge decision and
+/// `spl-asdlc ticket check` all read it, never [`missing_from_contract`]
+/// on their own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verdict {
+    /// Nothing missing: the PR goes on, the check passes, `ticket check`
+    /// exits 0.
+    Complete,
+    /// What is missing, in `ticket check`'s words: the PR is held, the
+    /// check fails, `ticket check` exits 1.
+    Incomplete(Vec<String>),
+    /// No ticket to judge (none linked, or none of that id): no hold for
+    /// the contract, no check, `ticket check` exits 2.
+    NoTicket,
+}
+
+impl Verdict {
+    /// The verdict on a ticket's description; `None` when there is no
+    /// ticket.
+    pub fn of(description: Option<&str>) -> Verdict {
+        match description {
+            None => Verdict::NoTicket,
+            Some(d) => {
+                let missing = missing_from_contract(d);
+                if missing.is_empty() {
+                    Verdict::Complete
+                } else {
+                    Verdict::Incomplete(missing)
+                }
+            }
+        }
+    }
+
+    /// Whether the bridge holds the PR for its ticket's contract.
+    pub fn holds(&self) -> bool {
+        matches!(self, Verdict::Incomplete(_))
+    }
+
+    /// What is missing; empty unless incomplete.
+    pub fn missing(&self) -> &[String] {
+        match self {
+            Verdict::Incomplete(m) => m,
+            _ => &[],
+        }
+    }
+
+    /// The missing parts as a Markdown list, one `- ` line each: the same
+    /// list in the hold comment, the decision request and the check.
+    pub fn listed(&self) -> String {
+        self.missing()
+            .iter()
+            .map(|m| format!("- {m}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// A short digest of what is missing: a new set of gaps is said anew.
+    pub fn digest(&self) -> String {
+        super::texts::digest(&self.missing().join("\n"))
+    }
+
+    /// What `spl-asdlc ticket check` prints for the ticket `name`, and its
+    /// exit code.
+    pub fn ticket_check(&self, name: &str) -> (String, u8) {
+        match self {
+            Verdict::Complete => (format!("{name}: the contract is complete\n"), 0),
+            Verdict::Incomplete(missing) => {
+                let mut out = format!("{name}: the contract is incomplete\n");
+                for m in missing {
+                    out.push_str(&format!("  - {m}\n"));
+                }
+                (out, 1)
+            }
+            Verdict::NoTicket => (format!("{name}: no such ticket\n"), 2),
+        }
+    }
 }
 
 /// The judgement of `spl-asdlc ticket check` (spec 01, the refinement gate):

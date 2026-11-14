@@ -122,6 +122,10 @@ pub trait GitHub {
     fn rulesets(&self, repo: &RepoSlug) -> Read<Vec<Ruleset>>;
     /// Comments on a PR or an issue, oldest first.
     fn issue_comments(&self, repo: &RepoSlug, number: u64) -> Read<Vec<Comment>>;
+    /// The check runs named `name` on the commit `sha`, whoever created
+    /// them (REST `commits/{sha}/check-runs`, the latest of each check
+    /// suite).
+    fn check_runs(&self, repo: &RepoSlug, sha: &str, name: &str) -> Read<Vec<CheckRunInfo>>;
 
     // ---- releases and workflow runs ----
 
@@ -181,6 +185,12 @@ pub trait GitHub {
     /// Removing a label the PR does not carry is a success.
     fn remove_label(&self, repo: &RepoSlug, number: u64, label: &str) -> Write<()>;
     fn comment(&self, repo: &RepoSlug, number: u64, body: &str) -> Write<Comment>;
+    /// Create a completed check run on its commit, as the bridge's App
+    /// (Checks: write; a token without it is refused with a 403). Returns
+    /// its id.
+    fn create_check_run(&self, repo: &RepoSlug, run: &NewCheckRun) -> Write<u64>;
+    /// Replace the outcome and output of the check run `id`.
+    fn update_check_run(&self, repo: &RepoSlug, id: u64, run: &NewCheckRun) -> Write<()>;
     fn update_comment(&self, repo: &RepoSlug, comment_id: u64, body: &str) -> Write<()>;
     /// Create or replace `path` on `branch` (contents API); returns the commit.
     fn put_file(

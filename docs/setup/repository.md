@@ -3,7 +3,7 @@
 Every project has the release cycle (`docs/method.md`): every step below applies, to a project with no optional step too; the optional steps are PR review and release QA (`docs/setup/README.md`, "Optional steps").
 
 **Rulesets** (Settings → Rules → Rulesets):
-- `main`: require a pull request, require the status checks `required-check` and the title check (`title / conventional-title`, the context of the example's job named `title`), require branches to be up to date, block force pushes; bypass list: the App only.
+- `main`: require a pull request, require the status checks `required-check` and the title check (`title / conventional-title`, the context of the example's job named `title`), require branches to be up to date, block force pushes; bypass list: the App only. Never require the bridge's `spl-asdlc / contract` check: it informs, the bridge's merge rule holds a PR whose ticket's contract is incomplete (rule M6TQ).
 - `release/**`: same, bypass list: the App only.
 - Tags `*-rc.*` and release tags: block updates and deletions (an RC tag is immutable).
 

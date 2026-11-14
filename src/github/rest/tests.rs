@@ -1808,3 +1808,75 @@ fn returning_a_pr_to_draft_requires_graphql_confirmation() {
         assert!(t.bodies()[1].contains("PR_node"));
     }
 }
+
+#[test]
+fn a_check_run_is_created_completed_updated_by_id_and_listed_by_name() {
+    let run = NewCheckRun {
+        name: "spl-asdlc / contract".into(),
+        head_sha: "h7".into(),
+        conclusion: "failure".into(),
+        external_id: "ABC-7:incomplete:00".into(),
+        title: "The contract of ABC-7 is incomplete (1 missing)".into(),
+        summary: "- no `## Goal` section".into(),
+        details_url: Some("https://tracker.test/ABC-7".into()),
+    };
+    let (gh, t) = client();
+    t.on(
+        "POST",
+        &url("/repos/example-org/acme/check-runs"),
+        201,
+        r#"{"id":91}"#,
+    );
+    assert_eq!(gh.create_check_run(&repo(), &run).unwrap(), 91);
+    let body: Value = serde_json::from_str(&t.bodies()[0]).unwrap();
+    assert_eq!(body["head_sha"], "h7");
+    assert_eq!(body["status"], "completed");
+    assert_eq!(body["conclusion"], "failure");
+    assert_eq!(body["external_id"], "ABC-7:incomplete:00");
+    assert_eq!(body["output"]["summary"], "- no `## Goal` section");
+    assert_eq!(body["details_url"], "https://tracker.test/ABC-7");
+
+    let (gh, t) = client();
+    t.on(
+        "PATCH",
+        &url("/repos/example-org/acme/check-runs/91"),
+        200,
+        r#"{"id":91}"#,
+    );
+    gh.update_check_run(&repo(), 91, &run).unwrap();
+    let body: Value = serde_json::from_str(&t.bodies()[0]).unwrap();
+    assert!(body.get("head_sha").is_none(), "an update names no commit");
+
+    let (gh, t) = client();
+    t.on(
+        "POST",
+        &url("/repos/example-org/acme/check-runs"),
+        403,
+        r#"{"message":"Resource not accessible by integration"}"#,
+    );
+    assert_eq!(
+        gh.create_check_run(&repo(), &run).unwrap_err().status,
+        Some(403)
+    );
+
+    let (gh, t) = client();
+    t.on(
+        "GET",
+        &url("/repos/example-org/acme/commits/h7/check-runs?check_name=spl-asdlc%20%2F%20contract&filter=latest&per_page=100"),
+        200,
+        r#"{"total_count":1,"check_runs":[{"id":91,"name":"spl-asdlc / contract","app":{"slug":"spl-asdlc"},"conclusion":"failure","external_id":"ABC-7:incomplete:00"}]}"#,
+    );
+    let runs = gh
+        .check_runs(&repo(), "h7", "spl-asdlc / contract")
+        .unwrap();
+    assert_eq!(
+        runs,
+        vec![CheckRunInfo {
+            id: 91,
+            name: "spl-asdlc / contract".into(),
+            app: Some("spl-asdlc".into()),
+            conclusion: Some("failure".into()),
+            external_id: Some("ABC-7:incomplete:00".into()),
+        }]
+    );
+}

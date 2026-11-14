@@ -468,6 +468,18 @@ fn one(
         return None;
     }
     let object = format!("pr#{} {}", pr.number, ticket.key);
+    // ---- the contract check on the head (ASDLC-57KZ) ----
+    // Every linked PR shows its ticket's contract on GitHub, whatever else
+    // holds it: the same verdict as the gate below (rule C9VD).
+    super::contract_check::publish(
+        t,
+        log,
+        report,
+        &pr,
+        &ticket,
+        &contract::Verdict::of(Some(&ticket.description)),
+        false,
+    );
     // Found by its id in the branch, the title or the body: the tracker's
     // link is laid, so that the release that ships the PR embarks the ticket.
     if unlinked {

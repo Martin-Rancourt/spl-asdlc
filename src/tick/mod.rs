@@ -11,6 +11,7 @@
 //! of why a PR waits when that reason changes ([`Report::waiting`]).
 
 pub mod closure;
+pub mod contract_check;
 pub mod contract_decision;
 pub mod identity;
 pub mod link;

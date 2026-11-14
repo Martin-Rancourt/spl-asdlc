@@ -304,6 +304,36 @@ pub struct CheckEntry {
     pub details_url: Option<String>,
 }
 
+/// A check run as the checks API lists it for a commit
+/// (`commits/{sha}/check-runs`): what the bridge needs to update its own.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CheckRunInfo {
+    pub id: u64,
+    pub name: String,
+    /// The slug of the App that created it (`github-actions` for a
+    /// workflow's job).
+    pub app: Option<String>,
+    /// Lowercase, as the REST API gives it (`success`, `failure`, …).
+    pub conclusion: Option<String>,
+    /// The creator's own reference: the bridge writes the verdict's key
+    /// there, to know whether the run still says the right thing.
+    pub external_id: Option<String>,
+}
+
+/// A completed check run the bridge publishes on a commit.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct NewCheckRun {
+    pub name: String,
+    pub head_sha: String,
+    /// `success` or `failure`.
+    pub conclusion: String,
+    pub external_id: String,
+    pub title: String,
+    /// Markdown.
+    pub summary: String,
+    pub details_url: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckKind {
     Run,
