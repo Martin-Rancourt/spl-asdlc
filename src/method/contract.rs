@@ -102,6 +102,68 @@ pub fn missing_from_contract(description: &str) -> Vec<String> {
     missing
 }
 
+/// Whether `## Business rules` is missing or empty: the one element of the
+/// contract the owner's answer « No new rule. » completes (ASDLC-G8M2).
+pub fn lacks_business_rules(description: &str) -> bool {
+    let lines = markdown::without_fences(description);
+    let rules = markdown::sections_of(&lines, is_business_rules_heading);
+    rules.is_empty() || rules.iter().all(|s| s.body().trim().is_empty())
+}
+
+/// Whether an answer declares that the ticket has no new rule: « No new
+/// rule. » or « None », the case and a final period ignored.
+pub fn says_no_new_rule(answer: &str) -> bool {
+    let a = answer.trim();
+    let a = a.strip_suffix('.').unwrap_or(a).trim().to_lowercase();
+    let a = a.split_whitespace().collect::<Vec<_>>().join(" ");
+    a == "no new rule" || a == "none"
+}
+
+/// The description with `## Business rules` declaring « No new rule. »: the
+/// first empty section filled, or, with none, the section added before
+/// `## Release note` (at the end without one). A description whose section
+/// already says something is returned unchanged.
+pub fn with_no_new_rule(description: &str) -> String {
+    if !lacks_business_rules(description) {
+        return description.to_string();
+    }
+    let fenced = markdown::without_fences(description);
+    let mut lines: Vec<String> = description.lines().map(str::to_string).collect();
+    let declaration = super::business_rules::ABSENCE_DECLARATION.to_string();
+    let block = |at_end: bool| {
+        let mut b = vec![String::new(), declaration.clone()];
+        if !at_end {
+            b.push(String::new());
+        }
+        b
+    };
+    if let Some(s) = markdown::sections_of(&fenced, is_business_rules_heading).first() {
+        let at_end = s.end >= lines.len();
+        lines.splice(s.start..s.end, block(at_end));
+    } else if let Some(note) = markdown::sections_of(&fenced, is_release_note_heading).first() {
+        let at = note.heading.line_no;
+        let hashes = "#".repeat(note.heading.level.max(2));
+        let mut b = vec![format!("{hashes} Business rules")];
+        b.extend(block(false));
+        if at > 0 && !lines[at - 1].trim().is_empty() {
+            b.insert(0, String::new());
+        }
+        lines.splice(at..at, b);
+    } else {
+        while lines.last().is_some_and(|l| l.trim().is_empty()) {
+            lines.pop();
+        }
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+        lines.push("## Business rules".to_string());
+        lines.extend(block(true));
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
 /// The zero-boxes guard (REQ-MERGE-031): the ticket declares boxes and
 /// checks none of them. A ticket with no box at all does not trigger it.
 pub fn declares_nothing(description: &str) -> bool {
@@ -219,6 +281,74 @@ mod tests {
         assert!(missing[1].contains("no `## Business rules` section"));
         let all = missing_from_contract("");
         assert_eq!(all.len(), 3);
+    }
+
+    #[test]
+    fn no_new_rule_is_the_answer_case_and_final_period_aside() {
+        for a in [
+            "No new rule.",
+            "no new rule",
+            "  NO NEW RULE.  ",
+            "None",
+            "none.",
+            "No  new rule",
+        ] {
+            assert!(says_no_new_rule(a), "{a}");
+        }
+        for a in [
+            "No",
+            "No new rule: but see X",
+            "None yet, ask Bob",
+            "Add a rule",
+            "",
+        ] {
+            assert!(!says_no_new_rule(a), "{a}");
+        }
+    }
+
+    #[test]
+    fn no_new_rule_adds_the_missing_section_before_the_release_note() {
+        let text = COMPLETE.replace("## Business rules\nNone.\n\n", "");
+        assert!(lacks_business_rules(&text));
+        let out = with_no_new_rule(&text);
+        assert!(has_contract(&out), "{out}");
+        assert!(
+            out.contains("## Business rules\n\nNo new rule.\n\n## Release note"),
+            "{out}"
+        );
+        assert!(out.starts_with("## Goal\nThe thing works."));
+    }
+
+    #[test]
+    fn no_new_rule_fills_an_empty_section_and_appends_one_at_the_end() {
+        let empty = COMPLETE.replace("## Business rules\nNone.\n", "## Business rules\n\n");
+        let out = with_no_new_rule(&empty);
+        assert!(has_contract(&out), "{out}");
+        assert!(
+            out.contains("## Business rules\n\nNo new rule.\n\n## Release note"),
+            "{out}"
+        );
+
+        let last = "## Goal\nx\n\n## Acceptance criteria\n- [ ] a\n\n## Business rules\n";
+        let out = with_no_new_rule(last);
+        assert_eq!(
+            out,
+            "## Goal\nx\n\n## Acceptance criteria\n- [ ] a\n\n## Business rules\n\nNo new rule.\n"
+        );
+
+        let none = "## Goal\nx\n\n## Acceptance criteria\n- [ ] a\n\n";
+        let out = with_no_new_rule(none);
+        assert_eq!(
+            out,
+            "## Goal\nx\n\n## Acceptance criteria\n- [ ] a\n\n## Business rules\n\nNo new rule.\n"
+        );
+        assert!(has_contract(&out));
+    }
+
+    #[test]
+    fn no_new_rule_leaves_a_stated_rule_alone() {
+        assert!(!lacks_business_rules(COMPLETE));
+        assert_eq!(with_no_new_rule(COMPLETE), COMPLETE);
     }
 
     #[test]

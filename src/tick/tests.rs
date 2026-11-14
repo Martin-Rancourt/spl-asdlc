@@ -4193,3 +4193,171 @@ fn unchecked_ready_contract_returns_unstarted_tickets_and_preserves_feedback_on_
         quiet(&w);
     }
 }
+
+// ---- ASDLC-G8M2: a held contract asks the owner a decision ----
+
+/// A green PR on a ticket with no `## Business rules` section, on a tracker
+/// with decision requests and no review.
+fn held_for_rules() -> World {
+    let mut w = World::new();
+    no_review(&mut w);
+    w.tracker.decisions = true;
+    ready_pr(&w);
+    w.tracker.restyle("ABC-7", |d| {
+        d.replace("## Business rules\nNo new rule.\n", "")
+    });
+    assert!(!crate::method::contract::has_contract(
+        &w.tracker.item("ABC-7").description
+    ));
+    w
+}
+
+fn requests(w: &World) -> Vec<crate::tracker::Decision> {
+    w.tracker.decisions_of("ABC-7")
+}
+
+#[test]
+fn a_held_contract_raises_one_decision_request_naming_the_pr_and_the_gap() {
+    let w = held_for_rules();
+    w.tick(false);
+    w.tick(false);
+    assert!(!merged(&w));
+    let rs = requests(&w);
+    assert_eq!(
+        rs.len(),
+        1,
+        "once per PR and per set of missing elements: {rs:?}"
+    );
+    let q = &rs[0].question;
+    assert!(q.contains("PR #7"), "{q}");
+    assert!(q.contains("no `## Business rules` section"), "{q}");
+    assert!(q.contains("« No new rule. » (the default)"), "{q}");
+    assert!(rs[0].is_open() && rs[0].by_bridge);
+    // The request replaces the ticket comment; the PR keeps its own.
+    let held: Vec<_> = w
+        .tracker
+        .comments("ABC-7")
+        .unwrap()
+        .into_iter()
+        .filter(|c| c.body.contains("PR #7 is held"))
+        .collect();
+    assert!(held.is_empty(), "{held:?}");
+    assert_eq!(
+        w.github_writes()
+            .iter()
+            .filter(|l| l.starts_with("comment"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn the_answer_no_new_rule_writes_the_declaration_and_the_pr_goes_on_at_the_same_tick() {
+    let w = held_for_rules();
+    w.tick(false);
+    let id = requests(&w)[0].id.clone();
+    w.tracker.answer_decision("ABC-7", &id, "no new rule");
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    let d = w.tracker.item("ABC-7").description;
+    assert!(d.contains("## Business rules\n\nNo new rule.\n"), "{d}");
+    assert!(crate::method::contract::has_contract(&d));
+    assert!(merged(&w), "{:?}", w.github_writes());
+    assert!(w.tracker.writes().contains(&"describe ABC-7".to_string()));
+    assert_eq!(requests(&w).len(), 1, "no new request");
+}
+
+#[test]
+fn another_answer_writes_nothing_and_says_once_that_the_pr_waits() {
+    let w = held_for_rules();
+    w.tick(false);
+    let id = requests(&w)[0].id.clone();
+    w.tracker
+        .answer_decision("ABC-7", &id, "There is a rule, I will write it");
+    w.tick(false);
+    w.tick(false);
+    assert!(!merged(&w));
+    assert!(!w.tracker.writes().contains(&"describe ABC-7".to_string()));
+    let waits: Vec<_> = w
+        .tracker
+        .comments("ABC-7")
+        .unwrap()
+        .into_iter()
+        .filter(|c| c.by_bridge && c.body.contains("still waits for the contract"))
+        .collect();
+    assert_eq!(waits.len(), 1, "{waits:?}");
+    assert_eq!(
+        requests(&w).len(),
+        1,
+        "the answered request is not raised again"
+    );
+}
+
+#[test]
+fn the_request_is_withdrawn_once_the_contract_is_complete_by_another_way() {
+    let w = held_for_rules();
+    w.tick(false);
+    assert!(requests(&w)[0].is_open());
+    w.tracker.restyle("ABC-7", |d| {
+        format!("{d}\n## Business rules\n- A new rule.\n")
+    });
+    w.tick(false);
+    let rs = requests(&w);
+    assert!(rs[0].withdrawn, "{rs:?}");
+    assert_eq!(
+        w.tracker
+            .writes()
+            .iter()
+            .filter(|x| x.starts_with("withdraw decision"))
+            .count(),
+        1
+    );
+    assert!(!w.tracker.writes().contains(&"describe ABC-7".to_string()));
+}
+
+/// A missing goal is never written by the bridge: the answer « No new
+/// rule. » fills only the rules, and a new request asks for the rest.
+#[test]
+fn a_missing_goal_is_only_asked_for() {
+    let w = held_for_rules();
+    w.tracker
+        .restyle("ABC-7", |d| d.replace("## Goal", "## Context"));
+    w.tick(false);
+    let first = requests(&w);
+    assert_eq!(first.len(), 1);
+    assert!(
+        !first[0].question.contains("(the default)"),
+        "{}",
+        first[0].question
+    );
+    assert!(first[0].question.contains("never writes a goal"));
+    w.tracker.answer_decision("ABC-7", &first[0].id, "None.");
+    w.tick(false);
+    assert!(!merged(&w));
+    let d = w.tracker.item("ABC-7").description;
+    assert!(d.contains("No new rule."), "{d}");
+    assert!(!d.contains("## Goal"), "{d}");
+    let rs = requests(&w);
+    assert_eq!(rs.len(), 2, "a request for the remaining gap: {rs:?}");
+    assert!(rs[1].is_open() && rs[1].question.contains("`## Goal`"));
+}
+
+/// A tracker without decision requests keeps the comment on the ticket.
+#[test]
+fn a_tracker_without_decisions_keeps_the_comment() {
+    let mut w = World::new();
+    no_review(&mut w);
+    ready_pr(&w);
+    w.tracker.restyle("ABC-7", |d| {
+        d.replace("## Business rules\nNo new rule.\n", "")
+    });
+    w.tick(false);
+    assert!(requests(&w).is_empty());
+    assert!(
+        w.tracker
+            .comments("ABC-7")
+            .unwrap()
+            .iter()
+            .any(|c| c.body.contains("PR #7 is held"))
+    );
+}

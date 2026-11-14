@@ -71,6 +71,21 @@ pub struct LivelaProject {
     pub name: String,
 }
 
+/// A decision request of an item as the Livela core keeps it: a comment of
+/// kind `decision_request`, answered by a comment that `resolves` it, or
+/// `withdrawn` by its author (`Store::request_decision`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LivelaDecision {
+    /// The id of the request (its comment).
+    pub id: String,
+    /// The participant that raised it.
+    pub author: String,
+    pub question: String,
+    /// The text of the comment that resolves it, once a person answered.
+    pub answer: Option<String>,
+    pub withdrawn: bool,
+}
+
 /// The relation kinds the Livela core stores (from the item that holds them).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LivelaRelation {
@@ -194,6 +209,33 @@ pub trait LivelaStore {
     /// Livela: `code` is [`PrReviews::code`] (the GitHub sync).
     fn set_pr_reviews(&mut self, _id: &str, _url: &str, _code: &str) -> Result<(), String> {
         Err("this Livela keeps no PR review".into())
+    }
+
+    /// Whether this store raises decision requests
+    /// ([`Self::request_decision`], ASDLC-G8M2): until it does, the bridge
+    /// asks in a comment.
+    fn holds_decisions(&self) -> bool {
+        false
+    }
+    /// The decision requests of an item, oldest first, answered and
+    /// withdrawn ones included.
+    fn decisions(&self, _id: &str) -> Result<Vec<LivelaDecision>, String> {
+        Ok(Vec::new())
+    }
+    /// Raise a decision request on an item (`Store::request_decision(id,
+    /// author, question)`); returns its id.
+    fn request_decision(
+        &mut self,
+        _id: &str,
+        _author: &str,
+        _question: &str,
+    ) -> Result<String, String> {
+        Err("this Livela raises no decision request".into())
+    }
+    /// Withdraw an open decision request (`Store::withdraw_decision(request,
+    /// by)`): only its author may.
+    fn withdraw_decision(&mut self, _request: &str, _by: &str) -> Result<(), String> {
+        Err("this Livela raises no decision request".into())
     }
 }
 
@@ -678,6 +720,59 @@ impl<S: LivelaStore> Tracker for Livela<S> {
 
     fn can_edit_comments(&self) -> bool {
         false
+    }
+
+    fn holds_decisions(&self) -> bool {
+        self.store.borrow().holds_decisions()
+    }
+
+    fn decisions(&self, key: &str) -> TResult<Vec<Decision>> {
+        let raw = self.raw(key)?;
+        let me = self.store.borrow().existing_bridge_participant();
+        let found = self
+            .store
+            .borrow()
+            .decisions(&raw.id)
+            .map_err(|e| TrackerError::unreadable(format!("decisions of {key}"), e))?;
+        Ok(found
+            .into_iter()
+            .map(|d| Decision {
+                by_bridge: me.as_deref() == Some(d.author.as_str()),
+                id: d.id,
+                question: d.question,
+                answer: d.answer,
+                withdrawn: d.withdrawn,
+            })
+            .collect())
+    }
+
+    fn request_decision(&self, key: &str, question: &str) -> TResult<String> {
+        if !self.holds_decisions() {
+            return Err(TrackerError::refused(
+                format!("decision request on {key}"),
+                "this Livela raises no decision request",
+            ));
+        }
+        let id = self.id_of(key)?;
+        self.as_bridge(format!("decision request on {key}"), |s, me| {
+            s.request_decision(&id, me, question)
+        })
+    }
+
+    fn withdraw_decision(&self, key: &str, request: &str) -> TResult<()> {
+        let open = self
+            .decisions(key)?
+            .into_iter()
+            .find(|d| d.id == request)
+            .ok_or_else(|| TrackerError::NotFound {
+                what: format!("decision request {request} on {key}"),
+            })?;
+        if !open.is_open() {
+            return Ok(());
+        }
+        self.as_bridge(format!("withdrawal of {request} on {key}"), |s, me| {
+            s.withdraw_decision(request, me)
+        })
     }
 
     fn update_comment(&self, comment_id: &str, _body: &str) -> TResult<()> {

@@ -22,6 +22,8 @@ struct Stored {
     priority: Option<Priority>,
     /// The kind it was created as (a ticket for a seeded item).
     kind: ItemKind,
+    /// Its decision requests, oldest first.
+    decisions: Vec<Decision>,
 }
 
 #[derive(Default)]
@@ -59,6 +61,9 @@ pub struct FakeTracker {
     /// Whether it groups a candidate's QA items in a milestone (false by
     /// default, as Linear); true plays Livela.
     pub milestones: bool,
+    /// Whether it holds decision requests (false by default, as Linear);
+    /// true plays Livela.
+    pub decisions: bool,
     pub state: RefCell<FakeState>,
 }
 
@@ -80,6 +85,7 @@ impl FakeTracker {
             archiving: true,
             projects: Some(Vec::new()),
             milestones: false,
+            decisions: false,
             state: RefCell::new(FakeState::default()),
         }
     }
@@ -124,8 +130,26 @@ impl FakeTracker {
                 pr_reviews: BTreeMap::new(),
                 priority: None,
                 kind: ItemKind::Ticket,
+                decisions: Vec::new(),
             },
         );
+    }
+
+    /// A person answers a decision request: no write is recorded.
+    pub fn answer_decision(&self, key: &str, request: &str, answer: &str) {
+        let mut s = self.state.borrow_mut();
+        let st = s.items.get_mut(key).expect("a seeded item");
+        let d = st
+            .decisions
+            .iter_mut()
+            .find(|d| d.id == request)
+            .expect("a decision request");
+        d.answer = Some(answer.to_string());
+    }
+
+    /// The decision requests of an item, as stored.
+    pub fn decisions_of(&self, key: &str) -> Vec<Decision> {
+        self.state.borrow().items[key].decisions.clone()
     }
 
     pub fn item(&self, key: &str) -> Item {
@@ -654,6 +678,68 @@ impl Tracker for FakeTracker {
         self.record(format!("pr reviews {key} {pr_url} {}", reviews.code()))?;
         self.with(key, |st| {
             st.pr_reviews.insert(pr_url.to_string(), reviews.clone());
+        })
+    }
+
+    fn holds_decisions(&self) -> bool {
+        self.decisions
+    }
+
+    fn decisions(&self, key: &str) -> TResult<Vec<Decision>> {
+        Ok(self.read(key)?.decisions)
+    }
+
+    fn request_decision(&self, key: &str, question: &str) -> TResult<String> {
+        if !self.decisions {
+            return Err(TrackerError::refused(
+                format!("decision request on {key}"),
+                "this tracker has no decision requests",
+            ));
+        }
+        self.read(key)?;
+        self.record(format!(
+            "decision {key} {}",
+            question.lines().next().unwrap_or("")
+        ))?;
+        let id = {
+            let mut s = self.state.borrow_mut();
+            s.next += 1;
+            format!("d{}", s.next)
+        };
+        let d = Decision {
+            id: id.clone(),
+            question: question.to_string(),
+            by_bridge: true,
+            answer: None,
+            withdrawn: false,
+        };
+        self.with(key, |st| st.decisions.push(d))?;
+        Ok(id)
+    }
+
+    fn withdraw_decision(&self, key: &str, request: &str) -> TResult<()> {
+        if !self.decisions {
+            return Err(TrackerError::refused(
+                format!("withdraw decision {request} on {key}"),
+                "this tracker has no decision requests",
+            ));
+        }
+        let st = self.read(key)?;
+        let d = st
+            .decisions
+            .iter()
+            .find(|d| d.id == request)
+            .ok_or_else(|| TrackerError::NotFound {
+                what: format!("decision {request}"),
+            })?;
+        if !d.is_open() {
+            return Ok(());
+        }
+        self.record(format!("withdraw decision {key} {request}"))?;
+        self.with(key, |st| {
+            if let Some(d) = st.decisions.iter_mut().find(|d| d.id == request) {
+                d.withdrawn = true;
+            }
         })
     }
 }

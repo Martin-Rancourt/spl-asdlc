@@ -103,6 +103,13 @@ A Livela workspace holds several projects; each that runs the method has its own
   - A candidate's QA items stay tickets: a release angle item goes In Review and back In Progress with its PR, statuses a task does not have.
   - Items created as tickets before stay tickets, and close as before.
 
+- **A decision request on a held ticket** (ASDLC-G8M2). When the bridge holds a PR because its ticket's contract is incomplete, it asks the owner in the decisions queue rather than in a comment nobody waits for (`01-ticket-contract.md`). The core already has them (`Store::request_decision`, SID-1087: a comment of kind `decision_request`, answered by a human's comment that `resolves` it, or `withdrawn` by its author). The store's slice has default methods that say they are not provided, so a runner that does not implement them builds unchanged and the bridge keeps commenting on the ticket:
+  - `LivelaStore::holds_decisions` (default `false`).
+  - `LivelaStore::decisions(id)` → `LivelaDecision { id, author, question, answer, withdrawn }`, oldest first, answered and withdrawn ones included: the item's `decision_request` comments, each with the text of the comment that resolves it.
+  - `LivelaStore::request_decision(id, author, question)` → the request's id: `Store::request_decision(id, author, question)`, `author` being the `spl-asdlc` participant.
+  - `LivelaStore::withdraw_decision(request, by)`: `Store::withdraw_decision(request, by)`, `by` being the `spl-asdlc` participant; the core refuses a request someone else raised, or one already answered or withdrawn.
+  - Every write is signed by `spl-asdlc`, the store's author restored (point 2); the adapter withdraws nothing already answered or withdrawn, so a repeated withdrawal records no fact. The conformance suite raises, reads back and withdraws a request on a store that holds them.
+
 - **Editing a comment.** The bridge would keep one status row per PR on a ticket and rewrite it in place (REQ-MERGE-069), so that informational facts never pile up as comments. The core has no comment edit. Until it does:
   - the adapter declares it (`can_edit_comments` is false);
   - the bridge writes no rewritten row on Livela;

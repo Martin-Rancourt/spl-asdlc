@@ -120,6 +120,29 @@ pub struct Comment {
     pub body: String,
 }
 
+/// A decision request on an item: a question a person answers in the
+/// tracker's decisions queue (`Tracker::request_decision`). While it is
+/// open, the item waits for that answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Decision {
+    pub id: String,
+    pub question: String,
+    /// Raised by the bridge's own tracker identity: the only requests whose
+    /// markers the bridge trusts, and the only ones it withdraws.
+    pub by_bridge: bool,
+    /// The answer, once a person gave it.
+    pub answer: Option<String>,
+    /// Withdrawn by the participant that raised it.
+    pub withdrawn: bool,
+}
+
+impl Decision {
+    /// Neither answered nor withdrawn.
+    pub fn is_open(&self) -> bool {
+        self.answer.is_none() && !self.withdrawn
+    }
+}
+
 /// The canonical priority of an item the bridge creates; the adapter maps
 /// it to the tracker's own scale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -498,6 +521,34 @@ pub trait Tracker {
     /// to the item, or a tracker that holds no reviews, writes nothing.
     fn record_pr_reviews(&self, _key: &str, _pr_url: &str, _reviews: &PrReviews) -> TResult<()> {
         Ok(())
+    }
+
+    /// Whether the tracker holds decision requests: a question on an item
+    /// that a person answers in a decisions queue (ASDLC-G8M2). Without
+    /// them, the bridge asks in a comment.
+    fn holds_decisions(&self) -> bool {
+        false
+    }
+    /// The decision requests of an item, oldest first, answered and
+    /// withdrawn ones included; none on a tracker that holds none.
+    fn decisions(&self, _key: &str) -> TResult<Vec<Decision>> {
+        Ok(Vec::new())
+    }
+    /// Raise a decision request on the item, signed by the service
+    /// identity; returns its id.
+    fn request_decision(&self, key: &str, _question: &str) -> TResult<String> {
+        Err(TrackerError::refused(
+            format!("decision request on {key}"),
+            "this tracker has no decision requests",
+        ))
+    }
+    /// Withdraw an open decision request the service identity raised. One
+    /// already answered or withdrawn records nothing.
+    fn withdraw_decision(&self, key: &str, request: &str) -> TResult<()> {
+        Err(TrackerError::refused(
+            format!("withdraw decision {request} on {key}"),
+            "this tracker has no decision requests",
+        ))
     }
 
     /// Whether the tracker groups a release candidate's QA items in a
