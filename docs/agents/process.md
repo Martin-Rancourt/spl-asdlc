@@ -43,7 +43,7 @@ The bridge is a deterministic program that reads GitHub and moves the tickets. Y
 5. Write the **Business rules** section: the new global invariants this ticket introduces, each as a bullet that will become a file of `.spl-asdlc/business-rules/` with a test, or "None.".
 6. Write the **Release note** snippet (recommended): one paragraph for the person who uses the product; empty only for an internal change.
 7. Run `spl-asdlc ticket check <item>` (or apply its rules by hand: a goal, at least one acceptance box, a business-rules section). Fix what it reports.
-8. If a decision belongs to the owner, do not guess: write a comment that lists the questions, assign the ticket to the owner with the escalation label (`release.escalation_label`, default `blocked-by-human`), and stop. Otherwise mark the ticket refined and leave it in Backlog: in Linear, add the `Refined` label; in Livela, nothing to write, its `refined` field is computed from the description (a goal, at least one acceptance criterion and a release note).
+8. If a decision belongs to the owner, do not guess: write a comment that lists the questions, assign the ticket to the owner with the escalation label (`release.escalation_label`, default `blocked-by-human`), and stop. Otherwise mark the ticket refined and leave it in Backlog: in Linear, add the `Refined` label; in Livela, nothing to write, its `refined` field is computed from the description and asks for the sections `spl-asdlc ticket check` asks for: a goal, at least one acceptance box, a `## Business rules` section with text ("None." when there is no new rule) and a release note.
 
 Never write an acceptance criterion the implementer cannot prove, and never split a ticket to make it look complete.
 
