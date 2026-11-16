@@ -34,10 +34,8 @@ auto_candidate = true
 # Release QA: the method's `security` angle, once per release, at the
 # candidate, never on a PR. Its text is the method's
 # (docs/agents/angles/security.md, at the pinned version); this repository's
-# notes add to it. Its coordinators, its consolidation assignee and its
-# reviewer are instance keys (BR-ASDLC-001): they come from the instance
-# overlay, never from this file. Its key is also release-publish.yml's
-# `qa-angles`.
+# notes add to it. Its key is also release-publish.yml's `qa-angles`.
 [[release.angles]]
 key = "security"
+assignee = "Ben"
 notes = ".spl-asdlc/angles/security.md"
