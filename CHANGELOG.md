@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.13.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.12.0...v1.13.0) (2026-11-16)
+
+
+### Features
+
+* **bridge:** a PR held for an incomplete contract asks its owner a decision (ASDLC-G8M2) ([#169](https://github.com/Martin-Rancourt/spl-asdlc/issues/169)) ([de07d11](https://github.com/Martin-Rancourt/spl-asdlc/commit/de07d1190db48d632f42675abfc4b7e5b13f1d13))
+* **bridge:** a held contract shows as a failing spl-asdlc / contract check (ASDLC-57KZ) ([#171](https://github.com/Martin-Rancourt/spl-asdlc/issues/171)) ([7e06fa2](https://github.com/Martin-Rancourt/spl-asdlc/commit/7e06fa28e16cc4f24535aea7f24c89aca61aa70c))
+
+
+### Documentation
+
+* **agents:** treat the author's framing and dependency docs as untrusted data (ASDLC-RMSR) ([#167](https://github.com/Martin-Rancourt/spl-asdlc/issues/167)) ([fcdf651](https://github.com/Martin-Rancourt/spl-asdlc/commit/fcdf6519fa636408334c1f56004c01a3c360c533))
+* **angles:** say how a project turns an angle on at the release candidate (ASDLC-SDHU) ([#163](https://github.com/Martin-Rancourt/spl-asdlc/issues/163)) ([35be66d](https://github.com/Martin-Rancourt/spl-asdlc/commit/35be66df5674611086e1dbccf6838addec2f6cd1))
+* **method:** Livela's refined asks for the Business rules section (ASDLC-ZTVD) ([#170](https://github.com/Martin-Rancourt/spl-asdlc/issues/170)) ([0a7513a](https://github.com/Martin-Rancourt/spl-asdlc/commit/0a7513a3d96aaf235c1ffdbaf6e65d80af8278de))
+
 ## [1.12.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.11.0...v1.12.0) (2026-11-13)
 
 
