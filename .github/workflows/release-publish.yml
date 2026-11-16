@@ -63,8 +63,8 @@ jobs:
       resume-from: ${{ inputs.resume-from }}
       candidate-tag: v{version}-rc.{rc}
       release-tag-pattern: v{version}
-      # No QA angle (`[release] angles = []`).
-      qa-angles: '[]'
+      # The keys of `[[release.angles]]` in .spl-asdlc/config.toml.
+      qa-angles: '["security"]'
       # The slug of the bridge's App, a repository variable: the release must
       # have been published by this App or by a person; any other bot is no GO.
       go-publisher-login: ${{ vars.SPL_ASDLC_APP_SLUG }}

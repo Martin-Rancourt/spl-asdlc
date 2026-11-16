@@ -26,8 +26,18 @@ angles = []                            # no PR review: a PR merges on its CI
 # `v<X.Y>` and the major tag `v1` follow (.spl-asdlc/development.md).
 candidate_tag = "v{version}-rc.{rc}"
 release_tag = "v{version}"
-angles = []                            # no QA angle: the GO rests on the release CI
 # A fix merged to the release branch (a gate-fix, a blocking finding's
 # fix) makes the next candidate: the bridge cuts it itself, so a cycle needs
 # no human between two candidates (ASDLC-R5JK).
 auto_candidate = true
+
+# Release QA: the method's `security` angle, once per release, at the
+# candidate, never on a PR. Its text is the method's
+# (docs/agents/angles/security.md, at the pinned version); this repository's
+# notes add to it. Its coordinators, its consolidation assignee and its
+# reviewer are instance keys (BR-ASDLC-001): they come from the instance
+# overlay, never from this file. Its key is also release-publish.yml's
+# `qa-angles`.
+[[release.angles]]
+key = "security"
+notes = ".spl-asdlc/angles/security.md"
