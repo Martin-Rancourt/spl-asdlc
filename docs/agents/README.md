@@ -4,7 +4,7 @@ Runtime-agnostic instructions an agent loads before doing one of the method's jo
 
 | File | Job |
 |---|---|
-| `process.md` | The one procedure: which steps the project's configuration enables, the ticket's statuses and who moves them, refine a ticket, implement it (branch, PR, merge), the release cycle, what an agent never does by hand |
+| `process.md` | The one procedure: which steps the project's configuration enables, the ticket's statuses and who moves them, refine a ticket, ask the owner (a decision request where the tracker has them), implement it (branch, PR, merge), the release cycle, what an agent never does by hand |
 | `review-pr.md` | Review a diff from one angle and post findings on the PR |
 | `consolidate.md` | Read every angle's findings, decide, fix, approve (PR review); review each angle PR as it comes, then the overall review once every angle PR is merged (release QA) |
 | `review-release.md` | Review a whole candidate from one angle, on an angle branch, with a report |
