@@ -753,7 +753,7 @@ pub fn lighter_pass(release: &Release, c: &Candidate) -> bool {
 /// The angles offered on this candidate (spec 05 §7, `later_passes`).
 pub fn offered(t: &Tick, c: &Candidate) -> Vec<String> {
     let release = section(t);
-    if c.rc > u64::from(release.max_rc_passes) || lighter_pass(release, c) {
+    if lighter_pass(release, c) {
         return Vec::new();
     }
     release.angles.iter().map(|a| a.key.clone()).collect()

@@ -208,7 +208,7 @@ impl World {
                     strict: false,
                 }),
             );
-            for sha in ["c1", "c2"] {
+            for sha in ["c1", "c2", "c3"] {
                 s.files
                     .insert((repo(), sha.into(), "CHANGELOG.md".into()), Ok(changelog()));
             }
@@ -444,6 +444,7 @@ fn a_tick_against_the_candidates_log_as_linear_stores_it_writes_nothing() {
 }
 
 const CAND2: &str = "acme-v1.2.0-rc.2";
+const CAND3: &str = "acme-v1.2.0-rc.3";
 
 impl World {
     /// The gate runs of the product, newest first.
@@ -530,6 +531,50 @@ impl World {
         s.artifacts.insert(
             (repo(), 2),
             Ok(vec![evidence(&gate::evidence_artifact("c2"))]),
+        );
+    }
+
+    /// A second fix merged and `rc.3` tagged on it.
+    fn cut_rc3(&self) {
+        let mut s = self.github.state.borrow_mut();
+        s.tags.insert(
+            repo(),
+            vec![
+                tag("acme-v1.1.0", "r0"),
+                tag(CAND, "c1"),
+                tag(CAND2, "c2"),
+                tag(CAND3, "c3"),
+            ],
+        );
+        s.branches.insert(repo(), vec![tag(BRANCH, "c3")]);
+        s.commits.insert(
+            (repo(), "c3".into()),
+            Ok(Commit {
+                sha: "c3".into(),
+                message: "chore: candidate".into(),
+                committer_date: Timestamp::parse("2026-10-05T12:10:00Z"),
+                parents: vec![],
+            }),
+        );
+        s.compares.insert(
+            (repo(), "c3".into(), BRANCH.into()),
+            cmp(CompareStatus::Identical, &[], &[]),
+        );
+        s.compares.insert(
+            (repo(), "acme-v1.1.0".into(), "c3".into()),
+            cmp(
+                CompareStatus::Ahead,
+                &["m1"],
+                &["src/a.rs", "src/b.rs", "src/c.rs"],
+            ),
+        );
+        s.compares.insert(
+            (repo(), CAND2.into(), "c3".into()),
+            cmp(CompareStatus::Ahead, &["f2"], &["src/c.rs"]),
+        );
+        s.artifacts.insert(
+            (repo(), 3),
+            Ok(vec![evidence(&gate::evidence_artifact("c3"))]),
         );
     }
 
@@ -688,6 +733,79 @@ fn a_later_candidate_with_a_red_gate_waits_again() {
         briefs[0].contains("actions/runs/2#artifacts"),
         "{}",
         briefs[0]
+    );
+}
+
+#[test]
+fn a_full_later_candidate_gets_qa_after_earlier_red_candidates() {
+    let w = World::new();
+    w.red_settled(1, CAND, "c1", r#""tests""#);
+    w.tick();
+
+    w.cut_rc2();
+    w.red_settled(2, CAND2, "c2", r#""tests""#);
+    w.tick();
+
+    w.cut_rc3();
+    w.gate(vec![
+        gate_run(3, CAND3, "c3", Some("success")),
+        gate_run(2, CAND2, "c2", Some("failure")),
+        gate_run(1, CAND, "c1", Some("failure")),
+    ]);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.round(CAND3).len(),
+        3,
+        "rc.3 gets two angles and its consolidation item"
+    );
+    let comments = w.tracker.comments(&w.release_item().key).unwrap();
+    let candidate = comments
+        .iter()
+        .find(|c| c.body.starts_with(&format!("### Candidate `{CAND3}`")))
+        .expect("rc.3 candidate comment");
+    assert!(
+        candidate.body.contains(
+            "Angles offered on this candidate once its gate is green: security, product."
+        ),
+        "{}",
+        candidate.body
+    );
+    let (_, decision) = crate::verbs::status(&w.tick_ctx()).unwrap();
+    assert_eq!(
+        decision.open_angles,
+        vec!["security (offered)", "product (offered)"]
+    );
+    assert!(!decision.go, "GO waits for rc.3's angle PRs");
+}
+
+#[test]
+fn a_green_candidate_recorded_without_angles_is_retried_after_upgrade() {
+    let mut w = World::new();
+    w.config = release_config(
+        "later_passes = \"full\"",
+        "later_passes = \"gate-and-coordinator\"",
+    );
+    w.config.release.go_policy = crate::config::GoPolicy::Human;
+    w.tick();
+    w.cut_rc2();
+    w.cut_rc3();
+    w.gate(vec![
+        gate_run(3, CAND3, "c3", Some("success")),
+        gate_run(2, CAND2, "c2", Some("success")),
+        gate_run(1, CAND, "c1", Some("success")),
+    ]);
+    w.tick();
+    assert!(w.round(CAND3).is_empty(), "the old policy offered no angle");
+
+    w.config = config();
+    w.config.release.go_policy = crate::config::GoPolicy::Human;
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.round(CAND3).len(),
+        3,
+        "the next tick repairs the already-recorded candidate"
     );
 }
 
