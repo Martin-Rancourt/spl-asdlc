@@ -215,6 +215,44 @@ fn implementation_carries_the_complete_contracts_of_duplicates() {
 }
 
 #[test]
+fn a_question_for_the_owner_goes_through_the_trackers_decision_requests() {
+    let page = read(PROCESS);
+    // One place says how to ask, and refinement and implementation send to it.
+    assert!(page.contains("## Ask the owner"), "{PROCESS}");
+    for said in [
+        "On a tracker with decision requests (Livela)",
+        "`request_decision`",
+        "Never ask only in a comment that lists the questions",
+        "On a tracker without decision requests (Linear)",
+        "with the escalation label (`release.escalation_label`",
+    ] {
+        assert!(page.contains(said), "{PROCESS} says {said:?}");
+    }
+    let refine = page
+        .split("## Refine a ticket")
+        .nth(1)
+        .and_then(|s| s.split("## Ask the owner").next())
+        .expect("a refine section");
+    assert!(
+        refine.contains("\"Ask the owner\""),
+        "refinement asks the owner that way"
+    );
+    assert!(
+        !refine.contains("write a comment that lists the questions"),
+        "refinement never asks by a comment alone"
+    );
+    let implement = page
+        .split("## Implement a ticket")
+        .nth(1)
+        .and_then(|s| s.split("## The design step").next())
+        .expect("an implement section");
+    assert!(
+        implement.contains("\"Ask the owner\""),
+        "implementation asks the owner that way"
+    );
+}
+
+#[test]
 fn the_agent_file_template_points_to_the_process_page_and_lets_it_win() {
     let agents = read(AGENTS);
     assert!(agents.contains("`.spl-asdlc/process.md`"), "{agents}");
