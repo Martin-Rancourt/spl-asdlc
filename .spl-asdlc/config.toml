@@ -30,6 +30,13 @@ release_tag = "v{version}"
 # fix) makes the next candidate: the bridge cuts it itself, so a cycle needs
 # no human between two candidates (ASDLC-R5JK).
 auto_candidate = true
+# Clawdia and Martin coordinate the release QA, as in every project: either
+# one's approval counts, and Clawdia receives each candidate's consolidation
+# item. Here, not in the overlay,
+# because the project's Livela settings list no release angle: the day they
+# do, remove both keys here (a key in both files is an error, BR-ASDLC-014).
+coordinators = ["spl-clawdia[bot]", "Martin-Rancourt"]
+coordinator_assignee = "Clawdia"
 
 # Release QA: the method's `security` angle, once per release, at the
 # candidate, never on a PR. Its text is the method's
