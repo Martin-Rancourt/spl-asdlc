@@ -4,7 +4,7 @@ This repository runs the SPL-ASDLC method on itself, like any project, at a publ
 
 ## Changes
 
-Every change is a pull request to `main`, or a fix to the release branch in flight, checked by `pr.yml` (the method's checks in one job of the pinned `asdlc-pr-checks.yml`, Conventional Commits title included; format, lints, tests, rule zero). The bridge squash-merges it once green; no PR review and no QA angle are configured (`.spl-asdlc/config.toml`). The workflows a PR changes are not the ones that check it: the tests (`tests/workflows/`) check them, and the sandbox runs them ("Testing the method").
+Every change is a pull request to `main`, or a fix to the release branch in flight, checked by `pr.yml` (the method's checks in one job of the pinned `asdlc-pr-checks.yml`, Conventional Commits title included; format, lints, tests, rule zero). The bridge squash-merges it once green; no PR review is configured, and one release QA angle, `security`, runs at each candidate (`.spl-asdlc/config.toml`, its notes in `.spl-asdlc/angles/security.md`). The workflows a PR changes are not the ones that check it: the tests (`tests/workflows/`) check them, and the sandbox runs them ("Testing the method").
 
 ## Releases
 
