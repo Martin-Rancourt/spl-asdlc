@@ -9,7 +9,7 @@ use crate::action_log::ActionLog;
 use crate::config::Release;
 use crate::github::{CompareStatus, MergeMethod};
 use crate::method::release::findings::{self, RequalifyStep};
-use crate::method::release::go::{AngleState, GoDecision};
+use crate::method::release::go::{AngleState, GoDecision, VerdictState};
 use crate::method::release::prs;
 use crate::method::release::report;
 use crate::method::release::shape::Shape;
@@ -154,6 +154,11 @@ pub fn status(t: &Tick) -> Result<(Cycle, GoDecision), String> {
     } else {
         (states, without_angles)
     };
+    let verdict = if without_angles || release::lighter_pass(release_cfg, c) {
+        VerdictState::NotNeeded
+    } else {
+        release::merged_verdict_state(t, c, &merged)?
+    };
     let mut report = Report::default();
     let decision = release::decide(
         t,
@@ -163,6 +168,7 @@ pub fn status(t: &Tick) -> Result<(Cycle, GoDecision), String> {
         &branch,
         &states,
         without_angles,
+        verdict,
     )
     .ok_or_else(|| report.failures.join("; "))?;
     Ok((cy, decision))

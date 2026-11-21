@@ -12,4 +12,4 @@ The owner's decision of 2026-10-07: the bridge wrote the shared nits ticket as b
 
 ## Test
 
-`method::release::findings::tests::a_blocking_finding_ticket_is_a_contract_to_fix_on_the_release_branch`, `method::release::findings::tests::a_non_blocking_finding_ticket_is_a_contract_logged_for_later`, `method::release::findings::tests::report_text_cannot_forge_a_box_or_a_marker_in_the_ticket`, `tick::release_tests::an_approved_angle_pr_with_a_valid_report_is_merged_and_its_findings_filed_once`, `config::tests::the_nits_grouping_is_gone_and_refused_as_unknown`
+`method::release::findings::tests::a_blocking_finding_ticket_is_a_contract_to_fix_on_the_release_branch`, `method::release::findings::tests::a_non_blocking_finding_ticket_is_a_contract_logged_for_later`, `method::release::findings::tests::report_text_cannot_forge_a_box_or_a_marker_in_the_ticket`, `tick::release_tests::the_merged_verdict_files_its_accepted_findings_once_and_closes_the_coordination`, `config::tests::the_nits_grouping_is_gone_and_refused_as_unknown`

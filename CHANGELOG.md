@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.14.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.13.0...v1.14.0) (2026-11-21)
+
+
+### Features
+
+* **release:** the coordinator's committed verdict gives a candidate's GO; the bridge merges a valid angle report on its own (ASDLC-8SPA) ([#177](https://github.com/Martin-Rancourt/spl-asdlc/issues/177)) ([0297234](https://github.com/Martin-Rancourt/spl-asdlc/commit/0297234a89fdc56f6f4d3451752e2869ce010f60))
+
+
+### Bug Fixes
+
+* **release:** review every green candidate (ASDLC-R3BG) ([#176](https://github.com/Martin-Rancourt/spl-asdlc/issues/176)) ([79f07c0](https://github.com/Martin-Rancourt/spl-asdlc/commit/79f07c0183e788036cb766a97a8408faa3a8e756))
+
+
+### Chores
+
+* **release:** enable security QA for spl-asdlc (ASDLC-UC3K) ([#175](https://github.com/Martin-Rancourt/spl-asdlc/issues/175)) ([a0855d0](https://github.com/Martin-Rancourt/spl-asdlc/commit/a0855d032e05366cb2a202764d7d25f9aa1e8a99))
+
 ## [1.13.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.12.0...v1.13.0) (2026-11-16)
 
 

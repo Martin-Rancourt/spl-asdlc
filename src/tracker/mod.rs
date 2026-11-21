@@ -86,6 +86,10 @@ pub struct Item {
 pub enum RelationKind {
     /// `a blocks b`: `b` waits on `a`.
     Blocks,
+    /// `a blocks b` through its implementation: `b` waits on `a` until `a`
+    /// is merged (To Deploy or later), not until its release. Only on a
+    /// tracker that keeps such blocks ([`Tracker::implementation_blocks`]).
+    BlocksImplementation,
     Related,
     Duplicate,
 }
@@ -103,6 +107,10 @@ pub struct Relations {
     pub blocks: Vec<Relation>,
     /// Items that block this one.
     pub blocked_by: Vec<Relation>,
+    /// Items that block this one through their implementation only
+    /// ([`RelationKind::BlocksImplementation`]): never a blocker of a
+    /// release.
+    pub blocked_by_implementation: Vec<Relation>,
     pub related: Vec<Relation>,
     /// Items linked by `duplicate`, in either direction.
     pub duplicates: Vec<Relation>,
@@ -484,6 +492,13 @@ pub trait Tracker {
     fn update_comment(&self, comment_id: &str, body: &str) -> TResult<()>;
     /// `relate(a, b, Blocks)`: `a` blocks `b`. The caller checks for loops.
     fn relate(&self, a: &str, b: &str, kind: RelationKind) -> TResult<()>;
+    /// Whether the tracker keeps blocks that free the blocked item once the
+    /// blocker is merged ([`RelationKind::BlocksImplementation`]). Without
+    /// them, the bridge holds such an item in Backlog itself until its
+    /// blockers are merged.
+    fn implementation_blocks(&self) -> bool {
+        false
+    }
     fn unrelate(&self, relation_id: &str) -> TResult<()>;
     /// Attach the PR to the item; a link already there is a no-op. `key` is
     /// the item's key as the tracker reads it back ([`Item::key`]).

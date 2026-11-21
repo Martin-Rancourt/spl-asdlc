@@ -244,9 +244,10 @@ fn the_release_consolidation_item_is_the_overall_review_after_every_angle() {
             scope: "acme-v1.2.0-rc.1".into()
         })
     );
-    assert!(body.contains("once every angle PR of the candidate is merged"));
-    assert!(body.contains("the coordinator reviews each one as it comes"));
-    assert!(body.contains("tag the next candidate"));
+    assert!(body.contains("once every angle report of the candidate is merged"));
+    assert!(body.contains("the bridge merges each valid report on its own"));
+    assert!(body.contains("from the branch `qa/acme-v1.2.0-rc.1/consolidation`"));
+    assert!(body.contains("for the accepted findings only"));
 }
 
 #[test]
@@ -738,7 +739,7 @@ fn a_release_angle_sub_item_embeds_the_release_protocol_its_angles_notes_and_the
     );
     assert!(body.contains("- Project notes: none"), "{body}");
     assert!(
-        body.contains("The bridge sets this sub-item Done when it merges your angle PR into `release/2026-10-05-14-03-utc`"),
+        body.contains("The bridge sets this sub-item To Deploy when it merges your angle PR into `release/2026-10-05-14-03-utc`, which it does with no approval"),
         "{body}"
     );
     assert!(
@@ -778,7 +779,7 @@ fn a_consolidation_item_embeds_the_consolidation_protocol_and_says_what_closes_i
     assert!(rc.contains("its part \"For a release candidate\""), "{rc}");
     assert!(rc.contains("\"schema\": \"spl-asdlc/qa-report/2\""), "{rc}");
     assert!(
-        rc.contains("The bridge sets it Done when a newer candidate is tagged"),
+        rc.contains("the bridge sets this item Done when it merges your verdict PR"),
         "{rc}"
     );
 }

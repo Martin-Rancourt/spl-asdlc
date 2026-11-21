@@ -56,15 +56,15 @@ jobs:
     permissions:
       contents: read
       actions: read
-    uses: Martin-Rancourt/spl-asdlc/.github/workflows/asdlc-release-publish.yml@v1.11
+    uses: Martin-Rancourt/spl-asdlc/.github/workflows/asdlc-release-publish.yml@v1.14
     with:
       stage: verify
       release-tag: ${{ github.event.release.tag_name || inputs.release-tag }}
       resume-from: ${{ inputs.resume-from }}
       candidate-tag: v{version}-rc.{rc}
       release-tag-pattern: v{version}
-      # No QA angle (`[release] angles = []`).
-      qa-angles: '[]'
+      # The keys of `[[release.angles]]` in .spl-asdlc/config.toml.
+      qa-angles: '["security"]'
       # The slug of the bridge's App, a repository variable: the release must
       # have been published by this App or by a person; any other bot is no GO.
       go-publisher-login: ${{ vars.SPL_ASDLC_APP_SLUG }}
@@ -224,7 +224,7 @@ jobs:
     permissions:
       contents: read
       actions: read
-    uses: Martin-Rancourt/spl-asdlc/.github/workflows/asdlc-release-publish.yml@v1.11
+    uses: Martin-Rancourt/spl-asdlc/.github/workflows/asdlc-release-publish.yml@v1.14
     with:
       stage: close
       release-tag: ${{ github.event.release.tag_name || inputs.release-tag }}

@@ -1,0 +1,40 @@
+{
+  "schema": "spl-asdlc/qa-report/2",
+  "candidate": "v1.14.0-rc.1",
+  "angle": "security",
+  "item": "ASDLC-WUTU",
+  "verdict": "go",
+  "checked": [
+    "Tag annotation of v1.14.0-rc.1 (Release-Class: routine, base v1.13.0) and git log/diff v1.13.0..v1.14.0-rc.1 (ASDLC-UC3K, ASDLC-8SPA, ASDLC-R3BG)",
+    "cargo test --locked at v1.14.0-rc.1: 1234 passed, 0 failed, workflow tests (tests/workflows/) included",
+    "scripts/check-no-instance-names.sh at v1.14.0-rc.1: exit 0 (identifier forms only; SPL_ASDLC_FORBIDDEN_WORDS is a CI secret, not set locally)",
+    "src/tick/release.rs angle_pr / follow_angle_pr: the bridge's own merge of an angle PR (report-only compare, checks, coordinator changes-requested, branch state), and who may author it",
+    "src/tick/release.rs candidate_verdict / verdict_pr / read_merged_verdict / merged_verdict_state / decide / bookkeeping: how the coordinator's verdict is merged, read back and turned into a computed GO",
+    "src/method/release/verdict.rs (parse/validate rules) and src/method/release/go.rs (VerdictState in the GO)",
+    "src/config/mod.rs: reserved angle key `consolidation`; .spl-asdlc/config.toml [[release.angles]] and release-publish.yml qa-angles",
+    "src/tracker/livela.rs and src/tracker/mod.rs: the new implementation-kind block relation",
+    "src/http.rs (max_redirects(0), MAX_BODY 64 MiB) and src/github/zip.rs (extract size limit): unchanged since v1.13.0",
+    ".github/workflows/*.yml and actions/: third-party actions pinned to full SHAs, no pull_request_target, ${{ }} from PR/event passed through env: only; pr.yml runs fork PRs on pull_request with a read-only token",
+    "Live GitHub settings of the repository (read-only): public; ruleset on release/2026-11-21-15-10-utc requires a PR with 0 approvals and checks `title / conventional-title` and `required-check`; Actions fork-PR approval policy all_external_contributors"
+  ],
+  "findings": [
+    {
+      "id": "security-1",
+      "blocking": false,
+      "summary": "The bridge merges an angle PR from any author, a fork included, with no coordinator approval, and itself tells the PR which sub-item key to name.",
+      "anchor": "src/tick/release.rs:1956 angle_pr (and :2174 follow_angle_pr, the `angle-unnamed` comment)",
+      "evidence": "Read at v1.14.0-rc.1: angle_pr takes every open, non-draft PR to the release branch whose head_ref parses as qa/<candidate>/<angle>; it checks the report's validity, that the PR changes only the report path, the required checks, a coordinator's changes-requested at head and the branch state, then merges with the App. It never reads pr.author nor pr.cross_repository (src/github/types.rs:379), so a PR from a fork whose branch is named qa/v1.14.0-rc.1/security qualifies. A PR that does not name the sub-item gets the bridge's comment naming the key to use. The repository is public and the release branch ruleset requires 0 approvals. Attacker: any GitHub user. Precondition: a maintainer clicks \"Approve and run\" for the fork's workflows (policy all_external_contributors), an action that approves CI, not a merge. Impact: a forged report (verdict go, findings []) is merged into the release branch by the App, the angle counts as merged, the real reviewer's PR then conflicts on the same path, and the coordinator's verdict judges only the findings of merged reports, so the security review of the candidate is pre-empted. The coordinator's verdict (author or approval by a coordinator) still stands between this and the GO, hence non-blocking. Obvious fix: refuse a cross-repository angle PR, or require its author to be the angle's assignee or a coordinator.",
+      "testable": true,
+      "proposed_test": "release_tests: an angle PR from a fork (cross_repository = true), valid and report-only with green checks, is never merged and its sub-item stays out of To Deploy"
+    },
+    {
+      "id": "security-2",
+      "blocking": false,
+      "summary": "A merged verdict is trusted from any merged qa/<candidate>/consolidation PR, whoever authored or merged it, so a person with write access can make a computed GO without any coordinator.",
+      "anchor": "src/tick/release.rs:2380 candidate_verdict (merged_pulls.find(is_verdict_pr)) and :2439 merged_verdict_state",
+      "evidence": "Read at v1.14.0-rc.1: verdict_pr requires a coordinator's authorship or approval at head before the bridge merges a verdict, but candidate_verdict and merged_verdict_state read the first merged PR into the release branch whose head_ref is qa/<candidate>/consolidation and take its file as the verdict, without checking its author, its approvals or merged_by. The release branch ruleset requires a PR with 0 approvals, so a writer can open and merge such a PR themselves in GitHub; with go_policy computed (the default) the verdict `go`, gate green and no open blocker give the GO, and the bridge tags and publishes, reaching every caller through the moving minor tag. Same for an angle report merged by hand. Attacker: a holder of write access, already privileged, hence non-blocking. Obvious fix: when reading a merged verdict, require that a coordinator authored it or approved it at its merged head (or that the bridge's App merged it).",
+      "testable": true,
+      "proposed_test": "release_tests: a verdict PR merged by a non-coordinator with no coordinator approval is not a VerdictState::Go and the GO stays held"
+    }
+  ]
+}
