@@ -10,3 +10,4 @@ pub mod prs;
 pub mod publication;
 pub mod report;
 pub mod shape;
+pub mod verdict;

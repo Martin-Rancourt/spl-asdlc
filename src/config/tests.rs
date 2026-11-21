@@ -535,6 +535,15 @@ fn an_angle_key_is_a_branch_segment_and_unique() {
 }
 
 #[test]
+fn the_verdict_key_is_no_release_angle() {
+    let text = MINIMAL.replace("key = \"security\"", "key = \"consolidation\"");
+    assert_refused_with(
+        &text,
+        "\"consolidation\" is reserved for the coordinator's verdict",
+    );
+}
+
+#[test]
 fn coordinators_are_required() {
     assert_refused_with(
         &MINIMAL.replace(
