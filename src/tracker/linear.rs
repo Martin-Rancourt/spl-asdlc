@@ -932,6 +932,14 @@ impl Tracker for Linear {
             RelationKind::Blocks => "blocks",
             RelationKind::Related => "related",
             RelationKind::Duplicate => "duplicate",
+            // Linear keeps one kind of block: the bridge holds such an item
+            // in Backlog itself (`implementation_blocks` is false).
+            RelationKind::BlocksImplementation => {
+                return Err(TrackerError::refused(
+                    format!("relation {a} blocks {b} through its implementation"),
+                    "Linear keeps no block freed at the merge",
+                ));
+            }
         };
         let (ida, idb) = (self.issue_id(a)?, self.issue_id(b)?);
         let existing = self.relations(a)?;

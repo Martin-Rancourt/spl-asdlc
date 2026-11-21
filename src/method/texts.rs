@@ -339,16 +339,17 @@ pub fn release_angle_item(
          - [ ] The report `{report_path}` is committed (mandatory, even when nothing was found).\n\
          - [ ] A PR from `qa/{candidate}/{key}` to `{branch}` names this item.\n\n\
          ## Business rules\n{absence}\n\n\
-         ## What closes this item\nThe bridge sets this sub-item Done when it merges your angle PR into `{branch}`, \
-         which it does once the PR is ready (not a draft), names this item's key in its title or body, carries a valid \
-         report at `{report_path}` on its head and no other change, is approved at its head by a release coordinator with no request for \
-         changes standing, has its required checks green and is up to date with `{branch}`. A report that is missing or \
-         invalid is said in a comment here and the PR is not merged. An item still open when the cycle closes is closed \
-         with the release.\n\n\
+         ## What closes this item\nThe bridge sets this sub-item To Deploy when it merges your angle PR into `{branch}`, \
+         which it does with no approval once the PR is ready (not a draft), names this item's key in its title or body, \
+         carries a valid report at `{report_path}` on its head and no other change, has no request for changes standing, \
+         has its required checks green and is up to date with `{branch}`. A report that is missing or invalid is said in a \
+         comment here and the PR is not merged. It goes Done when the release is published or a newer candidate is \
+         tagged; an item still open when the cycle closes is closed with the release. The coordinator judges your \
+         findings afterwards, in the candidate's verdict.\n\n\
          ## Context\n- Candidate: `{candidate}`\n- Release label: `{label}`\n- Project notes: {notes}\n- The brief is on the release item.\n\
          - This item follows your PR: `In Progress` once it appears; `In Review` once it is ready with its checks green, \
-         assigned to the coordinator who reviews it; back `In Progress` when the coordinator requests changes, assigned to \
-         this angle's assignee again (or to nobody); `Done` when the bridge merges it after the coordinator's approval.\n\n\
+         the bridge's own step, kept by its assignee; back `In Progress` when a coordinator requests changes at its head, \
+         assigned to this angle's assignee again (or to nobody); `To Deploy` when the bridge merges it.\n\n\
          {protocol}",
         marker = marker("angle", &[("scope", candidate), ("angle", &angle.key)]),
         key = angle.key,
@@ -670,21 +671,25 @@ pub fn consolidation_item(
         Consolidating::Candidate => (
             format!(
                 "The overall review of candidate `{scope}`, as the protocol below describes it (`## Protocol`, its part \
-                 \"For a release candidate\", the overall review), once every angle PR of the candidate is merged: read \
-                 every merged report together, confirm or reject each non-blocking finding in a comment on its ticket, \
-                 with a reason for every rejection, check that nothing falls between the angles, then tag the next \
-                 candidate (the cut workflow, action `candidate`) unless the project automates it."
+                 \"For a release candidate\", the overall review), once every angle report of the candidate is merged: \
+                 read every merged report together, judge each finding once (accepted, blocking or not, or rejected with \
+                 its reason), check what falls between the angles, then commit your verdict, `go` or `hold`, in the file \
+                 `consolidation.json` beside the reports, from the branch `qa/{scope}/consolidation`, in a PR to the \
+                 release branch that names this item."
             ),
-            "- Reviewing an angle PR: the coordinator reviews each one as it comes, before the bridge merges it.\n\
-             - Filing tickets: the bridge creates them from the merged reports.\n- Declaring the GO: the bridge computes it.",
+            "- Reviewing an angle PR: the bridge merges each valid report on its own.\n\
+             - Filing tickets: the bridge creates them from your merged verdict, for the accepted findings only.\n\
+             - Declaring the GO: the bridge computes it, your verdict `go` among its conditions.",
             "- [ ] Every merged report of the candidate is read, with the others.\n\
-             - [ ] Every non-blocking finding is confirmed or rejected on its ticket, with a reason for every rejection.\n\
-             - [ ] What falls between the angles is checked, and said on the release item.\n\
-             - [ ] The next candidate is tagged, or the project's automation tags it.",
-            "Nothing you set closes this item. It is served once every angle sub-item of the candidate is resolved, \
-             that is once the bridge merged every angle PR, since it is blocked by each of them. The bridge sets it Done \
-             when a newer candidate is tagged, or when the release is published; the cycle's closure closes it \
-             otherwise. The GO is computed from the facts, never declared.",
+             - [ ] Every finding is judged once in the verdict: accepted (blocking or not) or rejected with its reason.\n\
+             - [ ] What falls between the angles is checked, and said in the verdict.\n\
+             - [ ] The verdict is committed in a PR that names this item.",
+            "Your verdict does: the bridge sets this item Done when it merges your verdict PR, which it does once every \
+             angle PR of the candidate is merged, the PR names this item's key, carries a valid verdict and no other \
+             change, is authored by a release coordinator or approved by one at its head, has its required checks green \
+             and is up to date. What keeps it from the merge is said on the PR. This item is served once every angle \
+             report of the candidate is merged: blocked by each angle's implementation, or held in Backlog by the bridge \
+             where the tracker keeps no such block. A newer candidate cancels it.",
             protocol::Job::ReleaseConsolidation,
         ),
     };

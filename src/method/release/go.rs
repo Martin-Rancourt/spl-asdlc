@@ -33,6 +33,32 @@ impl AngleState {
     }
 }
 
+/// Where the coordinator's verdict on the candidate stands (BR-ASDLC-020).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VerdictState {
+    /// The candidate has no QA angle, or is a later pass under the lighter
+    /// policy: no verdict is asked.
+    #[default]
+    NotNeeded,
+    /// No verdict of the candidate is merged yet.
+    Missing,
+    /// The merged verdict says `hold`.
+    Hold,
+    /// The merged verdict says `go`.
+    Go,
+}
+
+impl VerdictState {
+    pub fn name(self) -> &'static str {
+        match self {
+            VerdictState::NotNeeded => "not needed",
+            VerdictState::Missing => "missing",
+            VerdictState::Hold => "hold",
+            VerdictState::Go => "go",
+        }
+    }
+}
+
 /// The facts the GO reads, established by the caller.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct GoFacts {
@@ -46,6 +72,8 @@ pub struct GoFacts {
     /// candidate was recorded while none was configured): an empty `angles`
     /// is then expected, not a round that never ran.
     pub no_qa_angle: bool,
+    /// The coordinator's verdict on the candidate.
+    pub verdict: VerdictState,
     pub blockers: Vec<String>,
     pub unlinked_blockers: Vec<String>,
     pub fix_gaps: Vec<String>,
@@ -77,6 +105,7 @@ pub struct GoDecision {
     pub gate_green: bool,
     pub open_angles: Vec<String>,
     pub missing_angles: Vec<String>,
+    pub verdict: VerdictState,
     pub blockers: Vec<String>,
     pub unlinked_blockers: Vec<String>,
     pub fix_gaps: Vec<String>,
@@ -136,6 +165,15 @@ pub fn evaluate(facts: &GoFacts) -> GoDecision {
     if !open_angles.is_empty() {
         reasons.push(format!("angles not merged: {}", open_angles.join(", ")));
     }
+    match facts.verdict {
+        VerdictState::NotNeeded | VerdictState::Go => {}
+        VerdictState::Missing => reasons.push(
+            "the coordinator's verdict on the candidate is not merged".to_string(),
+        ),
+        VerdictState::Hold => reasons.push(
+            "the coordinator's verdict on the candidate is `hold`: its blocking findings are fixed, then the next candidate is cut".to_string(),
+        ),
+    }
     if !blockers.is_empty() {
         reasons.push(format!("open blocking issues: {}", blockers.join(", ")));
     }
@@ -186,6 +224,7 @@ pub fn evaluate(facts: &GoFacts) -> GoDecision {
         gate_green,
         open_angles,
         missing_angles,
+        verdict: facts.verdict,
         blockers,
         unlinked_blockers: unlinked,
         fix_gaps,
@@ -220,6 +259,7 @@ impl GoDecision {
             "gate_green": self.gate_green,
             "open_angles": self.open_angles,
             "missing_angles": self.missing_angles,
+            "verdict": self.verdict.name(),
             "blockers": self.blockers,
             "unlinked_blockers": self.unlinked_blockers,
             "fix_gaps": self.fix_gaps,
@@ -257,6 +297,33 @@ mod tests {
         let d = evaluate(&all_good());
         assert!(d.go, "{:?}", d.reasons);
         assert_eq!(d.blockers_carried(), "none");
+    }
+
+    #[test]
+    fn a_candidate_with_qa_angles_needs_its_verdict_go() {
+        for (verdict, why) in [
+            (
+                VerdictState::Missing,
+                "the coordinator's verdict on the candidate is not merged",
+            ),
+            (
+                VerdictState::Hold,
+                "the coordinator's verdict on the candidate is `hold`: its blocking findings are fixed, then the next candidate is cut",
+            ),
+        ] {
+            let d = evaluate(&GoFacts {
+                verdict,
+                ..all_good()
+            });
+            assert!(!d.go);
+            assert_eq!(d.reasons, vec![why]);
+            assert_eq!(d.as_json()["verdict"], verdict.name());
+        }
+        let d = evaluate(&GoFacts {
+            verdict: VerdictState::Go,
+            ..all_good()
+        });
+        assert!(d.go, "{:?}", d.reasons);
     }
 
     #[test]

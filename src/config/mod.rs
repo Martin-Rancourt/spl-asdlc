@@ -927,6 +927,17 @@ impl Validator {
                 self.err(&format!("{at}.key"), format!("\"{k}\" is configured twice"));
                 continue;
             }
+            // The coordinator's verdict takes this key beside the reports,
+            // and its branch `qa/<candidate>/consolidation`.
+            if key == "release.angles" && k == crate::method::release::verdict::KEY {
+                self.err(
+                    &format!("{at}.key"),
+                    format!(
+                        "\"{k}\" is reserved for the coordinator's verdict (`qa/<candidate>/{k}`): name the angle otherwise"
+                    ),
+                );
+                continue;
+            }
             let title = self
                 .optional(&format!("{at}.title"), title)
                 .unwrap_or_else(|| default_title(&k));

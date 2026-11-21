@@ -211,6 +211,23 @@ pub trait LivelaStore {
         Err("this Livela keeps no PR review".into())
     }
 
+    /// Whether this store keeps blocks freed once the blocker is merged
+    /// (Livela's `block_kind = implementation`): until it does, the bridge
+    /// holds such an item in Backlog itself (ASDLC-8SPA).
+    fn holds_implementation_blocks(&self) -> bool {
+        false
+    }
+    /// The ids of the items that block this one through their
+    /// implementation (`blocked_by` with the implementation kind).
+    fn implementation_blockers(&self, _id: &str) -> Result<Vec<String>, String> {
+        Ok(Vec::new())
+    }
+    /// `id` blocked by `target` through its implementation: the item waits
+    /// until `target` is merged (To Deploy or later), not released.
+    fn add_implementation_block(&mut self, _id: &str, _target: &str) -> Result<(), String> {
+        Err("this Livela keeps no block freed at the merge".into())
+    }
+
     /// Whether this store raises decision requests
     /// ([`Self::request_decision`], ASDLC-G8M2): until it does, the bridge
     /// asks in a comment.
@@ -535,6 +552,21 @@ impl<S: LivelaStore> Tracker for Livela<S> {
             // Held by the blocked item as its `blocked_by`.
             out.blocks.push(rel("blocked_by", b, &raw.id, b)?);
         }
+        if self.store.borrow().holds_implementation_blocks() {
+            let blockers = self
+                .store
+                .borrow()
+                .implementation_blockers(&raw.id)
+                .map_err(|e| TrackerError::unreadable(format!("relations of {key}"), e))?;
+            for b in &blockers {
+                out.blocked_by_implementation.push(rel(
+                    "blocked_by_implementation",
+                    &raw.id,
+                    b,
+                    b,
+                )?);
+            }
+        }
         for r in &raw.related_to {
             out.related.push(rel("related_to", &raw.id, r, r)?);
         }
@@ -798,6 +830,25 @@ impl<S: LivelaStore> Tracker for Livela<S> {
                 }
                 (&ra.id, LivelaRelation::RelatedTo, &rb.id)
             }
+            RelationKind::BlocksImplementation => {
+                if !self.store.borrow().holds_implementation_blocks() {
+                    return Err(TrackerError::refused(
+                        format!("relation {a} blocks {b} through its implementation"),
+                        "this Livela keeps no block freed at the merge",
+                    ));
+                }
+                let present = self
+                    .store
+                    .borrow()
+                    .implementation_blockers(&rb.id)
+                    .map_err(|e| TrackerError::unreadable(format!("relations of {b}"), e))?;
+                if present.contains(&ra.id) {
+                    return Ok(());
+                }
+                return self.as_bridge(format!("relation {a} {kind:?} {b}"), |s, _| {
+                    s.add_implementation_block(&rb.id, &ra.id)
+                });
+            }
             RelationKind::Duplicate => match &ra.duplicate_of {
                 Some(d) if *d == rb.id => return Ok(()),
                 Some(d) => {
@@ -967,6 +1018,10 @@ impl<S: LivelaStore> Tracker for Livela<S> {
 
     fn candidate_milestones(&self) -> bool {
         self.store.borrow().creates_milestones()
+    }
+
+    fn implementation_blocks(&self) -> bool {
+        self.store.borrow().holds_implementation_blocks()
     }
 
     /// In the project, under `parent`.
