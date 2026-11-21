@@ -64,6 +64,9 @@ pub struct FakeTracker {
     /// Whether it holds decision requests (false by default, as Linear);
     /// true plays Livela.
     pub decisions: bool,
+    /// Whether it keeps blocks freed at the blocker's merge (false by
+    /// default, as Linear); true plays a Livela that keeps them.
+    pub implementation_blocks: bool,
     pub state: RefCell<FakeState>,
 }
 
@@ -86,6 +89,7 @@ impl FakeTracker {
             projects: Some(Vec::new()),
             milestones: false,
             decisions: false,
+            implementation_blocks: false,
             state: RefCell::new(FakeState::default()),
         }
     }
@@ -328,6 +332,9 @@ impl Tracker for FakeTracker {
             match kind {
                 RelationKind::Blocks if a == key => out.blocks.push(rel(b)),
                 RelationKind::Blocks if b == key => out.blocked_by.push(rel(a)),
+                RelationKind::BlocksImplementation if b == key => {
+                    out.blocked_by_implementation.push(rel(a))
+                }
                 RelationKind::Related if a == key => out.related.push(rel(b)),
                 RelationKind::Related if b == key => out.related.push(rel(a)),
                 RelationKind::Duplicate if a == key => out.duplicates.push(rel(b)),
@@ -563,11 +570,27 @@ impl Tracker for FakeTracker {
         })
     }
 
+    fn implementation_blocks(&self) -> bool {
+        self.implementation_blocks
+    }
+
     fn relate(&self, a: &str, b: &str, kind: RelationKind) -> TResult<()> {
         self.read(a)?;
         self.read(b)?;
+        if kind == RelationKind::BlocksImplementation && !self.implementation_blocks {
+            return Err(TrackerError::refused(
+                format!("relate {a} {kind:?} {b}"),
+                "this tracker keeps no block freed at the merge",
+            ));
+        }
         let exists = self.state.borrow().relations.iter().any(|(_, x, y, k)| {
-            *k == kind && ((x == a && y == b) || (kind != RelationKind::Blocks && x == b && y == a))
+            *k == kind
+                && ((x == a && y == b)
+                    || (!matches!(
+                        kind,
+                        RelationKind::Blocks | RelationKind::BlocksImplementation
+                    ) && x == b
+                        && y == a))
         });
         if exists {
             return Ok(());

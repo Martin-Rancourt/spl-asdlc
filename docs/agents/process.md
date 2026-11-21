@@ -93,8 +93,8 @@ Every project has one. It takes the tickets in To Deploy, already on the default
 
 1. **Cut.** A person dispatches the cut workflow on the default branch: it creates the release branch, writes the version and the CHANGELOG, and tags the first candidate. The bridge opens the release issue, assigned to the owner.
 2. **Release CI.** The candidate's tag runs the project's release suites. When it is red, the bridge opens an urgent gate-fix ticket in Ready: implement it as any ticket, with the release branch as the base.
-3. **QA**, when present. Angles review the candidate, each on its own angle branch with a report; the coordinator reviews each angle PR, then the whole. A blocking finding becomes an urgent fix ticket on the release branch, a non-blocking one a ticket for later.
-4. **GO.** It is computed by the bridge from the facts, never declared: the latest candidate's CI green, every QA angle done, no blocking finding open. The bridge then tags and publishes the release.
+3. **QA**, when present. Angles review the candidate, each on its own angle branch with a report, which the bridge merges with no approval; once every report is merged, the coordinator judges each finding in a committed verdict, `go` or `hold`. An accepted blocking finding becomes an urgent fix ticket on the release branch, an accepted non-blocking one a ticket for later; a rejected one, with its reason, none.
+4. **GO.** It is computed by the bridge from the facts, never declared: the latest candidate's CI green, every QA angle report merged, the coordinator's verdict `go`, no blocking finding open. The bridge then tags and publishes the release.
 5. **Publication.** The project's publish workflow deploys the release and merges the release branch back into the default branch.
 6. **Closure.** The bridge judges each ticket of the release: every box ticked, Done; only `## Post deploy` boxes left, Post Deploy, where the ticket is validated in production ("Validate a ticket in Post Deploy"); anything else open, back to In Progress.
 

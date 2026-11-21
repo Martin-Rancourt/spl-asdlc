@@ -5,21 +5,24 @@
 //! 2. the candidate's record (comment and `## Candidates` line), the
 //!    embarked tickets labelled; once the candidate's gate is green, and
 //!    never before, the angle sub-items and the consolidation item of the
-//!    candidate, the consolidation item blocked by every angle sub-item,
-//!    then the brief (BR-ASDLC-004, BR-ASDLC-020); a candidate with no QA
+//!    candidate, the consolidation item held until every angle report is
+//!    merged, then the brief (BR-ASDLC-004, BR-ASDLC-020); a candidate with no QA
 //!    angle (`release.angles = []`) gets the brief alone; the consolidation item of
 //!    an older candidate Done; a red gate whose automatic rerun settled gets
 //!    its urgent gate-fix ticket, which a later green gate closes
 //!    (BR-ASDLC-016);
 //! 3. the angle PRs: each sub-item follows its PR (In Progress, In Review,
 //!    back In Progress on changes requested); merged into the release
-//!    branch when approved, green and carrying a valid report, the sub-item
-//!    Done; the findings of a merged report filed;
-//! 4. the GO, and on GO the release tag on the candidate and its GitHub
+//!    branch when green and carrying a valid report alone, with no
+//!    approval, the sub-item To Deploy;
+//! 4. the coordinator's verdict PR, merged once every angle PR is; the
+//!    accepted findings of the merged verdict filed, the coordination item
+//!    Done;
+//! 5. the GO (which needs the verdict `go`), and on GO the release tag on the candidate and its GitHub
 //!    release published, with the notes the cut prepared;
-//! 5. otherwise the HOLD said once, the escalation when the passes are
+//! 6. otherwise the HOLD said once, the escalation when the passes are
 //!    spent, the stagnation notice;
-//! 6. once the release is published: the consolidation items Done, then the
+//! 7. once the release is published: the consolidation items Done, then the
 //!    closure (`closure.rs`); the closure of the cycle before, when the next
 //!    cycle was cut before it ended, goes on beside it.
 //!
@@ -30,16 +33,17 @@ use serde_json::json;
 
 use crate::action_log::ActionLog;
 use crate::config::{LaterPasses, Release};
-use crate::github::{CompareStatus, Comparison, GitRef, ObjectType, PullRequest};
+use crate::github::{CompareStatus, Comparison, GitRef, ObjectType, PullRequest, same_login};
 use crate::method::checks::{self, CheckState};
 use crate::method::release::findings;
 use crate::method::release::gate;
-use crate::method::release::go::{self, AngleState, GoFacts, Policy};
+use crate::method::release::go::{self, AngleState, GoFacts, Policy, VerdictState};
 use crate::method::release::note;
 use crate::method::release::prepare;
 use crate::method::release::prs;
-use crate::method::release::report::{self, Report as AngleReport};
+use crate::method::release::report::{self, Finding, Report as AngleReport};
 use crate::method::release::shape::{Shape, Version};
+use crate::method::release::verdict;
 use crate::method::review::{self, Approval, BranchState};
 use crate::method::texts::{self, AngleLine, AngleScope, BridgeItem, protocol};
 use crate::method::vocabulary::{self, Status};
@@ -271,7 +275,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
         let Some((cand, angle)) = prs::parse_angle_branch(&pr.head_ref) else {
             continue;
         };
-        if cand != candidate.tag {
+        if cand != candidate.tag || angle == verdict::KEY {
             continue;
         }
         let state = angle_pr(
@@ -289,17 +293,49 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
             s.1 = state;
         }
     }
-    file_merged_findings(
+    let merged_pulls = match t.github.merged_pulls(&t.repo, Some(&branch), None, 500) {
+        Ok(m) => m,
+        Err(e) => {
+            t.unreadable(
+                report,
+                &item.key,
+                format!("the merged PRs of {branch}: {e}"),
+            );
+            return merged;
+        }
+    };
+    let reports = merged_angles(
         t,
         log,
         report,
         &item,
         &candidate,
-        &branch,
-        &label,
         &children,
         &mut states,
+        &merged_pulls,
     );
+    // The coordinator's verdict, for a candidate that offered its angles;
+    // a later pass under the lighter policy counts the first pass's angles
+    // and asks no verdict of its own.
+    let verdict = if without_angles || lighter_pass(release, &candidate) {
+        VerdictState::NotNeeded
+    } else {
+        candidate_verdict(
+            t,
+            log,
+            report,
+            &item,
+            &candidate,
+            &branch,
+            &label,
+            &children,
+            &states,
+            reports.as_deref(),
+            &angle_prs,
+            &merged_pulls,
+            &mut merged,
+        )
+    };
 
     if merged {
         return true;
@@ -325,6 +361,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
         &branch,
         &states,
         without_angles,
+        verdict,
     ) else {
         return false;
     };
@@ -753,7 +790,7 @@ pub fn lighter_pass(release: &Release, c: &Candidate) -> bool {
 /// The angles offered on this candidate (spec 05 §7, `later_passes`).
 pub fn offered(t: &Tick, c: &Candidate) -> Vec<String> {
     let release = section(t);
-    if c.rc > u64::from(release.max_rc_passes) || lighter_pass(release, c) {
+    if lighter_pass(release, c) {
         return Vec::new();
     }
     release.angles.iter().map(|a| a.key.clone()).collect()
@@ -1162,12 +1199,21 @@ fn open_round(
         let (_, body) = texts::consolidation_item(&c.tag, &title_of, of, &pinned);
         let assignee = coordinator(t);
         let parent = qa_parent(t, log, report, item, c, &mut milestone)?;
-        if let Some(created) = create_child(t, log, report, &parent, &title, &body, label, assignee)
-        {
+        // Served once every angle report is merged: blocked by the angles'
+        // implementation where the tracker keeps such blocks, held in
+        // Backlog by the bridge otherwise (BR-ASDLC-020).
+        let status = if t.tracker.implementation_blocks() {
+            Status::Ready
+        } else {
+            Status::Backlog
+        };
+        if let Some(created) = create_item(
+            t, log, report, &parent, &title, &body, label, assignee, status,
+        ) {
             children.push(as_release_child(created, item));
         }
     }
-    let blocked = block_consolidation(t, log, report, &children, &c.tag);
+    let blocked = gate_consolidation(t, log, report, &children, &c.tag, offered);
     Some((children, blocked))
 }
 
@@ -1266,41 +1312,142 @@ fn renew(children: &mut [Item], found: Vec<Item>) {
     }
 }
 
-/// The candidate's consolidation item, while open, is blocked by every
-/// angle sub-item of the candidate (BR-ASDLC-020), through the same
-/// relation as a PR round's (BR-ASDLC-018): it is served only once every
-/// angle PR is merged. A relation already there is not written again; one
-/// that could not be read or written is reported and retried next tick, and
-/// `false` is returned so that the brief waits for it.
-fn block_consolidation(
+/// The candidate's consolidation item, while open, is served only once
+/// every angle report of the candidate is merged (BR-ASDLC-020): on a
+/// tracker that keeps blocks freed at the blocker's merge, it is blocked by
+/// every angle sub-item through its implementation; otherwise the bridge
+/// holds it in Backlog until every offered angle's sub-item is To Deploy or
+/// later, then moves it to Ready (and back, from Ready only, should that
+/// stop holding). A block of the release kind an older bridge laid from an
+/// angle would hold it until the release: it is removed. A relation or a
+/// status already right is not written again; one that could not be read
+/// or written is reported and retried next tick, and `false` is returned so
+/// that the brief waits for it.
+fn gate_consolidation(
     t: &Tick,
     log: &mut ActionLog,
     report: &mut Report,
     children: &[Item],
     candidate: &str,
+    offered: &[String],
 ) -> bool {
     let want = Some(BridgeItem::Consolidation {
         scope: candidate.to_string(),
     });
-    let Some(consolidation) = children.iter().find(|ch| {
+    let Some(cons) = children.iter().find(|ch| {
         !ch.state.is_resolved() && texts::bridge_item(&ch.description, ch.parent.as_deref()) == want
     }) else {
         return true;
     };
-    let angles: Vec<String> = children
+    let angles: Vec<&Item> = children
         .iter()
         .filter(|ch| angle_of(ch, candidate).is_some())
-        .map(|ch| ch.key.clone())
         .collect();
-    super::merge::block_consolidation(t, log, report, &consolidation.key, &angles)
+    let relations = match t.tracker.relations(&cons.key) {
+        Ok(r) if r.cut => {
+            t.unreadable(
+                report,
+                &cons.key,
+                "the relation list is cut: whether its angles block it cannot be told",
+            );
+            return false;
+        }
+        Ok(r) => r,
+        Err(e) => {
+            t.unreadable(report, &cons.key, format!("relations: {e}"));
+            return false;
+        }
+    };
+    let mut all = true;
+    for r in &relations.blocked_by {
+        if !angles.iter().any(|a| a.key.eq_ignore_ascii_case(&r.other)) {
+            continue;
+        }
+        all &= t
+            .act(
+                log,
+                report,
+                &cons.key,
+                &format!(
+                    "remove the release block of {} (an angle frees it at its merge)",
+                    r.other
+                ),
+                json!({"angle": r.other}),
+                || t.tracker.unrelate(&r.id).map_err(|e| e.to_string()),
+            )
+            .is_some();
+    }
+    let to = if t.tracker.implementation_blocks() {
+        for a in &angles {
+            if relations
+                .blocked_by_implementation
+                .iter()
+                .any(|r| r.other.eq_ignore_ascii_case(&a.key))
+            {
+                continue;
+            }
+            all &= t
+                .act(
+                    log,
+                    report,
+                    &a.key,
+                    &format!("relate BlocksImplementation {}", cons.key),
+                    json!({"consolidation": cons.key}),
+                    || {
+                        t.tracker
+                            .relate(&a.key, &cons.key, RelationKind::BlocksImplementation)
+                            .map_err(|e| e.to_string())
+                    },
+                )
+                .is_some();
+        }
+        // Held in Backlog before the tracker kept such blocks: the blocks
+        // hold it now.
+        (cons.state.status == Some(Status::Backlog)).then_some(Status::Ready)
+    } else {
+        let every_merged = offered.iter().all(|k| {
+            angles
+                .iter()
+                .any(|a| angle_of(a, candidate).as_deref() == Some(k.as_str()) && angle_merged(a))
+        });
+        match cons.state.status {
+            Some(Status::Backlog) if every_merged => Some(Status::Ready),
+            Some(Status::Ready) if !every_merged => Some(Status::Backlog),
+            _ => None,
+        }
+    };
+    if let Some(to) = to {
+        let why = if to == Status::Ready {
+            "every angle report is merged"
+        } else {
+            "until every angle report is merged"
+        };
+        all &= t
+            .act(
+                log,
+                report,
+                &cons.key,
+                &format!("status {to} ({why})"),
+                json!({"candidate": candidate}),
+                || {
+                    t.tracker
+                        .set_status(&cons.key, to, None)
+                        .map_err(|e| e.to_string())
+                },
+            )
+            .is_some();
+    }
+    all
 }
 
 /// The QA rounds of the release item ended by a later fact: once a newer
 /// candidate is tagged, it redoes every review (BR-ASDLC-038), so every QA
 /// item of an older candidate still open (its angle items, its
 /// consolidation item) goes Canceled, in the pass that first sees the newer
-/// candidate; with no `current`, the release is published and every
-/// consolidation item goes Done (BR-ASDLC-020). The cycle's closure still
+/// candidate, but an angle item whose report is merged (To Deploy), which
+/// goes Done; with no `current`, the release is published and every
+/// consolidation item, and every angle item whose report is merged, goes
+/// Done (BR-ASDLC-020). The cycle's closure still
 /// closes what is left (spec 05 §11).
 fn end_consolidations(
     t: &Tick,
@@ -1310,15 +1457,23 @@ fn end_consolidations(
     current: Option<&str>,
 ) {
     for ch in children {
-        let scope = match texts::bridge_item(&ch.description, ch.parent.as_deref()) {
-            Some(BridgeItem::Consolidation { scope }) => scope,
-            Some(BridgeItem::Angle { scope, .. }) if current.is_some() => scope,
+        let (scope, angle) = match texts::bridge_item(&ch.description, ch.parent.as_deref()) {
+            Some(BridgeItem::Consolidation { scope }) => (scope, false),
+            Some(BridgeItem::Angle { scope, .. }) => (scope, true),
             _ => continue,
         };
         if ch.state.is_resolved() || Some(scope.as_str()) == current {
             continue;
         }
+        // An angle whose report is merged did its work: Done. One that is
+        // not is canceled by a newer candidate, and left to the closure at
+        // the publication.
         let (status, why) = match current {
+            _ if angle && angle_merged(ch) => (
+                Status::Done,
+                "status Done (its report is merged)".to_string(),
+            ),
+            None if angle => continue,
             Some(newer) => (
                 Status::Canceled,
                 format!("status Canceled (newer candidate {newer} redoes every review)"),
@@ -1351,6 +1506,31 @@ fn create_child(
     label: &str,
     assignee: Option<crate::tracker::User>,
 ) -> Option<Item> {
+    create_item(
+        t,
+        log,
+        report,
+        parent,
+        title,
+        body,
+        label,
+        assignee,
+        Status::Ready,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_item(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    parent: &str,
+    title: &str,
+    body: &str,
+    label: &str,
+    assignee: Option<crate::tracker::User>,
+    status: Status,
+) -> Option<Item> {
     identity::create(
         t,
         log,
@@ -1362,7 +1542,7 @@ fn create_child(
             title: title.to_string(),
             description: for_tracker(t, body),
             labels: vec![label.to_string()],
-            status: Status::Ready,
+            status,
             priority: Some(Priority::Urgent),
             assignee,
             parent: Some(parent.to_string()),
@@ -1889,11 +2069,29 @@ fn angle_pr(
             return AngleState::InReview;
         }
     }
-    let Approval::Qualified { by } = review::pr_approval(pr, &release.coordinators) else {
+    // No approval is asked (BR-ASDLC-020): a valid report-only PR merges on
+    // the bridge's own checks. A coordinator's request for changes at its
+    // head still holds it (its sub-item goes back to its angle), as does a
+    // person's standing one; an App's other request for changes is never
+    // dismissed without an approval to supersede it, so it holds it too.
+    if review::changes_requested_at_head(pr, &release.coordinators).is_some() || !green {
         return AngleState::InReview;
-    };
-    if !green {
-        return AngleState::InReview;
+    }
+    match super::merge::superseded(pr, &release.coordinators) {
+        Ok(d) if d.is_empty() => {}
+        Ok(d) => {
+            let who: Vec<&str> = d.iter().map(|x| x.login.as_str()).collect();
+            t.wait(
+                report,
+                pr,
+                format!("changes requested by {} stand", who.join(", ")),
+            );
+            return AngleState::InReview;
+        }
+        Err(why) => {
+            t.wait(report, pr, why);
+            return AngleState::InReview;
+        }
     }
     match review::branch_state(pr) {
         BranchState::Conflicting => return AngleState::InReview,
@@ -1915,25 +2113,12 @@ fn angle_pr(
         }
         BranchState::Current => {}
     }
-    // As for any PR (spec 04 §6): a person's standing request for changes
-    // holds it; an App's is superseded by the approval at the head and
-    // dismissed right before the merge.
-    let dismissals = match super::merge::superseded(pr, &release.coordinators) {
-        Ok(d) => d,
-        Err(why) => {
-            t.wait(report, pr, why);
-            return AngleState::InReview;
-        }
-    };
-    if !super::merge::dismiss(t, log, report, &object, pr, &by, &dismissals) {
-        return AngleState::InReview;
-    }
     let done = t.act(
         log,
         report,
         &object,
         "merge (merge commit) into the release branch",
-        json!({"head": pr.head_sha, "approved_by": by, "angle": angle}),
+        json!({"head": pr.head_sha, "angle": angle}),
         || {
             t.github
                 .merge_pull(
@@ -1949,15 +2134,17 @@ fn angle_pr(
         return AngleState::InReview;
     }
     *merged = true;
+    // Its report is merged: To Deploy, as a ticket at its merge; Done when
+    // the release is published or a newer candidate is tagged.
     t.act(
         log,
         report,
         &sub.key,
-        "status Done (angle merged)",
+        "status To Deploy (angle merged)",
         json!({"pr": pr.url}),
         || {
             t.tracker
-                .set_status(&sub.key, Status::Done, None)
+                .set_status(&sub.key, Status::ToDeploy, None)
                 .map_err(|e| e.to_string())
         },
     );
@@ -1968,11 +2155,10 @@ fn angle_pr(
 /// its PR (BR-ASDLC-020): In Progress when the PR is opened, In Review once
 /// its required checks are green (a draft is out of the flow and never gets
 /// here), back In Progress when a
-/// configured coordinator requests changes at its head; Done comes from the
-/// merge. In Review assigns `release.coordinator_assignee`, who is then
-/// served the PR's review; sent back, the item goes to its angle's
-/// `assignee`, or to nobody (taken by role); both in the status's own write,
-/// an unset or unknown coordinator leaving the assignee as it is. Only a PR
+/// configured coordinator requests changes at its head; To Deploy comes
+/// from the merge. In Review keeps the assignee: it is the bridge's step,
+/// served to nobody; sent back, the item goes to its angle's `assignee`, or
+/// to nobody (taken by role), in the status's own write. Only a PR
 /// that names its sub-item drives it (the link the merge reads too), and
 /// one that does not is told once per head which key to name; a status
 /// already right is not written again.
@@ -2009,11 +2195,11 @@ fn follow_angle_pr(
     let Some(to) = prs::angle_item_status(sub.state.status, facts) else {
         return;
     };
-    // Who is served, in the same write as the status: the coordinator to
-    // review the PR; its angle again when the coordinator sent it back
-    // (nobody named: taken by role); untouched when the work starts.
+    // Who is served, in the same write as the status: its angle again when
+    // a coordinator sent it back (nobody named: taken by role); untouched
+    // otherwise. In Review is the bridge's own step, served to nobody: the
+    // item keeps its assignee while the bridge checks and merges the PR.
     let assignee: Option<Option<crate::tracker::User>> = match to {
-        Status::InReview => coordinator(t).map(Some),
         Status::InProgress if facts.sent_back => Some(angle_assignee(t, angle)),
         _ => None,
     };
@@ -2054,41 +2240,38 @@ fn angle_assignee(t: &Tick, angle: &str) -> Option<crate::tracker::User> {
     t.tracker.user(name).ok()
 }
 
-/// The findings of every angle PR of the candidate merged into the release
-/// branch, filed once each (spec 05 §5-6). Marks the merged angles.
+/// A merged angle report of the candidate, read from the merge.
+pub struct MergedReport {
+    pub angle: String,
+    pub pr_url: String,
+    pub path: String,
+    pub report: AngleReport,
+}
+
+/// Every angle PR of the candidate merged into the release branch: its
+/// angle marked merged, its sub-item To Deploy when it is not yet (spec 05
+/// §5), its report read. Nothing is filed from a report: the coordinator's
+/// verdict says which findings become tickets. `None` when a merged report
+/// could not be read: the verdict then waits.
 #[allow(clippy::too_many_arguments)]
-fn file_merged_findings(
+fn merged_angles(
     t: &Tick,
     log: &mut ActionLog,
     report: &mut Report,
     item: &Item,
     c: &Candidate,
-    branch: &str,
-    label: &str,
     children: &[Item],
     states: &mut [(String, AngleState)],
-) {
+    merged: &[PullRequest],
+) -> Option<Vec<MergedReport>> {
     let release = section(t);
-    let merged = match t.github.merged_pulls(&t.repo, Some(branch), None, 500) {
-        Ok(m) => m,
-        Err(e) => {
-            t.unreadable(
-                report,
-                &item.key,
-                format!("the merged PRs of {branch}: {e}"),
-            );
-            return;
-        }
-    };
+    let mut out = Vec::new();
+    let mut whole = true;
     for pr in merged {
-        if !t.in_time() {
-            report.out_of_time = true;
-            return;
-        }
         let Some((cand, angle)) = prs::parse_angle_branch(&pr.head_ref) else {
             continue;
         };
-        if cand != c.tag {
+        if cand != c.tag || angle == verdict::KEY {
             continue;
         }
         if let Some(s) = states.iter_mut().find(|(a, _)| *a == angle) {
@@ -2098,16 +2281,16 @@ fn file_merged_findings(
             .iter()
             .find(|ch| angle_of(ch, &c.tag).as_deref() == Some(angle.as_str()))
         {
-            if !sub.state.is_resolved() {
+            if !angle_merged(sub) {
                 t.act(
                     log,
                     report,
                     &sub.key,
-                    "status Done (angle merged)",
+                    "status To Deploy (angle merged)",
                     json!({"pr": pr.url}),
                     || {
                         t.tracker
-                            .set_status(&sub.key, Status::Done, None)
+                            .set_status(&sub.key, Status::ToDeploy, None)
                             .map_err(|e| e.to_string())
                     },
                 );
@@ -2124,13 +2307,397 @@ fn file_merged_findings(
             .map_err(|e| e.to_string())
             .and_then(|text| report::read_merged(&text, &c.tag, &angle).map_err(|e| e.join("; ")));
         match parsed {
-            Ok(r) => file_findings(t, log, report, item, c, &angle, &pr.url, &path, label, &r),
-            Err(e) => t.unreadable(
-                report,
-                &item.key,
-                format!("the merged report of {}: {e}", pr.url),
-            ),
+            Ok(r) => out.push(MergedReport {
+                angle,
+                pr_url: pr.url.clone(),
+                path,
+                report: r,
+            }),
+            Err(e) => {
+                whole = false;
+                t.unreadable(
+                    report,
+                    &item.key,
+                    format!("the merged report of {}: {e}", pr.url),
+                );
+            }
         }
+    }
+    whole.then_some(out)
+}
+
+/// An angle sub-item whose report is merged, or that is closed: To Deploy
+/// or later.
+fn angle_merged(sub: &Item) -> bool {
+    sub.state.is_resolved()
+        || matches!(
+            sub.state.status,
+            Some(Status::ToDeploy | Status::PostDeploy)
+        )
+}
+
+/// The verdict branch of the candidate: `qa/<candidate>/consolidation`.
+fn is_verdict_pr(pr: &PullRequest, c: &Candidate) -> bool {
+    prs::parse_angle_branch(&pr.head_ref) == Some((c.tag.clone(), verdict::KEY.to_string()))
+}
+
+/// The candidate's coordination item, open or not.
+fn consolidation_of<'a>(children: &'a [Item], c: &Candidate) -> Option<&'a Item> {
+    let want = Some(BridgeItem::Consolidation {
+        scope: c.tag.clone(),
+    });
+    children
+        .iter()
+        .find(|ch| texts::bridge_item(&ch.description, ch.parent.as_deref()) == want)
+}
+
+/// The coordinator's verdict on the candidate (BR-ASDLC-020): once merged,
+/// its accepted findings are filed (each once) and the coordination item
+/// goes Done; while its PR is open, the PR is merged when it may be. Where
+/// the verdict stands, for the GO.
+#[allow(clippy::too_many_arguments)]
+fn candidate_verdict(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    item: &Item,
+    c: &Candidate,
+    branch: &str,
+    label: &str,
+    children: &[Item],
+    states: &[(String, AngleState)],
+    reports: Option<&[MergedReport]>,
+    open: &[PullRequest],
+    merged_pulls: &[PullRequest],
+    merged: &mut bool,
+) -> VerdictState {
+    let release = section(t);
+    let path = verdict::path(&release.record, &c.tag);
+    let consolidation = consolidation_of(children, c);
+    let Some(reports) = reports else {
+        return VerdictState::Missing;
+    };
+    if let Some(pr) = merged_pulls.iter().find(|p| is_verdict_pr(p, c)) {
+        let v = match read_merged_verdict(t, c, pr) {
+            Ok(v) => v,
+            Err(e) => {
+                t.unreadable(
+                    report,
+                    &item.key,
+                    format!("the merged verdict of {}: {e}", pr.url),
+                );
+                return VerdictState::Missing;
+            }
+        };
+        file_verdict(t, log, report, item, c, label, &v, reports);
+        if let Some(cons) = consolidation.filter(|i| !i.state.is_resolved()) {
+            t.act(
+                log,
+                report,
+                &cons.key,
+                "status Done (verdict merged)",
+                json!({"pr": pr.url, "verdict": v.call.name()}),
+                || {
+                    t.tracker
+                        .set_status(&cons.key, Status::Done, None)
+                        .map_err(|e| e.to_string())
+                },
+            );
+        }
+        return match v.call {
+            verdict::Call::Go => VerdictState::Go,
+            verdict::Call::Hold => VerdictState::Hold,
+        };
+    }
+    if let (Some(pr), Some(cons)) = (open.iter().find(|p| is_verdict_pr(p, c)), consolidation) {
+        verdict_pr(
+            t, log, report, pr, c, branch, cons, states, reports, &path, merged,
+        );
+    }
+    VerdictState::Missing
+}
+
+/// The verdict a merged verdict PR carries, read at its merge.
+fn read_merged_verdict(
+    t: &Tick,
+    c: &Candidate,
+    pr: &PullRequest,
+) -> Result<verdict::Verdict, String> {
+    let path = verdict::path(&section(t).record, &c.tag);
+    let rev = pr
+        .merge_commit_sha
+        .clone()
+        .unwrap_or_else(|| pr.head_sha.clone());
+    t.github
+        .file(&t.repo, &path, &rev)
+        .map_err(|e| e.to_string())
+        .and_then(|text| verdict::parse(&text, &c.tag).map_err(|e| e.join("; ")))
+}
+
+/// Where the candidate's merged verdict stands, read-only (`release
+/// status`): `Missing` until its PR is merged into the release branch.
+pub fn merged_verdict_state(
+    t: &Tick,
+    c: &Candidate,
+    merged_pulls: &[PullRequest],
+) -> Result<VerdictState, String> {
+    let Some(pr) = merged_pulls.iter().find(|p| is_verdict_pr(p, c)) else {
+        return Ok(VerdictState::Missing);
+    };
+    let v = read_merged_verdict(t, c, pr)
+        .map_err(|e| format!("the merged verdict of {}: {e}", pr.url))?;
+    Ok(match v.call {
+        verdict::Call::Go => VerdictState::Go,
+        verdict::Call::Hold => VerdictState::Hold,
+    })
+}
+
+/// The accepted findings of a merged verdict, filed once each with the
+/// blocking the coordinator gave them (spec 05 §6); a rejected one is never
+/// filed.
+#[allow(clippy::too_many_arguments)]
+fn file_verdict(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    item: &Item,
+    c: &Candidate,
+    label: &str,
+    v: &verdict::Verdict,
+    reports: &[MergedReport],
+) {
+    for r in reports {
+        let accepted: Vec<Finding> = v
+            .accepted()
+            .filter(|j| j.angle == r.angle)
+            .filter_map(|j| {
+                r.report
+                    .findings
+                    .iter()
+                    .find(|f| f.id == j.id)
+                    .map(|f| Finding {
+                        blocking: j.blocking,
+                        ..f.clone()
+                    })
+            })
+            .collect();
+        if accepted.is_empty() {
+            continue;
+        }
+        file_findings(
+            t, log, report, item, c, &r.angle, &r.pr_url, &r.path, label, &accepted,
+        );
+    }
+}
+
+/// The open verdict PR of the candidate (`qa/<candidate>/consolidation`),
+/// merged into the release branch when it names the coordination item,
+/// carries only a valid verdict, every angle PR of the candidate is merged,
+/// its author is a coordinator or a coordinator approved it at its head,
+/// its required checks are green and it is up to date. What keeps it from
+/// the merge, beside the checks and the branch, is said once per head.
+#[allow(clippy::too_many_arguments)]
+fn verdict_pr(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    pr: &PullRequest,
+    c: &Candidate,
+    branch: &str,
+    cons: &Item,
+    states: &[(String, AngleState)],
+    reports: &[MergedReport],
+    path: &str,
+    merged: &mut bool,
+) {
+    let release = section(t);
+    let object = format!("pr#{}", pr.number);
+    let head = texts::short(&pr.head_sha);
+    let fields = [("pr", pr.url.as_str()), ("head", head)];
+    let mut say = |kind: &str, text: String| {
+        super::merge::say_once(t, log, report, pr, kind, &fields, &text);
+    };
+    if *merged {
+        return;
+    }
+    if !prs::names_sub_item(pr, &cons.key) {
+        say(
+            "verdict-unnamed",
+            format!(
+                "This verdict PR names no coordination item, so the bridge does not merge it: name `{}` in its title or description (`docs/agents/consolidate.md`).",
+                cons.key
+            ),
+        );
+        return;
+    }
+    let open: Vec<&str> = states
+        .iter()
+        .filter(|(_, s)| *s != AngleState::Merged)
+        .map(|(a, _)| a.as_str())
+        .collect();
+    if !open.is_empty() {
+        say(
+            "verdict-early",
+            format!(
+                "The bridge merges the verdict once every angle PR of `{}` is merged; still open: {}.",
+                c.tag,
+                open.join(", ")
+            ),
+        );
+        return;
+    }
+    match t.github.compare(&t.repo, branch, &pr.head_sha) {
+        Ok(cmp) => {
+            let others = cmp.files.iter().filter(|f| *f != path).count();
+            if others > 0 {
+                say(
+                    "verdict-not-only",
+                    format!(
+                        "This verdict PR changes {others} file(s) besides the verdict `{path}`, so the bridge does not merge it: the verdict judges, it fixes nothing."
+                    ),
+                );
+                return;
+            }
+        }
+        Err(e) => {
+            t.unreadable(
+                report,
+                &object,
+                format!("the changes of the verdict PR against {branch}: {e}"),
+            );
+            return;
+        }
+    }
+    let findings: Vec<(String, Finding)> = reports
+        .iter()
+        .flat_map(|r| {
+            r.report
+                .findings
+                .iter()
+                .map(|f| (r.angle.clone(), f.clone()))
+        })
+        .collect();
+    let valid = match t.github.file(&t.repo, path, &pr.head_sha) {
+        Ok(text) => verdict::validate(&text, &c.tag, &findings).and_then(|v| {
+            if v.item.eq_ignore_ascii_case(&cons.key) {
+                Ok(v)
+            } else {
+                Err(vec![format!(
+                    "`item` must be \"{}\", the coordination item",
+                    cons.key
+                )])
+            }
+        }),
+        Err(e) if e.is_not_found() => Err(vec![format!("no verdict at `{path}`")]),
+        Err(e) => {
+            t.unreadable(report, &object, e);
+            return;
+        }
+    };
+    if let Err(errors) = valid {
+        say(
+            "verdict-invalid",
+            format!(
+                "This verdict is not valid, so the bridge does not merge it (`docs/reference/06-qa-report.md`, \"The verdict\"):\n\n{}",
+                errors
+                    .iter()
+                    .map(|e| format!("- {e}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+        );
+        return;
+    }
+    let by_author = pr
+        .author
+        .as_ref()
+        .is_some_and(|a| release.coordinators.iter().any(|x| same_login(x, &a.login)));
+    let approved = match review::pr_approval(pr, &release.coordinators) {
+        Approval::Qualified { by } => Some(by),
+        _ => None,
+    };
+    if !by_author && approved.is_none() {
+        say(
+            "verdict-unapproved",
+            "The verdict is the coordinator's: the bridge merges it when a release coordinator authored this PR or approved it at its head.".to_string(),
+        );
+        return;
+    }
+    if review::changes_requested_at_head(pr, &release.coordinators).is_some() {
+        return;
+    }
+    let required = match t.github.required_checks(&t.repo, branch) {
+        Ok(r) => r,
+        Err(e) => {
+            t.unreadable(report, &object, e);
+            return;
+        }
+    };
+    if checks::pr_state(pr, &required.contexts) != CheckState::Green {
+        return;
+    }
+    match review::branch_state(pr) {
+        BranchState::Conflicting => return,
+        BranchState::Behind => {
+            t.act(
+                log,
+                report,
+                &object,
+                "update branch",
+                json!({"base": branch}),
+                || {
+                    t.github
+                        .update_branch(&t.repo, pr.number, &pr.head_sha)
+                        .map_err(|e| e.to_string())
+                },
+            );
+            return;
+        }
+        BranchState::Current => {}
+    }
+    let dismissals = match super::merge::superseded(pr, &release.coordinators) {
+        Ok(d) => d,
+        Err(why) => {
+            t.wait(report, pr, why);
+            return;
+        }
+    };
+    match &approved {
+        Some(by) => {
+            if !super::merge::dismiss(t, log, report, &object, pr, by, &dismissals) {
+                return;
+            }
+        }
+        None if !dismissals.is_empty() => {
+            let who: Vec<&str> = dismissals.iter().map(|x| x.login.as_str()).collect();
+            t.wait(
+                report,
+                pr,
+                format!("changes requested by {} stand", who.join(", ")),
+            );
+            return;
+        }
+        None => {}
+    }
+    let done = t.act(
+        log,
+        report,
+        &object,
+        "merge (merge commit) the verdict into the release branch",
+        json!({"head": pr.head_sha, "approved_by": approved}),
+        || {
+            t.github
+                .merge_pull(
+                    &t.repo,
+                    pr.number,
+                    &pr.head_sha,
+                    crate::github::MergeMethod::Merge,
+                )
+                .map_err(|e| e.to_string())
+        },
+    );
+    if done.is_some() {
+        *merged = true;
     }
 }
 
@@ -2145,7 +2712,7 @@ fn file_findings(
     pr_url: &str,
     path: &str,
     label: &str,
-    r: &AngleReport,
+    to_file: &[Finding],
 ) {
     let labelled = match t.tracker.list_by_label(label) {
         Ok(l) => l,
@@ -2181,7 +2748,7 @@ fn file_findings(
     let release_id = item.key.as_str();
     // Read once, and only when a blocking finding is filed.
     let mut fixer_of: Option<Option<crate::tracker::User>> = None;
-    for f in &r.findings {
+    for f in to_file {
         // Filed once, whatever became of it: a finding canceled as a false
         // alarm or requalified stays so (the merged report does not
         // change). A new candidate's report is another key.
@@ -2302,6 +2869,7 @@ pub fn decide(
     branch: &str,
     states: &[(String, AngleState)],
     no_qa_angle: bool,
+    verdict: VerdictState,
 ) -> Option<go::GoDecision> {
     let cfg = t.config;
     let release = section(t);
@@ -2413,6 +2981,7 @@ pub fn decide(
         gate_green,
         angles: states.to_vec(),
         no_qa_angle,
+        verdict,
         blockers,
         unlinked_blockers,
         fix_gaps: Vec::new(),
@@ -2425,12 +2994,14 @@ pub fn decide(
 }
 
 /// Whether `path` may differ between the candidate and the release branch
-/// tip (REQ-REL-070): a configured bookkeeping path (exact), or the report
-/// of one of the candidate's own angles (`release.record` rendered for
-/// `candidate`), and with a release note writer the version's note files,
-/// where the unified note is written after the cut.
+/// tip (REQ-REL-070): a configured bookkeeping path (exact), the report of
+/// one of the candidate's own angles or its coordinator's verdict
+/// (`release.record` rendered for `candidate`), and with a release note
+/// writer the version's note files, where the unified note is written
+/// after the cut.
 fn bookkeeping(release: &Release, c: &Candidate, path: &str) -> bool {
     release.bookkeeping_paths.iter().any(|b| b == path)
+        || verdict::path(&release.record, &c.tag) == path
         || release
             .angles
             .iter()

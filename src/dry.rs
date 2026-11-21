@@ -536,6 +536,9 @@ impl Tracker for DryTracker<'_> {
     fn candidate_milestones(&self) -> bool {
         self.inner.candidate_milestones()
     }
+    fn implementation_blocks(&self) -> bool {
+        self.inner.implementation_blocks()
+    }
     fn create_milestone(&self, parent: &str, title: &str, description: &str) -> TResult<Item> {
         self.intents.push(format!(
             "tracker: create milestone \"{title}\" under {parent}"
