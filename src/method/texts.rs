@@ -737,7 +737,7 @@ pub fn short(sha: &str) -> &str {
 /// Which angles a candidate is offered, and why (spec 05 §3, §7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AngleScope {
-    /// The configured angles, while passes remain.
+    /// The configured angles, on every candidate under the full policy.
     Configured,
     /// A later pass under `later_passes = "gate-and-coordinator"`: none.
     LighterPass,
