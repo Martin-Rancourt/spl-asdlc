@@ -7,8 +7,8 @@
 //!   ([`names_item`]), as a tracker's own GitHub integration does; a link a
 //!   person removed is never laid again;
 //! - it records on each open ticket the status of each PR linked to it
-//!   ([`PrStatus`]): draft, open with its checks, merged, released in a
-//!   tag, closed.
+//!   ([`PrStatus`]): draft, open with its checks, held by the ticket's
+//!   contract ([`held`]), merged, released in a tag, closed.
 //! - it mirrors on each open ticket the reviews of each PR linked to it
 //!   ([`PrReviews`]), read-only: each reviewer's latest verdict, as GitHub
 //!   holds it (BR-ASDLC-038), on a tracker that keeps them.
@@ -37,6 +37,7 @@ use crate::github::{CompareStatus, GitHub, PrState, PullRequest, RepoSlug, Times
 use crate::job::{Host, PassOutcome, RepositoryHost};
 use crate::lock::TickLock;
 use crate::method::checks::{self, CheckState};
+use crate::method::contract::Verdict;
 use crate::method::release::shape::Shape;
 use crate::quota::Pace;
 use crate::tracker::{Checks, PrReviews, PrStatus, Tracker};
@@ -558,7 +559,7 @@ fn record(
     let mut open = Vec::new();
     for key in linked {
         match tracker.get(&key) {
-            Ok(item) if !item.state.is_resolved() && !item.archived => open.push(item.key),
+            Ok(item) if !item.state.is_resolved() && !item.archived => open.push(item),
             Ok(_) => {}
             Err(e) if e.is_not_found() => {}
             Err(e) => return Err(e.to_string()),
@@ -569,12 +570,16 @@ fn record(
         return Ok(());
     }
     memory.followed.insert(pr.url.clone(), pr.number);
-    mirror_reviews(tracker, pr, &open, tally)?;
+    let keys: Vec<String> = open.iter().map(|i| i.key.clone()).collect();
+    mirror_reviews(tracker, pr, &keys, tally)?;
     if !tracker.holds_pr_status() {
         return Ok(());
     }
-    let status = status_of(pr, releases)?;
-    for key in open {
+    let base = status_of(pr, releases)?;
+    for item in open {
+        let key = item.key;
+        let status =
+            held(&base, &Verdict::of(Some(&item.description))).unwrap_or_else(|| base.clone());
         if tracker
             .pr_status(&key, &pr.url)
             .map_err(|e| e.to_string())?
@@ -619,7 +624,21 @@ fn mirror_reviews(
     Ok(())
 }
 
-/// Where a PR stands.
+/// The held status of an open PR whose ticket's contract the bridge holds
+/// (rule C9VD: the same [`Verdict`] as the gate, the hold comment and the
+/// `spl-asdlc / contract` check), with the verdict's missing parts; `None`
+/// when the contract is complete or the PR is not open and ready. A PR whose
+/// checks fail stays failing: the bridge waits on its CI before it reads
+/// the contract. A held PR is never recorded as passing (rule 4HQX).
+pub fn held(status: &PrStatus, verdict: &Verdict) -> Option<PrStatus> {
+    match status {
+        PrStatus::Open(Checks::Failing) => None,
+        PrStatus::Open(_) if verdict.holds() => Some(PrStatus::Held(verdict.missing().to_vec())),
+        _ => None,
+    }
+}
+
+/// Where a PR stands, from GitHub alone.
 fn status_of(pr: &PullRequest, releases: &mut Releases) -> Result<PrStatus, String> {
     Ok(match pr.state {
         PrState::Closed => PrStatus::Closed,

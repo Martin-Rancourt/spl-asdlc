@@ -4,6 +4,10 @@ use crate::github::{CheckEntry, CheckKind, Comparison, GitRef, Identity, ObjectT
 use crate::method::vocabulary::Status;
 use crate::tracker::fake::FakeTracker;
 
+/// A ticket whose contract is complete: its PR's status is its checks'.
+const COMPLETE: &str =
+    "## Goal\nA thing.\n\n## Acceptance criteria\n- [ ] it works\n\n## Business rules\nNone.\n";
+
 fn repo() -> RepoSlug {
     RepoSlug::parse("example-org/acme").unwrap()
 }
@@ -128,7 +132,7 @@ fn a_pr_names_its_ticket_by_its_branch_its_title_or_a_line_of_its_body() {
 #[test]
 fn a_pr_naming_a_ticket_is_linked_its_status_recorded_and_a_second_pass_writes_nothing() {
     let t = FakeTracker::default();
-    t.seed("ABC-12", "T", "", Status::InProgress, &[]);
+    t.seed("ABC-12", "T", COMPLETE, Status::InProgress, &[]);
     let g = github();
     let mut pr = named(7, "feat: thing (ABC-12)");
     pr.checks = vec![check("SUCCESS")];
@@ -176,7 +180,7 @@ fn a_pr_naming_a_ticket_is_linked_its_status_recorded_and_a_second_pass_writes_n
 #[test]
 fn a_sync_low_on_quota_waits_and_the_next_pass_resumes() {
     let t = FakeTracker::default();
-    t.seed("ABC-12", "T", "", Status::InProgress, &[]);
+    t.seed("ABC-12", "T", COMPLETE, Status::InProgress, &[]);
     let g = github();
     let pr = named(7, "feat: thing (ABC-12)");
     open(&g, vec![pr.clone()]);
@@ -217,7 +221,7 @@ fn a_sync_low_on_quota_waits_and_the_next_pass_resumes() {
 #[test]
 fn a_draft_is_linked_and_a_link_a_person_removed_is_not_laid_again() {
     let t = FakeTracker::default();
-    t.seed("ABC-12", "T", "", Status::InProgress, &[]);
+    t.seed("ABC-12", "T", COMPLETE, Status::InProgress, &[]);
     let g = github();
     let pr = PullRequest {
         draft: true,
@@ -243,7 +247,7 @@ fn a_draft_is_linked_and_a_link_a_person_removed_is_not_laid_again() {
 #[test]
 fn a_link_laid_by_another_is_used_and_an_unknown_ticket_is_skipped() {
     let t = FakeTracker::default();
-    t.seed("ABC-12", "T", "", Status::InReview, &[]);
+    t.seed("ABC-12", "T", COMPLETE, Status::InReview, &[]);
     let g = github();
     let pr = named(7, "fix: thing (ABC-99)");
     t.link("ABC-12", &pr.url);
@@ -260,9 +264,9 @@ fn a_link_laid_by_another_is_used_and_an_unknown_ticket_is_skipped() {
 #[test]
 fn a_merged_pr_is_released_in_the_oldest_tag_that_holds_its_commit() {
     let t = FakeTracker::default();
-    t.seed("ABC-1", "T", "", Status::PostDeploy, &[]);
-    t.seed("ABC-2", "T", "", Status::ToDeploy, &[]);
-    t.seed("ABC-3", "T", "", Status::InReview, &[]);
+    t.seed("ABC-1", "T", COMPLETE, Status::PostDeploy, &[]);
+    t.seed("ABC-2", "T", COMPLETE, Status::ToDeploy, &[]);
+    t.seed("ABC-3", "T", COMPLETE, Status::InReview, &[]);
     let g = github();
     let now = Timestamp::now();
     let merged_pr = |n: u64, key: &str, sha: &str| PullRequest {
@@ -347,7 +351,7 @@ fn a_merged_pr_is_released_in_the_oldest_tag_that_holds_its_commit() {
 #[test]
 fn a_followed_pr_is_read_until_its_tickets_are_resolved() {
     let t = FakeTracker::default();
-    t.seed("ABC-12", "T", "", Status::InReview, &[]);
+    t.seed("ABC-12", "T", COMPLETE, Status::InReview, &[]);
     let g = github();
     let pr = named(7, "feat: thing (ABC-12)");
     open(&g, vec![pr.clone()]);
@@ -380,7 +384,7 @@ fn a_followed_pr_is_read_until_its_tickets_are_resolved() {
 #[test]
 fn a_spent_budget_stops_the_pass_says_so_and_the_next_resumes() {
     let t = FakeTracker::default();
-    t.seed("ABC-12", "T", "", Status::InProgress, &[]);
+    t.seed("ABC-12", "T", COMPLETE, Status::InProgress, &[]);
     let g = github();
     open(&g, vec![named(7, "feat: thing (ABC-12)")]);
     let log = log("budget");
@@ -536,7 +540,7 @@ fn a_504_on_one_batch_keeps_the_progress_of_the_batches_before_it() {
 #[test]
 fn a_pr_that_fails_says_why_on_the_line_and_no_longer_holds_back_the_others() {
     let t = FakeTracker::default();
-    t.seed("ABC-12", "T", "", Status::InProgress, &[]);
+    t.seed("ABC-12", "T", COMPLETE, Status::InProgress, &[]);
     t.fail_writes_starting_with("link ABC-12");
     let g = github();
     let first = named(1, "chore: unrelated");
@@ -611,7 +615,7 @@ fn the_checkpoint_takes_the_lists_update_time() {
 #[test]
 fn followed_prs_are_read_in_turn_a_bounded_number_per_pass() {
     let t = FakeTracker::default();
-    t.seed("ABC-12", "T", "", Status::InReview, &[]);
+    t.seed("ABC-12", "T", COMPLETE, Status::InReview, &[]);
     let g = github();
     let prs = unrelated(120);
     for p in &prs {
@@ -660,7 +664,7 @@ fn followed_prs_are_read_in_turn_a_bounded_number_per_pass() {
 #[test]
 fn a_release_is_found_in_a_few_compares_among_hundreds_of_tags() {
     let t = FakeTracker::default();
-    t.seed("ABC-1", "T", "", Status::PostDeploy, &[]);
+    t.seed("ABC-1", "T", COMPLETE, Status::PostDeploy, &[]);
     let g = github();
     let pr = PullRequest {
         state: PrState::Merged,
@@ -722,7 +726,7 @@ fn a_release_is_found_in_a_few_compares_among_hundreds_of_tags() {
 #[test]
 fn a_release_whose_compare_has_300_files_or_more_holds_its_pr() {
     let t = FakeTracker::default();
-    t.seed("ABC-1", "T", "", Status::PostDeploy, &[]);
+    t.seed("ABC-1", "T", COMPLETE, Status::PostDeploy, &[]);
     let g = github();
     let pr = PullRequest {
         state: PrState::Merged,
@@ -766,7 +770,7 @@ fn a_release_whose_compare_has_300_files_or_more_holds_its_pr() {
 #[test]
 fn an_old_pr_on_a_closed_ticket_only_lays_a_missing_link() {
     let t = FakeTracker::default();
-    t.seed("ABC-12", "T", "", Status::Done, &[]);
+    t.seed("ABC-12", "T", COMPLETE, Status::Done, &[]);
     let g = github();
     let pr = named(7, "fix: history (ABC-12)");
     open(&g, vec![pr.clone()]);
@@ -778,7 +782,7 @@ fn an_old_pr_on_a_closed_ticket_only_lays_a_missing_link() {
 #[test]
 fn without_github_or_with_an_unreadable_tracker_the_pass_fails_and_writes_nothing() {
     let t = FakeTracker::default();
-    t.seed("ABC-12", "T", "", Status::InProgress, &[]);
+    t.seed("ABC-12", "T", COMPLETE, Status::InProgress, &[]);
     let g = github();
     open(&g, vec![named(7, "feat: thing (ABC-12)")]);
     g.state.borrow_mut().identity = None;
@@ -801,7 +805,7 @@ fn without_github_or_with_an_unreadable_tracker_the_pass_fails_and_writes_nothin
 #[test]
 fn a_host_runs_the_sync_from_the_repositorys_configuration() {
     let t = FakeTracker::default();
-    t.seed("ABC-12", "T", "", Status::InProgress, &[]);
+    t.seed("ABC-12", "T", COMPLETE, Status::InProgress, &[]);
     let g = github();
     g.state.borrow_mut().files.insert(
         (repo(), "main".into(), crate::config::DEFAULT_PATH.into()),
@@ -838,7 +842,7 @@ fn review(author: &str, state: &str) -> crate::github::Review {
 #[test]
 fn a_prs_github_reviews_are_mirrored_on_its_ticket_read_only_and_once() {
     let t = FakeTracker::default();
-    t.seed("ABC-12", "T", "", Status::InReview, &[]);
+    t.seed("ABC-12", "T", COMPLETE, Status::InReview, &[]);
     let g = github();
     let mut pr = named(7, "feat: thing (ABC-12)");
     pr.reviews = vec![review("alice", "APPROVED"), review("bob", "COMMENTED")];
@@ -884,4 +888,71 @@ fn a_prs_github_reviews_are_mirrored_on_its_ticket_read_only_and_once() {
         t.writes()
     );
     assert_eq!(t.item("ABC-12").state.status, Some(Status::InReview));
+}
+
+/// A ticket whose contract misses its business rules holds its PR: the sync
+/// records it held, with the contract verdict's own missing parts, never
+/// passing; once the ticket is completed, the next pass records its checks
+/// again, with no new commit (rule 4HQX).
+#[test]
+fn a_pr_held_by_its_tickets_contract_is_recorded_held_until_the_ticket_is_completed() {
+    let without_rules = "## Goal\nA thing.\n\n## Acceptance criteria\n- [ ] it works\n";
+    let t = FakeTracker::default();
+    t.seed("ABC-12", "T", without_rules, Status::InReview, &[]);
+    let g = github();
+    let mut pr = named(7, "feat: thing (ABC-12)");
+    pr.checks = vec![check("SUCCESS")];
+    open(&g, vec![pr.clone()]);
+    let log = log("held");
+    let out = sync(&t, &g, &log);
+    assert!(out.ok, "{out:?}");
+    let verdict = Verdict::of(Some(without_rules));
+    assert_eq!(verdict.missing(), ["no `## Business rules` section"]);
+    assert_eq!(
+        t.pr_status("ABC-12", &pr.url).unwrap(),
+        Some(PrStatus::Held(verdict.missing().to_vec()))
+    );
+    assert_eq!(
+        t.writes().last().unwrap(),
+        &format!(
+            "pr status ABC-12 {} open:held:no `## Business rules` section",
+            pr.url
+        )
+    );
+    // The same head, the ticket completed: its checks again.
+    t.update_description("ABC-12", COMPLETE).unwrap();
+    pr.updated_at = Timestamp::parse("2026-10-25T01:00:00Z");
+    open(&g, vec![pr.clone()]);
+    sync(&t, &g, &log);
+    assert_eq!(
+        t.pr_status("ABC-12", &pr.url).unwrap(),
+        Some(PrStatus::Open(Checks::Passing))
+    );
+}
+
+/// Held is the open PR's state only: a draft stays a draft, failing checks
+/// stay failing (the bridge waits on CI before it reads the contract), and a
+/// merged PR is merged.
+#[test]
+fn only_an_open_ready_pr_whose_checks_do_not_fail_is_held() {
+    let incomplete = Verdict::of(Some(""));
+    assert!(incomplete.holds());
+    let complete = Verdict::of(Some(COMPLETE));
+    let held_with = PrStatus::Held(incomplete.missing().to_vec());
+    for c in [Checks::None, Checks::Pending, Checks::Passing] {
+        assert_eq!(
+            held(&PrStatus::Open(c), &incomplete),
+            Some(held_with.clone())
+        );
+        assert_eq!(held(&PrStatus::Open(c), &complete), None);
+    }
+    for s in [
+        PrStatus::Open(Checks::Failing),
+        PrStatus::Draft,
+        PrStatus::Merged,
+        PrStatus::Closed,
+        PrStatus::Released("acme-v1.0.0".into()),
+    ] {
+        assert_eq!(held(&s, &incomplete), None, "{s:?}");
+    }
 }

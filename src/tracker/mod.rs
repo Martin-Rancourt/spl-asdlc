@@ -189,6 +189,11 @@ impl fmt::Display for Priority {
     }
 }
 
+/// The code of a held PR, before its missing parts.
+const HELD: &str = "open:held";
+/// The sentence of a held PR, before its missing parts.
+const HELD_SENTENCE: &str = "Open, held by its ticket's contract";
+
 /// Where a PR linked to an item stands, as the GitHub sync records it on
 /// the item (`crate::sync`): the bridge itself never reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -196,6 +201,10 @@ pub enum PrStatus {
     Draft,
     /// Open and ready, with the rollup of its head's checks.
     Open(Checks),
+    /// Open and ready, held by the bridge because its ticket's contract is
+    /// incomplete, with what is missing in `contract::Verdict`'s words
+    /// (never shown as passing, whatever its checks say).
+    Held(Vec<String>),
     /// Merged, in no release tag yet.
     Merged,
     /// Merged, and its merge commit is in this release tag.
@@ -216,7 +225,8 @@ pub enum Checks {
 
 impl PrStatus {
     /// The value a tracker stores: `draft`, `open`, `open:pending`,
-    /// `open:failing`, `open:passing`, `merged`, `released:<tag>`, `closed`.
+    /// `open:failing`, `open:passing`, `open:held:<missing>` (the missing
+    /// parts one per line), `merged`, `released:<tag>`, `closed`.
     pub fn code(&self) -> String {
         match self {
             PrStatus::Draft => "draft".into(),
@@ -224,6 +234,8 @@ impl PrStatus {
             PrStatus::Open(Checks::Pending) => "open:pending".into(),
             PrStatus::Open(Checks::Failing) => "open:failing".into(),
             PrStatus::Open(Checks::Passing) => "open:passing".into(),
+            PrStatus::Held(missing) if missing.is_empty() => HELD.into(),
+            PrStatus::Held(missing) => format!("{HELD}:{}", missing.join("\n")),
             PrStatus::Merged => "merged".into(),
             PrStatus::Released(tag) => format!("released:{tag}"),
             PrStatus::Closed => "closed".into(),
@@ -240,6 +252,14 @@ impl PrStatus {
             "open:passing" => PrStatus::Open(Checks::Passing),
             "merged" => PrStatus::Merged,
             "closed" => PrStatus::Closed,
+            HELD => PrStatus::Held(Vec::new()),
+            other if other.starts_with("open:held:") => PrStatus::Held(
+                other["open:held:".len()..]
+                    .split('\n')
+                    .filter(|m| !m.is_empty())
+                    .map(str::to_string)
+                    .collect(),
+            ),
             other => PrStatus::Released(
                 other
                     .strip_prefix("released:")
@@ -256,6 +276,17 @@ impl PrStatus {
     pub fn from_sentence(text: &str) -> Option<PrStatus> {
         if let Some(tag) = text.strip_prefix("Released in ").filter(|t| !t.is_empty()) {
             return Some(PrStatus::Released(tag.to_string()));
+        }
+        if text == HELD_SENTENCE {
+            return Some(PrStatus::Held(Vec::new()));
+        }
+        if let Some(missing) = text
+            .strip_prefix(HELD_SENTENCE)
+            .and_then(|m| m.strip_prefix(": "))
+        {
+            return Some(PrStatus::Held(
+                missing.split("; ").map(str::to_string).collect(),
+            ));
         }
         [
             PrStatus::Draft,
@@ -280,6 +311,8 @@ impl fmt::Display for PrStatus {
             PrStatus::Open(Checks::Pending) => f.write_str("Open, checks pending"),
             PrStatus::Open(Checks::Failing) => f.write_str("Open, checks failing"),
             PrStatus::Open(Checks::Passing) => f.write_str("Open, checks passing"),
+            PrStatus::Held(missing) if missing.is_empty() => f.write_str(HELD_SENTENCE),
+            PrStatus::Held(missing) => write!(f, "{HELD_SENTENCE}: {}", missing.join("; ")),
             PrStatus::Merged => f.write_str("Merged, not released"),
             PrStatus::Released(tag) => write!(f, "Released in {tag}"),
             PrStatus::Closed => f.write_str("Closed without merge"),
@@ -650,6 +683,33 @@ mod tests {
             commit_sha: None,
             submitted_at: None,
         }
+    }
+
+    /// A held PR's code and sentence carry the contract verdict's missing
+    /// parts, and read back as they were written (rule 4HQX).
+    #[test]
+    fn a_held_pr_status_round_trips_through_its_code_and_its_sentence() {
+        let missing = crate::method::contract::Verdict::of(Some(""))
+            .missing()
+            .to_vec();
+        assert_eq!(missing.len(), 3);
+        let held = PrStatus::Held(missing.clone());
+        assert_eq!(held.code(), format!("open:held:{}", missing.join("\n")));
+        assert_eq!(PrStatus::parse(&held.code()), Some(held.clone()));
+        assert!(
+            held.to_string()
+                .starts_with("Open, held by its ticket's contract: ")
+        );
+        assert_eq!(PrStatus::from_sentence(&held.to_string()), Some(held));
+        let bare = PrStatus::Held(Vec::new());
+        assert_eq!(bare.code(), "open:held");
+        assert_eq!(PrStatus::parse("open:held"), Some(bare.clone()));
+        assert_eq!(PrStatus::from_sentence(&bare.to_string()), Some(bare));
+        // Never read as passing, nor as a release.
+        assert_ne!(
+            PrStatus::parse("open:held:x"),
+            Some(PrStatus::Open(Checks::Passing))
+        );
     }
 
     #[test]
