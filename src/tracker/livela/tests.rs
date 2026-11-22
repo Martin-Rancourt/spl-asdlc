@@ -1068,9 +1068,15 @@ fn the_github_sync_links_and_records_on_livela_signed_by_the_bridge() {
     let before = t.store.borrow().facts.len();
     let out = crate::sync::pass_with(&host, &config, &github);
     assert!(out.ok, "{out:?}");
+    // `a` has no contract: its open PR is recorded held, with the verdict's
+    // own missing parts, and reads back whole from the store.
     assert_eq!(
         t.pr_status(&a.key, &by_address.url).unwrap(),
-        Some(PrStatus::Open(Checks::None))
+        Some(PrStatus::Held(
+            crate::method::contract::Verdict::of(Some(""))
+                .missing()
+                .to_vec()
+        ))
     );
     assert_eq!(
         t.pr_status(&b.key, &by_title.url).unwrap(),

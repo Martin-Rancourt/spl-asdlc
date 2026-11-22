@@ -57,7 +57,7 @@ The store-wide `prefix()` is gone: the team key is the project's prefix.
 
 For the GitHub sync ("The GitHub sync job" below), the slice has:
 
-- `LivelaItem::pr_statuses`: the status recorded for each PR the item links, `(url, code)`, the code of `PrStatus::code` (`draft`, `open:passing`, `merged`, `released:<tag>`, …);
+- `LivelaItem::pr_statuses`: the status recorded for each PR the item links, `(url, code)`, the code of `PrStatus::code` (`draft`, `open:passing`, `open:held:<missing parts, one per line>` for a PR held by its ticket's contract, `merged`, `released:<tag>`, …);
 - `set_pr_status(id, url, code)`: record it, on the web link of that PR (the core field SID-1253 adds; the glue writes it as one fact).
 
 This glue was run against `livela-core` on 2026-10-05 and passed the conformance suite (`spl_asdlc::tracker::conformance::run_with`, 60 steps), with a journal that counts facts:
