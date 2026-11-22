@@ -45,6 +45,8 @@ struct MemStore {
     /// by item id.
     decides: bool,
     decisions: Vec<(String, LivelaDecision)>,
+    /// The participants it says are persons; `None`: it does not say.
+    humans: Option<Vec<String>>,
 }
 
 impl Default for MemStore {
@@ -69,6 +71,7 @@ impl Default for MemStore {
             reviews: BTreeMap::new(),
             decides: false,
             decisions: Vec::new(),
+            humans: None,
         }
     }
 }
@@ -112,6 +115,9 @@ impl LivelaStore for MemStore {
     }
     fn participant_name(&self, id: &str) -> Option<String> {
         self.participants.get(id).cloned()
+    }
+    fn participant_is_human(&self, id: &str) -> Option<bool> {
+        self.humans.as_ref().map(|h| h.iter().any(|x| x == id))
     }
     fn project(&self, reference: &str) -> Result<Option<LivelaProject>, String> {
         let found: Vec<&LivelaProject> = self
@@ -1383,4 +1389,38 @@ fn a_store_without_decisions_refuses_a_request() {
     assert!(t.request_decision(&a.key, "Which?").is_err());
     assert!(t.decisions(&a.key).unwrap().is_empty());
     assert_eq!(t.store.borrow().facts.len(), before);
+}
+
+/// A comment is a person's only when the store says its author is human:
+/// never the bridge's own, never one the store says nothing of
+/// (ASDLC-RS9P).
+#[test]
+fn a_comment_is_a_persons_only_when_the_store_says_its_author_is_human() {
+    let t = td(MemStore::default());
+    let a = t.create_item(&new_item("a", Status::Ready)).unwrap();
+    t.comment(&a.key, "from the bridge").unwrap();
+    {
+        let mut store = t.store.borrow_mut();
+        store.comment(&a.id, "p-person", "from a person").unwrap();
+        store.comment(&a.id, "p-agent", "from an agent").unwrap();
+    }
+    assert!(
+        t.comments(&a.key).unwrap().iter().all(|c| !c.by_person),
+        "a store that does not say makes no comment a person's"
+    );
+    t.store.borrow_mut().humans = Some(vec!["p-person".into()]);
+    let person: Vec<(String, bool)> = t
+        .comments(&a.key)
+        .unwrap()
+        .into_iter()
+        .map(|c| (c.body, c.by_person))
+        .collect();
+    assert_eq!(
+        person,
+        [
+            ("from the bridge".to_string(), false),
+            ("from a person".to_string(), true),
+            ("from an agent".to_string(), false),
+        ]
+    );
 }

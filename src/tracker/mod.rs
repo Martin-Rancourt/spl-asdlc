@@ -125,6 +125,11 @@ pub struct Comment {
     /// Written by the bridge's own tracker identity: the only comments whose
     /// markers the bridge trusts.
     pub by_bridge: bool,
+    /// Written by a person, as the tracker says (its author is a human, not
+    /// an agent, an app or an integration); `false` when the tracker cannot
+    /// tell. A verdict given in the tracker counts only from a person
+    /// (`crate::tick::tracker_verdict`).
+    pub by_person: bool,
     pub body: String,
 }
 

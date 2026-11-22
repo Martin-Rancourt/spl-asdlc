@@ -2409,10 +2409,19 @@ fn candidate_verdict(
             verdict::Call::Hold => VerdictState::Hold,
         };
     }
-    if let (Some(pr), Some(cons)) = (open.iter().find(|p| is_verdict_pr(p, c)), consolidation) {
-        verdict_pr(
-            t, log, report, pr, c, branch, cons, states, reports, &path, merged,
+    if let Some(cons) = consolidation {
+        // A verdict given in the tracker, committed by the bridge (rule 2W8R).
+        let signed = super::tracker_verdict::pass(
+            t, log, report, item, c, branch, cons, states, reports, open, &path,
         );
+        if let (Some(pr), false) = (
+            open.iter().find(|p| is_verdict_pr(p, c)),
+            signed == super::tracker_verdict::Outcome::Wrote,
+        ) {
+            verdict_pr(
+                t, log, report, pr, c, branch, cons, states, reports, &path, &signed, merged,
+            );
+        }
     }
     VerdictState::Missing
 }
@@ -2508,6 +2517,7 @@ fn verdict_pr(
     states: &[(String, AngleState)],
     reports: &[MergedReport],
     path: &str,
+    signed: &super::tracker_verdict::Outcome,
     merged: &mut bool,
 ) {
     let release = section(t);
@@ -2577,8 +2587,9 @@ fn verdict_pr(
                 .map(|f| (r.angle.clone(), f.clone()))
         })
         .collect();
-    let valid = match t.github.file(&t.repo, path, &pr.head_sha) {
-        Ok(text) => verdict::validate(&text, &c.tag, &findings).and_then(|v| {
+    let at_head = t.github.file(&t.repo, path, &pr.head_sha);
+    let valid = match &at_head {
+        Ok(text) => verdict::validate(text, &c.tag, &findings).and_then(|v| {
             if v.item.eq_ignore_ascii_case(&cons.key) {
                 Ok(v)
             } else {
@@ -2611,7 +2622,12 @@ fn verdict_pr(
     let by_author = pr
         .author
         .as_ref()
-        .is_some_and(|a| release.coordinators.iter().any(|x| same_login(x, &a.login)));
+        .is_some_and(|a| release.coordinators.iter().any(|x| same_login(x, &a.login)))
+        // The bridge's own PR, carrying the verdict a person signed in the
+        // tracker (rule 2W8R).
+        || at_head
+            .as_ref()
+            .is_ok_and(|text| super::tracker_verdict::vouches(t, pr, text, signed));
     let approved = match review::pr_approval(pr, &release.coordinators) {
         Approval::Qualified { by } => Some(by),
         _ => None,

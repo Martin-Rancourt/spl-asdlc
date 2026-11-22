@@ -22,6 +22,9 @@ use crate::tracker::Tracker;
 use crate::tracker::fake::FakeTracker;
 use crate::tracker::{Priority, RelationKind};
 
+/// A coordinator's verdict given in the tracker (ASDLC-RS9P).
+mod tracker_verdict;
+
 const BRANCH: &str = "release/2026-10-05-14-03-utc";
 const CAND: &str = "acme-v1.2.0-rc.1";
 const LABEL: &str = "release/acme-v1.2.0";
