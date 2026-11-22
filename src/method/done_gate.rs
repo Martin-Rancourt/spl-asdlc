@@ -12,19 +12,19 @@ use super::vocabulary::Status;
 /// At most this many tickets in a duplicate walk; beyond, the contract is
 /// unreadable (an unfinished walk never promotes).
 pub const MAX_DUPLICATE_WALK: usize = 50;
-/// Open boxes quoted in a refusal before "+N more".
-const QUOTED_BOXES: usize = 5;
-
 /// One ticket of a contract: the ticket itself or one of its duplicates.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContractMember {
     pub id: String,
+    /// Its title, named beside its id when its boxes are listed.
+    pub title: String,
     pub description: String,
 }
 
 /// What a tracker answers about one ticket for the walk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DuplicateNode {
+    pub title: String,
     pub description: String,
     /// Tickets linked by a `duplicate` relation, in either direction.
     pub duplicates: Vec<String>,
@@ -53,6 +53,7 @@ pub fn duplicate_closure(
         }
         members.push(ContractMember {
             id: current.clone(),
+            title: node.title,
             description: node.description,
         });
         for next in node.duplicates {
@@ -93,6 +94,9 @@ pub struct DoneGate {
     pub unreadable_reason: Option<String>,
     /// The open boxes that sit in a `## Post deploy` section (a subset).
     pub post_release_items: Vec<OpenBox>,
+    /// Every member read, `(id, title)`, the primary ticket first: the
+    /// origins its open boxes are listed under.
+    pub origins: Vec<(String, String)>,
 }
 
 impl DoneGate {
@@ -141,6 +145,7 @@ pub fn evaluate(members: &[ContractMember], unreadable: Option<String>) -> DoneG
     };
     let mut any_box = false;
     for m in members {
+        gate.origins.push((m.id.clone(), m.title.clone()));
         let boxes = markdown::checkboxes(&m.description);
         any_box |= !boxes.is_empty();
         for b in boxes.into_iter().filter(|b| !b.checked) {
@@ -229,13 +234,67 @@ pub fn refusal(id: &str, gate: &DoneGate, state_unchanged: bool) -> String {
         s.push_str(" State unchanged.");
     }
     s.push('\n');
-    for b in gate.open_items.iter().take(QUOTED_BOXES) {
-        s.push_str(&format!("\n[{}] {}", b.source, b.line.trim()));
-    }
-    if n > QUOTED_BOXES {
-        s.push_str(&format!("\n+{} more", n - QUOTED_BOXES));
-    }
+    s.push_str(&open_boxes_by_origin(id, gate));
     s
+}
+
+/// Every open box of the contract, in full and verbatim, grouped by origin:
+/// the ticket itself, then each duplicate by its id and title, in the order
+/// the walk read them (rule Q9TM). A box of a `## Post deploy` section says
+/// so.
+fn open_boxes_by_origin(id: &str, gate: &DoneGate) -> String {
+    let mut order: Vec<&str> = vec![id];
+    for source in gate
+        .origins
+        .iter()
+        .map(|(o, _)| o.as_str())
+        .chain(gate.open_items.iter().map(|b| b.source.as_str()))
+    {
+        if !order.contains(&source) {
+            order.push(source);
+        }
+    }
+    let mut post = gate.post_release_items.clone();
+    let mut s = String::new();
+    for origin in order {
+        let boxes: Vec<&OpenBox> = gate
+            .open_items
+            .iter()
+            .filter(|b| b.source == origin)
+            .collect();
+        if boxes.is_empty() {
+            continue;
+        }
+        if origin == id {
+            s.push_str(&format!("\nUnchecked on {id}, this ticket:\n"));
+        } else {
+            let title = gate
+                .origins
+                .iter()
+                .find(|(o, _)| o == origin)
+                .map(|(_, t)| t.trim())
+                .filter(|t| !t.is_empty());
+            match title {
+                Some(t) => s.push_str(&format!(
+                    "\nUnchecked on {origin} — {t}, a duplicate merged into this ticket:\n"
+                )),
+                None => s.push_str(&format!(
+                    "\nUnchecked on {origin}, a duplicate merged into this ticket:\n"
+                )),
+            }
+        }
+        for b in boxes {
+            let in_post = match post.iter().position(|p| p == b) {
+                Some(i) => {
+                    post.remove(i);
+                    " (Post deploy)"
+                }
+                None => "",
+            };
+            s.push_str(&format!("{}{in_post}\n", b.line.trim()));
+        }
+    }
+    s.trim_end().to_string()
 }
 
 /// How the closure ends its comment on a ticket it sends back: unassigned,
@@ -243,9 +302,38 @@ pub fn refusal(id: &str, gate: &DoneGate, state_unchanged: bool) -> String {
 pub const RETURNED_UNASSIGNED: &str = "Returned to `In Progress` by the release closure, unassigned: \
      the agent system resumes it by role, with nobody named.";
 
-/// The closure's comment on a ticket it sends back (REQ-REL-089).
+/// How to reconcile the boxes a ticket carries from its merged duplicates
+/// (rules W4KD, Q9TM).
+pub const RECONCILE_DUPLICATES: &str = "How to reconcile the duplicates: merging a duplicate into a ticket keeps \
+     its boxes, and the closure counts them until they are checked on the duplicate itself (rule W4KD). For each box \
+     above taken from a duplicate:\n\
+     - when this ticket's work already proves it, check it on the duplicate and comment there with the evidence \
+     (the comment, PR or test that proves it);\n\
+     - when it needs a gesture in production, hand it to a human through a decision request that names the gesture \
+     and the box it checks;\n\
+     - otherwise, do the work it asks, as for a box of this ticket.\n\
+     Never check a box without its evidence, and never delete one: nothing is lost in a merge.";
+
+/// What follows a closure's reopening, once the boxes are checked.
+pub const WHAT_COMES_NEXT: &str = "What happens next: once only this ticket's own `## Post deploy` boxes are \
+     left unchecked (a duplicate's are checked on the duplicate), the ticket goes to the `Post Deploy` column as \
+     usual, where they are checked once verified in production; once every box is checked, it goes to `Done`.";
+
+/// The closure's comment on a ticket it sends back (REQ-REL-089): what is
+/// open, in full and by origin; how to reconcile the duplicates' boxes when
+/// some are open; what happens next; and that nobody is named (rule Q9TM).
 pub fn reopen_comment(id: &str, gate: &DoneGate) -> String {
-    format!("{}\n\n{RETURNED_UNASSIGNED}", refusal(id, gate, false))
+    let mut s = refusal(id, gate, false);
+    let readable = gate.unreadable_reason.is_none() && !gate.no_criteria_declared;
+    if readable && gate.open_items.iter().any(|b| b.source != id) {
+        s.push_str("\n\n");
+        s.push_str(RECONCILE_DUPLICATES);
+    }
+    if readable && !gate.open_items.is_empty() {
+        s.push_str("\n\n");
+        s.push_str(WHAT_COMES_NEXT);
+    }
+    format!("{s}\n\n{RETURNED_UNASSIGNED}")
 }
 
 #[cfg(test)]

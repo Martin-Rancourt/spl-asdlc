@@ -7,6 +7,7 @@ use std::collections::HashMap;
 fn member(id: &str, description: &str) -> ContractMember {
     ContractMember {
         id: id.into(),
+        title: String::new(),
         description: description.into(),
     }
 }
@@ -18,6 +19,7 @@ fn gate_of(members: &[(&str, &str)]) -> DoneGate {
 
 fn node(description: &str, duplicates: &[&str]) -> DuplicateNode {
     DuplicateNode {
+        title: String::new(),
         description: description.into(),
         duplicates: duplicates.iter().map(|s| s.to_string()).collect(),
         relations_cut: false,
@@ -267,20 +269,181 @@ fn done_gate_refusal_names_the_count_and_the_source_ticket() {
     let gate = gate_of(&[("ABC-1", "- [ ] a"), ("ABC-2", "- [ ] b\n- [ ] c")]);
     let text = refusal("ABC-1", &gate, true);
     assert!(text.starts_with("Cannot move to `Done`: 3 criteria/boxes unchecked, of which 2 taken from ABC-2. State unchanged."), "{text}");
-    assert!(text.contains("[ABC-1] - [ ] a"));
-    assert!(text.contains("[ABC-2] - [ ] b"));
+    assert!(
+        text.contains("Unchecked on ABC-1, this ticket:\n- [ ] a"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Unchecked on ABC-2, a duplicate merged into this ticket:\n- [ ] b\n- [ ] c"),
+        "{text}"
+    );
+}
+
+/// A ticket and two merged duplicates, each with a title, as the walk reads
+/// them.
+fn titled(members: &[(&str, &str, &str)]) -> DoneGate {
+    let m: Vec<ContractMember> = members
+        .iter()
+        .map(|(id, title, description)| ContractMember {
+            id: id.to_string(),
+            title: title.to_string(),
+            description: description.to_string(),
+        })
+        .collect();
+    evaluate(&m, None)
+}
+
+fn many(prefix: &str, n: usize) -> String {
+    (0..n)
+        .map(|i| format!("- [ ] {prefix} {i}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[test]
-fn done_gate_refusal_quotes_five_boxes_then_counts_the_rest() {
-    let many = (0..8)
-        .map(|i| format!("- [ ] box {i}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let text = refusal("ABC-1", &gate_of(&[("ABC-1", &many)]), false);
-    assert!(text.contains("box 4"));
-    assert!(!text.contains("box 5"));
-    assert!(text.ends_with("+3 more"));
+fn a_reopen_lists_every_open_box_in_full_grouped_by_origin() {
+    let gate = titled(&[
+        ("ABC-1", "The ticket", &many("own", 3)),
+        ("ABC-2", "A first duplicate", &many("first", 12)),
+        (
+            "ABC-3",
+            "A second duplicate",
+            &format!("- [x] done\n{}", many("second", 8)),
+        ),
+    ]);
+    let text = reopen_comment("ABC-1", &gate);
+    assert!(
+        text.starts_with("Cannot move to `Done`: 23 criteria/boxes unchecked, of which 12 taken from ABC-2, 8 taken from ABC-3."),
+        "{text}"
+    );
+    assert!(!text.contains("more"), "no box is left out: {text}");
+    for (prefix, n) in [("own", 3), ("first", 12), ("second", 8)] {
+        for i in 0..n {
+            assert!(
+                text.contains(&format!("- [ ] {prefix} {i}\n")),
+                "{prefix} {i}: {text}"
+            );
+        }
+    }
+    assert!(!text.contains("- [x] done"), "a checked box is not listed");
+    let own = text.find("Unchecked on ABC-1, this ticket:").unwrap();
+    let first = text
+        .find("Unchecked on ABC-2 — A first duplicate, a duplicate merged into this ticket:")
+        .unwrap();
+    let second = text
+        .find("Unchecked on ABC-3 — A second duplicate, a duplicate merged into this ticket:")
+        .unwrap();
+    assert!(
+        own < first && first < second,
+        "the ticket first, then each duplicate: {text}"
+    );
+    // Each box under its own origin.
+    assert!(text[own..first].contains("- [ ] own 2") && !text[own..first].contains("first 0"));
+    assert!(
+        text[first..second].contains("- [ ] first 11") && !text[first..second].contains("second 0")
+    );
+    assert!(text[second..].contains("- [ ] second 7"));
+}
+
+#[test]
+fn a_reopen_skips_an_origin_with_nothing_open_and_names_a_post_deploy_box() {
+    let gate = titled(&[
+        (
+            "ABC-1",
+            "The ticket",
+            "- [x] a\n## Post deploy\n- [ ] it holds in production",
+        ),
+        ("ABC-2", "Nothing left", "- [x] b"),
+        (
+            "ABC-3",
+            "Its own check",
+            "## Post deploy\n- [ ] it is signed in production",
+        ),
+    ]);
+    let text = reopen_comment("ABC-1", &gate);
+    assert!(!text.contains("ABC-2"), "{text}");
+    assert!(
+        text.contains("- [ ] it holds in production (Post deploy)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("- [ ] it is signed in production (Post deploy)"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_reopen_with_duplicate_boxes_says_how_to_reconcile_them_and_what_comes_next() {
+    let gate = titled(&[
+        ("ABC-1", "The ticket", "- [x] a"),
+        ("ABC-2", "A duplicate", "- [ ] b"),
+    ]);
+    let text = reopen_comment("ABC-1", &gate);
+    assert!(text.contains(RECONCILE_DUPLICATES), "{text}");
+    for words in [
+        "check it on the duplicate and comment there with the evidence",
+        "(the comment, PR or test that proves it)",
+        "a gesture in production, hand it to a human through a decision request",
+        "nothing is lost in a merge",
+    ] {
+        assert!(RECONCILE_DUPLICATES.contains(words), "{words}");
+    }
+    assert!(text.contains(WHAT_COMES_NEXT), "{text}");
+    assert!(WHAT_COMES_NEXT.contains("goes to the `Post Deploy` column as usual"));
+    // In that order, the unassignment last.
+    let listed = text.find("- [ ] b").unwrap();
+    let reconcile = text.find(RECONCILE_DUPLICATES).unwrap();
+    let next = text.find(WHAT_COMES_NEXT).unwrap();
+    assert!(listed < reconcile && reconcile < next, "{text}");
+    assert!(text.ends_with(RETURNED_UNASSIGNED), "{text}");
+}
+
+#[test]
+fn a_reopen_with_only_its_own_boxes_has_nothing_to_reconcile() {
+    let gate = titled(&[
+        ("ABC-1", "The ticket", "- [ ] a"),
+        ("ABC-2", "A duplicate", "- [x] b"),
+    ]);
+    let text = reopen_comment("ABC-1", &gate);
+    assert!(!text.contains(RECONCILE_DUPLICATES), "{text}");
+    assert!(text.contains(WHAT_COMES_NEXT), "{text}");
+}
+
+#[test]
+fn a_reopen_for_an_unreadable_or_absent_contract_lists_no_boxes() {
+    for gate in [
+        evaluate(&[member("ABC-1", "- [ ] a")], Some("relations cut".into())),
+        gate_of(&[("ABC-1", "nothing")]),
+    ] {
+        let text = reopen_comment("ABC-1", &gate);
+        assert!(
+            !text.contains(RECONCILE_DUPLICATES) && !text.contains(WHAT_COMES_NEXT),
+            "{text}"
+        );
+        assert!(text.ends_with(RETURNED_UNASSIGNED));
+    }
+}
+
+#[test]
+fn the_duplicates_boxes_hold_the_ticket_until_checked_on_the_duplicate() {
+    let open = gate_of(&[
+        ("ABC-1", "- [x] a\n## Post deploy\n- [ ] it holds"),
+        ("ABC-2", "- [ ] b"),
+    ]);
+    assert_eq!(
+        closure_verdict("ABC-1", Some(Status::ToDeploy), &open),
+        ClosureVerdict::Reopen,
+        "nothing is lost in a merge"
+    );
+    let checked = gate_of(&[
+        ("ABC-1", "- [x] a\n## Post deploy\n- [ ] it holds"),
+        ("ABC-2", "- [x] b"),
+    ]);
+    assert_eq!(
+        closure_verdict("ABC-1", Some(Status::ToDeploy), &checked),
+        ClosureVerdict::PostDeploy,
+        "only its own post-deploy boxes left: Post Deploy as usual"
+    );
 }
 
 #[test]
