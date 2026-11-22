@@ -865,15 +865,21 @@ pub struct Embarked {
     pub untracked: Vec<note::Untracked>,
 }
 
-/// Whether a merged PR is the release's own bookkeeping, never announced: a
-/// merge back of a release branch or the resolution of its conflict, an
-/// angle report PR of a release QA, a `chore(release)` commit.
+/// Whether a merged PR is the release's own bookkeeping by its branch, never
+/// announced whatever it links: a merge back of a release branch or the
+/// resolution of its conflict, an angle report PR of a release QA.
 fn release_bookkeeping(pr: &crate::github::CommitPull, shape: &Shape) -> bool {
     let head = pr.head_ref.as_str();
     head.starts_with(&shape.branch_prefix)
         || head.starts_with(review::MERGE_BACK_RESOLUTION_PREFIX)
         || head.starts_with(review::ANGLE_BRANCH_PREFIX)
-        || pr.title.trim_start().starts_with("chore(release)")
+}
+
+/// Whether a merged PR's title marks it `chore(release)`: bookkeeping only
+/// when it describes no ticket of the team; one that does embarks it like
+/// any other PR (ASDLC-F37V).
+fn release_chore_title(pr: &crate::github::CommitPull) -> bool {
+    pr.title.trim_start().starts_with("chore(release)")
 }
 
 /// Add a PR to an entry of `(key, PRs)`, once.
@@ -947,6 +953,11 @@ pub fn embarked_items(t: &Tick, shape: &Shape, c: &Candidate) -> Result<Embarked
         // recognised as in the PR pass (by marker, or by a parent linked to
         // the same PR), they are set apart.
         let split = super::link::split_linked(t.tracker, linked).map_err(|e| e.to_string())?;
+        // A `chore(release)` PR no ticket describes is the release's own
+        // bookkeeping: neither announced nor its round's items archived.
+        if split.tickets.is_empty() && release_chore_title(pr) {
+            continue;
+        }
         for sub in split.sub_items {
             if !out.sub_items.contains(&sub.key) {
                 out.sub_items.push(sub.key);
