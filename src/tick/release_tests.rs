@@ -13,6 +13,7 @@ use crate::github::{
     RequiredChecks, Review, Timestamp, WorkflowRun,
 };
 use crate::method::release::gate;
+use crate::method::release::go::VerdictState;
 use crate::method::texts::{self, BridgeItem, protocol};
 use crate::method::vocabulary::Status;
 
@@ -1562,6 +1563,102 @@ fn the_go_tags_the_candidate_and_publishes_its_prepared_notes_and_nothing_else()
     w.tick();
     assert_eq!(w.go_writes(), before);
     assert_eq!(w.go_comments(), 1);
+}
+
+/// The merged verdict PR (#32) of `all_angles_merged`, changed by `edit`.
+fn edit_merged_verdict(w: &World, edit: impl FnOnce(&mut PullRequest)) {
+    let mut s = w.github.state.borrow_mut();
+    let merged = s.merged_pulls.get_mut(&repo()).unwrap().as_mut().unwrap();
+    edit(merged.iter_mut().find(|p| p.number == 32).unwrap());
+}
+
+/// A verdict PR merged in GitHub by a person who is not a coordinator,
+/// with no coordinator's approval: not the coordinator's call
+/// (BR-ASDLC-020), so not a GO, and the GO stays held.
+#[test]
+fn a_verdict_pr_merged_by_a_non_coordinator_with_no_coordinator_approval_is_not_a_go() {
+    let w = World::new();
+    w.tick();
+    all_angles_merged(&w);
+    let writer = Actor {
+        login: "writer-login".into(),
+        is_bot: false,
+    };
+    edit_merged_verdict(&w, |pr| {
+        pr.author = Some(writer.clone());
+        pr.merged_by = Some(writer.clone());
+        pr.reviews.clear();
+    });
+    let (_, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
+    assert_ne!(d.verdict, VerdictState::Go);
+    assert_eq!(d.verdict, VerdictState::Untrusted);
+    assert!(!d.go);
+    assert!(
+        d.reasons
+            .iter()
+            .any(|r| r.contains("is not the coordinator's")),
+        "{:?}",
+        d.reasons
+    );
+    let r = w.tick();
+    assert!(w.go_writes().is_empty(), "{r:?}");
+    assert_eq!(w.go_comments(), 0);
+    assert_ne!(
+        w.consolidation(CAND).state.status,
+        Some(Status::Done),
+        "an untrusted verdict closes nothing"
+    );
+}
+
+/// The verdict a coordinator approved at its merged head, or the bridge's
+/// App merged, is the coordinator's call whoever authored it.
+#[test]
+fn a_merged_verdict_approved_by_a_coordinator_or_merged_by_the_bridge_is_a_go() {
+    let approved = |pr: &mut PullRequest| {
+        pr.reviews = vec![coordinator("APPROVED", &pr.head_sha)];
+    };
+    let by_bridge = |pr: &mut PullRequest| {
+        pr.merged_by = Some(Actor {
+            login: bot("spl-asdlc"),
+            is_bot: true,
+        });
+    };
+    let stale = |pr: &mut PullRequest| {
+        pr.reviews = vec![coordinator("APPROVED", "an-older-head")];
+    };
+    let by_a_person_of_the_bridge_name = |pr: &mut PullRequest| {
+        pr.merged_by = Some(Actor {
+            login: "spl-asdlc".into(),
+            is_bot: false,
+        });
+    };
+    type Edit = fn(&mut PullRequest);
+    let cases: [(Edit, VerdictState); 4] = [
+        (approved, VerdictState::Go),
+        (by_bridge, VerdictState::Go),
+        (stale, VerdictState::Untrusted),
+        (by_a_person_of_the_bridge_name, VerdictState::Untrusted),
+    ];
+    for (i, (edit, want)) in cases.into_iter().enumerate() {
+        let w = World::new();
+        w.tick();
+        all_angles_merged(&w);
+        edit_merged_verdict(&w, |pr| {
+            pr.author = Some(Actor {
+                login: "writer-login".into(),
+                is_bot: false,
+            });
+            edit(pr);
+        });
+        let (_, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
+        assert_eq!(d.verdict, want, "case {i}: {:?}", d.reasons);
+        w.tick();
+        assert_eq!(
+            w.go_writes().is_empty(),
+            want != VerdictState::Go,
+            "case {i}"
+        );
+    }
 }
 
 /// Spec 09 (BR-ASDLC-021): the release tag a person pushed on the
