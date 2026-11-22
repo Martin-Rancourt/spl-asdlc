@@ -1,0 +1,23 @@
+{
+  "schema": "spl-asdlc/qa-verdict/1",
+  "candidate": "v1.15.0-rc.1",
+  "item": "ASDLC-UHG8",
+  "verdict": "go",
+  "between_angles": "Compared the sole configured security angle with the release gate boundary and the complete v1.14.0..v1.15.0-rc.1 change set described in its checked evidence. Security owns the trust-boundary review; build, lint, tests and packaging remain gate concerns. No concern was unowned and no pair of angles could have assumed the other covered it because no second QA angle is configured.",
+  "findings": [
+    {
+      "angle": "security",
+      "id": "security-1",
+      "decision": "accepted",
+      "blocking": false,
+      "reason": "The reported authorization gap is present: tracker verdict eligibility follows the mutable coordination or release assignee plus the tracker person classification instead of the configured GitHub coordinator set. It requires insider tracker write access, remains dormant on the current Livela adapter, and the trusted GitHub verdict remains an independent GO condition, so it should be fixed but does not block this release."
+    },
+    {
+      "angle": "security",
+      "id": "security-2",
+      "decision": "accepted",
+      "blocking": false,
+      "reason": "The merged-angle reader accepts a matching merged branch and report without checking the PR author, merger or fork provenance. Exploitation requires repository write access and a trusted coordinator verdict still independently gates publication, so the finding is real but does not block this release."
+    }
+  ]
+}
