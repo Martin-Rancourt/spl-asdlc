@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.15.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.14.0...v1.15.0) (2026-11-22)
+
+
+### Features
+
+* **release:** a coordinator's verdict given in the tracker is committed by the bridge (ASDLC-RS9P) ([#187](https://github.com/Martin-Rancourt/spl-asdlc/issues/187)) ([3a724e9](https://github.com/Martin-Rancourt/spl-asdlc/commit/3a724e9b83592b00c5ef1afc27605178e52e8c8f))
+* **release:** the closure's reopen message lists every box by origin and says how to reconcile duplicates (ASDLC-32ZC) ([#185](https://github.com/Martin-Rancourt/spl-asdlc/issues/185)) ([2d66230](https://github.com/Martin-Rancourt/spl-asdlc/commit/2d66230f8e9183a215a8c7401c932502356d2d67))
+* **release:** with auto_candidate, the bridge cuts the next candidate once the release's fixes are merged (ASDLC-WMD9) ([#186](https://github.com/Martin-Rancourt/spl-asdlc/issues/186)) ([71d5659](https://github.com/Martin-Rancourt/spl-asdlc/commit/71d56598098a56c2b2ecd38a266912ea38c7a143))
+* **sync:** record a PR held by its ticket's contract as open:held (ASDLC-PA3F) ([#181](https://github.com/Martin-Rancourt/spl-asdlc/issues/181)) ([d288faa](https://github.com/Martin-Rancourt/spl-asdlc/commit/d288faa40aaee3b887b54b93936b9228be13b20c))
+
+
+### Bug Fixes
+
+* **release:** a chore(release) PR that describes a ticket embarks it (ASDLC-F37V) ([#182](https://github.com/Martin-Rancourt/spl-asdlc/issues/182)) ([f1baf3c](https://github.com/Martin-Rancourt/spl-asdlc/commit/f1baf3cfffd49445551f2f4092b28b729b53e397))
+* **release:** never merge an angle PR from a fork (ASDLC-89DX) ([#183](https://github.com/Martin-Rancourt/spl-asdlc/issues/183)) ([e5d881c](https://github.com/Martin-Rancourt/spl-asdlc/commit/e5d881cddd36945721c44e8a37aff3a91d866de6))
+* **release:** trust a merged verdict only from a coordinator or the bridge (ASDLC-JU4B) ([#184](https://github.com/Martin-Rancourt/spl-asdlc/issues/184)) ([243626f](https://github.com/Martin-Rancourt/spl-asdlc/commit/243626fb6913c7ddc97ab71be8d35445de760f11))
+
+
+### Documentation
+
+* **process:** an owner's question goes through the tracker's decision requests (ASDLC-KSJS) ([#174](https://github.com/Martin-Rancourt/spl-asdlc/issues/174)) ([3558c51](https://github.com/Martin-Rancourt/spl-asdlc/commit/3558c510029a47e4e117f633a6ab256f7cec5831))
+* **process:** on Livela, an agent keeps its ticket when it asks the owner (ASDLC-FGXY) ([#188](https://github.com/Martin-Rancourt/spl-asdlc/issues/188)) ([9a669c6](https://github.com/Martin-Rancourt/spl-asdlc/commit/9a669c6d22e3e95c047ed4a29d34253b3887834f))
+
+
+### Chores
+
+* move SPL-ASDLC to v1.14 (ASDLC-TBQY) ([#179](https://github.com/Martin-Rancourt/spl-asdlc/issues/179)) ([ce46b1d](https://github.com/Martin-Rancourt/spl-asdlc/commit/ce46b1d4427ab446a1d3e772fceba2bb75eaf225))
+* **release:** security report for v1.14.0-rc.1 (ASDLC-WUTU) ([e4a6698](https://github.com/Martin-Rancourt/spl-asdlc/commit/e4a6698bc274bd7cefdf19dc15b46204477160de))
+
 ## [1.14.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.13.0...v1.14.0) (2026-11-21)
 
 
