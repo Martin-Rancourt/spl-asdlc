@@ -5434,6 +5434,44 @@ fn the_note_and_the_brief_announce_every_pr_of_the_range_but_the_bookkeeping() {
     assert!(sent.contains("- **PR #7** — docs: seven"), "{sent}");
 }
 
+/// A `chore(release)` PR that describes a ticket is not bookkeeping: its
+/// ticket is embarked, announced and judged at the closure (ASDLC-F37V).
+#[test]
+fn a_chore_release_pr_with_a_ticket_embarks_it() {
+    let w = World::new();
+    {
+        let mut s = w.github.state.borrow_mut();
+        s.commit_pulls.insert(
+            (repo(), "m1".into()),
+            Ok(vec![CommitPull {
+                number: 5,
+                url: "https://github.com/example-org/acme/pull/5".into(),
+                title: "chore(release): enable security QA (ABC-5)".into(),
+                merge_commit_sha: Some("m1".into()),
+                base_ref: "main".into(),
+                head_ref: "chore/abc-5-security-angle".into(),
+                ..CommitPull::default()
+            }]),
+        );
+    }
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(
+        w.tracker.item("ABC-5").labels.contains(&LABEL.to_string()),
+        "embarked"
+    );
+    let d = &w.release_item().description;
+    assert!(
+        d.contains("- **ABC-5** — Shipped: You can now ship. (#5)"),
+        "{d}"
+    );
+    assert!(!d.contains("### No linked ticket"), "{d}");
+    publish(&w);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(w.tracker.item("ABC-5").state.status, Some(Status::Done));
+}
+
 /// The release item's description with its note taken out again, the
 /// fresh item's placeholder in its place.
 fn placeholder_back(w: &World, key: &str) {

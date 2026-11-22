@@ -111,7 +111,7 @@ flowchart TD
    - no blocking finding is open;
    - nothing but the candidate's own QA reports landed after it.
 
-   On GO, the bridge writes the release note into the release issue, then tags the release (`v1.4.0` in this example) on the candidate and publishes the GitHub release with its CHANGELOG section. The release note announces every PR of the release: a ticket by its `## Release note` paragraph, a PR with no ticket by its own `## Release note` section, or its title; the release's own bookkeeping (merge backs, QA reports, `chore(release)`) is left out. The bridge first writes it when the candidate's QA starts, so a GO given by hand finds it there too.
+   On GO, the bridge writes the release note into the release issue, then tags the release (`v1.4.0` in this example) on the candidate and publishes the GitHub release with its CHANGELOG section. The release note announces every PR of the release: a ticket by its `## Release note` paragraph, a PR with no ticket by its own `## Release note` section, or its title; the release's own bookkeeping (merge backs, QA reports, a `chore(release)` PR no ticket describes) is left out. The bridge first writes it when the candidate's QA starts, so a GO given by hand finds it there too.
 5. **Publication.** The release starts the project's publish workflow. It checks that the release is the candidate, builds and deploys every target the product has (desktop, mobile, web…), then merges the release branch back into `main`.
 6. **Closure.** The bridge judges each ticket of the release:
    - every box ticked: **Done**;
