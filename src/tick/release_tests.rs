@@ -3059,6 +3059,73 @@ fn the_closure_reopens_an_incomplete_ticket_unassigned_once() {
 }
 
 #[test]
+fn the_closure_reopens_a_ticket_for_its_duplicates_boxes_listed_by_origin() {
+    let w = World::new();
+    let own = "## Goal\nShip it.\n\n## Acceptance criteria\n- [x] shipped\n\n## Post deploy\n- [ ] it holds in production\n\n## Business rules\nNo new rule.\n";
+    assigned_ticket(&w, own);
+    let boxes = (0..7)
+        .map(|i| format!("- [ ] inherited {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    w.tracker.seed(
+        "ABC-6",
+        "Same ask, other words",
+        &format!("## Acceptance criteria\n- [x] proved\n{boxes}\n"),
+        Status::Canceled,
+        &[],
+    );
+    w.tracker
+        .relate("ABC-5", "ABC-6", RelationKind::Duplicate)
+        .unwrap();
+    w.tick();
+    publish(&w);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let ticket = w.tracker.item("ABC-5");
+    assert_eq!(
+        ticket.state.status,
+        Some(Status::InProgress),
+        "a duplicate's open box holds the ticket: nothing is lost in a merge"
+    );
+    let said = w.tracker.comments("ABC-5").unwrap();
+    let body = &said
+        .iter()
+        .find(|c| {
+            c.body
+                .contains(crate::method::done_gate::RETURNED_UNASSIGNED)
+        })
+        .expect("the reopen comment")
+        .body;
+    assert!(
+        body.contains(
+            "Unchecked on ABC-5, this ticket:\n- [ ] it holds in production (Post deploy)"
+        ),
+        "{body}"
+    );
+    assert!(
+        body.contains(
+            "Unchecked on ABC-6 — Same ask, other words, a duplicate merged into this ticket:"
+        ),
+        "{body}"
+    );
+    for i in 0..7 {
+        assert!(
+            body.contains(&format!("- [ ] inherited {i}")),
+            "{i}: {body}"
+        );
+    }
+    assert!(!body.contains("more"), "{body}");
+    assert!(
+        body.contains(crate::method::done_gate::RECONCILE_DUPLICATES),
+        "{body}"
+    );
+    assert!(
+        body.contains(crate::method::done_gate::WHAT_COMES_NEXT),
+        "{body}"
+    );
+}
+
+#[test]
 fn the_closure_reopens_a_ticket_citing_an_unknown_rule_unassigned() {
     let w = World::new();
     assigned_ticket(

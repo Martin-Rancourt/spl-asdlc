@@ -575,18 +575,19 @@ fn judge_member(
 
 /// The Done gate of a ticket: its boxes and its duplicates' (REQ-MERGE-064).
 pub(super) fn contract_gate(t: &Tick, m: &Item) -> Result<done_gate::DoneGate, String> {
-    let node = |key: &str, description: String| -> Result<DuplicateNode, String> {
+    let node = |key: &str, title: String, description: String| -> Result<DuplicateNode, String> {
         let r = t.tracker.relations(key).map_err(|e| e.to_string())?;
         Ok(DuplicateNode {
+            title,
             description,
             duplicates: r.duplicates.into_iter().map(|d| d.other).collect(),
             relations_cut: r.cut,
         })
     };
-    let first = node(&m.key, m.description.clone())?;
+    let first = node(&m.key, m.title.clone(), m.description.clone())?;
     let mut read = |key: &str| -> Result<DuplicateNode, String> {
         let item = t.tracker.get(key).map_err(|e| e.to_string())?;
-        node(key, item.description)
+        node(key, item.title, item.description)
     };
     let (members, unreadable) = done_gate::duplicate_closure(&m.key, first, &mut read);
     Ok(done_gate::evaluate(&members, unreadable))

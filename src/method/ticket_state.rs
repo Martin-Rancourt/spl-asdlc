@@ -281,6 +281,7 @@ mod tests {
             .iter()
             .map(|(id, description)| done_gate::ContractMember {
                 id: id.to_string(),
+                title: String::new(),
                 description: description.to_string(),
             })
             .collect();

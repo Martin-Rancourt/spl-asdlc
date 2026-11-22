@@ -319,6 +319,7 @@ mod tests {
         evaluate(
             &[ContractMember {
                 id: "ABC-1".into(),
+                title: String::new(),
                 description: desc.into(),
             }],
             None,
