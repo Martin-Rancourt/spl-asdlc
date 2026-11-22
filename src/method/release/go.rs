@@ -42,6 +42,10 @@ pub enum VerdictState {
     NotNeeded,
     /// No verdict of the candidate is merged yet.
     Missing,
+    /// A verdict PR is merged, but none a release coordinator authored or
+    /// approved at its head, nor the bridge merged: it is not the
+    /// coordinator's call, so it gives no GO.
+    Untrusted,
     /// The merged verdict says `hold`.
     Hold,
     /// The merged verdict says `go`.
@@ -53,6 +57,7 @@ impl VerdictState {
         match self {
             VerdictState::NotNeeded => "not needed",
             VerdictState::Missing => "missing",
+            VerdictState::Untrusted => "untrusted",
             VerdictState::Hold => "hold",
             VerdictState::Go => "go",
         }
@@ -169,6 +174,9 @@ pub fn evaluate(facts: &GoFacts) -> GoDecision {
         VerdictState::NotNeeded | VerdictState::Go => {}
         VerdictState::Missing => reasons.push(
             "the coordinator's verdict on the candidate is not merged".to_string(),
+        ),
+        VerdictState::Untrusted => reasons.push(
+            "the merged verdict on the candidate is not the coordinator's: no release coordinator authored it or approved it at its head, and the bridge did not merge it".to_string(),
         ),
         VerdictState::Hold => reasons.push(
             "the coordinator's verdict on the candidate is `hold`: its blocking findings are fixed, then the next candidate is cut".to_string(),

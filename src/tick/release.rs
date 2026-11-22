@@ -2341,6 +2341,37 @@ fn is_verdict_pr(pr: &PullRequest, c: &Candidate) -> bool {
     prs::parse_angle_branch(&pr.head_ref) == Some((c.tag.clone(), verdict::KEY.to_string()))
 }
 
+/// Whether a merged verdict PR is the coordinator's (BR-ASDLC-020): a
+/// release coordinator authored it or approved it at its merged head, or
+/// the bridge's App merged it (it merges only such a verdict). A verdict
+/// merged around the bridge by anyone else is not the coordinator's call.
+fn trusted_verdict(t: &Tick, pr: &PullRequest) -> bool {
+    let coordinators = &section(t).coordinators;
+    pr.author
+        .as_ref()
+        .is_some_and(|a| coordinators.iter().any(|x| same_login(x, &a.login)))
+        || matches!(
+            review::pr_approval(pr, coordinators),
+            Approval::Qualified { .. }
+        )
+        || pr
+            .merged_by
+            .as_ref()
+            .is_some_and(|m| m.is_bot && same_login(&t.github_login, &m.login))
+}
+
+/// The candidate's merged verdict PR the GO trusts ([`trusted_verdict`]),
+/// and whether a verdict PR of the candidate was merged at all.
+fn merged_verdict_pr<'a>(
+    t: &Tick,
+    c: &Candidate,
+    merged_pulls: &'a [PullRequest],
+) -> (Option<&'a PullRequest>, bool) {
+    let mut verdicts = merged_pulls.iter().filter(|p| is_verdict_pr(p, c));
+    let trusted = verdicts.clone().find(|p| trusted_verdict(t, p));
+    (trusted, verdicts.next().is_some())
+}
+
 /// The candidate's coordination item, open or not.
 fn consolidation_of<'a>(children: &'a [Item], c: &Candidate) -> Option<&'a Item> {
     let want = Some(BridgeItem::Consolidation {
@@ -2377,7 +2408,8 @@ fn candidate_verdict(
     let Some(reports) = reports else {
         return VerdictState::Missing;
     };
-    if let Some(pr) = merged_pulls.iter().find(|p| is_verdict_pr(p, c)) {
+    let (trusted, any_merged) = merged_verdict_pr(t, c, merged_pulls);
+    if let Some(pr) = trusted {
         let v = match read_merged_verdict(t, c, pr) {
             Ok(v) => v,
             Err(e) => {
@@ -2414,7 +2446,11 @@ fn candidate_verdict(
             t, log, report, pr, c, branch, cons, states, reports, &path, merged,
         );
     }
-    VerdictState::Missing
+    if any_merged {
+        VerdictState::Untrusted
+    } else {
+        VerdictState::Missing
+    }
 }
 
 /// The verdict a merged verdict PR carries, read at its merge.
@@ -2435,14 +2471,17 @@ fn read_merged_verdict(
 }
 
 /// Where the candidate's merged verdict stands, read-only (`release
-/// status`): `Missing` until its PR is merged into the release branch.
+/// status`): `Missing` until its PR is merged into the release branch,
+/// `Untrusted` while no merged one is the coordinator's.
 pub fn merged_verdict_state(
     t: &Tick,
     c: &Candidate,
     merged_pulls: &[PullRequest],
 ) -> Result<VerdictState, String> {
-    let Some(pr) = merged_pulls.iter().find(|p| is_verdict_pr(p, c)) else {
-        return Ok(VerdictState::Missing);
+    let pr = match merged_verdict_pr(t, c, merged_pulls) {
+        (Some(pr), _) => pr,
+        (None, true) => return Ok(VerdictState::Untrusted),
+        (None, false) => return Ok(VerdictState::Missing),
     };
     let v = read_merged_verdict(t, c, pr)
         .map_err(|e| format!("the merged verdict of {}: {e}", pr.url))?;
