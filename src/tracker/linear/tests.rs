@@ -199,6 +199,34 @@ fn comments_are_the_whole_thread_oldest_first_and_say_which_are_the_bridges() {
     assert_eq!(c[0].author.as_ref().unwrap().name, "spl-asdlc");
 }
 
+/// A comment is a person's when it has a user and no bot actor; the
+/// bridge's own and an integration's are not (ASDLC-RS9P).
+#[test]
+fn a_comment_is_a_persons_only_with_a_user_and_no_bot_actor() {
+    let (l, t) = linear();
+    t.on_body(
+        "POST",
+        URL,
+        "viewer",
+        200,
+        r#"{"data":{"viewer":{"id":"u-bridge","name":"spl-asdlc","displayName":""}}}"#,
+    );
+    t.on_body("POST", URL, "comments(first: 100", 200, r#"{"data":{"issue":{"comments":{"nodes":[
+        {"id":"c1","body":"a","createdAt":"2026-10-05T10:00:00Z","user":{"id":"u-human","name":"h","displayName":"Human"},"botActor":null},
+        {"id":"c2","body":"b","createdAt":"2026-10-05T11:00:00Z","user":{"id":"u-human","name":"h","displayName":"Human"},"botActor":{"id":"bot-1"}},
+        {"id":"c3","body":"c","createdAt":"2026-10-05T12:00:00Z","user":{"id":"u-bridge","name":"spl-asdlc","displayName":""},"botActor":null},
+        {"id":"c4","body":"d","createdAt":"2026-10-05T13:00:00Z","user":null,"botActor":null}],
+        "pageInfo":{"hasNextPage":false,"endCursor":null}}}}}"#);
+    let c = l.comments("ABC-2").unwrap();
+    let person: Vec<bool> = c.iter().map(|c| c.by_person).collect();
+    assert_eq!(person, [true, false, false, false]);
+    assert!(
+        t.bodies()
+            .iter()
+            .any(|b| b.contains("comments(first: 100") && b.contains("botActor { id }"))
+    );
+}
+
 #[test]
 fn a_status_the_team_lacks_is_refused_before_any_write() {
     let (l, t) = linear();

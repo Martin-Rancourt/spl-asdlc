@@ -66,6 +66,32 @@ Once every angle report of a candidate is merged, its coordinator commits the **
 
 The bridge merges the verdict PR when the verdict is valid, every angle PR of the candidate is merged, its author is one of `release.coordinators` or one of them approved it at its head, its required checks are green and it is up to date; what else keeps it from the merge is said once per head, on the PR. At its merge it files the accepted findings (rules 3 and 4), each once, and moves the consolidation item to Done. The GO of a candidate with QA angles needs its merged verdict `go` (`05-release-cycle.md` §8), and a merged verdict counts only when one of `release.coordinators` authored it or approved it at its merged head, or the bridge's App merged it: a verdict PR merged by hand by anyone else gives no GO. A finding filed with the wrong weight is still requalified (`09-requalification-and-human-gestures.md`).
 
+## The verdict given in the tracker
+
+A person who coordinates the release may give the verdict from the tracker instead of committing it: the bridge commits it for them (rule 2W8R). Two comments on the candidate's coordination item carry it, on every tracker alike (a comment is a comment: Livela and Linear work the same).
+
+**The request**, posted by the bridge once every angle PR of the candidate is merged and while the coordination item is open, once per candidate. It opens with the marker `<!-- spl-asdlc:verdict-request candidate=<rc tag> -->` (written as inline code on a tracker that drops HTML comments) and carries every finding of every merged report, as the reports give them, in a fenced `json` block, so that a tracker can render it as a form:
+
+```json
+{
+  "schema": "spl-asdlc/verdict-request/1",
+  "candidate": "<rc tag>",
+  "item": "<the key of the coordination item>",
+  "findings": [
+    { "angle": "<angle key>", "id": "<finding id>", "blocking": true, "summary": "...", "anchor": "...", "evidence": "...", "testable": true, "proposed_test": "<name or null>" }
+  ]
+}
+```
+
+The block's strings escape `<`, `` ` `` and the `:` of `spl-asdlc:` (`<`, ```, `:`): the same values, with no fence ended and no marker forged by a report's text.
+
+**The verdict**, posted back by a person: a comment that opens with the marker `<!-- spl-asdlc:verdict candidate=<rc tag> -->` (or the same token as inline code) and carries the verdict above (`spl-asdlc/qa-verdict/1`, its `item` the coordination item) in a fenced `json` block, the first of the comment.
+
+1. The bridge reads the latest verdict comment whose author the tracker says is a person (Livela: a human participant; Linear: a user, with no bot actor) and who is the coordination item's assignee or the release's owner (the release item's assignee, `owner.tracker_user`). A verdict comment of any other author (an agent, an app, another person) is ignored and told once, on the item, why. An agent commits its verdict in its own PR, as above.
+2. A valid verdict is committed unchanged: the bridge creates the branch `qa/<candidate>/consolidation` from the release branch's tip, puts the verdict file on it, and opens a PR to the release branch that names the coordination item. The bridge merges that PR by the rules of any verdict PR, its author being the bridge itself, on the strength of the signed comment: it counts as the coordinator's only while the PR's file is the verdict signed.
+3. An invalid verdict is told once, on the item, with its validation errors; nothing is committed. A verdict PR from the branch that the bridge did not open is never written to: the bridge says so once.
+4. A newer signed verdict before the merge replaces the file on the same branch, one more commit; once the candidate's verdict is merged, the bridge commits no other.
+
 ## Prompts
 
 The angle protocols are documentation (`docs/agents/review-release.md`, one base plus one short file per angle: security, design, product, maintainability). A project may add angle notes in `.spl-asdlc/angles/<angle>.md`. The report schema above is what every protocol ends with. The bridge embeds the base protocol, the angle's file and the schema and rules above in each angle sub-item and consolidation item of a candidate (the consolidation item also carries the verdict's schema and rules), and links the project's notes (BR-ASDLC-015, `05-release-cycle.md` §3): the protocol and the angle's file at the version of spl-asdlc the project is pinned on (BR-ASDLC-032), the schema and rules as the bridge itself checks them.

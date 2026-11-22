@@ -24,6 +24,7 @@ pub mod release;
 pub mod release_note;
 pub mod retract;
 pub mod sweep;
+pub mod tracker_verdict;
 
 #[cfg(test)]
 mod release_tests;

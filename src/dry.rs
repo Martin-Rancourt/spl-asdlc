@@ -482,6 +482,7 @@ impl Tracker for DryTracker<'_> {
             id: String::new(),
             author: None,
             by_bridge: true,
+            by_person: false,
             body: body.to_string(),
         })
     }

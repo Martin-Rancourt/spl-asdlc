@@ -212,6 +212,27 @@ impl FakeTracker {
                     name: author.to_string(),
                 }),
                 by_bridge: false,
+                by_person: true,
+                body: body.to_string(),
+            });
+        }
+    }
+
+    /// A comment from an agent (or an app) other than the bridge: no
+    /// person's.
+    pub fn agent_comment(&self, key: &str, author: &str, body: &str) {
+        let mut s = self.state.borrow_mut();
+        s.next += 1;
+        let id = format!("c{}", s.next);
+        if let Some(st) = s.items.get_mut(key) {
+            st.comments.push(Comment {
+                id,
+                author: Some(User {
+                    id: format!("u-{author}"),
+                    name: author.to_string(),
+                }),
+                by_bridge: false,
+                by_person: false,
                 body: body.to_string(),
             });
         }
@@ -550,6 +571,7 @@ impl Tracker for FakeTracker {
             id,
             author: Some(self.bridge.clone()),
             by_bridge: true,
+            by_person: false,
             body: body.to_string(),
         };
         self.with(key, |st| st.comments.push(c.clone()))?;

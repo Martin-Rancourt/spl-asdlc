@@ -106,6 +106,12 @@ pub trait LivelaStore {
     /// Participants answering to a name: `(id, name)`.
     fn participants_named(&self, name: &str) -> Vec<(String, String)>;
     fn participant_name(&self, id: &str) -> Option<String>;
+    /// Whether a participant is a person (`ParticipantType::Human`): `None`
+    /// when this store does not say. A comment counts as a person's only
+    /// when it says so (a verdict given in the tracker, ASDLC-RS9P).
+    fn participant_is_human(&self, _id: &str) -> Option<bool> {
+        None
+    }
     /// The project a reference names (its prefix, name or id); `Ok(None)`
     /// when none does, an error when several do.
     fn project(&self, reference: &str) -> Result<Option<LivelaProject>, String>;
@@ -589,11 +595,16 @@ impl<S: LivelaStore> Tracker for Livela<S> {
         Ok(raw
             .comments
             .iter()
-            .map(|(id, author, text)| Comment {
-                id: id.clone(),
-                author: Some(self.user_of(author)),
-                by_bridge: me.as_deref() == Some(author.as_str()),
-                body: text.clone(),
+            .map(|(id, author, text)| {
+                let by_bridge = me.as_deref() == Some(author.as_str());
+                Comment {
+                    id: id.clone(),
+                    author: Some(self.user_of(author)),
+                    by_bridge,
+                    by_person: !by_bridge
+                        && self.store.borrow().participant_is_human(author) == Some(true),
+                    body: text.clone(),
+                }
             })
             .collect())
     }
@@ -746,6 +757,7 @@ impl<S: LivelaStore> Tracker for Livela<S> {
             id: cid,
             author: Some(self.user_of(&me)),
             by_bridge: true,
+            by_person: false,
             body: body.to_string(),
         })
     }

@@ -613,7 +613,7 @@ impl Tracker for Linear {
             let data = self.read(
                 &what,
                 "query($id: String!, $after: String) { issue(id: $id) { comments(first: 100, after: $after) {
-                   nodes { id body createdAt user { id name displayName } } pageInfo { hasNextPage endCursor } } } }",
+                   nodes { id body createdAt user { id name displayName } botActor { id } } pageInfo { hasNextPage endCursor } } } }",
                 json!({"id": key, "after": cursor}),
             )?;
             let conn = &data["issue"]["comments"];
@@ -622,6 +622,9 @@ impl Tracker for Linear {
                 .ok_or_else(|| TrackerError::unreadable(&what, "no comment list"))?
             {
                 let author = user_of(&c["user"]);
+                // A person's comment has a user and no bot actor (an
+                // integration's comment carries one).
+                let by_bot = !c["botActor"].is_null();
                 let at = s(c, "createdAt");
                 if at.is_empty() {
                     return Err(TrackerError::unreadable(&what, "a comment without a date"));
@@ -631,6 +634,7 @@ impl Tracker for Linear {
                     Comment {
                         id: s(c, "id"),
                         by_bridge: author.as_ref().is_some_and(|a| a.id == me.id),
+                        by_person: !by_bot && author.as_ref().is_some_and(|a| a.id != me.id),
                         author,
                         body: s(c, "body"),
                     },
@@ -912,6 +916,7 @@ impl Tracker for Linear {
         Ok(Comment {
             id: s(&r["comment"], "id"),
             by_bridge: author.as_ref().is_some_and(|a| a.id == me.id),
+            by_person: false,
             author,
             body: s(&r["comment"], "body"),
         })
