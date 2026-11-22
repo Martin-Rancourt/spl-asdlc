@@ -4420,6 +4420,46 @@ fn an_angle_pr_that_does_not_name_its_sub_item_drives_nothing_and_is_told_once_p
 }
 
 #[test]
+fn an_angle_pr_from_a_fork_valid_and_report_only_with_green_checks_is_never_merged_and_its_sub_item_stays_out_of_to_deploy()
+ {
+    let w = World::new();
+    w.tick();
+    let mut pr = w.angle_pr(30, "security", &report_json("security", ""));
+    pr.reviews.clear();
+    pr.cross_repository = true;
+    w.github
+        .state
+        .borrow_mut()
+        .comments
+        .insert((repo(), 30), Ok(Vec::new()));
+    w.open_on_branch(vec![pr.clone()]);
+    let github = w.github.writes().len();
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(writes.is_empty(), "no status: {writes:?}");
+    assert!(
+        w.github.writes()[github..].is_empty(),
+        "no merge, no comment: {:?}",
+        &w.github.writes()[github..]
+    );
+    assert_eq!(w.sub_item("security").state.status, Some(Status::Ready));
+
+    // Naming no sub-item, it is not told which key to name either.
+    pr.body = "Angle security".into();
+    w.open_on_branch(vec![pr]);
+    let github = w.github.writes().len();
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(writes.is_empty(), "no status: {writes:?}");
+    assert!(
+        w.github.writes()[github..].is_empty(),
+        "no comment: {:?}",
+        &w.github.writes()[github..]
+    );
+    assert_ne!(w.sub_item("security").state.status, Some(Status::ToDeploy));
+}
+
+#[test]
 fn the_release_consolidation_item_waits_in_backlog_until_every_angle_report_is_merged() {
     let w = World::new();
     let r = w.tick();

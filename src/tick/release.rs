@@ -278,6 +278,13 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
         if cand != candidate.tag || angle == verdict::KEY {
             continue;
         }
+        // An angle PR from a fork is out of the flow: anyone can name a
+        // fork's branch `qa/<candidate>/<angle>`, so it is never merged,
+        // drives no sub-item, counts for nothing in the GO and is told
+        // nothing (not even which sub-item to name).
+        if pr.cross_repository {
+            continue;
+        }
         let state = angle_pr(
             t,
             log,
