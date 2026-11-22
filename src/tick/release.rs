@@ -379,6 +379,10 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
     hold(t, log, report, &item, &candidate, &decision);
     escalate(t, log, report, &item, &candidate, &decision, &branch);
     stagnation(t, log, report, &item, &candidate, &decision);
+    // With `auto_candidate`, the next candidate once the fixes are merged.
+    super::auto_candidate::cut(
+        t, log, report, &item, &candidate, &branch, &label, &decision,
+    );
     false
 }
 
@@ -2983,11 +2987,18 @@ pub fn decide(
                 .into_iter()
                 .filter(|f| !bookkeeping(release, c, f))
                 .collect();
+            // Who cuts the next candidate (rule C8WN): the bridge with
+            // `auto_candidate`, a person or the coordinator otherwise.
+            let next = if release.auto_candidate {
+                "the bridge cuts the next candidate once the release's fixes are merged"
+            } else {
+                "a cut of the next candidate is due"
+            };
             if moved.is_empty() {
                 Vec::new()
             } else {
                 vec![format!(
-                    "{branch} moved past {} ({} file(s)): tag the next candidate",
+                    "{branch} moved past {} ({} file(s)): {next}",
                     c.tag,
                     moved.len()
                 )]
@@ -3056,7 +3067,7 @@ pub fn decide(
 /// (`release.record` rendered for `candidate`), and with a release note
 /// writer the version's note files, where the unified note is written
 /// after the cut.
-fn bookkeeping(release: &Release, c: &Candidate, path: &str) -> bool {
+pub(super) fn bookkeeping(release: &Release, c: &Candidate, path: &str) -> bool {
     release.bookkeeping_paths.iter().any(|b| b == path)
         || verdict::path(&release.record, &c.tag) == path
         || release

@@ -10,6 +10,7 @@
 //! to do writes nothing, anywhere (invariant 7), but the action log's note
 //! of why a PR waits when that reason changes ([`Report::waiting`]).
 
+pub mod auto_candidate;
 pub mod closure;
 pub mod contract_check;
 pub mod contract_decision;
