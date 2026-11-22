@@ -1,0 +1,42 @@
+{
+  "schema": "spl-asdlc/qa-report/2",
+  "candidate": "v1.15.0-rc.1",
+  "angle": "security",
+  "item": "ASDLC-TT8V",
+  "verdict": "go",
+  "checked": [
+    "Tag annotation of v1.15.0-rc.1 (Release-Class: routine, base v1.14.0, surfaces none) and git log/diff v1.14.0..v1.15.0-rc.1 (ASDLC-FGXY, RS9P, WMD9, 32ZC, JU4B, 89DX, F37V, PA3F, KSJS, TBQY)",
+    "cargo test --locked at v1.15.0-rc.1: 1266 passed, 0 failed, workflow tests (tests/workflows/) included",
+    "scripts/check-no-instance-names.sh at v1.15.0-rc.1: exit 0 (identifier forms only; SPL_ASDLC_FORBIDDEN_WORDS is a CI secret, not set locally)",
+    "Fix of v1.14.0-rc.1 security-1 (ASDLC-89DX): src/tick/release.rs pass skips a cross_repository angle PR before angle_pr; src/github/rest.rs reads isCrossRepository with unwrap_or(true), so an unknown head reads as a fork (fail-closed)",
+    "Fix of v1.14.0-rc.1 security-2 (ASDLC-JU4B): src/tick/release.rs trusted_verdict / merged_verdict_pr / candidate_verdict / merged_verdict_state; a merged verdict PR counts only when a coordinator authored it, approved it at head, or the bridge App merged it, else VerdictState::Untrusted holds the GO (src/method/release/go.rs)",
+    "src/tick/tracker_verdict.rs (rule 2W8R, ASDLC-RS9P): who may sign (refusal: by_person + coordination assignee, release assignee or owner.tracker_user), marker parsing (opens_with, fenced_json), inert_json escaping of report text in the request, commit on qa/<candidate>/consolidation, vouches (bridge-authored PR whose file equals the signed text)",
+    "src/tick/release.rs verdict_pr: report-only compare against the release branch, verdict validation, coordinator authorship/approval or tracker vouch, changes-requested at head, required checks, branch state",
+    "src/tracker/linear.rs by_person (user with no botActor, not the bridge) and src/tracker/livela.rs by_person (participant_is_human, default None: no store in this crate implements it, so a Livela verdict comment never counts until the runner does)",
+    "src/tick/auto_candidate.rs (ASDLC-WMD9): dispatch of the cut workflow gated by auto_candidate, GO, max_rc_passes, release tag absent, open fix tickets; tracker_said trusts only by_bridge markers",
+    "src/tick/release.rs merged_angles: how a merged angle report is read and trusted",
+    "f1baf3c (ASDLC-F37V) chore(release) PR that describes a ticket embarks it: same path as any PR merged to main",
+    ".github/workflows diff v1.14.0..v1.15.0-rc.1: only the self-pin v1.11 -> v1.14 and PINNED_BLOB bumps; asdlc-pr-edit.yml and asdlc-release-gate-auto-rerun.yml (workflow_run) unchanged; third-party actions still pinned to full SHAs",
+    "Live GitHub settings (read-only): repository public; ruleset on release/2026-11-22-15-40-utc: deletion, non_fast_forward, pull_request with 0 approvals, required checks `title / conventional-title` and `required-check` (strict)"
+  ],
+  "findings": [
+    {
+      "id": "security-1",
+      "blocking": false,
+      "summary": "On Linear, a verdict given in the tracker is accepted from any user account with no bot actor who is the coordination item's assignee, and anyone with tracker write can set that assignee, so the GitHub `release.coordinators` list no longer bounds who gives the GO.",
+      "anchor": "src/tick/tracker_verdict.rs:166 refusal and :272 owners (cons.assignee, release_item.assignee, owner.tracker_user); src/tracker/linear.rs:637 by_person",
+      "evidence": "Read at v1.15.0-rc.1: the bridge's own verdict PR counts as the coordinator's (verdict_pr by_author via tracker_verdict::vouches) when its file equals the latest verdict comment whose author is by_person and is in owners. owners is read at each tick from the coordination item's and the release item's current assignee. On Linear, by_person is `no botActor && not the bridge`, so an agent or integration that writes through a personal API key (a user account, not an OAuth app actor) counts as a person. Attacker: any member of the tracker workspace (person or agent account) who is not a release coordinator. Path: assign the candidate's coordination item to themselves, post `spl-asdlc:verdict candidate=<tag>` with a valid verdict that judges every finding `go` (or rejects them), and the bridge commits, merges and, with go_policy computed, the GO publishes through the moving minor tag. Before RS9P only a GitHub login in release.coordinators could author or approve a verdict. Needs tracker write (an insider), and on Livela it is dormant (participant_is_human is not implemented in this crate; once it is, signatures rest on the tracker's own author check), hence non-blocking. Obvious fix: also require the signer to map to a configured coordinator (or the owner) rather than to whoever holds the assignee field.",
+      "testable": true,
+      "proposed_test": "tracker_verdict / release_tests: a verdict comment by a person who is the coordination item's assignee but neither a configured coordinator nor owner.tracker_user commits nothing and the GO stays held"
+    },
+    {
+      "id": "security-2",
+      "blocking": false,
+      "summary": "A merged angle report is trusted whoever opened or merged its PR, a fork's included, so a writer can pre-empt an angle by merging a forged report by hand.",
+      "anchor": "src/tick/release.rs:2279 merged_angles",
+      "evidence": "Read at v1.15.0-rc.1: ASDLC-89DX keeps the bridge from merging a fork's angle PR and ASDLC-JU4B makes a hand-merged verdict `untrusted`, but merged_angles still takes every merged PR into the release branch whose head_ref parses as qa/<candidate>/<angle>: it marks the angle Merged, moves its sub-item to To Deploy and reads its report, without looking at pr.author, merged_by or cross_repository. The release branch ruleset requires a PR with 0 approvals, so a holder of write access can merge a report with `verdict: go, findings: []` (from a branch of theirs or a fork) before the real reviewer's PR, which then conflicts on the same path; the coordinator's verdict judges only merged findings. This was named in v1.14.0-rc.1 security-2 (\"Same for an angle report merged by hand\") and its fix covered only the verdict. Attacker already privileged (write access) and a coordinator's trusted verdict still stands before the GO, hence non-blocking. Obvious fix: count a merged angle PR only when the bridge App merged it, as the verdict now does.",
+      "testable": true,
+      "proposed_test": "release_tests: an angle PR merged into the release branch by someone other than the bridge (or from a fork) leaves its angle open and its sub-item out of To Deploy"
+    }
+  ]
+}
