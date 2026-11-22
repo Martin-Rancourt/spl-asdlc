@@ -5239,7 +5239,7 @@ fn a_change_beside_the_candidates_report_is_still_a_tip_gap() {
     assert_eq!(
         w.tip_gaps(),
         vec![format!(
-            "{BRANCH} moved past {CAND} (1 file(s)): tag the next candidate"
+            "{BRANCH} moved past {CAND} (1 file(s)): a cut of the next candidate is due"
         )]
     );
     let r = w.tick();
@@ -5260,7 +5260,7 @@ fn an_earlier_candidates_report_after_the_latest_is_a_tip_gap() {
     assert_eq!(
         w.tip_gaps(),
         vec![format!(
-            "{BRANCH} moved past {CAND2} (1 file(s)): tag the next candidate"
+            "{BRANCH} moved past {CAND2} (1 file(s)): a cut of the next candidate is due"
         )]
     );
     w.moved_past("c2", &[&format!(".spl-asdlc/qa/{CAND2}/security.json")]);
@@ -6556,3 +6556,7 @@ fn a_note_writer_configured_after_the_first_candidate_waits_for_the_next_release
     w.tick();
     assert!(w.note_task(super::release_note::Step::Write).is_none());
 }
+
+// ---- the next candidate cut by the bridge (rule C8WN) ----
+
+mod auto_candidate;
