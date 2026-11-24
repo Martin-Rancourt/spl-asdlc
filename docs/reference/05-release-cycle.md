@@ -36,6 +36,8 @@ Every project has the cycle: a configuration without a `[release]` section is re
 
 Posted by the bridge on the release issue once per RC, once that RC's gate is green (§3): the candidate (tag, commit, class), the range, the embarked tickets with their acceptance criteria (each ticket is found by commit → PR → linked ticket, never by text; the bridge's own review items linked to a PR are not tickets, §11), the business rules touched (the rule files of `.spl-asdlc/business-rules/` the range changes), the link to the evidence pack, the angles and their sub-items. A range, PR, link or evidence pack that cannot be read makes the brief fail; it is never guessed or left empty, and the angle sub-items wait with it, so that no agent starts without its brief.
 
+GitHub lists at most 300 files of a comparison. A range whose list GitHub cut is still read (rule G7CK): its commits are complete, so its tickets are found and labelled, and its brief is written; the brief says the list was cut at 300, and its paths and business rules touched are the first 300 only. A cut list counts as touching every reviewed path (rule X4PV): the brief and the candidate's comment give the class `sensible` whatever the tag says, every configured angle is offered as on any candidate, and a release branch that moved past its candidate by a cut list is a tip gap.
+
 ## The range and the first release
 
 A candidate's range is Git's: the commits of the candidate that the highest published release below its version does not contain. The version and the notes `release prepare` writes (§1), the release class the cut computes, the gate's evidence pack, the embarked tickets, the brief and the closure (§11) all read this one range.

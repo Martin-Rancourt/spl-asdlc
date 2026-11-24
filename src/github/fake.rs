@@ -331,12 +331,14 @@ impl GitHub for FakeGitHub {
             .compares
             .get(&(repo.clone(), base.to_string(), head.to_string()))
         {
-            // Like GitHub's REST compare: a list of 300 files or more is cut,
-            // so the whole comparison is refused.
-            Some(Ok(c)) if c.files.len() >= 300 => Err(ReadError::unreadable(
-                format!("{base}...{head}"),
-                "300 files or more: GitHub cuts the list at 300",
-            )),
+            // Like GitHub's REST compare: a list of 300 files or more is cut
+            // at 300 and marked so; the commits stay whole (rule G7CK).
+            Some(Ok(c)) if c.files.len() >= COMPARE_FILES_CAP => {
+                let mut c = c.clone();
+                c.files.truncate(COMPARE_FILES_CAP);
+                c.files_cut = true;
+                Ok(c)
+            }
             Some(c) => c.clone(),
             None => not_scripted(format!("{base}...{head}")),
         }

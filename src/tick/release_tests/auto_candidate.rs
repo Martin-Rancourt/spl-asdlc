@@ -124,6 +124,23 @@ fn bookkeeping_after_the_candidate_cuts_nothing() {
     assert!(w.dispatches().is_empty(), "{:?}", w.dispatches());
 }
 
+/// Rule X4PV: a list GitHub cut at 300 files holds more than bookkeeping,
+/// even when every file it lists is: the next candidate is cut.
+#[test]
+fn a_cut_file_list_after_the_candidate_is_never_bookkeeping_only() {
+    let w = World::opened(&[AUTO]);
+    let report = format!(".spl-asdlc/qa/{CAND}/security.json");
+    let listed: Vec<&str> = (0..300).map(|_| report.as_str()).collect();
+    w.moved_past("c1", &listed);
+    w.github
+        .state
+        .borrow_mut()
+        .branches
+        .insert(repo(), vec![tag(BRANCH, "q1")]);
+    w.tick();
+    assert_eq!(w.dispatches(), vec![DISPATCH.to_string()]);
+}
+
 #[test]
 fn no_cut_while_a_fix_ticket_of_the_release_is_before_to_deploy() {
     let w = World::opened(&[AUTO]);

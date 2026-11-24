@@ -58,7 +58,8 @@ pub fn cut(
         return;
     }
     let moved = match t.github.compare(&t.repo, &c.sha, branch) {
-        Ok(cmp) => cmp.files.iter().any(|f| !release::bookkeeping(cfg, c, f)),
+        // A list GitHub cut holds more than bookkeeping (rule X4PV).
+        Ok(cmp) => cmp.files_cut || cmp.files.iter().any(|f| !release::bookkeeping(cfg, c, f)),
         Err(e) => {
             t.unreadable(
                 report,

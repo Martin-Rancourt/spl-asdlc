@@ -1784,6 +1784,7 @@ mod tests {
             behind_by: 0,
             commits: Vec::new(),
             files: Vec::new(),
+            files_cut: false,
             base_committed_at: None,
         }
     }

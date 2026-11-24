@@ -26,6 +26,9 @@ use crate::tracker::{Priority, RelationKind};
 /// A coordinator's verdict given in the tracker (ASDLC-RS9P).
 mod tracker_verdict;
 
+/// A range whose file list GitHub cuts at 300 (ASDLC-P3U7).
+mod cut_file_list;
+
 const BRANCH: &str = "release/2026-10-05-14-03-utc";
 const CAND: &str = "acme-v1.2.0-rc.1";
 const LABEL: &str = "release/acme-v1.2.0";
@@ -60,6 +63,7 @@ fn cmp(status: CompareStatus, commits: &[&str], files: &[&str]) -> crate::github
             })
             .collect(),
         files: files.iter().map(|f| f.to_string()).collect(),
+        files_cut: false,
         base_committed_at: None,
     })
 }
@@ -1800,6 +1804,7 @@ fn first_release(extra: &[(&str, &str)]) -> World {
                     })
                     .collect(),
                 files: vec!["README.md".into(), "src/a.rs".into()],
+                files_cut: false,
                 base_committed_at: None,
             }),
         );

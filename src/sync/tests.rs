@@ -313,6 +313,7 @@ fn a_merged_pr_is_released_in_the_oldest_tag_that_holds_its_commit() {
                 behind_by: 0,
                 commits: Vec::new(),
                 files: Vec::new(),
+                files_cut: false,
                 base_committed_at: None,
             })
         };
@@ -701,6 +702,7 @@ fn a_release_is_found_in_a_few_compares_among_hundreds_of_tags() {
                     behind_by: 0,
                     commits: Vec::new(),
                     files: Vec::new(),
+                    files_cut: false,
                     base_committed_at: None,
                 }),
             );
@@ -753,6 +755,7 @@ fn a_release_whose_compare_has_300_files_or_more_holds_its_pr() {
                 behind_by: 0,
                 commits: Vec::new(),
                 files: (0..300).map(|i| format!("f{i}")).collect(),
+                files_cut: false,
                 base_committed_at: None,
             }),
         );

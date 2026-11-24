@@ -362,6 +362,7 @@ fn the_comment_says_so_when_nothing_is_reopened() {
         Some("acme-v1.2.3-rc.1"),
         None,
         &[],
+        false,
         &[],
         AngleScope::LighterPass,
     );
@@ -373,6 +374,7 @@ fn the_comment_says_so_when_nothing_is_reopened() {
         None,
         Some("u"),
         &paths,
+        false,
         &["security".into()],
         AngleScope::Configured,
     );
@@ -380,6 +382,64 @@ fn the_comment_says_so_when_nothing_is_reopened() {
     assert!(!has_marker(&c, &no_qa_angle_marker("acme-v1.2.3-rc.1")));
     assert!(c.contains("… and 5 more"));
     assert!(c.contains(&marker("candidate", &[("tag", "acme-v1.2.3-rc.1")])));
+}
+
+/// Rules G7CK, X4PV: a list GitHub cut at 300 is said cut, never counted
+/// as what it is not, and makes the candidate `sensible`.
+#[test]
+fn a_file_list_github_cut_is_said_cut_and_makes_the_class_sensible() {
+    let paths: Vec<String> = (0..300).map(|i| format!("p{i}")).collect();
+    let c = candidate_comment(
+        "acme-v1.2.3-rc.2",
+        "routine",
+        Some("acme-v1.2.3-rc.1"),
+        None,
+        &paths,
+        true,
+        &["security".into()],
+        AngleScope::Configured,
+    );
+    assert!(
+        c.contains("- Class: sensible (GitHub cut the file list at 300"),
+        "{c}"
+    );
+    assert!(
+        c.contains("- Paths touched since the previous candidate: 300 file(s) or more: GitHub cut the list at 300\n"),
+        "{c}"
+    );
+    assert!(c.contains("Angles offered on this candidate once its gate is green: security."));
+
+    let b = Brief {
+        candidate: "acme-v1.2.3-rc.1".into(),
+        sha: "abc".into(),
+        class: "routine".into(),
+        last_release: Some("acme-v1.2.2".into()),
+        previous_candidate: None,
+        paths_since_release: paths.clone(),
+        paths_since_release_cut: true,
+        paths_since_candidate: None,
+        paths_since_candidate_cut: false,
+        gate_url: None,
+        evidence_url: None,
+        tickets: vec![],
+        untracked: vec![],
+        rule_files_touched: vec![],
+        no_qa_angle: false,
+    };
+    let text = brief(&b);
+    assert!(
+        text.contains("- Diff since the last published release: `acme-v1.2.2` — 300 file(s) or more: GitHub cut the list at 300\n"),
+        "{text}"
+    );
+    assert!(text.contains("- Class: sensible (GitHub cut the file list at 300: it counts as touching every reviewed path; the tag says routine)\n"), "{text}");
+    assert!(text.contains("#### File list cut by GitHub"), "{text}");
+    let whole = brief(&Brief {
+        paths_since_release_cut: false,
+        ..b
+    });
+    assert!(whole.contains("- Class: routine\n"), "{whole}");
+    assert!(whole.contains("— 300 file(s)\n"), "{whole}");
+    assert!(!whole.contains("File list cut by GitHub"), "{whole}");
 }
 
 #[test]
@@ -391,7 +451,9 @@ fn the_brief_names_tickets_criteria_rules_and_distinguishes_first_from_unresolva
         last_release: Some("acme-v1.2.2".into()),
         previous_candidate: Some("acme-v1.2.3-rc.1".into()),
         paths_since_release: vec![".spl-asdlc/business-rules/BR-ACME-001.md".into()],
+        paths_since_release_cut: false,
         paths_since_candidate: None,
+        paths_since_candidate_cut: false,
         gate_url: Some("https://github.com/example-org/acme/actions/runs/1".into()),
         evidence_url: Some("https://github.com/example-org/acme/actions/runs/1#artifacts".into()),
         tickets: vec![
@@ -913,6 +975,7 @@ fn a_release_with_no_qa_angle_says_so_in_its_texts() {
         None,
         None,
         &[],
+        false,
         &[],
         AngleScope::NoQaAngle,
     );
@@ -937,7 +1000,9 @@ fn a_release_with_no_qa_angle_says_so_in_its_texts() {
         last_release: None,
         previous_candidate: None,
         paths_since_release: vec![],
+        paths_since_release_cut: false,
         paths_since_candidate: None,
+        paths_since_candidate_cut: false,
         gate_url: Some("https://github.com/example-org/acme/actions/runs/1".into()),
         evidence_url: None,
         tickets: vec![],
