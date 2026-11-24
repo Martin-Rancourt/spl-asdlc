@@ -396,8 +396,10 @@ fn a_list_that_is_not_a_list_is_unreadable() {
 
 // ---- compare ----
 
+/// A file list GitHub cut at 300 is read all the same, marked cut, with
+/// every commit (rule G7CK, ASDLC-P3U7).
 #[test]
-fn a_comparison_reads_every_commit_and_refuses_a_cut_file_list() {
+fn a_comparison_reads_every_commit_and_marks_a_cut_file_list() {
     let (gh, t) = client();
     let path = "/repos/example-org/acme/compare/acme-v1.0.0...acme-v1.1.0-rc.1?per_page=100";
     t.on(
@@ -440,23 +442,29 @@ fn a_comparison_reads_every_commit_and_refuses_a_cut_file_list() {
     );
     assert_eq!(c.commits[1].committed_at, None);
 
-    let (gh, t) = client();
-    let files: Vec<String> = (0..300)
-        .map(|i| format!(r#"{{"filename":"f{i}"}}"#))
-        .collect();
-    t.on(
-        "GET",
-        &url(path),
-        200,
-        &format!(
-            r#"{{"status":"ahead","total_commits":0,"commits":[],"files":[{}]}}"#,
-            files.join(",")
-        ),
-    );
-    assert!(
-        gh.compare(&repo(), "acme-v1.0.0", "acme-v1.1.0-rc.1")
-            .is_err()
-    );
+    assert!(!c.files_cut, "one file is a whole list");
+
+    for (n, cut) in [(299, false), (300, true)] {
+        let (gh, t) = client();
+        let files: Vec<String> = (0..n)
+            .map(|i| format!(r#"{{"filename":"f{i}"}}"#))
+            .collect();
+        t.on(
+            "GET",
+            &url(path),
+            200,
+            &format!(
+                r#"{{"status":"ahead","total_commits":1,"commits":[{{"sha":"a1","commit":{{"message":"feat: one"}}}}],"files":[{}]}}"#,
+                files.join(",")
+            ),
+        );
+        let c = gh
+            .compare(&repo(), "acme-v1.0.0", "acme-v1.1.0-rc.1")
+            .unwrap();
+        assert_eq!(c.files.len(), n);
+        assert_eq!(c.files_cut, cut, "{n} files");
+        assert_eq!(c.commits.len(), 1, "the commits are whole");
+    }
 }
 
 /// The status alone is read whatever the number of files: GitHub's cut
