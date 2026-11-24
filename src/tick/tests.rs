@@ -3529,6 +3529,7 @@ fn base_for_red(w: &World, head: &str, status: crate::github::CompareStatus) {
             behind_by: 1,
             commits: vec![],
             files: vec![],
+            files_cut: false,
             base_committed_at: None,
         }),
     );
@@ -3808,6 +3809,7 @@ fn shipped(w: &World, merge_sha: &str) {
             behind_by: 0,
             commits: vec![],
             files: vec![],
+            files_cut: false,
             base_committed_at: None,
         }),
     );

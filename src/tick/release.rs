@@ -709,9 +709,9 @@ fn record_candidate(
     match tracker_said(t, &item.key, &marker) {
         Ok(true) => {}
         Ok(false) => {
-            let paths = match previous.map(|p| t.github.compare(&t.repo, p, &c.sha)) {
-                None => Vec::new(),
-                Some(Ok(cmp)) => cmp.files,
+            let (paths, paths_cut) = match previous.map(|p| t.github.compare(&t.repo, p, &c.sha)) {
+                None => (Vec::new(), false),
+                Some(Ok(cmp)) => (cmp.files, cmp.files_cut),
                 Some(Err(e)) => {
                     // Never a comment with a range that was not read: it would
                     // be said once, and wrong.
@@ -735,7 +735,7 @@ fn record_candidate(
             let body = for_tracker(
                 t,
                 &texts::candidate_comment(
-                    &c.tag, &c.class, previous, None, &paths, &offered, scope,
+                    &c.tag, &c.class, previous, None, &paths, paths_cut, &offered, scope,
                 ),
             );
             t.act(
@@ -1571,16 +1571,20 @@ fn brief_facts(
 ) -> Result<texts::Brief, String> {
     // A first release (no earlier one) is measured from the repository's
     // root: every path at the candidate.
+    // A file list GitHub cut at 300 is read all the same (rule G7CK): the
+    // brief says so, and the candidate is briefed `sensible` (rule X4PV).
     let (last, cmp) = release_range(t, shape, c)?;
     let paths_since_release = cmp.files;
-    let paths_since_candidate = match previous {
-        Some(p) => Some(
-            t.github
+    let paths_since_release_cut = cmp.files_cut;
+    let (paths_since_candidate, paths_since_candidate_cut) = match previous {
+        Some(p) => {
+            let cmp = t
+                .github
                 .compare(&t.repo, p, &c.sha)
-                .map_err(|e| e.to_string())?
-                .files,
-        ),
-        None => None,
+                .map_err(|e| e.to_string())?;
+            (Some(cmp.files), cmp.files_cut)
+        }
+        None => (None, false),
     };
     let embarked = embarked_items(t, shape, c)?;
     let untracked = embarked
@@ -1612,7 +1616,9 @@ fn brief_facts(
         last_release: last,
         previous_candidate: previous.map(str::to_string),
         paths_since_release,
+        paths_since_release_cut,
         paths_since_candidate,
+        paths_since_candidate_cut,
         gate_url: Some(run.url.clone()),
         evidence_url: Some(evidence_url),
         tickets,
@@ -2921,18 +2927,21 @@ pub fn decide(
     // it. An earlier candidate's report is a gap.
     let tip_gaps = match t.github.compare(&t.repo, &c.sha, branch) {
         Ok(cmp) => {
+            let cut = cmp.files_cut;
             let moved: Vec<String> = cmp
                 .files
                 .into_iter()
                 .filter(|f| !bookkeeping(release, c, f))
                 .collect();
-            if moved.is_empty() {
+            // A list GitHub cut is more than bookkeeping: its other files
+            // are not known (rule X4PV).
+            if moved.is_empty() && !cut {
                 Vec::new()
             } else {
                 vec![format!(
-                    "{branch} moved past {} ({} file(s)): tag the next candidate",
+                    "{branch} moved past {} ({}): tag the next candidate",
                     c.tag,
-                    moved.len()
+                    texts::file_count(&moved, cut)
                 )]
             }
         }
@@ -3222,6 +3231,15 @@ fn go_target(t: &Tick, c: &Candidate, branch: &str) -> Result<String, String> {
         .github
         .compare(&t.repo, &c.sha, branch)
         .map_err(|e| format!("{branch} could not be compared with {}: {e}", c.tag))?;
+    // A list GitHub cut may hide the note files and others: the tip is
+    // never tagged on it (rule X4PV).
+    if cmp.files_cut {
+        return Err(format!(
+            "{branch} differs from {} by {}: the release cannot be tagged on its tip; tag the next candidate",
+            c.tag,
+            texts::file_count(&cmp.files, true)
+        ));
+    }
     if !cmp.files.iter().any(|f| notes.contains(f)) {
         return Ok(c.sha.clone());
     }

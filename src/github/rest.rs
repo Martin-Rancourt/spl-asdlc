@@ -19,8 +19,6 @@ const API_VERSION: &str = "2022-11-28";
 const MAX_OPEN_PULLS: usize = 1000;
 /// GitHub lists at most 3000 files of a PR.
 const MAX_PULL_FILES: usize = 3000;
-/// GitHub's compare lists at most 300 files.
-const MAX_COMPARE_FILES: usize = 300;
 /// A paged list longer than this many pages is refused.
 const MAX_PAGES: usize = 1000;
 /// A file read out of an artifact larger than this is refused.
@@ -997,21 +995,17 @@ impl GitHub for RestGitHub {
             .iter()
             .map(|f| str_of(f, "filename"))
             .collect();
-        if files.len() >= MAX_COMPARE_FILES {
-            return Err(ReadError::unreadable(
-                &what,
-                format!(
-                    "{} files or more: GitHub cuts the list at {MAX_COMPARE_FILES}",
-                    files.len()
-                ),
-            ));
-        }
+        // GitHub lists at most 300 files: a list that long may be cut. The
+        // commits are still complete, so the comparison is read, its file
+        // list marked cut (rule G7CK).
+        let files_cut = files.len() >= COMPARE_FILES_CAP;
         Ok(Comparison {
             status,
             ahead_by: first["ahead_by"].as_u64().unwrap_or(0),
             behind_by: first["behind_by"].as_u64().unwrap_or(0),
             commits,
             files,
+            files_cut,
             base_committed_at: time_of(&first["base_commit"]["commit"]["committer"], "date"),
         })
     }
@@ -1087,6 +1081,8 @@ impl GitHub for RestGitHub {
             behind_by: 0,
             commits,
             files,
+            // The tree is whole or refused.
+            files_cut: false,
             base_committed_at: None,
         })
     }

@@ -259,7 +259,12 @@ pub enum CompareStatus {
     Diverged,
 }
 
-/// `base...head` as GitHub's compare answers it, complete or refused.
+/// GitHub's compare lists at most this many files: a list this long may
+/// be cut (ASDLC-P3U7).
+pub const COMPARE_FILES_CAP: usize = 300;
+
+/// `base...head` as GitHub's compare answers it: its commits complete or
+/// refused, its file list complete or marked cut.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Comparison {
     pub status: CompareStatus,
@@ -267,8 +272,14 @@ pub struct Comparison {
     pub behind_by: u64,
     /// Commits of `base..head`, oldest first.
     pub commits: Vec<CommitSummary>,
-    /// Files changed between the merge base and `head`.
+    /// Files changed between the merge base and `head`: every one, unless
+    /// `files_cut`.
     pub files: Vec<String>,
+    /// GitHub cut the file list at [`COMPARE_FILES_CAP`]: `files` holds
+    /// the first ones only, and the diff may have more. A reader that needs
+    /// every path counts a cut list as touching every path it looks for
+    /// (rules G7CK, X4PV).
+    pub files_cut: bool,
     /// The committer date of `base`'s commit; `None` when GitHub did not
     /// give it.
     pub base_committed_at: Option<Timestamp>,

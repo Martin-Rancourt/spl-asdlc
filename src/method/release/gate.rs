@@ -209,6 +209,18 @@ pub fn class_of_annotation(message: Option<&str>) -> Class {
     Class::Unclassified
 }
 
+/// The class a candidate is briefed and reviewed with (rule X4PV): its
+/// tag's, unless GitHub cut a file list of its range at 300. A cut list
+/// counts as touching every reviewed path, so the candidate is `sensible`:
+/// never fewer reviews because GitHub stopped listing.
+pub fn class_with_cut_list(class: &str, files_cut: bool) -> String {
+    if files_cut {
+        Class::Sensible.name().to_string()
+    } else {
+        class.to_string()
+    }
+}
+
 /// The class a cut computes (REQ-REL-011): `sensible` whenever the diff or
 /// the reviewed paths (the union of the review angles' `paths`) could not
 /// be read, or a reviewed path is touched; `routine` otherwise, and when no
@@ -516,6 +528,16 @@ mod tests {
             Class::Unclassified,
             "a lightweight tag is unclassified"
         );
+    }
+
+    /// Rule X4PV: a file list GitHub cut counts as touching every reviewed
+    /// path, so the candidate is `sensible` whatever its tag says.
+    #[test]
+    fn a_cut_file_list_makes_the_candidate_sensible() {
+        for tagged in ["routine", "unclassified", "sensible"] {
+            assert_eq!(class_with_cut_list(tagged, true), "sensible", "{tagged}");
+            assert_eq!(class_with_cut_list(tagged, false), tagged);
+        }
     }
 
     #[test]

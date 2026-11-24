@@ -12,8 +12,10 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+use crate::github::COMPARE_FILES_CAP;
 use crate::method::contract::is_acceptance_heading;
 use crate::method::markdown;
+use crate::method::release::gate;
 
 pub mod protocol;
 
@@ -757,17 +759,47 @@ pub fn no_qa_angle_marker(candidate: &str) -> String {
     marker("no-qa-angle", &[("candidate", candidate)])
 }
 
+/// How many files a list holds, said as GitHub gave it: a list GitHub cut
+/// at [`COMPARE_FILES_CAP`] says so, never a count it is not (rule G7CK).
+pub fn file_count(paths: &[String], cut: bool) -> String {
+    if cut {
+        format!(
+            "{} file(s) or more: GitHub cut the list at {COMPARE_FILES_CAP}",
+            paths.len()
+        )
+    } else {
+        format!("{} file(s)", paths.len())
+    }
+}
+
+/// The class a candidate is said with (rule X4PV): a file list GitHub cut
+/// counts as touching every reviewed path, so the candidate is `sensible`
+/// whatever its tag says, and says why.
+pub fn class_line(class: &str, cut: bool) -> String {
+    match gate::class_with_cut_list(class, cut) {
+        c if c == class => format!("- Class: {class}\n"),
+        c => format!(
+            "- Class: {c} (GitHub cut the file list at {COMPARE_FILES_CAP}: it counts as touching every reviewed path; the tag says {class})\n"
+        ),
+    }
+}
+
 /// The comment posted once per candidate (REQ-REL-041).
+#[allow(clippy::too_many_arguments)]
 pub fn candidate_comment(
     candidate: &str,
     class: &str,
     previous: Option<&str>,
     gate_url: Option<&str>,
     paths_since_previous: &[String],
+    paths_cut: bool,
     offered: &[String],
     scope: AngleScope,
 ) -> String {
-    let mut out = format!("### Candidate `{candidate}`\n\n- Class: {class}\n");
+    let mut out = format!(
+        "### Candidate `{candidate}`\n\n{}",
+        class_line(class, paths_cut)
+    );
     out.push_str(&match previous {
         Some(p) => format!("- Previous candidate: `{p}`\n"),
         None => "- First candidate.\n".to_string(),
@@ -777,7 +809,11 @@ pub fn candidate_comment(
     }
     out.push_str(&format!(
         "- Paths touched since the previous candidate: {}\n",
-        paths_since_previous.len()
+        if paths_cut {
+            file_count(paths_since_previous, true)
+        } else {
+            paths_since_previous.len().to_string()
+        }
     ));
     for p in paths_since_previous.iter().take(20) {
         out.push_str(&format!("  - `{p}`\n"));
@@ -829,7 +865,11 @@ pub struct Brief {
     pub last_release: Option<String>,
     pub previous_candidate: Option<String>,
     pub paths_since_release: Vec<String>,
+    /// GitHub cut `paths_since_release` at 300 (rule G7CK).
+    pub paths_since_release_cut: bool,
     pub paths_since_candidate: Option<Vec<String>>,
+    /// GitHub cut `paths_since_candidate` at 300 (rule G7CK).
+    pub paths_since_candidate_cut: bool,
     pub gate_url: Option<String>,
     pub evidence_url: Option<String>,
     pub tickets: Vec<BriefTicket>,
@@ -840,23 +880,26 @@ pub struct Brief {
 }
 
 pub fn brief(b: &Brief) -> String {
+    let cut = b.paths_since_release_cut || b.paths_since_candidate_cut;
     let mut out = format!(
-        "### Release brief — `{}`\n\n- Commit: `{}`\n- Class: {}\n",
-        b.candidate, b.sha, b.class
+        "### Release brief — `{}`\n\n- Commit: `{}`\n{}",
+        b.candidate,
+        b.sha,
+        class_line(&b.class, cut)
     );
+    let since_release = file_count(&b.paths_since_release, b.paths_since_release_cut);
     out.push_str(&match &b.last_release {
-        Some(t) => format!(
-            "- Diff since the last published release: `{t}` — {} file(s)\n",
-            b.paths_since_release.len()
-        ),
+        Some(t) => format!("- Diff since the last published release: `{t}` — {since_release}\n"),
         None => format!(
-            "- Diff since the repository's root: first release, no earlier release to measure from — {} file(s)\n",
-            b.paths_since_release.len()
+            "- Diff since the repository's root: first release, no earlier release to measure from — {since_release}\n"
         ),
     });
     out.push_str(&match (&b.previous_candidate, &b.paths_since_candidate) {
         (None, _) => "- Diff since the previous candidate: first candidate of this version, identical to the diff above\n".to_string(),
-        (Some(p), Some(paths)) => format!("- Diff since the previous candidate: `{p}` — {} file(s)\n", paths.len()),
+        (Some(p), Some(paths)) => format!(
+            "- Diff since the previous candidate: `{p}` — {}\n",
+            file_count(paths, b.paths_since_candidate_cut)
+        ),
         (Some(p), None) => format!("- Diff since the previous candidate: `{p}` not found — diff cannot be computed\n"),
     });
     if let Some(u) = &b.gate_url {
@@ -929,6 +972,11 @@ pub fn brief(b: &Brief) -> String {
         out.push_str(&format!(
             "\n#### Business rules touched\n\n{}\n\nEach rule touched must have a named test that is green.\n",
             b.rule_files_touched.iter().map(|p| format!("- `{p}`")).collect::<Vec<_>>().join("\n")
+        ));
+    }
+    if b.paths_since_release_cut {
+        out.push_str(&format!(
+            "\n#### File list cut by GitHub\n\nGitHub lists at most {COMPARE_FILES_CAP} files of a comparison, and cut this one: the paths below and the business rules touched are the first {COMPARE_FILES_CAP} only. The range's commits, and so its tickets, are complete. The cut list counts as touching every reviewed path: the candidate is reviewed as `sensible`, with every configured angle. Read the whole diff with `git diff --name-only` on the range.\n"
         ));
     }
     let details = |title: &str, paths: &[String]| {
