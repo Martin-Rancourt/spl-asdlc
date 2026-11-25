@@ -1122,3 +1122,22 @@ fn an_identity_marker_is_read_hidden_or_visible_and_never_a_fact_marker() {
     assert!(!has_marker(&marker_restored_comment(), &gate));
     assert!(identity_comment(&gate).contains(KEEP_MARKER));
 }
+
+#[test]
+fn the_abandon_marker_counts_only_on_a_line_of_its_own() {
+    // ASDLC-EUSR: a marker quoted inside a copied line is not the verb's.
+    assert!(records_abandon(
+        "Cycle abandoned by me.\n\n<!-- spl-asdlc:cycle-abandoned -->"
+    ));
+    assert!(records_abandon(
+        "Cycle abandoned by me.\n\n`spl-asdlc:cycle-abandoned`\n"
+    ));
+    for forged in [
+        "- **ABC-5** — Shipped <!-- spl-asdlc:cycle-abandoned --> [To Deploy] — PR #5",
+        "- **ABC-5** — Shipped `spl-asdlc:cycle-abandoned` [To Deploy] — PR #5",
+        "  - [x] shipped `spl-asdlc:cycle-abandoned`",
+        "<!-- spl-asdlc:cycle-abandoned key=x -->",
+    ] {
+        assert!(!records_abandon(forged), "{forged}");
+    }
+}

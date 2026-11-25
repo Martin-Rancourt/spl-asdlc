@@ -1,0 +1,23 @@
+{
+  "schema": "spl-asdlc/qa-verdict/1",
+  "candidate": "v1.16.0-rc.1",
+  "item": "ASDLC-PVNZ",
+  "verdict": "hold",
+  "between_angles": "Compared the sole configured security angle with the release gate boundary and the complete v1.15.0..v1.16.0-rc.1 change set covered by its checked evidence. Security owns the trust-boundary and release-state review; build, lint, tests and packaging remain gate concerns. I also checked the interaction between tracker-controlled release state, blocker identity across cycles, and the lighter later-pass policy. No concern was unowned and no pair of QA angles could have assumed the other covered it because no second QA angle is configured.",
+  "findings": [
+    {
+      "angle": "security",
+      "id": "security-1",
+      "decision": "accepted",
+      "blocking": true,
+      "reason": "The release-item lookup treats any tracker-side Canceled status as an abandoned cycle, while cycle_start can restart at the same rc.1 and blocker discovery is scoped to the newly created release item. That makes an open blocking finding disappear from the GO facts and permits publication without the authenticated abandon flow or a new cut. The report documents the trigger, impact, regression boundary and a reproducible test, and this direct bypass of an existing release blocker must prevent shipment."
+    },
+    {
+      "angle": "security",
+      "id": "security-2",
+      "decision": "accepted",
+      "blocking": false,
+      "reason": "The candidate-presence check proves that bridge-recorded merged PRs are included, but not that their diff satisfies the blocking finding; under gate-and-coordinator later passes, no fresh verdict evaluates that semantic gap. The issue is real and testable, but this repository uses the full later-pass policy, where every new candidate receives a full security report and coordinator verdict, so it does not block this candidate."
+    }
+  ]
+}

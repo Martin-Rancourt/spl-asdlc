@@ -1,0 +1,38 @@
+{
+  "schema": "spl-asdlc/qa-report/2",
+  "candidate": "v1.16.0-rc.1",
+  "angle": "security",
+  "item": "ASDLC-ESCJ",
+  "verdict": "hold",
+  "checked": [
+    "Tag annotation of v1.16.0-rc.1 (Release-Class: routine, base v1.15.0, surfaces none: review.angles is empty, so no reviewed path exists) and git log/diff v1.15.0..v1.16.0-rc.1 (ASDLC-M4TN, P3U7, SEJA, QFSB, R7K6)",
+    "cargo test --locked at v1.16.0-rc.1: 1289 passed, 0 failed (lib 1048, workflow tests tests/workflows/ 198, other suites 43)",
+    "scripts/check-no-instance-names.sh at v1.16.0-rc.1: exit 0 (identifier forms only; SPL_ASDLC_FORBIDDEN_WORDS is a CI secret, not set locally)",
+    "ASDLC-R7K6 (src/tick/release.rs cycle_start, release_item, find_release_item; src/verbs.rs abandon and cycle): how an abandoned cycle is recognised (release item status Canceled only) and what the next tick does with the same candidate; probed in-crate with the fake tracker (tracker-only Canceled vs the `release abandon` verb), probes not committed",
+    "ASDLC-SEJA (src/tick/release.rs decide, blocker_fix, merged_pr_numbers; src/method/ticket_state.rs FixMerged; src/method/release/go.rs fix_gaps): what frees a blocking finding from the GO, which inputs are bridge-authored (merged_pr comments by_bridge) and which are tracker-writable (status, boxes, label), ancestry check fail-closed on unreadable PR or compare",
+    "ASDLC-P3U7 / rules G7CK, X4PV (src/github/rest.rs compare, src/github/types.rs COMPARE_FILES_CAP, src/method/release/gate.rs class_with_cut_list, src/method/texts.rs, src/tick/auto_candidate.rs, go_target): a cut list is never read as bookkeeping-only, go_target refuses to tag a tip on a cut list, tip gap raised; class_with_cut_list only changes texts, angles offered independently of class",
+    "ASDLC-QFSB (src/tick/release.rs gate_consolidation): only skips removing an implementation block also listed in blocked_by; no trust change",
+    ".github/workflows diff v1.15.0..v1.16.0-rc.1: only self-pin v1.14 -> v1.15 in callers and the documented example; no permissions, trigger, secret or third-party action change",
+    "Open findings of v1.15.0-rc.1 (security-1 tracker verdict signer bound by assignee, security-2 merged_angles trusts any merger) re-read at the tag: code unchanged (src/tick/tracker_verdict.rs, merged_angles), still open, already filed by that candidate; not re-reported here"
+  ],
+  "findings": [
+    {
+      "id": "security-1",
+      "blocking": true,
+      "summary": "Setting the release item to Canceled in the tracker, with no `release abandon` and no new cut, opens a fresh cycle on the same held candidate; its open blocking findings no longer hold the GO and the bridge tags and publishes the release.",
+      "anchor": "src/tick/release.rs:628 release_item (Canceled items filtered out), :532 cycle_start, :3052 decide (blockers read from the new item's relations and markers only); new in ASDLC-R7K6",
+      "evidence": "Probed in-crate at v1.16.0-rc.1 (fake tracker/GitHub, World::without_angles in src/tick/release_tests.rs): candidate acme-v1.2.0-rc.1, gate green, blocking finding ABC-9 (release label, blocker marker naming the release item, `blocks` it, status Ready) -> decision `go=false, open blocking issues: ABC-9`. Then one tracker write: set_status(release item, Canceled). Next tick: a second release item ABC-1007 is created for the same rc.1 (cycle_start gives first_rc=1: the range 1..rc is empty), decide reads blockers only from ABC-1007's relations and markers naming ABC-1007, so ABC-9 (still Ready) is ignored, `go=true`, and the GitHub writes are `create-tag acme-v1.2.0 at c1` and `create-release acme-v1.2.0`. With angles configured (World::new) the same cancel also opens a new item on rc.1 with the angles offered again; an honest re-review cannot re-hold it with the same finding ids, since finding tickets are keyed by candidate/angle/finding id whatever became of them, and the angle and verdict PRs already merged into the release branch for rc.1 are still there (that combination not probed). The `release abandon` verb itself does not lead there in the probe (it deletes the release branch: `no release branch holds acme-v1.2.0-rc.1`), so the hole is the tracker-only cancel. Before R7K6 a Canceled release item read as a closed cycle and never reached a GO. Attacker: any tracker participant who can change the release item's status (on Livela any agent or person of the project, on Linear any workspace member), with no GitHub write and not a coordinator; also an accidental cancel. Impact: a release held by a blocking security finding ships to every caller through the moving minor tag. Spec 05 section 13 says the NEXT CUT starts a new cycle from main; obvious fix: count a Canceled release item as abandoned only with the abandon verb's own bridge marker, and start a new cycle only at a candidate newer than the last one the abandoned item recorded.",
+      "testable": true,
+      "proposed_test": "release_tests::abandoned_cycle: a release item set Canceled in the tracker without `release abandon`, its candidate held by an open blocking finding and no new cut, creates no second release item and writes no tag or release"
+    },
+    {
+      "id": "security-2",
+      "blocking": false,
+      "summary": "A blocking finding stops holding the GO once its ticket is To Deploy with any bridge-recorded merged PR in the candidate; under later_passes = gate-and-coordinator no verdict is asked on that candidate, so nobody judges that the merge fixes the finding.",
+      "anchor": "src/tick/release.rs:3195 blocker_fix and :3247 merged_pr_numbers; src/tick/release.rs:346 (lighter pass: VerdictState::NotNeeded)",
+      "evidence": "Read at v1.16.0-rc.1 (ASDLC-SEJA): blocker_fix returns InCandidate when the ticket carries the release label and the blocker marker, its status is To Deploy or Post Deploy, and every PR listed in by_bridge `merged_pr:` comments is merged and an ancestor of the candidate. The status comes from ticket_state::decide (every box checked + a PR merged), and the boxes are tracker-writable; the PR only has to name the ticket. On a later pass under gate-and-coordinator (src/tick/release.rs lighter_pass) the candidate asks no coordinator verdict, so a docs-only or partial PR naming the finding plus ticked boxes frees the GO and auto_candidate cuts and publishes with no human or angle re-reading the fix. Before SEJA such a blocker held until Done or a human requalification. Needs a PR merged by a writer and later_passes = gate-and-coordinator (this repository runs the default `full`, where the new candidate gets a full review and a verdict), hence non-blocking. Obvious fix: under the lighter policy, still require a coordinator verdict (or the finding's proposed_test) on a candidate that frees a blocking finding.",
+      "testable": true,
+      "proposed_test": "release_tests: under later_passes = gate-and-coordinator, a blocking finding at To Deploy whose merged PR is in rc.2 does not let rc.2 reach a GO without a coordinator verdict on rc.2"
+    }
+  ]
+}

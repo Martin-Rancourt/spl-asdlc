@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.16.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.15.0...v1.16.0) (2026-11-25)
+
+
+### Bug Fixes
+
+* **github:** read a comparison GitHub cuts at 300 files, its list marked cut (ASDLC-P3U7) ([#193](https://github.com/Martin-Rancourt/spl-asdlc/issues/193)) ([ed00844](https://github.com/Martin-Rancourt/spl-asdlc/commit/ed00844eb6f7975973199044e04f45030213ec97))
+* **release:** a blocking finding whose fix is in the candidate no longer holds the GO (ASDLC-SEJA) ([#194](https://github.com/Martin-Rancourt/spl-asdlc/issues/194)) ([25bb024](https://github.com/Martin-Rancourt/spl-asdlc/commit/25bb024bb59b0720ede701184e98970dd9a391b1))
+* **release:** keep a consolidation's implementation block from an angle (ASDLC-QFSB) ([#195](https://github.com/Martin-Rancourt/spl-asdlc/issues/195)) ([e65fade](https://github.com/Martin-Rancourt/spl-asdlc/commit/e65fade949b8d3bed14351650c9027fc42f0b4dc))
+* **release:** start a new cycle at the next cut after an abandon (ASDLC-R7K6) ([#196](https://github.com/Martin-Rancourt/spl-asdlc/issues/196)) ([3e8979c](https://github.com/Martin-Rancourt/spl-asdlc/commit/3e8979cc44d94d1cccc0631343a8488a1df7c233))
+
+
+### Chores
+
+* move SPL-ASDLC to v1.15 (ASDLC-M4TN) ([#192](https://github.com/Martin-Rancourt/spl-asdlc/issues/192)) ([32902cb](https://github.com/Martin-Rancourt/spl-asdlc/commit/32902cbd5e70c132e2ab173910077d9c788035da))
+* **qa:** consolidate v1.15.0-rc.1 (ASDLC-UHG8) ([5fad8e9](https://github.com/Martin-Rancourt/spl-asdlc/commit/5fad8e954a39438fde954f17920f2939525b195a))
+* **release:** security report for v1.15.0-rc.1 (ASDLC-TT8V) ([0b890b4](https://github.com/Martin-Rancourt/spl-asdlc/commit/0b890b4c4ad7afb395da2c2af38e38e7b919a278))
+
 ## [1.15.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.14.0...v1.15.0) (2026-11-22)
 
 
