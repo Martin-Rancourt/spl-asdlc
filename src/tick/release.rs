@@ -536,7 +536,7 @@ pub fn cycle_start(t: &Tick, shape: &Shape, version: Version, rc: u64) -> Result
         product: shape.product.clone(),
         version: vocabulary::normalise_version(&v),
     };
-    let abandoned: Vec<Item> = t
+    let canceled: Vec<Item> = t
         .tracker
         .list_by_label(&label)
         .map_err(|e| format!("the items labelled {label}: {e}"))?
@@ -545,11 +545,16 @@ pub fn cycle_start(t: &Tick, shape: &Shape, version: Version, rc: u64) -> Result
         .filter(|i| texts::bridge_item(&i.description, i.parent.as_deref()).as_ref() == Some(&want))
         .collect();
     let mut last = 0;
-    for item in &abandoned {
+    for item in &canceled {
         let comments = t
             .tracker
             .comments(&item.key)
             .map_err(|e| format!("the comments of {}: {e}", item.key))?;
+        if !comments.iter().any(|c| {
+            c.by_bridge && texts::has_marker(&c.body, &texts::marker("cycle-abandoned", &[]))
+        }) {
+            continue;
+        }
         for n in (last + 1)..rc {
             let marker = texts::marker("candidate", &[("tag", &shape.candidate_tag(version, n))]);
             if comments
@@ -621,12 +626,20 @@ fn release_item(
         version: vocabulary::normalise_version(&v),
     };
     let found: Vec<Item> = match t.tracker.list_by_label(&label) {
-        // An abandoned cycle's item: the next cycle of the version gets its
-        // own (spec 05 §13), as `find_release_item` reads it.
-        Ok(items) => items
-            .into_iter()
-            .filter(|i| i.state.status != Some(Status::Canceled))
-            .collect(),
+        Ok(items) => {
+            let mut found = Vec::new();
+            for item in items {
+                match cycle_was_abandoned(t, &item) {
+                    Ok(false) => found.push(item),
+                    Ok(true) => {}
+                    Err(e) => {
+                        t.unreadable(report, &object, e);
+                        return None;
+                    }
+                }
+            }
+            found
+        }
         Err(e) => {
             t.unreadable(report, &object, format!("the items labelled {label}: {e}"));
             return None;
@@ -749,15 +762,19 @@ pub fn find_release_item(
         product: shape.product.clone(),
         version: vocabulary::normalise_version(&v),
     };
-    let mut mine: Vec<Item> = t
+    let candidates: Vec<Item> = t
         .tracker
         .list_by_label(&label)
         .map_err(|e| format!("the items labelled {label}: {e}"))?
         .into_iter()
         .filter(|i| texts::bridge_item(&i.description, i.parent.as_deref()).as_ref() == Some(&want))
-        // An abandoned cycle's item: the next cycle of the version gets its own.
-        .filter(|i| i.state.status != Some(Status::Canceled))
         .collect();
+    let mut mine = Vec::new();
+    for item in candidates {
+        if !cycle_was_abandoned(t, &item)? {
+            mine.push(item);
+        }
+    }
     match mine.len() {
         0 => Ok(None),
         1 => Ok(Some(mine.remove(0))),
@@ -769,6 +786,21 @@ pub fn find_release_item(
                 .join(", ")
         )),
     }
+}
+
+/// A canceled release item starts a new cycle only when the bridge's
+/// `release abandon` verb recorded that gesture. A tracker-only status
+/// change must not discard the cycle's blockers or reopen its candidate.
+fn cycle_was_abandoned(t: &Tick, item: &Item) -> Result<bool, String> {
+    if item.state.status != Some(Status::Canceled) {
+        return Ok(false);
+    }
+    let marker = texts::marker("cycle-abandoned", &[]);
+    Ok(t.tracker
+        .comments(&item.key)
+        .map_err(|e| format!("the comments of {}: {e}", item.key))?
+        .iter()
+        .any(|c| c.by_bridge && texts::has_marker(&c.body, &marker)))
 }
 
 /// The candidate's comment, once, and its line in `## Candidates`.

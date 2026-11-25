@@ -96,6 +96,40 @@ fn names(write: &str, key: &str) -> bool {
 }
 
 #[test]
+fn a_release_item_set_canceled_in_the_tracker_without_release_abandon_stays_held() {
+    let w = World::without_angles();
+    w.gate(vec![gate_run(1, CAND, "c1", None)]);
+    w.tick();
+    let release = w.release_item();
+    w.tracker.seed(
+        "ABC-9",
+        "Blocker",
+        "## Goal\nFix.\n",
+        Status::Ready,
+        &[LABEL],
+    );
+    w.tracker
+        .relate("ABC-9", &release.key, RelationKind::Blocks)
+        .unwrap();
+    w.gate(vec![gate_run(1, CAND, "c1", Some("success"))]);
+    w.tick();
+    let (_, held) = crate::verbs::status(&w.tick_ctx()).unwrap();
+    assert_eq!(held.reasons, vec!["open blocking issues: ABC-9"]);
+
+    w.tracker
+        .set_status(&release.key, Status::Canceled, None)
+        .unwrap();
+    let tracker_writes = w.tracker.writes().len();
+    let github_writes = w.github.writes().len();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+
+    assert_eq!(release_items(&w).len(), 1, "no second release item");
+    assert_eq!(w.tracker.writes().len(), tracker_writes, "no tracker write");
+    assert_eq!(w.github.writes().len(), github_writes, "no tag or release");
+}
+
+#[test]
 fn the_next_cut_after_an_abandon_opens_a_second_release_item_and_records_its_candidate() {
     let w = World::new();
     let abandoned = recut(&w);

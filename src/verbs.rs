@@ -527,7 +527,8 @@ pub fn abandon(t: &Tick, log: &mut ActionLog, who: &str) -> Result<String, Strin
     let body = for_tracker(
         t,
         &format!(
-            "Cycle abandoned by {who}: the tags are kept, the release branch is merged back, the remaining blockers are ordinary tickets. The next cut starts a new cycle."
+            "Cycle abandoned by {who}: the tags are kept, the release branch is merged back, the remaining blockers are ordinary tickets. The next cut starts a new cycle.\n\n{}",
+            crate::method::texts::marker("cycle-abandoned", &[])
         ),
     );
     t.act(
