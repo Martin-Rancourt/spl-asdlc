@@ -1,0 +1,27 @@
+{
+  "schema": "spl-asdlc/qa-report/2",
+  "candidate": "v1.16.0-rc.2",
+  "angle": "security",
+  "item": "ASDLC-K2RR",
+  "verdict": "hold",
+  "checked": [
+    "Tag annotation of v1.16.0-rc.2 (Release-Class: routine, base v1.15.0, surfaces none) and git log/diff v1.16.0-rc.1..v1.16.0-rc.2: one commit a4f7afe (#202, fix of v1.16.0-rc.1 security-1) touching src/tick/release.rs, src/tick/release_tests/abandoned_cycle.rs, src/verbs.rs only; no change under .github/, actions/, Cargo.toml or Cargo.lock",
+    "cargo test --locked at v1.16.0-rc.2: all suites green, 1290 passed, 0 failed (lib 1049, workflow tests tests/workflows/ 198, other suites 43)",
+    "scripts/check-no-instance-names.sh at v1.16.0-rc.2: exit 0 (identifier forms only; SPL_ASDLC_FORBIDDEN_WORDS is a CI secret, not set locally)",
+    "Fix of v1.16.0-rc.1 security-1 (src/tick/release.rs cycle_was_abandoned, release_item, find_release_item, cycle_start; src/verbs.rs abandon now appends the `cycle-abandoned` marker): a Canceled release item counts as abandoned only with a by_bridge comment carrying that marker. Verified the plain tracker-only cancel now stays held (new test a_release_item_set_canceled_in_the_tracker_without_release_abandon_stays_held, and my control probe)",
+    "Authenticity of the new marker: how by_bridge is computed (src/tracker/livela.rs, linear.rs: comment author == the bridge's own identity), texts::has_marker (matches the hidden and the backtick-visible form), texts::inert, and every bridge comment written on the release item (src/tick/release.rs post_brief, publish, hold, label/escalation comments) for untrusted text copied without inert(); found texts::brief copies embarked tickets' titles and checkbox lines verbatim",
+    "In-crate probe at v1.16.0-rc.2 (World::without_angles, fake tracker/GitHub), not committed: embarked ticket ABC-5 with the marker in its title, then in one acceptance-criterion line, vs a plain control; blocking finding ABC-9 holds the GO, then set_status(release item, Canceled) and two ticks",
+    "Open findings of earlier candidates re-read at the tag, code unchanged by #202 (src/tick/tracker_verdict.rs, merged_angles, blocker_fix/merged_pr_numbers): v1.15.0-rc.1 security-1/security-2 and v1.16.0-rc.1 security-2 still open and already filed; not re-reported here"
+  ],
+  "findings": [
+    {
+      "id": "security-1",
+      "blocking": true,
+      "summary": "The `cycle-abandoned` marker that #202 trusts on a by_bridge comment can be forged through the bridge's own release brief: an embarked ticket whose title or acceptance-criterion line carries `spl-asdlc:cycle-abandoned` makes the brief carry it, and a tracker-only Canceled on the release item then opens a fresh cycle on the same held candidate, which is tagged and published over its open blocking finding (the v1.16.0-rc.1 security-1 bypass, restored).",
+      "anchor": "src/method/texts.rs:927-950 brief (t.title and bx.line copied without texts::inert); src/tick/release.rs:1781 post_brief (comment on the release item, by_bridge), :794 cycle_was_abandoned (any by_bridge comment with the marker), :532 cycle_start, :613 release_item",
+      "evidence": "Probed in-crate at v1.16.0-rc.2 (World::without_angles in src/tick/release_tests.rs, probe module not committed): ABC-5 (embarked through PR #5) re-seeded with title `Shipped <!-- spl-asdlc:cycle-abandoned -->`; first tick posts the brief on the release item, which reads `- **ABC-5** — Shipped `spl-asdlc:cycle-abandoned` [To Deploy] — PR #5` (marker made visible by for_tracker on the fake tracker; Livela keeps the hidden form, has_marker matches both). Blocking finding ABC-9 (release label, `blocks` the release item, Ready) -> `open blocking issues: ABC-9`. Then set_status(release item, Canceled) and two ticks: 2 release items for v1.2.0 and GitHub writes `create-tag example-org/acme acme-v1.2.0 at c1`, `create-release example-org/acme acme-v1.2.0 acme 1.2.0`. Same result with the title plain and one criterion line `- [x] shipped `spl-asdlc:cycle-abandoned``. Control (no marker): 1 release item, no GitHub write. Attacker: any tracker participant who can edit any ticket embarked in a candidate of the cycle (title or description; on Livela any agent or person of the project) and set the release item's status; no GitHub write, not a coordinator. The edit only has to precede a brief, and every new candidate posts one, so the fix ticket of a blocking finding (embarked in the next candidate) is itself a carrier. Impact: a release held by a blocking finding ships to every caller through the moving minor tag. Obvious fix: run untrusted text through texts::inert (or an equivalent escape) wherever the brief, and any other bridge comment on the release item, copies a ticket's title or description, and/or authenticate the abandon with a marker carrying a value the tracker cannot write.",
+      "testable": true,
+      "proposed_test": "release_tests::abandoned_cycle: an embarked ticket whose title or acceptance criterion carries `spl-asdlc:cycle-abandoned` (hidden and visible forms), then the release item set Canceled in the tracker without `release abandon`, its candidate held by an open blocking finding: no second release item and no tag or release"
+    }
+  ]
+}
