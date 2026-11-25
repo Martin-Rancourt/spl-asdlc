@@ -483,6 +483,10 @@ pub struct RedGateFacts<'a> {
     pub run_url: &'a str,
     /// The failed suites of the evidence pack, or why it could not be read.
     pub suites: Result<Vec<String>, String>,
+    /// The failed jobs of the gate run, read when the evidence pack names no
+    /// failed suite; empty when they were not read or none failed. They name
+    /// the title only, never the contract.
+    pub failed_jobs: Vec<String>,
     /// Why the red is taken as final although no automatic rerun was seen
     /// (the bounded wait ran out), when that is the case.
     pub rerun_unseen: Option<&'a str>,
@@ -490,6 +494,51 @@ pub struct RedGateFacts<'a> {
 
 /// At most this many failed suites are named one by one.
 const SUITES_SHOWN: usize = 30;
+
+/// At most this many failures are named in a gate-fix ticket's title, the
+/// rest counted (`+N`).
+const TITLE_FAILURES_SHOWN: usize = 2;
+
+/// A failure's name in a title is cut past this many characters.
+const TITLE_NAME_CHARS: usize = 40;
+
+/// The title of a gate-fix ticket: what failed in the candidate's gate (the
+/// failed suites of the evidence pack, otherwise the failed jobs of the
+/// run), or today's wording when nothing failed is known (ASDLC-HZYJ). The
+/// bridge finds the ticket by its marker, never by its title.
+pub fn gate_fix_title(f: &RedGateFacts) -> String {
+    let candidate = inert(f.candidate);
+    let failed: &[String] = match &f.suites {
+        Ok(suites) if !suites.is_empty() => suites,
+        _ => &f.failed_jobs,
+    };
+    let names: Vec<String> = failed
+        .iter()
+        .map(|n| inert(n))
+        .filter(|n| !n.is_empty())
+        .collect();
+    if names.is_empty() {
+        return format!("Make the gate green — {candidate}");
+    }
+    let shown: Vec<String> = names
+        .iter()
+        .take(TITLE_FAILURES_SHOWN)
+        .map(|n| {
+            if n.chars().count() > TITLE_NAME_CHARS {
+                let cut: String = n.chars().take(TITLE_NAME_CHARS - 1).collect();
+                format!("{cut}…")
+            } else {
+                n.clone()
+            }
+        })
+        .collect();
+    let more = match names.len().saturating_sub(TITLE_FAILURES_SHOWN) {
+        0 => String::new(),
+        n => format!(" +{n}"),
+    };
+    let verb = if names.len() == 1 { "fails" } else { "fail" };
+    format!("Gate red on {candidate}: {}{more} {verb}", shown.join(", "))
+}
 
 /// The gate-fix ticket the bridge opens when a candidate's gate is red and
 /// its automatic rerun settled (BR-ASDLC-016): served to an implementer by
@@ -499,7 +548,7 @@ pub fn gate_fix_ticket(f: &RedGateFacts) -> (String, String) {
     // Suite names and read errors come from the evidence pack and from
     // GitHub: one line each, no marker, no backtick that closes a span.
     let code = |s: &str| inert(s).replace('`', "'");
-    let title = format!("Make the gate green — {}", code(f.candidate));
+    let title = gate_fix_title(f);
     let (criterion, found) = match &f.suites {
         Ok(suites) if suites.is_empty() => (
             format!(
