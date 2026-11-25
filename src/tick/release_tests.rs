@@ -4725,6 +4725,140 @@ fn with_implementation_blocks_the_consolidation_item_is_ready_and_blocked_by_eve
     w.quiet();
 }
 
+// ---- ASDLC-QFSB: an implementation block Livela also lists among `blocked_by` is kept ----
+
+impl World {
+    /// A cut on a tracker shaped as Livela: implementation blocks, each also
+    /// listed among `blocked_by` under the same relation.
+    fn livela_shaped() -> World {
+        let mut w = World::new();
+        w.tracker.implementation_blocks = true;
+        w.tracker.implementation_in_blocked_by = true;
+        w
+    }
+
+    /// What still holds `key`: a release block of an item not resolved, an
+    /// implementation block of an item before To Deploy. Sorted.
+    fn holding(&self, key: &str) -> Vec<String> {
+        let rel = self.tracker.relations(key).unwrap();
+        let state = |k: &str| self.tracker.item(k).state;
+        let implementation = |k: &str| rel.blocked_by_implementation.iter().any(|r| r.other == k);
+        let mut out: Vec<String> = rel
+            .blocked_by
+            .iter()
+            .filter(|r| !implementation(&r.other) && !state(&r.other).is_resolved())
+            .chain(rel.blocked_by_implementation.iter().filter(|r| {
+                !matches!(
+                    state(&r.other).status,
+                    Some(Status::ToDeploy | Status::PostDeploy | Status::Done | Status::Canceled)
+                )
+            }))
+            .map(|r| r.other.clone())
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+}
+
+#[test]
+fn an_implementation_block_listed_among_blocked_by_is_kept_pass_after_pass() {
+    let w = World::livela_shaped();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let consolidation = w.consolidation(CAND);
+    let angles = w.angle_keys(CAND);
+    assert_eq!(w.implementation_blockers(&consolidation.key), angles);
+    assert_eq!(w.blockers(&consolidation.key), angles, "Livela's shape");
+    // Two passes in a row: neither removes nor lays a relation.
+    for pass in 0..2 {
+        let (r, writes) = w.writes_of_a_tick();
+        assert!(r.ok(), "{r:?}");
+        assert!(writes.is_empty(), "pass {pass}: {writes:?}");
+        assert_eq!(w.implementation_blockers(&consolidation.key), angles);
+        assert_eq!(w.holding(&consolidation.key), angles, "pass {pass}");
+    }
+}
+
+#[test]
+fn a_release_block_from_an_angle_is_still_converted_once_on_a_livela_shaped_tracker() {
+    let w = World::livela_shaped();
+    w.tick();
+    let consolidation = w.consolidation(CAND);
+    let angles = w.angle_keys(CAND);
+    // An older item: the angle blocks it until the release.
+    for rel in w
+        .tracker
+        .relations(&consolidation.key)
+        .unwrap()
+        .blocked_by_implementation
+    {
+        if rel.other == angles[0] {
+            w.tracker.unrelate(&rel.id).unwrap();
+        }
+    }
+    w.tracker
+        .relate(&angles[0], &consolidation.key, RelationKind::Blocks)
+        .unwrap();
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(writes.len(), 2, "{writes:?}");
+    assert!(writes[0].starts_with("unrelate "), "{writes:?}");
+    assert_eq!(
+        writes[1],
+        format!(
+            "relate {} BlocksImplementation {}",
+            angles[0], consolidation.key
+        )
+    );
+    assert_eq!(w.implementation_blockers(&consolidation.key), angles);
+    assert_eq!(
+        w.blockers(&consolidation.key),
+        angles,
+        "implementation only"
+    );
+    w.quiet();
+}
+
+#[test]
+fn a_consolidation_on_a_livela_shaped_tracker_is_unblocked_on_the_pass_that_merges_its_last_angle()
+{
+    let w = World::livela_shaped();
+    w.tick();
+    let consolidation = w.consolidation(CAND);
+    let angles = w.angle_keys(CAND);
+    // Every angle but security already merged.
+    let security = w.sub_item("security").key;
+    for a in angles.iter().filter(|a| **a != security) {
+        w.tracker.set_status(a, Status::ToDeploy, None).unwrap();
+    }
+    w.quiet();
+    assert_eq!(w.holding(&consolidation.key), vec![security.clone()]);
+    // The pass that merges the security angle PR frees it.
+    let mut pr = w.angle_pr(30, "security", &report_json("security", ""));
+    pr.reviews.clear();
+    w.open_on_branch(vec![pr.clone()]);
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(
+        !writes
+            .iter()
+            .any(|l| l.starts_with("unrelate") || l.starts_with("relate")),
+        "{writes:?}"
+    );
+    assert!(w.github.writes().contains(&format!(
+        "merge example-org/acme#30 at {} merge",
+        pr.head_sha
+    )));
+    assert_eq!(w.sub_item("security").state.status, Some(Status::ToDeploy));
+    assert!(w.holding(&consolidation.key).is_empty());
+    assert_eq!(
+        w.consolidation(CAND).state.status,
+        Some(Status::Ready),
+        "served"
+    );
+}
+
 /// An agent edited the markers away: the items are found by their exact
 /// titles among the release item's children and never created twice
 /// (REQ-REL-048).
