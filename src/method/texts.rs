@@ -373,9 +373,11 @@ pub fn release_angle_item(
          tagged; an item still open when the cycle closes is closed with the release. The coordinator judges your \
          findings afterwards, in the candidate's verdict.\n\n\
          ## Context\n- Candidate: `{candidate}`\n- Release label: `{label}`\n- Project notes: {notes}\n- The brief is on the release item.\n\
-         - This item follows your PR: `In Progress` once it appears; `In Review` once it is ready with its checks green, \
+         - This item follows your PR: `In Progress` once it appears; move it `In Review` yourself once your PR is \
+         opened (not a draft) or pushed again, before you give it back (the bridge does too once its checks are green), \
          the bridge's own step, kept by its assignee; back `In Progress` when a coordinator requests changes at its head, \
-         assigned to this angle's assignee again (or to nobody); `To Deploy` when the bridge merges it.\n\n\
+         assigned to this angle's assignee again (or to nobody), or when a required check is red, its report is missing \
+         or invalid, or it carries more than its report; `To Deploy` when the bridge merges it.\n\n\
          {protocol}",
         marker = marker("angle", &[("scope", candidate), ("angle", &angle.key)]),
         key = angle.key,
@@ -437,9 +439,11 @@ pub fn review_angle_item(
          ## Acceptance criteria\n- [ ] Every finding is a review thread on the PR, with its severity.\n\
          - [ ] The review is submitted on GitHub, its body naming this item's key.\n\n\
          ## Business rules\n{absence}\n\n\
-         ## What closes this item\nThe bridge sets this sub-item Done at the first tick that finds on {pr_url} a \
-         submitted review (any state but pending) whose body names this item's key as a whole word: name it in the \
-         body of your review. The PR's merge closes it too (Done), its close without merge cancels it.\n\n\
+         ## What closes this item\nYou do: once your review is submitted on {pr_url} (any state but pending), its \
+         body naming this item's key as a whole word, mark this item Done before you give it back; the bridge never \
+         closes it for a review, and the coordinator's approval does not count while it is open. The coordinator \
+         reopens it when no submitted review names its key. The PR's merge closes it too (Done), its close without \
+         merge cancels it.\n\n\
          ## Context\n- Ticket: {ticket}\n- Project notes: {notes}{why}\n\n\
          {protocol}",
         marker = marker(
@@ -735,12 +739,16 @@ pub fn consolidation_item(
             "- New findings beyond what a fix requires.",
             "- [ ] Every finding is confirmed or rejected in its thread.\n\
              - [ ] The retained fixes are commits of the branch.\n- [ ] The approval is submitted at the head.",
-            "Nothing you set closes this item: its PR does. The bridge sets it Done when it merges the PR, which it does \
-             once a coordinator's approval stands at the PR's head commit (of each coordinator's latest approval or \
-             request for changes, none requests changes and one approves the current head), the required checks are \
-             green there, every review thread is resolved, the branch is up to date when the base requires it, no hold \
-             stands and, when the project requires one, a human approved too. A close of the PR without merge cancels \
-             it. A request for changes at the head sends the ticket back to In Progress and leaves this item open.",
+            "You do: once your approving review stands at the PR's head, or your request for changes, mark this item \
+             Done before you give it back. Before approving, check that every angle sub-item of the round has a \
+             submitted review on the PR naming its key, and reopen the one that has none instead of approving. The \
+             bridge merges the PR once a coordinator's approval stands at its head commit (of each coordinator's latest \
+             approval or request for changes, none requests changes and one approves the current head), every angle \
+             sub-item of the round is closed, the required checks are green there, every review thread is resolved, \
+             the branch is up to date when the base requires it and no hold stands. While the PR still waits on an \
+             approval at its head with this item closed, the bridge serves it again (Ready), once per head. The PR's \
+             merge closes it too (Done), its close without merge cancels it. A request for changes at the head sends \
+             the ticket back to In Progress.",
             protocol::Job::PrConsolidation,
         ),
         Consolidating::Candidate => (
@@ -759,10 +767,13 @@ pub fn consolidation_item(
              - [ ] Every finding is judged once in the verdict: accepted (blocking or not) or rejected with its reason.\n\
              - [ ] What falls between the angles is checked, and said in the verdict.\n\
              - [ ] The verdict is committed in a PR that names this item.",
-            "Your verdict does: the bridge sets this item Done when it merges your verdict PR, which it does once every \
+            "Your verdict does: move this item In Review yourself once your verdict PR is opened (not a draft), before \
+             you give it back. The bridge sets it Done when it merges your verdict PR, which it does once every \
              angle PR of the candidate is merged, the PR names this item's key, carries a valid verdict and no other \
              change, is authored by a release coordinator or approved by one at its head, has its required checks green \
-             and is up to date. What keeps it from the merge is said on the PR. This item is served once every angle \
+             and is up to date. What keeps it from the merge is said on the PR; the bridge moves this item back In \
+             Progress when that is yours to mend (the PR names no item, carries another change or an invalid verdict, \
+             or a required check is red) or when no verdict PR is open. This item is served once every angle \
              report of the candidate is merged: blocked by each angle's implementation, or held in Backlog by the bridge \
              where the tracker keeps no such block. A newer candidate cancels it.",
             protocol::Job::ReleaseConsolidation,

@@ -673,12 +673,12 @@ fn a_pr_put_in_draft_during_its_round_writes_nothing_and_its_round_goes_on_once_
     let w = World::new();
     let mut pr = in_review(&w, 7);
     check_every_box(&w, "ABC-7");
-    let items = round(&w, "ABC-7", &pr);
     let before = (w.tracker.writes().len(), w.github_writes().len());
     pr.draft = true;
     // A draft's checks are not read: red, conflicting and approved, it is
     // neither told of its conflict nor merged.
     let mut draft = approved(&w, pr.clone());
+    let items = round(&w, "ABC-7", &pr);
     draft.checks.clear();
     draft.mergeable = crate::github::Mergeable::Conflicting;
     w.open(draft);
@@ -968,6 +968,8 @@ fn an_approved_green_pr_is_merged_and_its_ticket_goes_to_deploy() {
         .into_iter()
         .find(|c| c.title.starts_with("Maintainability"))
         .unwrap();
+    // Its agent closes it once its review is published (ASDLC-WMTX).
+    w.tracker.moved_by_someone(&angle.key, Status::Done);
     pr.reviews = vec![
         review(
             "angle-agent",
@@ -1071,6 +1073,8 @@ fn a_required_check_that_succeeded_while_still_in_progress_merges() {
         .into_iter()
         .find(|c| c.title.starts_with("Maintainability"))
         .unwrap();
+    // Its agent closes it once its review is published (ASDLC-WMTX).
+    w.tracker.moved_by_someone(&angle.key, Status::Done);
     pr.checks[0].status = Some("IN_PROGRESS".into());
     pr.reviews = vec![
         review(
@@ -1643,7 +1647,8 @@ fn approved(w: &World, mut pr: PullRequest) -> PullRequest {
     pr
 }
 
-/// A submitted review naming each angle sub-item linked to the PR.
+/// A submitted review naming each angle sub-item linked to the PR, each
+/// sub-item then closed by its agent, as its protocol says (ASDLC-WMTX).
 fn angle_reviews(w: &World, pr: &PullRequest) -> Vec<Review> {
     crate::tracker::Tracker::items_linked_to_pr(&w.tracker, &pr.url)
         .unwrap()
@@ -1656,6 +1661,9 @@ fn angle_reviews(w: &World, pr: &PullRequest) -> Vec<Review> {
             )
         })
         .map(|k| {
+            if !w.tracker.item(&k).state.is_resolved() {
+                w.tracker.moved_by_someone(&k, Status::Done);
+            }
             review(
                 "angle-agent",
                 "COMMENTED",
@@ -1871,6 +1879,87 @@ fn a_prs_round_items_are_tasks_that_block_and_close_as_before() {
     w.tick(false);
     assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::ToDeploy));
     assert!(all_in(&round(&w, "ABC-7", &pr), Status::Done));
+    quiet(&w);
+}
+
+/// ASDLC-WMTX: a submitted review no longer closes its angle sub-item:
+/// its agent does, so the bridge leaves it open and the approval waits.
+#[test]
+fn a_submitted_review_leaves_its_angle_item_to_its_agent() {
+    let w = World::new();
+    let mut pr = in_review(&w, 7);
+    check_every_box(&w, "ABC-7");
+    let (_, angles) = round_keys(&w, "ABC-7", &pr);
+    pr.reviews = angles
+        .iter()
+        .map(|k| {
+            review(
+                "angle-agent",
+                "COMMENTED",
+                &pr.head_sha,
+                &format!("Reviewed for {k}."),
+            )
+        })
+        .collect();
+    pr.reviews
+        .push(review("coordinator-login", "APPROVED", &pr.head_sha, "ok"));
+    w.open(pr.clone());
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    for key in &angles {
+        assert_eq!(
+            w.tracker.item(key).state.status,
+            Some(Status::Ready),
+            "{key}"
+        );
+    }
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::InReview));
+    assert!(
+        !w.github_writes().iter().any(|x| x.starts_with("merge ")),
+        "{:?}",
+        w.github_writes()
+    );
+    // Its agent closes it: the approval counts and the PR merges.
+    for key in &angles {
+        w.tracker.moved_by_someone(key, Status::Done);
+    }
+    w.tick(false);
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::ToDeploy));
+}
+
+/// ASDLC-WMTX: the coordinator closes its consolidation task once its
+/// review is submitted; a PR still waiting on an approval at its head
+/// serves it again, once per head.
+#[test]
+fn a_closed_consolidation_with_no_approval_at_the_head_is_served_again_once() {
+    let w = World::new();
+    let mut pr = in_review(&w, 7);
+    check_every_box(&w, "ABC-7");
+    let (consolidation, _) = round_keys(&w, "ABC-7", &pr);
+    pr.reviews = angle_reviews(&w, &pr);
+    w.tracker.moved_by_someone(&consolidation, Status::Done);
+    w.open(pr.clone());
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(
+        w.tracker.item(&consolidation).state.status,
+        Some(Status::Ready)
+    );
+    let said = crate::tracker::Tracker::comments(&w.tracker, &consolidation)
+        .unwrap()
+        .iter()
+        .filter(|c| c.body.contains("waits on a coordinator's approval"))
+        .count();
+    assert_eq!(said, 1);
+    // Closed again with still no approval at this head: not reopened twice.
+    w.tracker.moved_by_someone(&consolidation, Status::Done);
+    w.tick(false);
+    assert_eq!(
+        w.tracker.item(&consolidation).state.status,
+        Some(Status::Done)
+    );
+    // Open, it is left to its coordinator.
+    w.tracker.moved_by_someone(&consolidation, Status::Ready);
     quiet(&w);
 }
 

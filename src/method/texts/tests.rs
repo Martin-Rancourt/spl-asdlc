@@ -832,11 +832,11 @@ fn a_pr_review_angle_sub_item_embeds_the_pr_review_protocol_and_its_angles_notes
         !body.contains("as `docs/agents/review-pr.md` describes it"),
         "no path the project's repository lacks is the instruction: {body}"
     );
-    // What closes it, in the bridge's terms (`close_reviewed_sub_items`).
+    // What closes it: its agent, once its review is submitted (ASDLC-WMTX).
     assert!(
-        body.contains(
-            "a submitted review (any state but pending) whose body names this item's key"
-        ),
+        body.contains("You do: once your review is submitted on")
+            && body.contains("mark this item Done before you give it back")
+            && body.contains("the bridge never closes it for a review"),
         "{body}"
     );
     assert!(
@@ -863,6 +863,11 @@ fn a_release_angle_sub_item_embeds_the_release_protocol_its_angles_notes_and_the
         ),
     );
     assert_one_contract(&body);
+    // ASDLC-WMTX: its agent moves it In Review at its PR's opening.
+    assert!(
+        body.contains("move it `In Review` yourself once your PR is opened (not a draft)"),
+        "{body}"
+    );
     assert!(body.contains(&embedded(protocol::REVIEW_RELEASE)), "{body}");
     assert!(
         body.contains(&embedded(protocol::angle_notes("product").unwrap())),
@@ -895,7 +900,11 @@ fn a_consolidation_item_embeds_the_consolidation_protocol_and_says_what_closes_i
     assert!(pr.contains(&embedded(protocol::CONSOLIDATE)), "{pr}");
     assert!(pr.contains("its part \"For a PR review\""), "{pr}");
     assert!(
-        pr.contains("The bridge sets it Done when it merges the PR, which it does once a coordinator's approval stands at the PR's head commit"),
+        pr.contains("The bridge merges the PR once a coordinator's approval stands at its head commit")
+            // ASDLC-WMTX: its coordinator closes it, after checking each
+            // angle published its review.
+            && pr.contains("mark this item Done before you give it back")
+            && pr.contains("reopen the one that has none instead of approving"),
         "{pr}"
     );
     assert!(
@@ -914,7 +923,8 @@ fn a_consolidation_item_embeds_the_consolidation_protocol_and_says_what_closes_i
     assert!(rc.contains("its part \"For a release candidate\""), "{rc}");
     assert!(rc.contains("\"schema\": \"spl-asdlc/qa-report/2\""), "{rc}");
     assert!(
-        rc.contains("the bridge sets this item Done when it merges your verdict PR"),
+        rc.contains("The bridge sets it Done when it merges your verdict PR")
+            && rc.contains("move this item In Review yourself once your verdict PR is opened"),
         "{rc}"
     );
 }

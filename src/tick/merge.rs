@@ -507,7 +507,7 @@ fn one(
         return None;
     }
 
-    // ---- reviews submitted close their angle sub-items ----
+    // ---- the round's items: each agent closes its own (ASDLC-WMTX) ----
     let mut has_round = true;
     let mut open_angles = Vec::new();
     let mut read_children = None;
@@ -515,8 +515,7 @@ fn one(
         match t.tracker.children(&ticket.key) {
             Ok(children) => {
                 has_round = children.iter().any(|c| round_of(c, &pr.url));
-                let closed = close_reviewed_sub_items(t, log, report, &pr, &children);
-                open_angles = angles_open(&children, &pr, &closed);
+                open_angles = angles_open(&children, &pr);
                 repair_rounds(t, log, report, &pr, &children);
                 read_children = Some(children);
             }
@@ -915,6 +914,11 @@ fn one(
             return None;
         }
         other => {
+            if open_angles.is_empty() {
+                if let Some(children) = &read_children {
+                    reopen_consolidation(t, log, report, &pr, &ticket.key, children);
+                }
+            }
             t.wait(report, &pr, approval_wait(&pr, &other));
             return None;
         }
@@ -2109,10 +2113,11 @@ fn repair_rounds(
     }
 }
 
-/// The angle sub-items of this PR's round still open (BR-ASDLC-018), but
-/// those closed this tick: the round at the PR's head when there is one,
-/// otherwise every round of the PR (fail closed).
-fn angles_open(children: &[Item], pr: &PullRequest, closed: &[String]) -> Vec<String> {
+/// The angle sub-items of this PR's round still open (BR-ASDLC-018): the
+/// round at the PR's head when there is one, otherwise every round of the
+/// PR (fail closed). Each angle's agent closes its own once its review is
+/// published (ASDLC-WMTX); the bridge never does before the PR resolves.
+fn angles_open(children: &[Item], pr: &PullRequest) -> Vec<String> {
     let prefix = format!("{}@", pr.url);
     let head = texts::round_scope(&pr.url, &pr.head_sha);
     let angles: Vec<(&Item, String)> = children
@@ -2130,54 +2135,109 @@ fn angles_open(children: &[Item], pr: &PullRequest, closed: &[String]) -> Vec<St
     angles
         .into_iter()
         .filter(|(_, s)| !at_head || *s == head)
-        .filter(|(c, _)| !c.state.is_resolved() && !closed.contains(&c.key))
+        .filter(|(c, _)| !c.state.is_resolved())
         .map(|(c, _)| c.key.clone())
         .collect()
 }
 
-/// A submitted review closes the angle sub-item it names (spec 04 §4).
-/// Returns the sub-items closed now.
-fn close_reviewed_sub_items(
+/// The PR's current round consolidation item served again (ASDLC-WMTX):
+/// its coordinator closes it once the approval is submitted, so a PR still
+/// waiting on an approval at its head (the head moved since, or none was
+/// given) with no consolidation item of its own open gets the latest
+/// round's back to Ready, once per head, with a comment saying why. The
+/// latest round is the one whose round comment the bridge wrote last on
+/// the ticket; a canceled item is never reopened.
+fn reopen_consolidation(
     t: &Tick,
     log: &mut ActionLog,
     report: &mut Report,
     pr: &PullRequest,
+    ticket: &str,
     children: &[Item],
-) -> Vec<String> {
-    let mut closed = Vec::new();
+) {
     let prefix = format!("{}@", pr.url);
-    for child in children {
-        let Some(BridgeItem::Angle { scope, .. }) =
-            texts::bridge_item(&child.description, child.parent.as_deref())
-        else {
-            continue;
-        };
-        if !scope.starts_with(&prefix) || child.state.is_resolved() {
-            continue;
+    let ours: Vec<(&Item, String)> = children
+        .iter()
+        .filter_map(
+            |c| match texts::bridge_item(&c.description, c.parent.as_deref()) {
+                Some(BridgeItem::Consolidation { scope }) if scope.starts_with(&prefix) => {
+                    Some((c, scope))
+                }
+                _ => None,
+            },
+        )
+        .collect();
+    if ours.iter().any(|(c, _)| !c.state.is_resolved()) {
+        return;
+    }
+    let comments = match t.tracker.comments(ticket) {
+        Ok(c) => c,
+        Err(e) => {
+            t.unreadable(report, ticket, format!("the ticket's comments: {e}"));
+            return;
         }
-        let reviewed = pr
-            .reviews
-            .iter()
-            .any(|r| !r.state.eq_ignore_ascii_case("PENDING") && names(&r.body, &child.key));
-        if reviewed
-            && t.act(
-                log,
-                report,
-                &child.key,
-                "status Done (review submitted)",
-                json!({"pr": pr.url}),
-                || {
-                    t.tracker
-                        .set_status(&child.key, Status::Done, None)
-                        .map_err(|e| e.to_string())
-                },
-            )
-            .is_some()
-        {
-            closed.push(child.key.clone());
+    };
+    // The round opened last: its round comment is the latest of the PR's.
+    let latest = ours
+        .iter()
+        .filter_map(|(c, scope)| {
+            let head = &scope[prefix.len()..];
+            let marker = texts::marker("review-round", &[("pr", &pr.url), ("head", head)]);
+            comments
+                .iter()
+                .rposition(|x| x.by_bridge && texts::has_marker(&x.body, &marker))
+                .map(|at| (at, *c))
+        })
+        .max_by_key(|(at, _)| *at)
+        .map(|(_, c)| c);
+    let Some(item) = latest.filter(|c| c.state.status == Some(Status::Done)) else {
+        return;
+    };
+    let head = texts::short(&pr.head_sha);
+    let marker = texts::marker("consolidation-reopened", &[("pr", &pr.url), ("head", head)]);
+    match tracker_said(t, &item.key, &marker) {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(e) => {
+            t.unreadable(report, &item.key, e);
+            return;
         }
     }
-    closed
+    let body = for_tracker(
+        t,
+        &format!(
+            "{} waits on a coordinator's approval at `{head}`, and this item is closed: the bridge serves it \
+             again. Approve the current head, or request changes (`docs/agents/consolidate.md`).\n\n{marker}",
+            pr.url
+        ),
+    );
+    let reopened = t.act(
+        log,
+        report,
+        &item.key,
+        "status Ready (no approval at the head)",
+        json!({"pr": pr.url, "head": pr.head_sha}),
+        || {
+            t.tracker
+                .set_status(&item.key, Status::Ready, None)
+                .map_err(|e| e.to_string())
+        },
+    );
+    if reopened.is_some() {
+        t.act(
+            log,
+            report,
+            &item.key,
+            "comment consolidation reopened",
+            json!({"pr": pr.url}),
+            || {
+                t.tracker
+                    .comment(&item.key, &body)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            },
+        );
+    }
 }
 
 /// Whether a text names an item key as a whole word.
