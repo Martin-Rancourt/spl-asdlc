@@ -2034,6 +2034,116 @@ fn release_cut_dispatches_the_next_candidate_or_refuses_a_second_cycle() {
     assert!(refused.contains("a cycle is in flight"), "{refused}");
 }
 
+impl World {
+    /// `acme-v1.1.0` published, and the merged PRs given on `main`.
+    fn in_production(&self, merged: Vec<PullRequest>) {
+        let mut s = self.github.state.borrow_mut();
+        s.releases.insert(
+            (repo(), "acme-v1.1.0".into()),
+            Ok(Release {
+                id: 1,
+                tag: "acme-v1.1.0".into(),
+                url: "https://github.com/example-org/acme/releases/tag/acme-v1.1.0".into(),
+                body: String::new(),
+                draft: false,
+                prerelease: false,
+                published_at: None,
+                author: None,
+            }),
+        );
+        s.merged_pulls.insert(repo(), Ok(merged));
+    }
+}
+
+fn merged_into(number: u64, base: &str, sha: &str) -> PullRequest {
+    let mut pr = pull_request(number);
+    pr.state = crate::github::PrState::Merged;
+    pr.base_ref = base.into();
+    pr.merge_commit_sha = Some(sha.into());
+    pr
+}
+
+#[test]
+fn release_patch_dispatches_the_cut_from_the_release_in_production() {
+    let w = World::new();
+    w.in_production(vec![
+        merged_into(7, "main", "f7"),
+        merged_into(8, "main", "f8"),
+    ]);
+    for sha in ["f7", "f8"] {
+        w.github.state.borrow_mut().compares.insert(
+            (repo(), sha.into(), "acme-v1.1.0".into()),
+            cmp(CompareStatus::Diverged, &[], &[]),
+        );
+    }
+    let t = w.tick_ctx();
+    let mut log = ActionLog::in_memory();
+    let line = crate::verbs::patch(&t, &mut log, &[7, 8, 7], "me").unwrap();
+    assert!(line.contains("1.1.1 from acme-v1.1.0"), "{line}");
+    let writes = w.github.writes();
+    let dispatch = writes
+        .iter()
+        .find(|l| l.contains("release-cut.yml"))
+        .expect("the cut dispatched");
+    assert!(dispatch.contains("on main"), "{dispatch}");
+    assert!(dispatch.contains("action=patch"), "{dispatch}");
+    assert!(dispatch.contains("version=1.1.1"), "{dispatch}");
+    assert!(dispatch.contains("pulls=7,8"), "{dispatch}");
+}
+
+#[test]
+fn release_patch_refuses_a_pr_not_merged_into_main_or_already_in_production() {
+    let w = World::new();
+    let mut open = pull_request(9);
+    open.base_ref = "main".into();
+    w.in_production(vec![
+        merged_into(7, "main", "f7"),
+        merged_into(8, BRANCH, "f8"),
+    ]);
+    w.github
+        .state
+        .borrow_mut()
+        .open_pulls
+        .insert(repo(), Ok(vec![open]));
+    w.github.state.borrow_mut().compares.insert(
+        (repo(), "f7".into(), "acme-v1.1.0".into()),
+        cmp(CompareStatus::Ahead, &[], &[]),
+    );
+    let t = w.tick_ctx();
+    let mut log = ActionLog::in_memory();
+    let refused = crate::verbs::patch(&t, &mut log, &[7, 8, 9], "me").unwrap_err();
+    assert!(refused.contains("#7 is already in production"), "{refused}");
+    assert!(refused.contains("#8 was merged into"), "{refused}");
+    assert!(refused.contains("#9 is not merged"), "{refused}");
+    assert!(w.github.writes().is_empty(), "nothing dispatched");
+}
+
+#[test]
+fn release_patch_needs_a_release_in_production_and_a_free_version() {
+    let w = World::new();
+    let t = w.tick_ctx();
+    let mut log = ActionLog::in_memory();
+    // acme-v1.1.0 is tagged but has no published release.
+    let refused = crate::verbs::patch(&t, &mut log, &[7], "me").unwrap_err();
+    assert!(refused.contains("no release is in production"), "{refused}");
+
+    w.in_production(vec![merged_into(7, "main", "f7")]);
+    w.github.state.borrow_mut().compares.insert(
+        (repo(), "f7".into(), "acme-v1.1.0".into()),
+        cmp(CompareStatus::Diverged, &[], &[]),
+    );
+    w.github
+        .state
+        .borrow_mut()
+        .tags
+        .get_mut(&repo())
+        .unwrap()
+        .push(tag("acme-v1.1.1-rc.1", "p1"));
+    let refused = crate::verbs::patch(&t, &mut log, &[7], "me").unwrap_err();
+    assert!(refused.contains("1.1.1 already has a cycle"), "{refused}");
+    assert!(w.github.writes().is_empty(), "nothing dispatched");
+}
+
 #[test]
 fn release_status_says_why_there_is_no_go() {
     let w = World::new();

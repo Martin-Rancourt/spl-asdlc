@@ -100,6 +100,12 @@ enum ReleaseCommand {
         #[arg(long)]
         open: bool,
     },
+    /// Start a patch release from the published release, carrying merged PRs.
+    Patch {
+        /// A PR already merged into the default branch; repeat for several PRs.
+        #[arg(long = "pr", required = true, value_delimiter = ',')]
+        pulls: Vec<u64>,
+    },
     /// Prepare the next release in a checkout of the release branch: compute
     /// its version from the commits since the last release, write it into the
     /// version files and the CHANGELOG, and write its notes. Prints
@@ -579,6 +585,7 @@ fn release(
             };
         }
         ReleaseCommand::Cut { open } => project.cut(open, &who()),
+        ReleaseCommand::Patch { pulls } => project.patch(&pulls, &who()),
         ReleaseCommand::Prepare { .. } => unreachable!("prepared above, with no connection"),
         ReleaseCommand::Requalify {
             ticket,

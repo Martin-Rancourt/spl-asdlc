@@ -268,6 +268,11 @@ impl<'a> Project<'a> {
         self.gesture("release cut", |t, log| verbs::cut(t, log, open, who))
     }
 
+    /// Start a patch cycle carrying PRs already merged into the default branch.
+    pub fn patch(&self, pulls: &[u64], who: &str) -> Outcome {
+        self.gesture("release patch", |t, log| verbs::patch(t, log, pulls, who))
+    }
+
     /// `release requalify <ticket> --blocking <b> --reason <r>`, by `who`.
     pub fn requalify(&self, ticket: &str, blocking: bool, reason: &str, who: &str) -> Outcome {
         self.gesture("release requalify", |t, log| {

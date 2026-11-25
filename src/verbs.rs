@@ -7,12 +7,12 @@ use serde_json::json;
 
 use crate::action_log::ActionLog;
 use crate::config::Release;
-use crate::github::{CompareStatus, MergeMethod};
+use crate::github::{CompareStatus, MergeMethod, PrState};
 use crate::method::release::findings::{self, RequalifyStep};
 use crate::method::release::go::{AngleState, GoDecision, VerdictState};
 use crate::method::release::prs;
 use crate::method::release::report;
-use crate::method::release::shape::Shape;
+use crate::method::release::shape::{Shape, Version};
 use crate::method::vocabulary::{self, Status};
 use crate::tick::merge::for_tracker;
 use crate::tick::release::{self, Candidate};
@@ -230,6 +230,154 @@ pub fn cut(t: &Tick, log: &mut ActionLog, open: bool, who: &str) -> Result<Strin
     .ok_or_else(|| report.failures.join("; "))?;
     Ok(format!(
         "{workflow} dispatched on {git_ref} (action {action}); the bridge takes it from the next tick"
+    ))
+}
+
+/// The release in production: the highest release tag whose GitHub release
+/// is published (not a draft), with its version. A tag with no release, or a
+/// draft, is not in production; unreadable is an error, never "none".
+pub fn production(t: &Tick, shape: &Shape) -> Result<Option<(String, Version)>, String> {
+    let tags = t
+        .github
+        .tags(&t.repo, shape.release_tag_prefix())
+        .map_err(|e| e.to_string())?;
+    let mut releases: Vec<(String, Version)> = tags
+        .iter()
+        .filter_map(|r| shape.parse_release(&r.name).map(|v| (r.name.clone(), v)))
+        .collect();
+    releases.sort_by_key(|a| std::cmp::Reverse(a.1));
+    for (tag, version) in releases {
+        match t.github.release(&t.repo, &tag) {
+            Ok(r) if !r.draft => return Ok(Some((tag, version))),
+            Ok(_) => continue,
+            Err(e) if e.is_not_found() => continue,
+            Err(e) => return Err(format!("the release {tag}: {e}")),
+        }
+    }
+    Ok(None)
+}
+
+/// The version a patch of `production` ships: its next patch version.
+pub fn patch_version(production: Version) -> Version {
+    Version {
+        patch: production.patch + 1,
+        ..production
+    }
+}
+
+/// `release patch --pr <n>...` by `who`: check that each PR is merged into
+/// the default branch and not yet in production, then dispatch the cut
+/// workflow with the action `patch`. The workflow opens the patch's release
+/// branch from the tag in production, cherry-picks the PRs' merge commits,
+/// prepares the patch version and tags its first candidate as the App; the
+/// bridge carries that cycle beside any cycle in flight (ASDLC-MG26).
+pub fn patch(t: &Tick, log: &mut ActionLog, pulls: &[u64], who: &str) -> Result<String, String> {
+    let cfg = release_cycle(t);
+    let shape = Shape::of(&t.config.product.name, cfg);
+    let mut numbers: Vec<u64> = Vec::new();
+    for n in pulls {
+        if !numbers.contains(n) {
+            numbers.push(*n);
+        }
+    }
+    if numbers.is_empty() {
+        return Err("a patch carries at least one PR merged into the default branch".into());
+    }
+    let (prod_tag, prod) = production(t, &shape)?.ok_or(
+        "no release is in production: a patch starts from the published release, so cut a normal cycle with `release cut --open`",
+    )?;
+    let version = patch_version(prod);
+    let default = t
+        .github
+        .default_branch(&t.repo)
+        .map_err(|e| e.to_string())?;
+    let mut refused = Vec::new();
+    for n in &numbers {
+        let pr = t
+            .github
+            .pull(&t.repo, *n)
+            .map_err(|e| format!("PR #{n}: {e}"))?;
+        if pr.state != PrState::Merged {
+            refused.push(format!(
+                "#{n} is not merged: a patch only carries PRs already merged, through their normal review"
+            ));
+            continue;
+        }
+        if pr.base_ref != default {
+            refused.push(format!(
+                "#{n} was merged into {}, not {default}: a patch only carries PRs merged into the default branch",
+                pr.base_ref
+            ));
+            continue;
+        }
+        let Some(sha) = pr.merge_commit_sha.as_deref() else {
+            refused.push(format!("#{n} has no merge commit GitHub can name"));
+            continue;
+        };
+        let status = t
+            .github
+            .compare_status(&t.repo, sha, &prod_tag)
+            .map_err(|e| format!("whether {prod_tag} holds #{n}: {e}"))?;
+        if matches!(status, CompareStatus::Ahead | CompareStatus::Identical) {
+            refused.push(format!("#{n} is already in production ({prod_tag})"));
+        }
+    }
+    if !refused.is_empty() {
+        return Err(format!("no patch: {}", refused.join("; ")));
+    }
+    // One cycle per version: the patch's version must be free. A cycle in
+    // flight at that very version (a patch already launched, or a normal
+    // cycle that is itself a patch bump) is finished first.
+    let candidates = t
+        .github
+        .tags(&t.repo, shape.candidate_tag_prefix())
+        .map_err(|e| e.to_string())?;
+    if let Some(taken) = candidates.iter().find(|r| {
+        shape
+            .parse_candidate(&r.name)
+            .is_some_and(|(v, _)| v == version)
+    }) {
+        return Err(format!(
+            "{version} already has a cycle ({}): finish or abandon it before patching {prod_tag}",
+            taken.name
+        ));
+    }
+    let list = numbers
+        .iter()
+        .map(u64::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let workflow = &cfg.cut_workflow;
+    let mut report = Report::default();
+    t.act(
+        log,
+        &mut report,
+        "release patch",
+        &format!("dispatch {workflow} (patch {version} from {prod_tag})"),
+        json!({"ref": default, "by": who, "from": prod_tag, "version": version.to_string(), "pulls": numbers}),
+        || {
+            t.github
+                .dispatch_workflow(
+                    &t.repo,
+                    workflow,
+                    &default,
+                    &[
+                        ("action".to_string(), "patch".to_string()),
+                        ("version".to_string(), version.to_string()),
+                        ("pulls".to_string(), list.clone()),
+                    ],
+                )
+                .map_err(|e| e.to_string())
+        },
+    )
+    .ok_or_else(|| report.failures.join("; "))?;
+    Ok(format!(
+        "{workflow} dispatched on {default} (action patch): {version} from {prod_tag}, carrying {}; the bridge takes it from the next tick",
+        numbers
+            .iter()
+            .map(|n| format!("#{n}"))
+            .collect::<Vec<_>>()
+            .join(", ")
     ))
 }
 
