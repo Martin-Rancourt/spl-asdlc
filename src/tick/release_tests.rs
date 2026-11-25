@@ -2159,6 +2159,10 @@ fn escalating() -> World {
         let mut pr = w.angle_pr(n, angle, &report_json(angle, &findings));
         pr.state = PrState::Merged;
         pr.merge_commit_sha = Some(format!("merge-of-{n}"));
+        pr.merged_by = Some(Actor {
+            login: bot("spl-asdlc"),
+            is_bot: true,
+        });
         merged.push(pr);
     }
     merged.push(w.merged_verdict(
