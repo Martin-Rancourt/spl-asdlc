@@ -5337,6 +5337,163 @@ fn with_no_qa_angle_a_blocker_still_holds_the_release() {
     assert_eq!(d.reasons, vec!["open blocking issues: ABC-9"]);
 }
 
+// ---- ASDLC-SEJA: a blocking finding whose fix is merged and in the candidate frees the GO ----
+
+impl World {
+    /// The cycle opened with no QA angle, the gate still running, and the
+    /// blocking finding ABC-9 of the release in `status`: its fix PR #40
+    /// merged into the release branch by `fix40`, recorded on it by the
+    /// bridge, and `fix40` placed against the candidate as `ancestry` says
+    /// (`None`: GitHub cannot say). The gate then turns green.
+    fn with_a_fixed_finding(status: Status, ancestry: Option<CompareStatus>) -> World {
+        let w = World::without_angles();
+        w.gate(vec![gate_run(1, CAND, "c1", None)]);
+        w.tick();
+        let release = w.release_item();
+        let description = format!(
+            "## Goal\nFix.\n\n## Acceptance criteria\n- [x] fixed\n\n## Business rules\nNo new rule.\n\n{}\n",
+            crate::method::release::findings::blocker_marker(&release.key)
+        );
+        w.tracker
+            .seed("ABC-9", "Blocker", &description, status, &[LABEL]);
+        w.tracker
+            .relate("ABC-9", &release.key, RelationKind::Blocks)
+            .unwrap();
+        let url = "https://github.com/example-org/acme/pull/40";
+        w.tracker.link("ABC-9", url);
+        w.tracker
+            .comment(
+                "ABC-9",
+                &texts::merged_comment(
+                    url,
+                    BRANCH,
+                    &texts::MergedBy::Outside("someone"),
+                    status.name(),
+                    "-",
+                ),
+            )
+            .unwrap();
+        let mut pr = pull_request(40);
+        pr.base_ref = BRANCH.into();
+        pr.head_ref = "fix/abc-9-the-finding".into();
+        pr.state = PrState::Merged;
+        pr.merge_commit_sha = Some("fix40".into());
+        {
+            let mut s = w.github.state.borrow_mut();
+            s.merged_pulls.insert(repo(), Ok(vec![pr]));
+            if let Some(status) = ancestry {
+                s.compares
+                    .insert((repo(), "fix40".into(), "c1".into()), cmp(status, &[], &[]));
+            }
+        }
+        w.gate(vec![gate_run(1, CAND, "c1", Some("success"))]);
+        w
+    }
+}
+
+#[test]
+fn a_blocking_findings_fix_merged_in_the_candidate_no_longer_holds_the_go() {
+    let w = World::with_a_fixed_finding(Status::ToDeploy, Some(CompareStatus::Ahead));
+    let (_, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
+    assert!(d.go, "{:?}", d.reasons);
+    assert!(d.blockers.is_empty() && d.fix_gaps.is_empty(), "{d:?}");
+    let r = w.tick();
+    assert_eq!(w.go_writes(), go_lines("c1"), "{r:?}");
+    // Freed, not closed: the closure moves it to Done.
+    assert_eq!(w.tracker.item("ABC-9").state.status, Some(Status::ToDeploy));
+}
+
+#[test]
+fn a_blocking_findings_fix_at_post_deploy_in_the_candidate_no_longer_holds_the_go() {
+    let w = World::with_a_fixed_finding(Status::PostDeploy, Some(CompareStatus::Identical));
+    let (_, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
+    assert!(d.go, "{:?}", d.reasons);
+}
+
+#[test]
+fn a_blocking_findings_fix_not_in_the_candidate_still_holds_the_go_as_a_fix_gap() {
+    for ancestry in [CompareStatus::Behind, CompareStatus::Diverged] {
+        let w = World::with_a_fixed_finding(Status::ToDeploy, Some(ancestry));
+        w.tick();
+        assert!(w.go_writes().is_empty(), "{ancestry:?}");
+        let (_, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
+        assert!(!d.go);
+        assert!(d.blockers.is_empty(), "{d:?}");
+        assert_eq!(d.fix_gaps, vec![format!("ABC-9: PR #40 is not in {CAND}")]);
+        assert_eq!(
+            d.reasons,
+            vec![format!(
+                "resolved blockers whose fix is not in the candidate (a new candidate that contains it frees them): ABC-9: PR #40 is not in {CAND}"
+            )]
+        );
+    }
+}
+
+#[test]
+fn a_blocking_findings_fix_whose_ancestry_cannot_be_read_still_holds_the_go() {
+    let w = World::with_a_fixed_finding(Status::ToDeploy, None);
+    let r = w.tick();
+    assert!(w.go_writes().is_empty(), "{r:?}");
+    assert!(
+        r.failures
+            .iter()
+            .any(|f| f.starts_with("ABC-9: the fix of this blocking finding")),
+        "{r:?}"
+    );
+    let (_, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
+    assert!(!d.go);
+    assert_eq!(d.fix_gaps, vec!["ABC-9: its fix could not be read"]);
+}
+
+#[test]
+fn a_blocking_findings_fix_with_no_recorded_merged_pr_still_holds_the_go() {
+    let w = World::with_a_fixed_finding(Status::ToDeploy, Some(CompareStatus::Ahead));
+    // Moved To Deploy by hand: the bridge recorded no merge on it.
+    let release = w.release_item();
+    let description = w.tracker.item("ABC-9").description;
+    w.tracker
+        .seed("ABC-9", "Blocker", &description, Status::ToDeploy, &[LABEL]);
+    w.tracker
+        .relate("ABC-9", &release.key, RelationKind::Blocks)
+        .unwrap();
+    // A comment anyone can type proves nothing.
+    w.tracker.human_comment(
+        "ABC-9",
+        "someone",
+        "merged_pr: https://github.com/example-org/acme/pull/40",
+    );
+    w.tick();
+    assert!(w.go_writes().is_empty());
+    let (_, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
+    assert_eq!(d.fix_gaps, vec!["ABC-9: no merged PR of it is recorded"]);
+}
+
+#[test]
+fn a_blocking_findings_fix_whose_recorded_pr_is_not_merged_still_holds_the_go() {
+    let w = World::with_a_fixed_finding(Status::ToDeploy, Some(CompareStatus::Ahead));
+    {
+        let mut s = w.github.state.borrow_mut();
+        let mut pr = s.merged_pulls.get(&repo()).unwrap().as_ref().unwrap()[0].clone();
+        pr.state = PrState::Closed;
+        pr.merge_commit_sha = None;
+        s.merged_pulls.insert(repo(), Ok(vec![pr]));
+    }
+    w.tick();
+    assert!(w.go_writes().is_empty());
+    let (_, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
+    assert_eq!(d.fix_gaps, vec!["ABC-9: PR #40 is not merged"]);
+}
+
+#[test]
+fn a_blocker_in_review_still_holds_the_go_whatever_its_fix() {
+    // Not past its merge: open, as any blocker.
+    let w = World::with_a_fixed_finding(Status::InReview, Some(CompareStatus::Ahead));
+    w.tick();
+    assert!(w.go_writes().is_empty());
+    let (_, d) = crate::verbs::status(&w.tick_ctx()).unwrap();
+    assert_eq!(d.reasons, vec!["open blocking issues: ABC-9"]);
+}
+
 #[test]
 fn angles_configured_later_apply_from_the_next_candidate() {
     // Under the human policy the GO waits for the owner: rc.1, whose gate

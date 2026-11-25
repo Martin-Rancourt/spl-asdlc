@@ -81,6 +81,9 @@ pub struct GoFacts {
     pub verdict: VerdictState,
     pub blockers: Vec<String>,
     pub unlinked_blockers: Vec<String>,
+    /// Blocking findings whose fix is merged (To Deploy or later) but not in
+    /// the candidate, or not known to be: one line each. A finding whose fix
+    /// the candidate contains is neither here nor in `blockers`.
     pub fix_gaps: Vec<String>,
     pub tip_gaps: Vec<String>,
     /// The release tag retracted from this candidate, its publication having
@@ -504,6 +507,31 @@ mod tests {
         assert_eq!(
             d.reasons,
             vec!["the candidate is not the release branch tip: src/a.rs"]
+        );
+    }
+
+    #[test]
+    fn a_blocking_finding_freed_by_the_candidate_is_no_longer_counted_and_a_fix_gap_still_holds() {
+        // ASDLC-SEJA: the caller leaves out a blocking finding whose fix is
+        // merged and in the candidate, so a release with only such findings
+        // is a GO; one whose fix is not in the candidate is a fix gap.
+        let freed = evaluate(&GoFacts {
+            blockers: Vec::new(),
+            fix_gaps: Vec::new(),
+            ..all_good()
+        });
+        assert!(freed.go, "{:?}", freed.reasons);
+        let d = evaluate(&GoFacts {
+            fix_gaps: vec!["ABC-3: PR #4 is not in v1.2.0-rc.1".into()],
+            ..all_good()
+        });
+        assert!(!d.go);
+        assert!(d.blockers.is_empty());
+        assert_eq!(
+            d.reasons,
+            vec![
+                "resolved blockers whose fix is not in the candidate (a new candidate that contains it frees them): ABC-3: PR #4 is not in v1.2.0-rc.1"
+            ]
         );
     }
 

@@ -71,6 +71,10 @@ pub enum Why {
     NothingMerged,
     /// Every box checked, a PR merged, nothing open.
     Complete,
+    /// [`Why::Complete`] for a blocking finding of a release (its blocker
+    /// marker names the release item, here): a candidate that contains the
+    /// merge frees the GO of it; the closure still moves it to Done.
+    FixMerged(String),
     /// Nothing to deploy: every box checked, a PR merged, nothing open; the
     /// merge delivered it.
     Delivered,
@@ -110,6 +114,9 @@ impl Why {
                 "the release closure moves it to `Done` once every box of its contract is checked."
                     .to_string()
             }
+            Why::FixMerged(release) => format!(
+                "this blocking finding no longer holds the GO of {release} once a candidate contains this merge; the closure of that release moves it to `Done` once every box of its contract is checked."
+            ),
             Why::Delivered => {
                 "it has nothing to deploy, so the merge delivered it: every box of its contract is checked."
                     .to_string()
@@ -149,7 +156,11 @@ pub fn decide(f: &Facts) -> Option<(Status, Why)> {
     if !f.merged {
         return Some((Status::InProgress, Why::NothingMerged));
     }
-    Some((Status::ToDeploy, Why::Complete))
+    let why = match super::release::findings::parse_blocker_marker(f.description) {
+        Some(release) => Why::FixMerged(release),
+        None => Why::Complete,
+    };
+    Some((Status::ToDeploy, why))
 }
 
 /// Where a ticket the rules put To Deploy goes when it has nothing to
@@ -208,6 +219,26 @@ mod tests {
             decide(&facts(&[], ALL)),
             Some((Status::ToDeploy, Why::Complete)),
             "the post-deploy section is set apart"
+        );
+    }
+
+    #[test]
+    fn a_blocking_findings_fix_merged_says_a_candidate_frees_the_go_not_the_closure() {
+        // ASDLC-SEJA: a candidate that contains the merge frees the GO; the
+        // closure, which needs the GO, only moves the ticket to Done.
+        let description = format!(
+            "{ALL}\n{}",
+            crate::method::release::findings::blocker_marker("ABC-1")
+        );
+        let (to, why) = decide(&facts(&[], &description)).unwrap();
+        assert_eq!(
+            (to, &why),
+            (Status::ToDeploy, &Why::FixMerged("ABC-1".into()))
+        );
+        let next = why.next();
+        assert!(
+            next.starts_with("this blocking finding no longer holds the GO of ABC-1 once a candidate contains this merge;"),
+            "{next}"
         );
     }
 

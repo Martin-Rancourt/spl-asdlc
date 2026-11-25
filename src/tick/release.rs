@@ -2970,18 +2970,23 @@ pub fn decide(
             return None;
         }
     };
+    let label = vocabulary::release_label(&cfg.product.name, &c.version.to_string());
     let mut blockers = Vec::new();
+    let mut fix_gaps = Vec::new();
     for b in &relations.blocked_by {
         match t.tracker.get(&b.other) {
             Ok(i) if i.state.is_resolved() => {}
-            Ok(_) => blockers.push(b.other.clone()),
+            Ok(i) => match blocker_fix(t, report, item, &label, c, &i) {
+                Fix::InCandidate => {}
+                Fix::Gap(gap) => fix_gaps.push(gap),
+                Fix::NotMerged => blockers.push(b.other.clone()),
+            },
             Err(e) => {
                 t.unreadable(report, &b.other, e);
                 return None;
             }
         }
     }
-    let label = vocabulary::release_label(&cfg.product.name, &c.version.to_string());
     let unlinked_blockers: Vec<String> = match t.tracker.list_by_label(&label) {
         Ok(items) => items
             .into_iter()
@@ -2990,6 +2995,7 @@ pub fn decide(
                 findings::parse_blocker_marker(&i.description).as_deref() == Some(item.key.as_str())
             })
             .filter(|i| !relations.blocked_by.iter().any(|b| b.other == i.key))
+            .filter(|i| !matches!(blocker_fix(t, report, item, &label, c, i), Fix::InCandidate))
             .map(|i| i.key)
             .collect(),
         Err(e) => {
@@ -3077,13 +3083,107 @@ pub fn decide(
         verdict,
         blockers,
         unlinked_blockers,
-        fix_gaps: Vec::new(),
+        fix_gaps,
         tip_gaps,
         retracted,
         held,
         policy,
     };
     Some(go::evaluate(&facts))
+}
+
+/// Where an open blocker of the release stands against the candidate
+/// (spec 05 §8, ASDLC-SEJA).
+#[derive(Debug, PartialEq, Eq)]
+enum Fix {
+    /// Not a blocking finding of this release whose fix is merged: it is an
+    /// open blocking issue.
+    NotMerged,
+    /// A blocking finding whose fix is merged and in the candidate: it no
+    /// longer holds the GO, though it reaches Done only at the closure.
+    InCandidate,
+    /// A blocking finding whose fix is merged, but not in the candidate, or
+    /// not known to be: a fix gap, which a newer candidate that contains it
+    /// frees.
+    Gap(String),
+}
+
+/// Whether the open blocker `i` of the release `item` is freed by the
+/// candidate: a blocking finding of this release (the release label and the
+/// blocker marker naming the release item) at To Deploy or later, every PR
+/// the bridge recorded as merged on it merged by a commit the candidate
+/// contains (REQ-REL-059). Closing it is the closure's, after the publication,
+/// which needs the GO: counting it open until Done would never let the
+/// release go. Fail closed: a PR or an ancestry that cannot be read is a
+/// gap, never a freed blocker.
+fn blocker_fix(
+    t: &Tick,
+    report: &mut Report,
+    item: &Item,
+    label: &str,
+    c: &Candidate,
+    i: &Item,
+) -> Fix {
+    let past_merge = matches!(i.state.status, Some(Status::ToDeploy | Status::PostDeploy));
+    let finding = i.labels.iter().any(|l| l.eq_ignore_ascii_case(label))
+        && findings::parse_blocker_marker(&i.description).as_deref() == Some(item.key.as_str());
+    if !past_merge || !finding {
+        return Fix::NotMerged;
+    }
+    let unread = |report: &mut Report, e: String| {
+        t.unreadable(
+            report,
+            &i.key,
+            format!("the fix of this blocking finding: {e}"),
+        );
+        Fix::Gap(format!("{}: its fix could not be read", i.key))
+    };
+    let numbers = match merged_pr_numbers(t, &i.key) {
+        Ok(n) => n,
+        Err(e) => return unread(report, e.to_string()),
+    };
+    if numbers.is_empty() {
+        return Fix::Gap(format!("{}: no merged PR of it is recorded", i.key));
+    }
+    // Every recorded PR: a fix that took two PRs is in when both are.
+    for n in numbers {
+        let pr = match t.github.pull(&t.repo, n) {
+            Ok(pr) => pr,
+            Err(e) => return unread(report, format!("PR #{n}: {e}")),
+        };
+        let sha = pr.merge_commit_sha.as_deref().filter(|s| !s.is_empty());
+        let Some(sha) = sha.filter(|_| pr.state == crate::github::PrState::Merged) else {
+            return Fix::Gap(format!("{}: PR #{n} is not merged", i.key));
+        };
+        match t.github.compare_status(&t.repo, sha, &c.sha) {
+            Ok(CompareStatus::Ahead | CompareStatus::Identical) => {}
+            Ok(CompareStatus::Behind | CompareStatus::Diverged) => {
+                return Fix::Gap(format!("{}: PR #{n} is not in {}", i.key, c.tag));
+            }
+            Err(e) => return unread(report, format!("PR #{n} against {}: {e}", c.tag)),
+        }
+    }
+    Fix::InCandidate
+}
+
+/// The PRs the bridge recorded as merged on a ticket (its `merged_pr: <url>`
+/// lines), oldest first, once each.
+fn merged_pr_numbers(t: &Tick, key: &str) -> crate::tracker::TResult<Vec<u64>> {
+    let mut out = Vec::new();
+    for n in t
+        .tracker
+        .comments(key)?
+        .iter()
+        .filter(|c| c.by_bridge)
+        .flat_map(|c| c.body.lines())
+        .filter_map(|l| l.trim().strip_prefix("merged_pr: "))
+        .filter_map(|url| url.trim().rsplit('/').next()?.parse::<u64>().ok())
+    {
+        if !out.contains(&n) {
+            out.push(n);
+        }
+    }
+    Ok(out)
 }
 
 /// Whether `path` may differ between the candidate and the release branch
