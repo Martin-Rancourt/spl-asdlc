@@ -1,0 +1,8 @@
+{
+  "schema": "spl-asdlc/qa-verdict/1",
+  "candidate": "v1.17.0-rc.2",
+  "item": "ASDLC-EK6U",
+  "verdict": "go",
+  "between_angles": "Security is the only configured release angle, so there is no second angle whose assumptions can leave a gap. I compared the complete v1.17.0-rc.1..v1.17.0-rc.2 change set with the security report: the candidate changes only the ordinary merge pass and its regression test, plus the prior candidate's QA records. The report re-checks the repaired fork-PR boundary from GitHub input through ticket mutation and merge, the other PR-reading paths, the mutation test, repository settings, tests and the unchanged delivery chain. The release gate remains responsible for CI. No concern was found unowned or between angles.",
+  "findings": []
+}
