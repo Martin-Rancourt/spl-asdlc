@@ -4672,3 +4672,6 @@ fn a_check_refused_for_another_reason_is_a_failure_retried_next_tick() {
     );
     assert!(pr_said(&w, 7, "The contract of ABC-7 is incomplete"));
 }
+
+#[path = "approval_notice_tests.rs"]
+mod approval_notice_tests;

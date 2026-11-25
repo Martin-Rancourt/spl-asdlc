@@ -915,6 +915,14 @@ fn one(
             return None;
         }
         other => {
+            if open_angles.is_empty()
+                && plan.holds.is_empty()
+                && review::unresolved_threads(&pr) == Some(0)
+                && branch == BranchState::Current
+                && superseded(&pr, &t.config.review.coordinators).is_ok()
+            {
+                approval_notice(t, log, report, &pr, read_children.as_deref().unwrap_or(&[]));
+            }
             t.wait(report, &pr, approval_wait(&pr, &other));
             return None;
         }
@@ -1554,6 +1562,90 @@ pub fn latest_merge(comments: &[crate::tracker::Comment]) -> Option<String> {
         .filter_map(|l| l.trim().strip_prefix("merged_pr: "))
         .map(|url| url.trim().to_string())
         .next_back()
+}
+
+/// Explain exceptional approval waits without adding noise to normal rounds.
+fn approval_notice(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    pr: &PullRequest,
+    children: &[Item],
+) {
+    let coordinators = &t.config.review.coordinators;
+    let fields = [("pr", pr.url.as_str()), ("head", pr.head_sha.as_str())];
+    let outsiders: Vec<_> = review::approvals_at_head(&pr.reviews, &pr.head_sha)
+        .into_iter()
+        .filter(|login| {
+            !coordinators
+                .iter()
+                .any(|c| crate::github::same_login(c, login))
+        })
+        .collect();
+    if !outsiders.is_empty() {
+        say_once(
+            t,
+            log,
+            report,
+            pr,
+            "non-coordinator-approval",
+            &fields,
+            &format!(
+                "Waiting for a coordinator approval at `{}`. The approvals from {} do not \
+                 count: the configured coordinators are {} (`review.coordinators`).",
+                pr.head_sha,
+                outsiders.join(", "),
+                coordinators.join(", ")
+            ),
+        );
+    }
+    let apps: Vec<_> = coordinators
+        .iter()
+        .filter(|c| crate::github::login_key(c).ends_with("[bot]"))
+        .collect();
+    if !apps.is_empty()
+        && pr.author.as_ref().is_some_and(|author| {
+            apps.iter()
+                .all(|c| crate::github::same_login(c, &author.login))
+        })
+    {
+        let people: Vec<_> = coordinators
+            .iter()
+            .filter(|c| !crate::github::login_key(c).ends_with("[bot]"))
+            .cloned()
+            .collect();
+        let text = format!(
+            "Waiting for a coordinator approval at `{}`. Every configured App coordinator \
+             is the PR's author, and GitHub refuses an author's own approval. Only a person \
+             coordinator can approve this PR. Configured coordinators: {}. Person coordinators: {}.",
+            pr.head_sha,
+            coordinators.join(", "),
+            if people.is_empty() {
+                "none configured".into()
+            } else {
+                people.join(", ")
+            }
+        );
+        say_once(t, log, report, pr, "author-coordinator", &fields, &text);
+        for child in children.iter().filter(|c| {
+            !c.state.is_resolved()
+                && round_of(c, &pr.url)
+                && matches!(
+                    texts::bridge_item(&c.description, c.parent.as_deref()),
+                    Some(BridgeItem::Consolidation { .. })
+                )
+        }) {
+            say_once_on_item(
+                t,
+                log,
+                report,
+                &child.key,
+                "author-coordinator",
+                &fields,
+                &text,
+            );
+        }
+    }
 }
 
 /// Why a PR In Review waits on its approval (Missing or Stale).
