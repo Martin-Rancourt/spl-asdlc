@@ -120,7 +120,7 @@ pub fn ensure(
     c: &Candidate,
     branch: &str,
 ) -> bool {
-    let create = c.rc == 1;
+    let create = c.pass() == 1;
     let release = section(t);
     let Some(writer) = &release.note_writer else {
         return true;

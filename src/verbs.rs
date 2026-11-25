@@ -35,9 +35,10 @@ pub fn release_cycle<'a>(t: &Tick<'a>) -> &'a Release {
 /// Read the cycle in flight; nothing is created.
 pub fn cycle(t: &Tick) -> Result<Cycle, String> {
     let shape = Shape::of(&t.config.product.name, release_cycle(t));
-    let (candidate, _) = release::newest(t, &shape)?.ok_or("no release candidate tag")?;
+    let (mut candidate, _) = release::newest(t, &shape)?.ok_or("no release candidate tag")?;
     let item = release::find_release_item(t, &shape, candidate.version)?
         .ok_or("no release item yet: the next tick creates it")?;
+    candidate.first_rc = release::cycle_start(t, &shape, candidate.version, candidate.rc)?;
     let branch = release::release_branch(t, &shape, &candidate).ok();
     Ok(Cycle {
         shape,

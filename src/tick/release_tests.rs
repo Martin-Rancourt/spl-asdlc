@@ -29,6 +29,9 @@ mod tracker_verdict;
 /// A range whose file list GitHub cuts at 300 (ASDLC-P3U7).
 mod cut_file_list;
 
+/// A cycle abandoned, then the same version cut again (ASDLC-R7K6).
+mod abandoned_cycle;
+
 const BRANCH: &str = "release/2026-10-05-14-03-utc";
 const CAND: &str = "acme-v1.2.0-rc.1";
 const LABEL: &str = "release/acme-v1.2.0";
