@@ -62,6 +62,24 @@ pub fn has_marker(text: &str, marker: &str) -> bool {
     })
 }
 
+/// Whether a text carries the marker as a line of its own, hidden or
+/// visible: the form the bridge writes a gesture's marker in, which a
+/// marker quoted inside a copied line (a ticket's title, a criterion) never
+/// takes.
+pub fn has_marker_line(text: &str, marker: &str) -> bool {
+    let hidden = marker.trim();
+    let visible = format!("`{}`", token(marker));
+    text.lines()
+        .map(str::trim)
+        .any(|l| l == hidden || l == visible)
+}
+
+/// Whether a bridge comment records the `release abandon` verb: its
+/// marker on a line of its own.
+pub fn records_abandon(body: &str) -> bool {
+    has_marker_line(body, &marker("cycle-abandoned", &[]))
+}
+
 static HIDDEN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"<!-- (spl-asdlc:[^`>]*?) -->").unwrap());
 
@@ -81,6 +99,12 @@ pub fn inert(text: &str) -> String {
         .replace("<!--", "&lt;!--")
         .replace("spl-asdlc:", "spl-asdlc :")
         .replace("release_blocker::", "release_blocker :")
+}
+
+/// Untrusted text made inert for an inline code span: [`inert`], and no
+/// backtick that would close the span.
+fn inert_code(text: &str) -> String {
+    inert(text).replace('`', "'")
 }
 
 /// The kind of item the bridge created, read off its description marker.
@@ -349,9 +373,11 @@ pub fn release_angle_item(
          tagged; an item still open when the cycle closes is closed with the release. The coordinator judges your \
          findings afterwards, in the candidate's verdict.\n\n\
          ## Context\n- Candidate: `{candidate}`\n- Release label: `{label}`\n- Project notes: {notes}\n- The brief is on the release item.\n\
-         - This item follows your PR: `In Progress` once it appears; `In Review` once it is ready with its checks green, \
+         - This item follows your PR: `In Progress` once it appears; move it `In Review` yourself once your PR is \
+         opened (not a draft) or pushed again, before you give it back (the bridge does too once its checks are green), \
          the bridge's own step, kept by its assignee; back `In Progress` when a coordinator requests changes at its head, \
-         assigned to this angle's assignee again (or to nobody); `To Deploy` when the bridge merges it.\n\n\
+         assigned to this angle's assignee again (or to nobody), or when a required check is red, its report is missing \
+         or invalid, or it carries more than its report; `To Deploy` when the bridge merges it.\n\n\
          {protocol}",
         marker = marker("angle", &[("scope", candidate), ("angle", &angle.key)]),
         key = angle.key,
@@ -413,9 +439,11 @@ pub fn review_angle_item(
          ## Acceptance criteria\n- [ ] Every finding is a review thread on the PR, with its severity.\n\
          - [ ] The review is submitted on GitHub, its body naming this item's key.\n\n\
          ## Business rules\n{absence}\n\n\
-         ## What closes this item\nThe bridge sets this sub-item Done at the first tick that finds on {pr_url} a \
-         submitted review (any state but pending) whose body names this item's key as a whole word: name it in the \
-         body of your review. The PR's merge closes it too (Done), its close without merge cancels it.\n\n\
+         ## What closes this item\nYou do: once your review is submitted on {pr_url} (any state but pending), its \
+         body naming this item's key as a whole word, mark this item Done before you give it back; the bridge never \
+         closes it for a review, and the coordinator's approval does not count while it is open. The coordinator \
+         reopens it when no submitted review names its key. The PR's merge closes it too (Done), its close without \
+         merge cancels it.\n\n\
          ## Context\n- Ticket: {ticket}\n- Project notes: {notes}{why}\n\n\
          {protocol}",
         marker = marker(
@@ -483,6 +511,10 @@ pub struct RedGateFacts<'a> {
     pub run_url: &'a str,
     /// The failed suites of the evidence pack, or why it could not be read.
     pub suites: Result<Vec<String>, String>,
+    /// The failed jobs of the gate run, read when the evidence pack names no
+    /// failed suite; empty when they were not read or none failed. They name
+    /// the title only, never the contract.
+    pub failed_jobs: Vec<String>,
     /// Why the red is taken as final although no automatic rerun was seen
     /// (the bounded wait ran out), when that is the case.
     pub rerun_unseen: Option<&'a str>,
@@ -490,6 +522,51 @@ pub struct RedGateFacts<'a> {
 
 /// At most this many failed suites are named one by one.
 const SUITES_SHOWN: usize = 30;
+
+/// At most this many failures are named in a gate-fix ticket's title, the
+/// rest counted (`+N`).
+const TITLE_FAILURES_SHOWN: usize = 2;
+
+/// A failure's name in a title is cut past this many characters.
+const TITLE_NAME_CHARS: usize = 40;
+
+/// The title of a gate-fix ticket: what failed in the candidate's gate (the
+/// failed suites of the evidence pack, otherwise the failed jobs of the
+/// run), or today's wording when nothing failed is known (ASDLC-HZYJ). The
+/// bridge finds the ticket by its marker, never by its title.
+pub fn gate_fix_title(f: &RedGateFacts) -> String {
+    let candidate = inert(f.candidate);
+    let failed: &[String] = match &f.suites {
+        Ok(suites) if !suites.is_empty() => suites,
+        _ => &f.failed_jobs,
+    };
+    let names: Vec<String> = failed
+        .iter()
+        .map(|n| inert(n))
+        .filter(|n| !n.is_empty())
+        .collect();
+    if names.is_empty() {
+        return format!("Make the gate green — {candidate}");
+    }
+    let shown: Vec<String> = names
+        .iter()
+        .take(TITLE_FAILURES_SHOWN)
+        .map(|n| {
+            if n.chars().count() > TITLE_NAME_CHARS {
+                let cut: String = n.chars().take(TITLE_NAME_CHARS - 1).collect();
+                format!("{cut}…")
+            } else {
+                n.clone()
+            }
+        })
+        .collect();
+    let more = match names.len().saturating_sub(TITLE_FAILURES_SHOWN) {
+        0 => String::new(),
+        n => format!(" +{n}"),
+    };
+    let verb = if names.len() == 1 { "fails" } else { "fail" };
+    format!("Gate red on {candidate}: {}{more} {verb}", shown.join(", "))
+}
 
 /// The gate-fix ticket the bridge opens when a candidate's gate is red and
 /// its automatic rerun settled (BR-ASDLC-016): served to an implementer by
@@ -499,7 +576,7 @@ pub fn gate_fix_ticket(f: &RedGateFacts) -> (String, String) {
     // Suite names and read errors come from the evidence pack and from
     // GitHub: one line each, no marker, no backtick that closes a span.
     let code = |s: &str| inert(s).replace('`', "'");
-    let title = format!("Make the gate green — {}", code(f.candidate));
+    let title = gate_fix_title(f);
     let (criterion, found) = match &f.suites {
         Ok(suites) if suites.is_empty() => (
             format!(
@@ -662,12 +739,16 @@ pub fn consolidation_item(
             "- New findings beyond what a fix requires.",
             "- [ ] Every finding is confirmed or rejected in its thread.\n\
              - [ ] The retained fixes are commits of the branch.\n- [ ] The approval is submitted at the head.",
-            "Nothing you set closes this item: its PR does. The bridge sets it Done when it merges the PR, which it does \
-             once a coordinator's approval stands at the PR's head commit (of each coordinator's latest approval or \
-             request for changes, none requests changes and one approves the current head), the required checks are \
-             green there, every review thread is resolved, the branch is up to date when the base requires it, no hold \
-             stands and, when the project requires one, a human approved too. A close of the PR without merge cancels \
-             it. A request for changes at the head sends the ticket back to In Progress and leaves this item open.",
+            "You do: once your approving review stands at the PR's head, or your request for changes, mark this item \
+             Done before you give it back. Before approving, check that every angle sub-item of the round has a \
+             submitted review on the PR naming its key, and reopen the one that has none instead of approving. The \
+             bridge merges the PR once a coordinator's approval stands at its head commit (of each coordinator's latest \
+             approval or request for changes, none requests changes and one approves the current head), every angle \
+             sub-item of the round is closed, the required checks are green there, every review thread is resolved, \
+             the branch is up to date when the base requires it and no hold stands. While the PR still waits on an \
+             approval at its head with this item closed, the bridge serves it again (Ready), once per head. The PR's \
+             merge closes it too (Done), its close without merge cancels it. A request for changes at the head sends \
+             the ticket back to In Progress.",
             protocol::Job::PrConsolidation,
         ),
         Consolidating::Candidate => (
@@ -686,10 +767,13 @@ pub fn consolidation_item(
              - [ ] Every finding is judged once in the verdict: accepted (blocking or not) or rejected with its reason.\n\
              - [ ] What falls between the angles is checked, and said in the verdict.\n\
              - [ ] The verdict is committed in a PR that names this item.",
-            "Your verdict does: the bridge sets this item Done when it merges your verdict PR, which it does once every \
+            "Your verdict does: move this item In Review yourself once your verdict PR is opened (not a draft), before \
+             you give it back. The bridge sets it Done when it merges your verdict PR, which it does once every \
              angle PR of the candidate is merged, the PR names this item's key, carries a valid verdict and no other \
              change, is authored by a release coordinator or approved by one at its head, has its required checks green \
-             and is up to date. What keeps it from the merge is said on the PR. This item is served once every angle \
+             and is up to date. What keeps it from the merge is said on the PR; the bridge moves this item back In \
+             Progress when that is yours to mend (the PR names no item, carries another change or an invalid verdict, \
+             or a required check is red) or when no verdict PR is open. This item is served once every angle \
              report of the candidate is merged: blocked by each angle's implementation, or held in Backlog by the bridge \
              where the tracker keeps no such block. A newer candidate cancels it.",
             protocol::Job::ReleaseConsolidation,
@@ -926,9 +1010,9 @@ pub fn brief(b: &Brief) -> String {
             .join(", ");
         out.push_str(&format!(
             "- **{}** — {} [{}] — PR {}\n",
-            t.id,
-            t.title,
-            t.state,
+            inert(&t.id),
+            inert(&t.title),
+            inert(&t.state),
             if prs.is_empty() { "none".into() } else { prs }
         ));
         match &t.description {
@@ -947,7 +1031,7 @@ pub fn brief(b: &Brief) -> String {
                     } else {
                         ""
                     };
-                    out.push_str(&format!("  {}{tag}\n", bx.line.trim()));
+                    out.push_str(&format!("  {}{tag}\n", inert(&bx.line)));
                 }
                 if boxes.is_empty() && ac.is_empty() {
                     out.push_str("  - (no acceptance criterion declared)\n");
@@ -971,7 +1055,7 @@ pub fn brief(b: &Brief) -> String {
     if !b.rule_files_touched.is_empty() {
         out.push_str(&format!(
             "\n#### Business rules touched\n\n{}\n\nEach rule touched must have a named test that is green.\n",
-            b.rule_files_touched.iter().map(|p| format!("- `{p}`")).collect::<Vec<_>>().join("\n")
+            b.rule_files_touched.iter().map(|p| format!("- `{}`", inert_code(p))).collect::<Vec<_>>().join("\n")
         ));
     }
     if b.paths_since_release_cut {
@@ -985,7 +1069,7 @@ pub fn brief(b: &Brief) -> String {
             paths.len()
         );
         for p in paths.iter().take(40) {
-            s.push_str(&format!("- `{p}`\n"));
+            s.push_str(&format!("- `{}`\n", inert_code(p)));
         }
         if paths.len() > 40 {
             s.push_str(&format!("- … and {} more\n", paths.len() - 40));

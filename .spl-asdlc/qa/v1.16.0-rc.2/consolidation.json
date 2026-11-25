@@ -1,0 +1,16 @@
+{
+  "schema": "spl-asdlc/qa-verdict/1",
+  "candidate": "v1.16.0-rc.2",
+  "item": "ASDLC-CBSE",
+  "verdict": "hold",
+  "between_angles": "Security is the only release angle configured (.spl-asdlc/config.toml, [[release.angles]] key security), so no two angles could each assume the other covered a concern. Compared its checked evidence with the full v1.16.0-rc.1..v1.16.0-rc.2 change set (git diff --stat: src/tick/release.rs, src/tick/release_tests/abandoned_cycle.rs, src/verbs.rs, plus the rc.1 QA records): every changed source file is in the report's scope. Build, tests and packaging stay with the gate (the report notes cargo test green; not a finding). I re-read at the tag the code the finding names: texts::brief copies t.title and bx.line without texts::inert, texts::has_marker matches the bare token spl-asdlc:cycle-abandoned with no comment wrapper, and cycle_was_abandoned accepts any by_bridge comment on the release item carrying it, so the trust boundary the fix of rc.1 security-1 relies on is crossed by the bridge's own brief. The open findings of earlier candidates (v1.15.0-rc.1 security-1/2, v1.16.0-rc.1 security-2) stay filed and are untouched by #202. Nothing found unowned.",
+  "findings": [
+    {
+      "angle": "security",
+      "id": "security-1",
+      "decision": "accepted",
+      "blocking": true,
+      "reason": "Confirmed at the tag: the release brief, posted by the bridge on the release item, carries embarked tickets' titles and checkbox lines verbatim, and cycle_was_abandoned trusts any by_bridge comment whose body has the cycle-abandoned token. A tracker participant without GitHub write can therefore forge the abandon gesture and, with a tracker-only Canceled, get a held candidate tagged and published over its open blocking finding: the exact bypass rc.2 was cut to close. It must not ship. The report documents trigger, anchors, a reproducible probe with control, impact and a proposed regression test faithfully enough for the fix ticket; the fix should cover every bridge comment on the release item that copies tracker text, not only the brief."
+    }
+  ]
+}

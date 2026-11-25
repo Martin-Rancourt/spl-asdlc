@@ -515,6 +515,21 @@ pub trait Tracker {
     fn update_description(&self, key: &str, description: &str) -> TResult<()>;
     fn add_label(&self, key: &str, label: &str) -> TResult<()>;
     fn remove_label(&self, key: &str, label: &str) -> TResult<()>;
+    /// Whether the item is a task ([`ItemKind::Task`]): a step of work
+    /// whose statuses are [`ItemKind::holds`]'s, which cannot follow a PR
+    /// (In Review, To Deploy). A tracker with a single kind: never.
+    fn is_task(&self, _key: &str) -> TResult<bool> {
+        Ok(false)
+    }
+    /// Turn a task into a ticket, its status kept (every status of a task is
+    /// a ticket's): the item a PR names follows the ticket's cycle
+    /// (ASDLC-JA74). A ticket already is one: nothing is written.
+    fn make_ticket(&self, key: &str) -> TResult<()> {
+        Err(TrackerError::refused(
+            format!("type of {key}"),
+            "this tracker changes no item's type",
+        ))
+    }
     /// Set a status by canonical name; `assignee` `Some` changes the
     /// assignee in the same write (`Some(None)` unassigns).
     fn set_status(&self, key: &str, status: Status, assignee: Option<Option<&User>>)

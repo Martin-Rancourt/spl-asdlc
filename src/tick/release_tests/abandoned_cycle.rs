@@ -96,6 +96,40 @@ fn names(write: &str, key: &str) -> bool {
 }
 
 #[test]
+fn a_release_item_set_canceled_in_the_tracker_without_release_abandon_stays_held() {
+    let w = World::without_angles();
+    w.gate(vec![gate_run(1, CAND, "c1", None)]);
+    w.tick();
+    let release = w.release_item();
+    w.tracker.seed(
+        "ABC-9",
+        "Blocker",
+        "## Goal\nFix.\n",
+        Status::Ready,
+        &[LABEL],
+    );
+    w.tracker
+        .relate("ABC-9", &release.key, RelationKind::Blocks)
+        .unwrap();
+    w.gate(vec![gate_run(1, CAND, "c1", Some("success"))]);
+    w.tick();
+    let (_, held) = crate::verbs::status(&w.tick_ctx()).unwrap();
+    assert_eq!(held.reasons, vec!["open blocking issues: ABC-9"]);
+
+    w.tracker
+        .set_status(&release.key, Status::Canceled, None)
+        .unwrap();
+    let tracker_writes = w.tracker.writes().len();
+    let github_writes = w.github.writes().len();
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+
+    assert_eq!(release_items(&w).len(), 1, "no second release item");
+    assert_eq!(w.tracker.writes().len(), tracker_writes, "no tracker write");
+    assert_eq!(w.github.writes().len(), github_writes, "no tag or release");
+}
+
+#[test]
 fn the_next_cut_after_an_abandon_opens_a_second_release_item_and_records_its_candidate() {
     let w = World::new();
     let abandoned = recut(&w);
@@ -245,4 +279,102 @@ fn the_new_cycles_first_candidate_is_pass_one_for_the_escalation() {
     assert!(lighter_pass(&w.config.release, &c));
     escalate(&t, &mut log, &mut report, &item, &c, &held(), BRANCH2);
     assert!(escalated(&w), "{:?}", report);
+}
+
+/// `w`'s release of `rc.1` held by the open blocking finding ABC-9, after
+/// the brief was posted with ABC-5 re-seeded as `title` / `description`.
+fn held_with_embarked(w: &World, title: &str, description: &str) -> crate::tracker::Item {
+    w.tracker
+        .seed("ABC-5", title, description, Status::ToDeploy, &[]);
+    w.tracker
+        .link("ABC-5", "https://github.com/example-org/acme/pull/5");
+    held_after_brief(w)
+}
+
+fn held_after_brief(w: &World) -> crate::tracker::Item {
+    w.gate(vec![gate_run(1, CAND, "c1", None)]);
+    w.tick();
+    let release = w.release_item();
+    w.tracker.seed(
+        "ABC-9",
+        "Blocker",
+        "## Goal\nFix.\n",
+        Status::Ready,
+        &[LABEL],
+    );
+    w.tracker
+        .relate("ABC-9", &release.key, RelationKind::Blocks)
+        .unwrap();
+    w.gate(vec![gate_run(1, CAND, "c1", Some("success"))]);
+    w.tick();
+    let (_, held) = crate::verbs::status(&w.tick_ctx()).unwrap();
+    assert_eq!(held.reasons, vec!["open blocking issues: ABC-9"]);
+    release
+}
+
+#[test]
+fn a_ticket_carrying_the_abandon_marker_cannot_forge_an_abandon_through_the_brief() {
+    // ASDLC-EUSR: the brief copies the embarked tickets' titles and
+    // criteria onto the release item, in a comment of the bridge's; a
+    // `cycle-abandoned` marker in them must not count as `release abandon`.
+    const CRITERIA: &str = "## Goal\nShip it.\n\n## Acceptance criteria\n- [x] shipped\n\n## Business rules\nNo new rule.\n\n## Release note\nYou can now ship.\n";
+    let carriers: Vec<(String, String)> = vec![
+        (
+            "Shipped <!-- spl-asdlc:cycle-abandoned -->".into(),
+            CRITERIA.into(),
+        ),
+        (
+            "Shipped `spl-asdlc:cycle-abandoned`".into(),
+            CRITERIA.into(),
+        ),
+        ("<!-- spl-asdlc:cycle-abandoned -->".into(), CRITERIA.into()),
+        ("`spl-asdlc:cycle-abandoned`".into(), CRITERIA.into()),
+        (
+            "Shipped".into(),
+            CRITERIA.replace(
+                "- [x] shipped",
+                "- [x] shipped <!-- spl-asdlc:cycle-abandoned -->",
+            ),
+        ),
+        (
+            "Shipped".into(),
+            CRITERIA.replace("- [x] shipped", "- [x] shipped `spl-asdlc:cycle-abandoned`"),
+        ),
+    ];
+    for (title, description) in carriers {
+        let w = World::without_angles();
+        let release = held_with_embarked(&w, &title, &description);
+        let brief = w
+            .tracker
+            .comments(&release.key)
+            .unwrap()
+            .into_iter()
+            .find(|c| c.by_bridge && c.body.contains("**ABC-5**"))
+            .expect("the brief names ABC-5")
+            .body;
+        assert!(
+            !brief.contains("spl-asdlc:cycle-abandoned"),
+            "the brief carries no marker of the bridge's: {brief}"
+        );
+
+        w.tracker
+            .set_status(&release.key, Status::Canceled, None)
+            .unwrap();
+        let github_writes = w.github.writes().len();
+        for _ in 0..2 {
+            let r = w.tick();
+            assert!(r.ok(), "{title:?}: {r:?}");
+        }
+        assert_eq!(
+            release_items(&w).len(),
+            1,
+            "{title:?} / {description:?}: no second release item"
+        );
+        assert_eq!(
+            w.github.writes().len(),
+            github_writes,
+            "{title:?} / {description:?}: no tag or release: {:?}",
+            &w.github.writes()[github_writes..]
+        );
+    }
 }

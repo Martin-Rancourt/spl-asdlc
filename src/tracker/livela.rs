@@ -184,6 +184,17 @@ pub trait LivelaStore {
         Err(format!("this Livela creates no task (\"{title}\")"))
     }
 
+    /// Whether the item is a `task` (ASDLC-JA74): a store that does not say
+    /// keeps every item as it is, and the bridge as it was.
+    fn is_task(&self, _id: &str) -> Result<bool, String> {
+        Ok(false)
+    }
+    /// Turn a task into a ticket (`Store::change_type(id, Ticket)`): its
+    /// status kept, since every status of a task is a ticket's.
+    fn make_ticket(&mut self, _id: &str) -> Result<(), String> {
+        Err("this Livela changes no item's type".into())
+    }
+
     /// Whether this store creates a milestone under a release item
     /// ([`Self::create_milestone`]): until it does, a candidate's QA items
     /// are the release item's own children (BR-ASDLC-038).
@@ -737,6 +748,22 @@ impl<S: LivelaStore> Tracker for Livela<S> {
             }
             Ok(())
         })
+    }
+
+    fn is_task(&self, key: &str) -> TResult<bool> {
+        let raw = self.raw(key)?;
+        self.store
+            .borrow()
+            .is_task(&raw.id)
+            .map_err(|e| TrackerError::unreadable(format!("type of {key}"), e))
+    }
+
+    fn make_ticket(&self, key: &str) -> TResult<()> {
+        if !self.is_task(key)? {
+            return Ok(());
+        }
+        let id = self.id_of(key)?;
+        self.as_bridge(format!("type of {key}"), |s, _| s.make_ticket(&id))
     }
 
     fn assign(&self, key: &str, user: Option<&User>) -> TResult<()> {

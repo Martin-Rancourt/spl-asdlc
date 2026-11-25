@@ -16,6 +16,7 @@ use crate::method::release::gate;
 use crate::method::release::go::VerdictState;
 use crate::method::texts::{self, BridgeItem, protocol};
 use crate::method::vocabulary::Status;
+use crate::tracker::ItemKind;
 
 const POST_DEPLOY_LABEL: &str = "post-deploy-validation/acme";
 use crate::notify::Recorder;
@@ -361,6 +362,10 @@ impl World {
             let mut pr = self.angle_pr(*n, angle, report.as_ref());
             pr.state = PrState::Merged;
             pr.merge_commit_sha = Some(format!("merge-of-{n}"));
+            pr.merged_by = Some(Actor {
+                login: bot("spl-asdlc"),
+                is_bot: true,
+            });
             merged.push(pr);
         }
         if let Some(v) = verdict {
@@ -1488,6 +1493,10 @@ fn all_angles_merged(w: &World) {
         let mut pr = w.angle_pr(n, angle, &report_json(angle, ""));
         pr.state = PrState::Merged;
         pr.merge_commit_sha = Some(format!("merge-of-{n}"));
+        pr.merged_by = Some(Actor {
+            login: bot("spl-asdlc"),
+            is_bot: true,
+        });
         merged.push(pr);
     }
     merged.push(w.merged_verdict(32, &verdict_json("go", "")));
@@ -2151,6 +2160,10 @@ fn escalating() -> World {
         let mut pr = w.angle_pr(n, angle, &report_json(angle, &findings));
         pr.state = PrState::Merged;
         pr.merge_commit_sha = Some(format!("merge-of-{n}"));
+        pr.merged_by = Some(Actor {
+            login: bot("spl-asdlc"),
+            is_bot: true,
+        });
         merged.push(pr);
     }
     merged.push(w.merged_verdict(
@@ -3350,7 +3363,7 @@ fn a_red_gate_opens_one_urgent_gate_fix_ticket_once_its_rerun_settled() {
     let fixes = w.gate_fixes();
     assert_eq!(fixes.len(), 1, "{:?}", w.tracker.writes());
     let fix = &fixes[0];
-    assert_eq!(fix.title, format!("Make the gate green — {CAND}"));
+    assert_eq!(fix.title, format!("Gate red on {CAND}: tests, lint fail"));
     assert_eq!(fix.state.status, Some(Status::Ready));
     assert_eq!(fix.assignee, None, "taken by role, nobody named");
     assert_eq!(fix.parent.as_deref(), Some(release.key.as_str()));
@@ -3536,9 +3549,7 @@ fn a_rerun_still_running_past_the_bound_keeps_the_wait() {
         "the rerun it shows may still rerun the gate"
     );
     assert!(
-        !writes
-            .iter()
-            .any(|l| l.starts_with("create Make the gate green")),
+        !writes.iter().any(|l| l.starts_with("create Gate red on")),
         "{writes:?}"
     );
     // It completed without rerunning: settled, and nothing says it was unseen.
@@ -3629,6 +3640,59 @@ fn an_unreadable_rerun_workflow_opens_nothing_and_says_why() {
     assert!(w.gate_fixes().is_empty());
 }
 
+/// The jobs of a gate run, by name and conclusion.
+fn gate_jobs(jobs: &[(&str, &str)]) -> Vec<crate::github::Job> {
+    jobs.iter()
+        .map(|(name, c)| crate::github::Job {
+            name: (*name).into(),
+            conclusion: Some((*c).into()),
+        })
+        .collect()
+}
+
+#[test]
+fn a_gate_fix_title_names_the_failed_jobs_when_the_pack_has_no_suites_file() {
+    let w = World::new();
+    w.gate(vec![gate_run(1, CAND, "c1", Some("failure"))]);
+    w.reruns(vec![rerun_run(91, "completed")]);
+    w.github.state.borrow_mut().artifact_files.insert(
+        (repo(), 7, gate::SUITES_FILE.into()),
+        Err(crate::github::ReadError::NotFound {
+            what: "results/suites.json in artifact 7".into(),
+        }),
+    );
+    w.github.state.borrow_mut().jobs.insert(
+        (repo(), 1),
+        Ok(gate_jobs(&[
+            ("build", "success"),
+            ("pre_release_qa", "failure"),
+            ("deploy", "skipped"),
+            ("fresh_migrations", "timed_out"),
+            ("cleanup", "cancelled"),
+        ])),
+    );
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let fixes = w.gate_fixes();
+    assert_eq!(fixes.len(), 1, "{:?}", w.tracker.writes());
+    assert_eq!(
+        fixes[0].title,
+        format!("Gate red on {CAND}: pre_release_qa, fresh_migrations fail")
+    );
+    // The title only: the contract still says the pack could not be read.
+    assert!(
+        fixes[0]
+            .description
+            .contains("unknown: the evidence pack could not be read"),
+        "{}",
+        fixes[0].description
+    );
+    assert_eq!(
+        texts::gate_fix_candidate(&fixes[0].description).as_deref(),
+        Some(CAND)
+    );
+}
+
 #[test]
 fn a_red_gate_whose_evidence_cannot_be_read_still_opens_its_ticket() {
     let w = World::new();
@@ -3645,6 +3709,8 @@ fn a_red_gate_whose_evidence_cannot_be_read_still_opens_its_ticket() {
     assert!(r.ok(), "{r:?}");
     let fixes = w.gate_fixes();
     assert_eq!(fixes.len(), 1, "never a silence");
+    // Neither the pack nor the jobs read: today's wording.
+    assert_eq!(fixes[0].title, format!("Make the gate green — {CAND}"));
     let d = &fixes[0].description;
     assert!(
         d.contains("unknown: the evidence pack could not be read"),
@@ -3954,8 +4020,7 @@ fn a_dry_run_prints_the_urgent_gate_fix_ticket_it_would_open() {
     let w = World::new();
     w.red_settled(1, CAND, "c1", r#""tests""#);
     // The release item exists; its gate-fix ticket does not yet.
-    w.tracker
-        .fail_writes_starting_with("create Make the gate green");
+    w.tracker.fail_writes_starting_with("create Gate red on");
     w.tick();
     assert!(w.gate_fixes().is_empty());
     let release = w.release_item();
@@ -3979,7 +4044,7 @@ fn a_dry_run_prints_the_urgent_gate_fix_ticket_it_would_open() {
     assert!(r.ok(), "{r:?}");
     assert_eq!(w.tracker.writes().len(), before, "the tracker saw no write");
     let want = format!(
-        "tracker: create \"Make the gate green — {CAND}\" [Ready] priority urgent under {}",
+        "tracker: create \"Gate red on {CAND}: tests fails\" [Ready] priority urgent under {}",
         release.key
     );
     assert!(intents.lines().contains(&want), "{:?}", intents.lines());
@@ -4556,6 +4621,129 @@ fn a_release_angle_item_follows_its_pr_to_review_back_to_work_and_to_deploy_at_t
     w.quiet();
 }
 
+/// ASDLC-WMTX: the angle's agent moves its ticket In Review at its PR's
+/// opening, so that it is not served again while the bridge checks the
+/// PR; pending checks leave it there, a fault only the angle can mend (a
+/// red check, an invalid report) sends it back to work.
+#[test]
+fn an_angle_item_its_agent_moved_in_review_goes_back_to_work_on_a_fault() {
+    let w = World::new();
+    w.tick();
+    let sub = w.sub_item("security").key;
+    // Its code is its report: a ticket, as the consolidation, whose code is
+    // the verdict; a PR's review items are tasks (ASDLC-TDXM).
+    assert_eq!(w.tracker.kind(&sub), ItemKind::Ticket);
+    assert_eq!(w.tracker.kind(&w.consolidation(CAND).key), ItemKind::Ticket);
+    let mut pr = w.angle_pr(30, "security", &report_json("security", ""));
+    pr.reviews.clear();
+    pr.checks[0].status = Some("IN_PROGRESS".into());
+    pr.checks[0].conclusion = None;
+    w.tracker.moved_by_someone(&sub, Status::InReview);
+    w.open_on_branch(vec![pr.clone()]);
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(writes.is_empty(), "pending checks: {writes:?}");
+    assert_eq!(w.sub_item("security").state.status, Some(Status::InReview));
+
+    // A required check red: back to its angle, its assignee kept.
+    pr.checks[0].status = Some("COMPLETED".into());
+    pr.checks[0].conclusion = Some("FAILURE".into());
+    w.open_on_branch(vec![pr.clone()]);
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(writes, vec![format!("status {sub} In Progress")]);
+    w.quiet();
+
+    // Pushed again and moved In Review by its agent, its checks green but
+    // its report invalid: back to work too.
+    pr = green(pr);
+    pr.head_sha = "invalidhead00001".into();
+    w.report_only(&pr.head_sha, "security");
+    w.github.state.borrow_mut().files.insert(
+        (
+            repo(),
+            pr.head_sha.clone(),
+            format!(".spl-asdlc/qa/{CAND}/security.json"),
+        ),
+        Ok("{}".into()),
+    );
+    w.tracker.moved_by_someone(&sub, Status::InReview);
+    w.open_on_branch(vec![pr.clone()]);
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        writes.first(),
+        Some(&format!("status {sub} In Progress")),
+        "{writes:?}"
+    );
+    assert_eq!(
+        w.sub_item("security").state.status,
+        Some(Status::InProgress)
+    );
+    assert!(!w.github.writes().iter().any(|x| x.starts_with("merge ")));
+}
+
+/// ASDLC-WMTX: the coordinator moves the candidate's consolidation ticket
+/// In Review at its verdict PR's opening; a verdict the bridge cannot merge
+/// for a fault of the coordinator's, or no verdict PR open, sends it back
+/// to work.
+#[test]
+fn a_consolidation_its_agent_moved_in_review_goes_back_to_work_on_a_fault() {
+    let w = World::new();
+    w.tick();
+    let cons = w.consolidation(CAND).key;
+    w.merged_with_verdict(
+        &[
+            (30, "security", report_json("security", "")),
+            (31, "product", report_json("product", "")),
+        ],
+        None,
+    );
+    w.tick();
+    // A verdict PR that names no item: back to work.
+    let mut pr = w.verdict_pr(32, &verdict_json("go", ""));
+    pr.body = "Verdict".into();
+    w.github
+        .state
+        .borrow_mut()
+        .comments
+        .insert((repo(), 32), Ok(Vec::new()));
+    w.tracker.moved_by_someone(&cons, Status::InReview);
+    w.open_on_branch(vec![pr.clone()]);
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(writes, vec![format!("status {cons} In Progress")]);
+    // Named and valid, In Review: left to the bridge's merge, Done there.
+    let pr = w.verdict_pr(32, &verdict_json("go", ""));
+    w.tracker.moved_by_someone(&cons, Status::InReview);
+    w.open_on_branch(vec![pr]);
+    w.tick();
+    assert!(
+        w.github
+            .writes()
+            .iter()
+            .any(|x| x.starts_with("merge example-org/acme#32 "))
+    );
+    // In Review with no verdict PR open (closed unmerged): back to work.
+    let w = World::new();
+    w.tick();
+    let cons = w.consolidation(CAND).key;
+    w.merged_with_verdict(
+        &[
+            (30, "security", report_json("security", "")),
+            (31, "product", report_json("product", "")),
+        ],
+        None,
+    );
+    w.tick();
+    w.tracker.moved_by_someone(&cons, Status::InReview);
+    w.open_on_branch(Vec::new());
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(writes, vec![format!("status {cons} In Progress")]);
+    w.quiet();
+}
+
 #[test]
 fn an_angle_pr_that_does_not_name_its_sub_item_drives_nothing_and_is_told_once_per_head() {
     let w = World::new();
@@ -4632,6 +4820,51 @@ fn an_angle_pr_from_a_fork_valid_and_report_only_with_green_checks_is_never_merg
         &w.github.writes()[github..]
     );
     assert_ne!(w.sub_item("security").state.status, Some(Status::ToDeploy));
+}
+
+/// A hand merge, including one from a fork, is not evidence the release
+/// bridge produced. It must leave the real reviewer's angle available.
+#[test]
+fn an_angle_pr_merged_by_someone_other_than_the_bridge_or_from_a_fork_leaves_its_angle_open_and_sub_item_out_of_to_deploy()
+ {
+    for (merged_by, cross_repository) in [
+        (
+            Some(Actor {
+                login: "writer-login".into(),
+                is_bot: false,
+            }),
+            false,
+        ),
+        (
+            Some(Actor {
+                login: bot("spl-asdlc"),
+                is_bot: true,
+            }),
+            true,
+        ),
+    ] {
+        let w = World::new();
+        w.tick();
+        let mut pr = w.angle_pr(30, "security", &report_json("security", ""));
+        pr.state = PrState::Merged;
+        pr.merge_commit_sha = Some("merge-of-30".into());
+        pr.merged_by = merged_by;
+        pr.cross_repository = cross_repository;
+        w.github
+            .state
+            .borrow_mut()
+            .merged_pulls
+            .insert(repo(), Ok(vec![pr]));
+
+        let r = w.tick();
+        assert!(r.ok(), "{r:?}");
+        assert_eq!(w.sub_item("security").state.status, Some(Status::Ready));
+        let (_, decision) = crate::verbs::status(&w.tick_ctx()).unwrap();
+        assert!(
+            !decision.every_angle_answered(),
+            "untrusted merged angle must not be evidence"
+        );
+    }
 }
 
 #[test]

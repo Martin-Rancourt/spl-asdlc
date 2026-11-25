@@ -286,7 +286,7 @@ fn merged(t: &Tick, log: &mut ActionLog, report: &mut Report, open: &OpenPrs) {
                 continue;
             }
         };
-        if ticket.archived {
+        if ticket.archived || !merge::make_ticket(t, log, report, &object, &ticket) {
             continue;
         }
         merge::close_round(t, log, report, &ticket.key, &pr.url, true);

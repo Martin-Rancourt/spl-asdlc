@@ -219,6 +219,114 @@ fn a_green_pr_with_a_complete_contract_opens_a_review_round_then_nothing_more() 
     quiet(&w);
 }
 
+// ---- ASDLC-JA74: the item a PR names is a ticket ----
+
+#[test]
+fn a_pr_naming_a_task_makes_it_a_ticket_then_follows_it_without_failing_again() {
+    let w = World::new();
+    let pr = green(pull_request(7));
+    w.ticket("ABC-1", Status::InProgress, &pr);
+    w.tracker.set_kind("ABC-1", ItemKind::Task);
+    w.open(pr.clone());
+    let (report, log) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(w.tracker.kind("ABC-1"), ItemKind::Ticket);
+    assert_eq!(w.tracker.item("ABC-1").state.status, Some(Status::InReview));
+    let writes = w.tracker.writes();
+    assert_eq!(
+        &writes[..2],
+        ["type ABC-1 ticket", "status ABC-1 In Review"],
+        "the type first, then the ticket's cycle: {writes:?}"
+    );
+    assert!(
+        !log.entries()
+            .iter()
+            .any(|e| matches!(e.outcome, Outcome::Failed(_))),
+        "{:?}",
+        log.entries()
+    );
+    // The next passes: no type write, no failure.
+    quiet(&w);
+    assert_eq!(
+        w.tracker
+            .writes()
+            .iter()
+            .filter(|x| x.starts_with("type "))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_task_whose_type_change_is_refused_is_not_moved_and_is_made_a_ticket_once_it_can() {
+    let w = World::new();
+    let pr = green(pull_request(7));
+    w.ticket("ABC-1", Status::InProgress, &pr);
+    w.tracker.set_kind("ABC-1", ItemKind::Task);
+    w.open(pr.clone());
+    w.tracker.fail_writes_starting_with("type ");
+    let (report, _) = w.tick(false);
+    assert_eq!(report.failures.len(), 1, "{report:?}");
+    assert!(report.failures[0].contains("type ticket"), "{report:?}");
+    assert_eq!(
+        w.tracker.item("ABC-1").state.status,
+        Some(Status::InProgress)
+    );
+    assert!(
+        !w.tracker.writes().iter().any(|x| x.starts_with("status ")),
+        "no status write on a task: {:?}",
+        w.tracker.writes()
+    );
+    w.tracker.clear_failing_writes();
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(w.tracker.kind("ABC-1"), ItemKind::Ticket);
+    assert_eq!(w.tracker.item("ABC-1").state.status, Some(Status::InReview));
+}
+
+#[test]
+fn a_dry_run_says_it_would_make_the_task_a_ticket_and_writes_nothing() {
+    let w = World::new();
+    let pr = green(pull_request(7));
+    w.ticket("ABC-1", Status::InProgress, &pr);
+    w.tracker.set_kind("ABC-1", ItemKind::Task);
+    w.open(pr);
+    let intents = crate::dry::Intents::default();
+    let gh = crate::dry::DryGitHub {
+        inner: &w.github,
+        intents: &intents,
+    };
+    let tr = crate::dry::DryTracker {
+        inner: &w.tracker,
+        intents: &intents,
+    };
+    let sig = crate::dry::DrySignal { intents: &intents };
+    let t = Tick {
+        config: &w.config,
+        repo: repo(),
+        github: &gh,
+        tracker: &tr,
+        signal: &sig,
+        github_login: bot("spl-asdlc"),
+        now: crate::github::Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
+        deadline: None,
+        dry_run: true,
+        method_texts: Default::default(),
+        low_quota: false,
+    };
+    let mut log = ActionLog::in_memory();
+    let report = run(&t, &mut log);
+    assert!(report.ok(), "{report:?}");
+    assert!(w.tracker.writes().is_empty());
+    assert_eq!(w.tracker.kind("ABC-1"), ItemKind::Task);
+    let lines = intents.lines();
+    assert_eq!(
+        lines.first().map(String::as_str),
+        Some("tracker: make ABC-1 a ticket"),
+        "{lines:?}"
+    );
+}
+
 // ---- BR-ASDLC-015: an item carries its protocol, frozen at creation ----
 
 #[test]
@@ -673,12 +781,12 @@ fn a_pr_put_in_draft_during_its_round_writes_nothing_and_its_round_goes_on_once_
     let w = World::new();
     let mut pr = in_review(&w, 7);
     check_every_box(&w, "ABC-7");
-    let items = round(&w, "ABC-7", &pr);
     let before = (w.tracker.writes().len(), w.github_writes().len());
     pr.draft = true;
     // A draft's checks are not read: red, conflicting and approved, it is
     // neither told of its conflict nor merged.
     let mut draft = approved(&w, pr.clone());
+    let items = round(&w, "ABC-7", &pr);
     draft.checks.clear();
     draft.mergeable = crate::github::Mergeable::Conflicting;
     w.open(draft);
@@ -968,6 +1076,8 @@ fn an_approved_green_pr_is_merged_and_its_ticket_goes_to_deploy() {
         .into_iter()
         .find(|c| c.title.starts_with("Maintainability"))
         .unwrap();
+    // Its agent closes it once its review is published (ASDLC-WMTX).
+    w.tracker.moved_by_someone(&angle.key, Status::Done);
     pr.reviews = vec![
         review(
             "angle-agent",
@@ -1071,6 +1181,8 @@ fn a_required_check_that_succeeded_while_still_in_progress_merges() {
         .into_iter()
         .find(|c| c.title.starts_with("Maintainability"))
         .unwrap();
+    // Its agent closes it once its review is published (ASDLC-WMTX).
+    w.tracker.moved_by_someone(&angle.key, Status::Done);
     pr.checks[0].status = Some("IN_PROGRESS".into());
     pr.reviews = vec![
         review(
@@ -1261,6 +1373,34 @@ fn a_pr_merged_outside_the_bridge_is_swept_once() {
         .merged_pulls
         .insert(repo(), Ok(vec![pr]));
     w.tick(false);
+    assert_eq!(w.tracker.item("ABC-9").state.status, Some(Status::ToDeploy));
+    let after = w.tracker.writes().len();
+    w.tick(false);
+    assert_eq!(w.tracker.writes().len(), after, "once");
+}
+
+#[test]
+fn a_task_named_by_a_pr_merged_outside_the_bridge_is_made_a_ticket_then_swept() {
+    // ASDLC-JA74: To Deploy is a ticket's status, never a task's.
+    let w = World::new();
+    let mut pr = pull_request(9);
+    pr.state = PrState::Merged;
+    pr.merged_at = crate::github::Timestamp::parse("2026-10-05T10:00:00Z");
+    pr.merged_by = Some(Actor {
+        login: "someone-login".into(),
+        is_bot: false,
+    });
+    w.ticket("ABC-9", Status::InProgress, &pr);
+    w.tracker.set_kind("ABC-9", ItemKind::Task);
+    check_every_box(&w, "ABC-9");
+    w.github
+        .state
+        .borrow_mut()
+        .merged_pulls
+        .insert(repo(), Ok(vec![pr]));
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(w.tracker.kind("ABC-9"), ItemKind::Ticket);
     assert_eq!(w.tracker.item("ABC-9").state.status, Some(Status::ToDeploy));
     let after = w.tracker.writes().len();
     w.tick(false);
@@ -1643,7 +1783,8 @@ fn approved(w: &World, mut pr: PullRequest) -> PullRequest {
     pr
 }
 
-/// A submitted review naming each angle sub-item linked to the PR.
+/// A submitted review naming each angle sub-item linked to the PR, each
+/// sub-item then closed by its agent, as its protocol says (ASDLC-WMTX).
 fn angle_reviews(w: &World, pr: &PullRequest) -> Vec<Review> {
     crate::tracker::Tracker::items_linked_to_pr(&w.tracker, &pr.url)
         .unwrap()
@@ -1656,6 +1797,9 @@ fn angle_reviews(w: &World, pr: &PullRequest) -> Vec<Review> {
             )
         })
         .map(|k| {
+            if !w.tracker.item(&k).state.is_resolved() {
+                w.tracker.moved_by_someone(&k, Status::Done);
+            }
             review(
                 "angle-agent",
                 "COMMENTED",
@@ -1871,6 +2015,87 @@ fn a_prs_round_items_are_tasks_that_block_and_close_as_before() {
     w.tick(false);
     assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::ToDeploy));
     assert!(all_in(&round(&w, "ABC-7", &pr), Status::Done));
+    quiet(&w);
+}
+
+/// ASDLC-WMTX: a submitted review no longer closes its angle sub-item:
+/// its agent does, so the bridge leaves it open and the approval waits.
+#[test]
+fn a_submitted_review_leaves_its_angle_item_to_its_agent() {
+    let w = World::new();
+    let mut pr = in_review(&w, 7);
+    check_every_box(&w, "ABC-7");
+    let (_, angles) = round_keys(&w, "ABC-7", &pr);
+    pr.reviews = angles
+        .iter()
+        .map(|k| {
+            review(
+                "angle-agent",
+                "COMMENTED",
+                &pr.head_sha,
+                &format!("Reviewed for {k}."),
+            )
+        })
+        .collect();
+    pr.reviews
+        .push(review("coordinator-login", "APPROVED", &pr.head_sha, "ok"));
+    w.open(pr.clone());
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    for key in &angles {
+        assert_eq!(
+            w.tracker.item(key).state.status,
+            Some(Status::Ready),
+            "{key}"
+        );
+    }
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::InReview));
+    assert!(
+        !w.github_writes().iter().any(|x| x.starts_with("merge ")),
+        "{:?}",
+        w.github_writes()
+    );
+    // Its agent closes it: the approval counts and the PR merges.
+    for key in &angles {
+        w.tracker.moved_by_someone(key, Status::Done);
+    }
+    w.tick(false);
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::ToDeploy));
+}
+
+/// ASDLC-WMTX: the coordinator closes its consolidation task once its
+/// review is submitted; a PR still waiting on an approval at its head
+/// serves it again, once per head.
+#[test]
+fn a_closed_consolidation_with_no_approval_at_the_head_is_served_again_once() {
+    let w = World::new();
+    let mut pr = in_review(&w, 7);
+    check_every_box(&w, "ABC-7");
+    let (consolidation, _) = round_keys(&w, "ABC-7", &pr);
+    pr.reviews = angle_reviews(&w, &pr);
+    w.tracker.moved_by_someone(&consolidation, Status::Done);
+    w.open(pr.clone());
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(
+        w.tracker.item(&consolidation).state.status,
+        Some(Status::Ready)
+    );
+    let said = crate::tracker::Tracker::comments(&w.tracker, &consolidation)
+        .unwrap()
+        .iter()
+        .filter(|c| c.body.contains("waits on a coordinator's approval"))
+        .count();
+    assert_eq!(said, 1);
+    // Closed again with still no approval at this head: not reopened twice.
+    w.tracker.moved_by_someone(&consolidation, Status::Done);
+    w.tick(false);
+    assert_eq!(
+        w.tracker.item(&consolidation).state.status,
+        Some(Status::Done)
+    );
+    // Open, it is left to its coordinator.
+    w.tracker.moved_by_someone(&consolidation, Status::Ready);
     quiet(&w);
 }
 
