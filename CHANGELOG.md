@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.17.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.16.0...v1.17.0) (2026-11-25)
+
+
+### Features
+
+* **release:** a gate-fix ticket's title names what failed (ASDLC-HZYJ) ([#201](https://github.com/Martin-Rancourt/spl-asdlc/issues/201)) ([925ed96](https://github.com/Martin-Rancourt/spl-asdlc/commit/925ed9612de8b3cf17ebeedccb5401a44c257c7c))
+
+
+### Bug Fixes
+
+* **bridge:** a delivered review item is never served again while the bridge comes (ASDLC-WMTX) ([#212](https://github.com/Martin-Rancourt/spl-asdlc/issues/212)) ([390ea35](https://github.com/Martin-Rancourt/spl-asdlc/commit/390ea35e17f48a8e88954a3264fa2b0e2216c192))
+* **bridge:** make a task a PR names a ticket before its status writes (ASDLC-JA74) ([#211](https://github.com/Martin-Rancourt/spl-asdlc/issues/211)) ([20cfbe0](https://github.com/Martin-Rancourt/spl-asdlc/commit/20cfbe07786240ac0b7edd5e32e98aceb85c49fe))
+* **release:** trust only bridge-merged angle reports (ASDLC-P8G6) ([#200](https://github.com/Martin-Rancourt/spl-asdlc/issues/200)) ([f30f2ba](https://github.com/Martin-Rancourt/spl-asdlc/commit/f30f2bae42c8d04743bc1cf59633fcd2d1a2cfdb))
+* **review:** explain coordinator approval waits (ASDLC-Q2AX) ([#198](https://github.com/Martin-Rancourt/spl-asdlc/issues/198)) ([5238f22](https://github.com/Martin-Rancourt/spl-asdlc/commit/5238f223864a8b60bb262b30f649a2919be60f5a))
+
+
+### Documentation
+
+* **design-angle:** state the WCAG 2.2 AA floor and a risk-first grading (ASDLC-XMP7) ([#204](https://github.com/Martin-Rancourt/spl-asdlc/issues/204)) ([c3db4c1](https://github.com/Martin-Rancourt/spl-asdlc/commit/c3db4c18f9e9cd993569a69cd2894b9198ea3051))
+
+
+### Chores
+
+* **release:** allow 5 candidates before the escalation (ASDLC-YQV5) ([#207](https://github.com/Martin-Rancourt/spl-asdlc/issues/207)) ([7223af2](https://github.com/Martin-Rancourt/spl-asdlc/commit/7223af29464ff950c195eb70867a9058cd2f5f96))
+* **release:** consolidation verdict for v1.16.0-rc.3 (ASDLC-SZ4B) ([aea2cd0](https://github.com/Martin-Rancourt/spl-asdlc/commit/aea2cd05886feff45a07cc887afe40e5a06bb8ca))
+* **release:** security report for v1.16.0-rc.3 (ASDLC-XCUM) ([47779e8](https://github.com/Martin-Rancourt/spl-asdlc/commit/47779e8c806589609b4356b42f19657ce3ca93a0))
+
 ## [1.16.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.15.0...v1.16.0) (2026-11-25)
 
 
