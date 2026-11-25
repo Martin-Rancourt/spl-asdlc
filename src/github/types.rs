@@ -235,6 +235,18 @@ pub struct Commit {
     pub parents: Vec<String>,
 }
 
+/// The sha of the last `(cherry picked from commit <sha>)` line of a commit
+/// message, as `git cherry-pick -x` writes it.
+pub fn picked_from(message: &str) -> Option<String> {
+    message.lines().rev().find_map(|l| {
+        let sha = l
+            .trim()
+            .strip_prefix("(cherry picked from commit ")?
+            .strip_suffix(')')?;
+        (sha.len() >= 7 && sha.chars().all(|c| c.is_ascii_hexdigit())).then(|| sha.to_string())
+    })
+}
+
 impl Commit {
     pub fn subject(&self) -> &str {
         self.message.lines().next().unwrap_or("")
@@ -245,6 +257,10 @@ impl Commit {
 pub struct CommitSummary {
     pub sha: String,
     pub subject: String,
+    /// The commit `git cherry-pick -x` copied, from the last
+    /// `(cherry picked from commit <sha>)` line of the message: a patch's
+    /// commit maps to the PR merged on the default branch through it.
+    pub picked_from: Option<String>,
     /// The committer date; `None` when GitHub did not give it.
     pub committed_at: Option<Timestamp>,
 }
@@ -552,6 +568,14 @@ impl MergeMethod {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn picked_from_reads_the_last_cherry_pick_line() {
+        let m = "fix: a (#7)\n\nbody\n\n(cherry picked from commit 0123abcd)\n(cherry picked from commit 89ef4567aa)\n";
+        assert_eq!(picked_from(m).as_deref(), Some("89ef4567aa"));
+        assert_eq!(picked_from("fix: a (#7)"), None);
+        assert_eq!(picked_from("(cherry picked from commit not-a-sha)"), None);
+    }
 
     /// The login REST and the UI show for an App.
     fn bot(slug: &str) -> String {

@@ -968,6 +968,7 @@ impl GitHub for RestGitHub {
                 .unwrap_or("")
                 .to_string(),
             committed_at: time_of(&c["commit"]["committer"], "date"),
+            picked_from: picked_from(&str_of(&c["commit"], "message")),
         };
         let mut commits: Vec<CommitSummary> = first["commits"]
             .as_array()
@@ -1049,6 +1050,7 @@ impl GitHub for RestGitHub {
                         .unwrap_or("")
                         .to_string(),
                     committed_at: time_of(&c["commit"]["committer"], "date"),
+                    picked_from: picked_from(&str_of(&c["commit"], "message")),
                 })
             })
             .collect::<Read<Vec<CommitSummary>>>()?;

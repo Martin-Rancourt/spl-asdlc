@@ -1036,13 +1036,16 @@ pub fn embarked_items(t: &Tick, shape: &Shape, c: &Candidate) -> Result<Embarked
     }
     let mut out = Embarked::default();
     for commit in commits {
+        // A patch's commit is a cherry-pick of a PR merged on the default
+        // branch: the PR is found through the commit it copied (ASDLC-MG26).
+        let sha = commit.picked_from.as_deref().unwrap_or(&commit.sha);
         let pulls = t
             .github
-            .commit_pulls(&t.repo, &commit.sha)
+            .commit_pulls(&t.repo, sha)
             .map_err(|e| e.to_string())?;
         let Some(pr) = pulls
             .iter()
-            .find(|p| p.merge_commit_sha.as_deref() == Some(commit.sha.as_str()))
+            .find(|p| p.merge_commit_sha.as_deref() == Some(sha))
         else {
             continue;
         };

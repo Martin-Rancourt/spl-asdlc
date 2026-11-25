@@ -67,6 +67,7 @@ fn cmp(status: CompareStatus, commits: &[&str], files: &[&str]) -> crate::github
                 sha: c.to_string(),
                 subject: format!("feat: {c}"),
                 committed_at: None,
+                picked_from: None,
             })
             .collect(),
         files: files.iter().map(|f| f.to_string()).collect(),
@@ -1816,6 +1817,7 @@ fn first_release(extra: &[(&str, &str)]) -> World {
                         sha: sha.to_string(),
                         subject: subject.to_string(),
                         committed_at: Timestamp::parse("2026-10-05T10:00:00Z"),
+                        picked_from: None,
                     })
                     .collect(),
                 files: vec!["README.md".into(), "src/a.rs".into()],
@@ -2142,6 +2144,23 @@ fn release_patch_needs_a_release_in_production_and_a_free_version() {
     let refused = crate::verbs::patch(&t, &mut log, &[7], "me").unwrap_err();
     assert!(refused.contains("1.1.1 already has a cycle"), "{refused}");
     assert!(w.github.writes().is_empty(), "nothing dispatched");
+}
+
+#[test]
+fn a_cherry_picked_commit_embarks_the_ticket_of_the_pr_it_copies() {
+    let w = World::new();
+    {
+        let mut s = w.github.state.borrow_mut();
+        let mut range = cmp(CompareStatus::Ahead, &["p1"], &["src/a.rs"]).unwrap();
+        range.commits[0].picked_from = Some("m1".into());
+        s.compares
+            .insert((repo(), "acme-v1.1.0".into(), "c1".into()), Ok(range));
+    }
+    let t = w.tick_ctx();
+    let shape = crate::method::release::shape::Shape::of(&t.config.product.name, &t.config.release);
+    let (candidate, _) = crate::tick::release::newest(&t, &shape).unwrap().unwrap();
+    let embarked = crate::tick::release::embarked(&t, &shape, &candidate).unwrap();
+    assert_eq!(embarked, vec![("ABC-5".to_string(), vec![5])]);
 }
 
 #[test]
