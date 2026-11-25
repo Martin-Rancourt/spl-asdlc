@@ -62,6 +62,24 @@ pub fn has_marker(text: &str, marker: &str) -> bool {
     })
 }
 
+/// Whether a text carries the marker as a line of its own, hidden or
+/// visible: the form the bridge writes a gesture's marker in, which a
+/// marker quoted inside a copied line (a ticket's title, a criterion) never
+/// takes.
+pub fn has_marker_line(text: &str, marker: &str) -> bool {
+    let hidden = marker.trim();
+    let visible = format!("`{}`", token(marker));
+    text.lines()
+        .map(str::trim)
+        .any(|l| l == hidden || l == visible)
+}
+
+/// Whether a bridge comment records the `release abandon` verb: its
+/// marker on a line of its own.
+pub fn records_abandon(body: &str) -> bool {
+    has_marker_line(body, &marker("cycle-abandoned", &[]))
+}
+
 static HIDDEN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"<!-- (spl-asdlc:[^`>]*?) -->").unwrap());
 
@@ -81,6 +99,12 @@ pub fn inert(text: &str) -> String {
         .replace("<!--", "&lt;!--")
         .replace("spl-asdlc:", "spl-asdlc :")
         .replace("release_blocker::", "release_blocker :")
+}
+
+/// Untrusted text made inert for an inline code span: [`inert`], and no
+/// backtick that would close the span.
+fn inert_code(text: &str) -> String {
+    inert(text).replace('`', "'")
 }
 
 /// The kind of item the bridge created, read off its description marker.
@@ -926,9 +950,9 @@ pub fn brief(b: &Brief) -> String {
             .join(", ");
         out.push_str(&format!(
             "- **{}** — {} [{}] — PR {}\n",
-            t.id,
-            t.title,
-            t.state,
+            inert(&t.id),
+            inert(&t.title),
+            inert(&t.state),
             if prs.is_empty() { "none".into() } else { prs }
         ));
         match &t.description {
@@ -947,7 +971,7 @@ pub fn brief(b: &Brief) -> String {
                     } else {
                         ""
                     };
-                    out.push_str(&format!("  {}{tag}\n", bx.line.trim()));
+                    out.push_str(&format!("  {}{tag}\n", inert(&bx.line)));
                 }
                 if boxes.is_empty() && ac.is_empty() {
                     out.push_str("  - (no acceptance criterion declared)\n");
@@ -971,7 +995,7 @@ pub fn brief(b: &Brief) -> String {
     if !b.rule_files_touched.is_empty() {
         out.push_str(&format!(
             "\n#### Business rules touched\n\n{}\n\nEach rule touched must have a named test that is green.\n",
-            b.rule_files_touched.iter().map(|p| format!("- `{p}`")).collect::<Vec<_>>().join("\n")
+            b.rule_files_touched.iter().map(|p| format!("- `{}`", inert_code(p))).collect::<Vec<_>>().join("\n")
         ));
     }
     if b.paths_since_release_cut {
@@ -985,7 +1009,7 @@ pub fn brief(b: &Brief) -> String {
             paths.len()
         );
         for p in paths.iter().take(40) {
-            s.push_str(&format!("- `{p}`\n"));
+            s.push_str(&format!("- `{}`\n", inert_code(p)));
         }
         if paths.len() > 40 {
             s.push_str(&format!("- … and {} more\n", paths.len() - 40));

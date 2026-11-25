@@ -550,9 +550,10 @@ pub fn cycle_start(t: &Tick, shape: &Shape, version: Version, rc: u64) -> Result
             .tracker
             .comments(&item.key)
             .map_err(|e| format!("the comments of {}: {e}", item.key))?;
-        if !comments.iter().any(|c| {
-            c.by_bridge && texts::has_marker(&c.body, &texts::marker("cycle-abandoned", &[]))
-        }) {
+        if !comments
+            .iter()
+            .any(|c| c.by_bridge && texts::records_abandon(&c.body))
+        {
             continue;
         }
         for n in (last + 1)..rc {
@@ -795,12 +796,11 @@ fn cycle_was_abandoned(t: &Tick, item: &Item) -> Result<bool, String> {
     if item.state.status != Some(Status::Canceled) {
         return Ok(false);
     }
-    let marker = texts::marker("cycle-abandoned", &[]);
     Ok(t.tracker
         .comments(&item.key)
         .map_err(|e| format!("the comments of {}: {e}", item.key))?
         .iter()
-        .any(|c| c.by_bridge && texts::has_marker(&c.body, &marker)))
+        .any(|c| c.by_bridge && texts::records_abandon(&c.body)))
 }
 
 /// The candidate's comment, once, and its line in `## Candidates`.
