@@ -468,6 +468,10 @@ fn one(
         return None;
     }
     let object = format!("pr#{} {}", pr.number, ticket.key);
+    // ---- the item a PR names is a ticket (ASDLC-JA74) ----
+    if !make_ticket(t, log, report, &object, &ticket) {
+        return None;
+    }
     // ---- the contract check on the head (ASDLC-57KZ) ----
     // Every linked PR shows its ticket's contract on GitHub, whatever else
     // holds it: the same verdict as the gate below (rule C9VD).
@@ -2603,5 +2607,40 @@ pub fn for_tracker(t: &Tick, text: &str) -> String {
         text.to_string()
     } else {
         texts::visible_markers(text)
+    }
+}
+
+/// The item a PR names follows the ticket's cycle. A task (a step of work,
+/// with no In Review nor To Deploy) is made a ticket first, its status kept,
+/// so that no status write of the PR fails on it at every pass (ASDLC-JA74).
+/// False while it is still a task: its type unreadable or the change
+/// refused, said in the report; nothing else is written for the PR.
+pub(super) fn make_ticket(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    object: &str,
+    ticket: &Item,
+) -> bool {
+    match t.tracker.is_task(&ticket.key) {
+        Ok(false) => true,
+        Ok(true) => t
+            .act(
+                log,
+                report,
+                object,
+                "type ticket",
+                json!({"was": "task"}),
+                || {
+                    t.tracker
+                        .make_ticket(&ticket.key)
+                        .map_err(|e| e.to_string())
+                },
+            )
+            .is_some(),
+        Err(e) => {
+            t.unreadable(report, &ticket.key, format!("its type: {e}"));
+            false
+        }
     }
 }

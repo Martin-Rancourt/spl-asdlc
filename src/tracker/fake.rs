@@ -171,6 +171,11 @@ impl FakeTracker {
         self.state.borrow().items[key].kind
     }
 
+    /// Make a seeded item a task, as a person may in the tracker.
+    pub fn set_kind(&self, key: &str, kind: ItemKind) {
+        self.state.borrow_mut().items.get_mut(key).unwrap().kind = kind;
+    }
+
     /// The priority the item was created with (`None` for a seeded item).
     pub fn priority(&self, key: &str) -> Option<Priority> {
         self.state.borrow().items[key].priority
@@ -516,6 +521,19 @@ impl Tracker for FakeTracker {
         }
         self.record(format!("label {key} -{label}"))?;
         self.with(key, |st| st.item.labels.retain(|l| l != label))
+    }
+
+    fn is_task(&self, key: &str) -> TResult<bool> {
+        self.read(key)?;
+        Ok(self.kind(key) == ItemKind::Task)
+    }
+
+    fn make_ticket(&self, key: &str) -> TResult<()> {
+        if !self.is_task(key)? {
+            return Ok(());
+        }
+        self.record(format!("type {key} ticket"))?;
+        self.with(key, |st| st.kind = ItemKind::Ticket)
     }
 
     fn set_status(

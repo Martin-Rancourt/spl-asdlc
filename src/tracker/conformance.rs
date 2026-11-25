@@ -6,7 +6,8 @@
 //! linked PR's status where the tracker holds one, comment twice
 //! as the service identity and read the thread oldest first, edit a comment
 //! where the tracker can, raise, read back and withdraw a decision request
-//! where the tracker holds them (refused elsewhere), describe, label, unlabel, assign and unassign with
+//! where the tracker holds them (refused elsewhere), make a task a ticket
+//! where the tracker tells tasks from tickets, describe, label, unlabel, assign and unassign with
 //! a read-back after each write, repeat every write and check that the
 //! repetition leaves no trace, list by label, then cancel everything it
 //! created, on success and on failure alike.
@@ -577,6 +578,57 @@ fn suite(
             "the blocker still sees the relation",
         )?;
     }
+
+    // A task a PR names is made a ticket, its status kept, and then follows
+    // the ticket's cycle; making a ticket of a ticket writes nothing
+    // (ASDLC-JA74).
+    let task = step(
+        r,
+        "create task",
+        tracker.create_item(&NewItem {
+            title: format!("A step of work — conformance v0.0.{run_id}"),
+            description: "Conformance run of the spl-asdlc tracker adapter.".into(),
+            labels: Vec::new(),
+            status: Status::InProgress,
+            priority: None,
+            assignee: None,
+            parent: None,
+            kind: ItemKind::Task,
+        }),
+    )?;
+    r.created.push(task.key.clone());
+    if step(r, "read task type", tracker.is_task(&task.key))? {
+        step(r, "make ticket", tracker.make_ticket(&task.key))?;
+        check(
+            !step(r, "read made ticket type", tracker.is_task(&task.key))?,
+            "the task is still a task",
+        )?;
+        let back = step(r, "read made ticket", tracker.get(&task.key))?;
+        check(
+            back.state.status == Some(Status::InProgress),
+            &format!("the made ticket reads {:?}", back.state.status),
+        )?;
+        let before = changes.map(|count| count());
+        step(r, "repeat: make ticket", tracker.make_ticket(&task.key))?;
+        if let (Some(count), Some(before)) = (changes, before) {
+            check(
+                count() == before,
+                "making a ticket of a ticket recorded a change",
+            )?;
+        }
+        step(
+            r,
+            "set In Review on the made ticket",
+            tracker.set_status(&task.key, Status::InReview, None),
+        )?;
+        let back = step(r, "read In Review", tracker.get(&task.key))?;
+        check(
+            back.state.status == Some(Status::InReview),
+            &format!("set In Review, read {:?}", back.state.status),
+        )?;
+    } else {
+        r.not_offered.push("task to ticket".to_string());
+    }
     Ok(())
 }
 
@@ -590,7 +642,8 @@ mod tests {
         let t = FakeTracker::new("ABC");
         let count = || t.writes().len() as u64;
         let report = run_with(&t, &StatusTable::identity(), "1", Some(&count)).unwrap();
-        assert_eq!(report.created.len(), 3);
+        assert_eq!(report.created.len(), 4);
+        assert!(report.passed.contains(&"make ticket".to_string()));
         assert!(
             report
                 .passed
