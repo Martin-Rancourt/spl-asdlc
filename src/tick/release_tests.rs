@@ -361,6 +361,10 @@ impl World {
             let mut pr = self.angle_pr(*n, angle, report.as_ref());
             pr.state = PrState::Merged;
             pr.merge_commit_sha = Some(format!("merge-of-{n}"));
+            pr.merged_by = Some(Actor {
+                login: bot("spl-asdlc"),
+                is_bot: true,
+            });
             merged.push(pr);
         }
         if let Some(v) = verdict {
@@ -1488,6 +1492,10 @@ fn all_angles_merged(w: &World) {
         let mut pr = w.angle_pr(n, angle, &report_json(angle, ""));
         pr.state = PrState::Merged;
         pr.merge_commit_sha = Some(format!("merge-of-{n}"));
+        pr.merged_by = Some(Actor {
+            login: bot("spl-asdlc"),
+            is_bot: true,
+        });
         merged.push(pr);
     }
     merged.push(w.merged_verdict(32, &verdict_json("go", "")));
@@ -4632,6 +4640,51 @@ fn an_angle_pr_from_a_fork_valid_and_report_only_with_green_checks_is_never_merg
         &w.github.writes()[github..]
     );
     assert_ne!(w.sub_item("security").state.status, Some(Status::ToDeploy));
+}
+
+/// A hand merge, including one from a fork, is not evidence the release
+/// bridge produced. It must leave the real reviewer's angle available.
+#[test]
+fn an_angle_pr_merged_by_someone_other_than_the_bridge_or_from_a_fork_leaves_its_angle_open_and_sub_item_out_of_to_deploy()
+ {
+    for (merged_by, cross_repository) in [
+        (
+            Some(Actor {
+                login: "writer-login".into(),
+                is_bot: false,
+            }),
+            false,
+        ),
+        (
+            Some(Actor {
+                login: bot("spl-asdlc"),
+                is_bot: true,
+            }),
+            true,
+        ),
+    ] {
+        let w = World::new();
+        w.tick();
+        let mut pr = w.angle_pr(30, "security", &report_json("security", ""));
+        pr.state = PrState::Merged;
+        pr.merge_commit_sha = Some("merge-of-30".into());
+        pr.merged_by = merged_by;
+        pr.cross_repository = cross_repository;
+        w.github
+            .state
+            .borrow_mut()
+            .merged_pulls
+            .insert(repo(), Ok(vec![pr]));
+
+        let r = w.tick();
+        assert!(r.ok(), "{r:?}");
+        assert_eq!(w.sub_item("security").state.status, Some(Status::Ready));
+        let (_, decision) = crate::verbs::status(&w.tick_ctx()).unwrap();
+        assert!(
+            !decision.every_angle_answered(),
+            "untrusted merged angle must not be evidence"
+        );
+    }
 }
 
 #[test]
