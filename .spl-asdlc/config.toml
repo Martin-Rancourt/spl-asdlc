@@ -26,7 +26,7 @@ angles = []                            # no PR review: a PR merges on its CI
 # `v<X.Y>` and the major tag `v1` follow (.spl-asdlc/development.md).
 candidate_tag = "v{version}-rc.{rc}"
 release_tag = "v{version}"
-# Up to 5 candidates before the escalation hands the cycle to the owner (ASDLC-YQV5, Martin 2026-11-25:
+# Up to 5 candidates before the escalation hands the cycle to the owner (ASDLC-YQV5, 2026-11-25:
 # a release often needs more than 2). It never caps QA rounds.
 max_rc_passes = 5
 # A fix merged to the release branch (a gate-fix, a blocking finding's
