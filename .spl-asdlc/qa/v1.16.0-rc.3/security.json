@@ -1,0 +1,19 @@
+{
+  "schema": "spl-asdlc/qa-report/2",
+  "candidate": "v1.16.0-rc.3",
+  "angle": "security",
+  "item": "ASDLC-XCUM",
+  "verdict": "go",
+  "checked": [
+    "Tag annotation of v1.16.0-rc.3 (Release-Class: routine, base v1.15.0, surfaces none) at c974fb9, the head of release/2026-11-25-03-21-utc; git log/diff v1.16.0-rc.2..v1.16.0-rc.3: one code commit c974fb9 (#206, fix of v1.16.0-rc.2 security-1, ASDLC-EUSR) touching src/method/texts.rs, src/method/texts/tests.rs, src/tick/release.rs, src/tick/release_tests/abandoned_cycle.rs, plus the rc.2 QA records",
+    "cargo test --locked at v1.16.0-rc.3: all suites green, 1292 passed, 0 failed (lib 1051, workflow tests tests/workflows/ 198, other suites 43)",
+    "scripts/check-no-instance-names.sh at v1.16.0-rc.3: exit 0 (identifier forms only; SPL_ASDLC_FORBIDDEN_WORDS is a CI secret, not set locally)",
+    "Fix of v1.16.0-rc.2 security-1, layer 1 (src/method/texts.rs brief): embarked ticket id, title, state and checkbox lines now go through texts::inert (whitespace collapsed to one line, `<!--` escaped, `spl-asdlc:` broken to `spl-asdlc :`); paths and rule files through inert_code; untracked PR titles were already inert (src/tick/release.rs brief_facts), and business rules cited are regex-matched ids only. Checked that the inert replacement cannot recreate the `spl-asdlc:` token across its own boundary",
+    "Fix layer 2 (texts::has_marker_line / records_abandon, used by cycle_start and cycle_was_abandoned): the abandon counts only as a whole line equal to the hidden or the backtick-visible marker, with no field; the verb's own comment (src/verbs.rs abandon) still writes it on its own line after a blank line, so the real gesture is kept (test the_next_cut_after_an_abandon_opens_a_second_release_item_and_records_its_candidate green)",
+    "Coordinator's rc.2 ask (every bridge comment on the release item that copies tracker text): re-read every comment the bridge writes on the release item at the tag (candidate_comment, post_brief, publish, hold_comment, escalation_comment, stagnation_message, auto_candidate comment, requalification and abandon in src/verbs.rs, closure and release-note comments in src/tick/closure.rs): besides the brief, they carry keys, tags, SHAs, angle names, GO reasons, operator-supplied CLI text (requalify reason already inert) or post-publication text; no untrusted multi-line tracker or PR text reaches them",
+    "Mutation tests at the tag (each restored by git checkout HEAD --): (1) brief copying t.title and bx.line raw again -> a_ticket_carrying_the_abandon_marker_cannot_forge_an_abandon_through_the_brief FAILED; (2) records_abandon back to has_marker anywhere in the body -> the_abandon_marker_counts_only_on_a_line_of_its_own FAILED. Each layer is held by its own test",
+    "Other bridge reads of by_bridge comments by line or marker (src/tick/merge.rs merge_recorded / any_merge_recorded `merged_pr:` lines, release.rs candidate markers, post_deploy, sweep, identity, tracker_verdict): merged_comment interpolates only the PR URL, base ref, GitHub login and state; candidate markers in the brief are now broken by inert as well",
+    "Open findings of earlier candidates (v1.15.0-rc.1 security-1/security-2, v1.16.0-rc.1 security-2: fix ticket at To Deploy frees the GO under later_passes = gate-and-coordinator) re-read at the tag: code unchanged by #206, still open and already filed; not re-reported here"
+  ],
+  "findings": []
+}
