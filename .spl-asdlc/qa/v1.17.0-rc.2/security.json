@@ -1,0 +1,19 @@
+{
+  "schema": "spl-asdlc/qa-report/2",
+  "candidate": "v1.17.0-rc.2",
+  "angle": "security",
+  "item": "ASDLC-H6S4",
+  "verdict": "go",
+  "checked": [
+    "Tag annotation of v1.17.0-rc.2 (Release-Class: routine, reason no reviewed path touched, base v1.16.0, surfaces none) at 32c102d, the head of release/2026-11-25-20-27-utc; git diff v1.17.0-rc.1..v1.17.0-rc.2: PR #215 (src/tick/merge.rs, src/tick/tests.rs) plus the v1.17.0-rc.1 security report and verdict; everything else unchanged since the v1.17.0-rc.1 security review, whose checked scope still holds",
+    "v1.17.0-rc.1 security-1 (raised to blocking by the rc.1 verdict): merge.rs pass now skips every cross_repository PR before link::resolve, open.add, make_ticket, status writes and merge, so a fork PR is neither merged nor drives its ticket; cross_repository comes from GraphQL isCrossRepository and defaults to true when absent (src/github/rest.rs:704, fail-closed)",
+    "Other paths reading PRs re-checked for fork input: release.rs angle PRs (:304) and merged_angles (:2441) already skip cross_repository; sweep.rs merged acts only on PRs already merged, by the bridge (never a fork now) or by a person with write access; verbs.rs status is read-only",
+    "cargo test --locked at v1.17.0-rc.2: all suites green, 1311 passed, 0 failed, 2 ignored (lib 1070, tests/workflows/ 198)",
+    "Mutation test at the tag (restored by git checkout HEAD --): the new guard at merge.rs:286 neutralised -> tick::tests::a_fork_pr_does_not_merge_or_mutate_the_task_it_names FAILED; the guard is held by its test",
+    "scripts/check-no-instance-names.sh at v1.17.0-rc.2: exit 0 (identifier forms only; SPL_ASDLC_FORBIDDEN_WORDS is a CI secret, not set locally)",
+    "GitHub settings read via the API: rulesets main and release/** unchanged (0 required approvals, required checks title/conventional-title and required-check from GitHub Actions, no bypass actors); Actions fork PR approval policy all_external_contributors; one open PR (#172, same repository, base main)",
+    "Delivery chain: no workflow, action, Cargo.toml or Cargo.lock change in this candidate since v1.17.0-rc.1",
+    "Open findings of earlier candidates (v1.15.0-rc.1 security-1, v1.16.0-rc.1 security-2): code paths unchanged, still filed; not re-reported here"
+  ],
+  "findings": []
+}
