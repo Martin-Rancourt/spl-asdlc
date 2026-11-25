@@ -1,0 +1,16 @@
+{
+  "schema": "spl-asdlc/qa-verdict/1",
+  "candidate": "v1.17.0-rc.1",
+  "item": "ASDLC-NKVP",
+  "verdict": "hold",
+  "between_angles": "Security is the only release angle configured at the candidate (.spl-asdlc/config.toml has one [[release.angles]] entry, key security), so there is no second angle with which coverage could fall between assumptions. I compared the full v1.16.0..v1.17.0-rc.1 change set (36 files) with the security report's checked scope: it covers the bridge changes in merge, release, tracker and dry-run paths; the method and workflow changes; the delivery chain and repository settings; and the prior open findings. I also re-read the ordinary merge path and pr.yml at the tag specifically where CI trust and merge authorization meet. That cross-boundary check found security-1: a fork PR can supply the workflow that reports the required checks, while the bridge has no cross_repository guard before ticket mutation and merge. No other concern was found unowned. Build, tests and packaging remain the release gate's responsibility.",
+  "findings": [
+    {
+      "angle": "security",
+      "id": "security-1",
+      "decision": "accepted",
+      "blocking": true,
+      "reason": "Accepted and raised from non-blocking to blocking. The required maintainer click approves an external contributor's workflow run, not the resulting code merge; after that click, the fork controls the workflow definition that can report both required checks, and the bridge automatically mutates the named Livela item and squash-merges the outside code without any review or independent approval. That is a direct path from an untrusted GitHub account to code on main and the next published release. Release QA is detection after compromise, not an authorization boundary, so this candidate must not ship until cross-repository PRs are excluded from the ordinary merge pass or require an explicit trusted merge approval. The report's summary, anchor, evidence and proposed regression test are sufficiently faithful and actionable for the fix ticket."
+    }
+  ]
+}
