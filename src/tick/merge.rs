@@ -280,6 +280,12 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> Pass {
             report.out_of_time = true;
             return Pass::default();
         }
+        // A PR from a fork is untrusted input. Running its Actions only
+        // authorizes the workflow; it must never authorize the bridge to
+        // mutate a linked ticket or merge the PR into the base repository.
+        if pr.cross_repository {
+            continue;
+        }
         if review::excluded_from_merge_pass(&pr, branch_prefix).is_some() {
             continue;
         }
