@@ -219,6 +219,13 @@ impl LivelaStore for MemStore {
         Ok(id)
     }
     fn set_status(&mut self, id: &str, status: &str) -> Result<(), String> {
+        if self.created_tasks.iter().any(|t| t == id)
+            && !["Ready", "In Progress", "Done", "Canceled"].contains(&status)
+        {
+            return Err(format!(
+                "status \u{201c}{status}\u{201d} is not valid for type \u{201c}task\u{201d}"
+            ));
+        }
         self.fact(format!("status {id} {status}"));
         let canon = STATUSES
             .iter()
@@ -341,6 +348,14 @@ impl LivelaStore for MemStore {
         )?;
         self.created_tasks.push(id.clone());
         Ok(id)
+    }
+    fn is_task(&self, id: &str) -> Result<bool, String> {
+        Ok(self.created_tasks.iter().any(|t| t == id))
+    }
+    fn make_ticket(&mut self, id: &str) -> Result<(), String> {
+        self.fact(format!("type {id} ticket"));
+        self.created_tasks.retain(|t| t != id);
+        Ok(())
     }
     fn create_milestone(
         &mut self,
@@ -575,8 +590,8 @@ fn the_livela_adapter_passes_the_conformance_suite_on_two_projects_of_one_store(
             conformance::run_with(&t, &StatusTable::identity(), "1", Some(&facts)).unwrap();
         assert_eq!(
             report.not_offered,
-            vec!["comment edit", "decision request"],
-            "the missing point of the contract, and decisions a store without them does not raise"
+            vec!["comment edit", "decision request", "task to ticket"],
+            "the missing point of the contract, and what a store without decisions or tasks does not do"
         );
         assert!(
             report
@@ -1225,6 +1240,58 @@ fn a_task_the_bridge_asks_is_a_task_signed_and_reads_like_a_ticket() {
         .filter(|(by, what)| *by != me && !what.starts_with("participant"))
         .collect();
     assert!(unsigned.is_empty(), "{unsigned:?}");
+}
+
+/// ASDLC-JA74: a task a PR names is made a ticket, signed by `spl-asdlc`,
+/// its status kept; a ticket is left as it is, with no fact. The store
+/// passes the suite with it.
+#[test]
+fn a_task_a_pr_names_is_made_a_ticket_signed_once_and_follows_the_ticket_cycle() {
+    let t = td(MemStore {
+        tasks: true,
+        ..MemStore::default()
+    });
+    let task = t
+        .create_item(&NewItem {
+            kind: ItemKind::Task,
+            ..new_item("A step", Status::InProgress)
+        })
+        .unwrap();
+    let ticket = t.create_item(&new_item("ticket", Status::Ready)).unwrap();
+    assert!(t.is_task(&task.key).unwrap());
+    assert!(!t.is_task(&ticket.key).unwrap());
+    // The refusal the box's journal showed, before the change.
+    assert!(t.set_status(&task.key, Status::InReview, None).is_err());
+    let before = t.store.borrow().facts.len();
+    t.make_ticket(&ticket.key).unwrap();
+    assert_eq!(t.store.borrow().facts.len(), before, "a ticket: no fact");
+    t.make_ticket(&task.key).unwrap();
+    assert!(!t.is_task(&task.key).unwrap());
+    assert_eq!(
+        t.get(&task.key).unwrap().state.status,
+        Some(Status::InProgress)
+    );
+    let after = t.store.borrow().facts.len();
+    t.make_ticket(&task.key).unwrap();
+    assert_eq!(t.store.borrow().facts.len(), after, "once");
+    t.set_status(&task.key, Status::InReview, None).unwrap();
+    let me = t.identity().unwrap().id;
+    let store = t.into_store();
+    let typed: Vec<_> = store
+        .facts
+        .iter()
+        .filter(|(_, what)| what.starts_with("type "))
+        .collect();
+    assert_eq!(typed, vec![&(me, format!("type {} ticket", task.id))]);
+
+    let t = td(MemStore {
+        tasks: true,
+        ..MemStore::default()
+    });
+    let facts = || t.store.borrow().facts.len() as u64;
+    let report = conformance::run_with(&t, &StatusTable::identity(), "1", Some(&facts)).unwrap();
+    assert!(report.passed.contains(&"make ticket".to_string()));
+    assert!(!report.not_offered.contains(&"task to ticket".to_string()));
 }
 
 #[test]

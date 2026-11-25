@@ -505,6 +505,19 @@ impl Tracker for DryTracker<'_> {
             .push(format!("tracker: remove relation {relation_id}"));
         Ok(())
     }
+    fn is_task(&self, key: &str) -> TResult<bool> {
+        if would_create(key) {
+            return Ok(false);
+        }
+        self.inner.is_task(key)
+    }
+    fn make_ticket(&self, key: &str) -> TResult<()> {
+        if !self.inner.is_task(key)? {
+            return Ok(());
+        }
+        self.intents.push(format!("tracker: make {key} a ticket"));
+        Ok(())
+    }
     fn link_pr(&self, key: &str, pr_url: &str, _title: &str) -> TResult<()> {
         self.intents
             .push(format!("tracker: link {key} to {pr_url}"));

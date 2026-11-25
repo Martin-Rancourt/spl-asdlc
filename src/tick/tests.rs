@@ -219,6 +219,114 @@ fn a_green_pr_with_a_complete_contract_opens_a_review_round_then_nothing_more() 
     quiet(&w);
 }
 
+// ---- ASDLC-JA74: the item a PR names is a ticket ----
+
+#[test]
+fn a_pr_naming_a_task_makes_it_a_ticket_then_follows_it_without_failing_again() {
+    let w = World::new();
+    let pr = green(pull_request(7));
+    w.ticket("ABC-1", Status::InProgress, &pr);
+    w.tracker.set_kind("ABC-1", ItemKind::Task);
+    w.open(pr.clone());
+    let (report, log) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(w.tracker.kind("ABC-1"), ItemKind::Ticket);
+    assert_eq!(w.tracker.item("ABC-1").state.status, Some(Status::InReview));
+    let writes = w.tracker.writes();
+    assert_eq!(
+        &writes[..2],
+        ["type ABC-1 ticket", "status ABC-1 In Review"],
+        "the type first, then the ticket's cycle: {writes:?}"
+    );
+    assert!(
+        !log.entries()
+            .iter()
+            .any(|e| matches!(e.outcome, Outcome::Failed(_))),
+        "{:?}",
+        log.entries()
+    );
+    // The next passes: no type write, no failure.
+    quiet(&w);
+    assert_eq!(
+        w.tracker
+            .writes()
+            .iter()
+            .filter(|x| x.starts_with("type "))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_task_whose_type_change_is_refused_is_not_moved_and_is_made_a_ticket_once_it_can() {
+    let w = World::new();
+    let pr = green(pull_request(7));
+    w.ticket("ABC-1", Status::InProgress, &pr);
+    w.tracker.set_kind("ABC-1", ItemKind::Task);
+    w.open(pr.clone());
+    w.tracker.fail_writes_starting_with("type ");
+    let (report, _) = w.tick(false);
+    assert_eq!(report.failures.len(), 1, "{report:?}");
+    assert!(report.failures[0].contains("type ticket"), "{report:?}");
+    assert_eq!(
+        w.tracker.item("ABC-1").state.status,
+        Some(Status::InProgress)
+    );
+    assert!(
+        !w.tracker.writes().iter().any(|x| x.starts_with("status ")),
+        "no status write on a task: {:?}",
+        w.tracker.writes()
+    );
+    w.tracker.clear_failing_writes();
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(w.tracker.kind("ABC-1"), ItemKind::Ticket);
+    assert_eq!(w.tracker.item("ABC-1").state.status, Some(Status::InReview));
+}
+
+#[test]
+fn a_dry_run_says_it_would_make_the_task_a_ticket_and_writes_nothing() {
+    let w = World::new();
+    let pr = green(pull_request(7));
+    w.ticket("ABC-1", Status::InProgress, &pr);
+    w.tracker.set_kind("ABC-1", ItemKind::Task);
+    w.open(pr);
+    let intents = crate::dry::Intents::default();
+    let gh = crate::dry::DryGitHub {
+        inner: &w.github,
+        intents: &intents,
+    };
+    let tr = crate::dry::DryTracker {
+        inner: &w.tracker,
+        intents: &intents,
+    };
+    let sig = crate::dry::DrySignal { intents: &intents };
+    let t = Tick {
+        config: &w.config,
+        repo: repo(),
+        github: &gh,
+        tracker: &tr,
+        signal: &sig,
+        github_login: bot("spl-asdlc"),
+        now: crate::github::Timestamp::parse("2026-10-05T12:00:00Z").unwrap(),
+        deadline: None,
+        dry_run: true,
+        method_texts: Default::default(),
+        low_quota: false,
+    };
+    let mut log = ActionLog::in_memory();
+    let report = run(&t, &mut log);
+    assert!(report.ok(), "{report:?}");
+    assert!(w.tracker.writes().is_empty());
+    assert_eq!(w.tracker.kind("ABC-1"), ItemKind::Task);
+    let lines = intents.lines();
+    assert_eq!(
+        lines.first().map(String::as_str),
+        Some("tracker: make ABC-1 a ticket"),
+        "{lines:?}"
+    );
+}
+
 // ---- BR-ASDLC-015: an item carries its protocol, frozen at creation ----
 
 #[test]
@@ -1261,6 +1369,34 @@ fn a_pr_merged_outside_the_bridge_is_swept_once() {
         .merged_pulls
         .insert(repo(), Ok(vec![pr]));
     w.tick(false);
+    assert_eq!(w.tracker.item("ABC-9").state.status, Some(Status::ToDeploy));
+    let after = w.tracker.writes().len();
+    w.tick(false);
+    assert_eq!(w.tracker.writes().len(), after, "once");
+}
+
+#[test]
+fn a_task_named_by_a_pr_merged_outside_the_bridge_is_made_a_ticket_then_swept() {
+    // ASDLC-JA74: To Deploy is a ticket's status, never a task's.
+    let w = World::new();
+    let mut pr = pull_request(9);
+    pr.state = PrState::Merged;
+    pr.merged_at = crate::github::Timestamp::parse("2026-10-05T10:00:00Z");
+    pr.merged_by = Some(Actor {
+        login: "someone-login".into(),
+        is_bot: false,
+    });
+    w.ticket("ABC-9", Status::InProgress, &pr);
+    w.tracker.set_kind("ABC-9", ItemKind::Task);
+    check_every_box(&w, "ABC-9");
+    w.github
+        .state
+        .borrow_mut()
+        .merged_pulls
+        .insert(repo(), Ok(vec![pr]));
+    let (report, _) = w.tick(false);
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(w.tracker.kind("ABC-9"), ItemKind::Ticket);
     assert_eq!(w.tracker.item("ABC-9").state.status, Some(Status::ToDeploy));
     let after = w.tracker.writes().len();
     w.tick(false);
