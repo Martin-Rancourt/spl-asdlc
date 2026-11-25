@@ -67,6 +67,11 @@ pub struct FakeTracker {
     /// Whether it keeps blocks freed at the blocker's merge (false by
     /// default, as Linear); true plays a Livela that keeps them.
     pub implementation_blocks: bool,
+    /// Whether an implementation block is listed among `blocked_by` as well
+    /// as `blocked_by_implementation`, under the same relation id (false by
+    /// default); true plays Livela, which keeps such a block as a
+    /// `blocked_by` entry with a kind (ASDLC-QFSB).
+    pub implementation_in_blocked_by: bool,
     pub state: RefCell<FakeState>,
 }
 
@@ -90,6 +95,7 @@ impl FakeTracker {
             milestones: false,
             decisions: false,
             implementation_blocks: false,
+            implementation_in_blocked_by: false,
             state: RefCell::new(FakeState::default()),
         }
     }
@@ -354,7 +360,10 @@ impl Tracker for FakeTracker {
                 RelationKind::Blocks if a == key => out.blocks.push(rel(b)),
                 RelationKind::Blocks if b == key => out.blocked_by.push(rel(a)),
                 RelationKind::BlocksImplementation if b == key => {
-                    out.blocked_by_implementation.push(rel(a))
+                    out.blocked_by_implementation.push(rel(a));
+                    if self.implementation_in_blocked_by {
+                        out.blocked_by.push(rel(a));
+                    }
                 }
                 RelationKind::Related if a == key => out.related.push(rel(b)),
                 RelationKind::Related if b == key => out.related.push(rel(a)),

@@ -1385,6 +1385,18 @@ fn gate_consolidation(
         if !angles.iter().any(|a| a.key.eq_ignore_ascii_case(&r.other)) {
             continue;
         }
+        // A tracker that lists an implementation block among `blocked_by`
+        // too (Livela keeps it as a `blocked_by` entry with a kind): that
+        // block is the one wanted, never removed, or the next pass would lay
+        // it again and the consolidation item be served in between
+        // (ASDLC-QFSB).
+        if relations
+            .blocked_by_implementation
+            .iter()
+            .any(|i| i.other.eq_ignore_ascii_case(&r.other))
+        {
+            continue;
+        }
         all &= t
             .act(
                 log,
