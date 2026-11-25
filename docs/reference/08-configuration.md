@@ -228,7 +228,7 @@ The section is required: every project has the release cycle (rule 11). One of i
 | `release.candidate_tag` | `<product>-v{version}-rc.{rc}` | RC tag pattern. | Placeholders wrong: file invalid. |
 | `release.release_tag` | `<product>-v{version}` | Final tag pattern. | Placeholders wrong: file invalid. |
 | `release.branch_prefix` | `release/` | Prefix of release branches; the rest is `<YYYY-MM-DD-HH-MM>-utc`. | Not a path ending in `/`: file invalid. |
-| `release.max_rc_passes` | `2` | RC number at which unresolved blockers or release-branch movement escalate to the owner; it never caps QA rounds. | Not a positive integer: file invalid. |
+| `release.max_rc_passes` | `2` | Pass of the cycle (its first candidate is pass 1, also after an abandoned cycle of the same version, `05-release-cycle.md` §13) at which unresolved blockers or release-branch movement escalate to the owner; it never caps QA rounds. | Not a positive integer: file invalid. |
 | `release.later_passes` | `"full"` | Whether passes after the first run every angle (`full`) or only the gate and the coordinator. | Other value: file invalid. |
 | `release.go_policy` | `"computed"` | `human` adds the owner's approval to the computed GO; that approval is not read yet, so under `human` the bridge never reaches a GO (rule 4). | Other value: file invalid. |
 | `release.record` | `.spl-asdlc/qa/{candidate}/` | Directory of the angle reports (`06-qa-report.md`). | Without `{candidate}`: file invalid. |

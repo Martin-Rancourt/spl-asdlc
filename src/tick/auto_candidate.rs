@@ -54,7 +54,7 @@ pub fn cut(
     decision: &GoDecision,
 ) {
     let cfg = release::section(t);
-    if !cfg.auto_candidate || decision.go || c.rc >= u64::from(cfg.max_rc_passes) {
+    if !cfg.auto_candidate || decision.go || c.pass() >= u64::from(cfg.max_rc_passes) {
         return;
     }
     let moved = match t.github.compare(&t.repo, &c.sha, branch) {

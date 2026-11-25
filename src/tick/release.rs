@@ -60,6 +60,18 @@ pub struct Candidate {
     pub sha: String,
     pub class: String,
     pub tagged_at: Option<crate::github::Timestamp>,
+    /// The rc of its cycle's first candidate: 1, or after an abandoned cycle
+    /// of the same version, the candidate after the last one that cycle
+    /// recorded (spec 05 §13, ASDLC-R7K6). Set by `cycle_start`.
+    pub first_rc: u64,
+}
+
+impl Candidate {
+    /// The candidate's pass in its cycle: 1 for the cycle's first
+    /// candidate, whatever its rc (`max_rc_passes`, `later_passes`).
+    pub fn pass(&self) -> u64 {
+        self.rc.saturating_sub(self.first_rc) + 1
+    }
 }
 
 /// The `[release]` section: every configuration has one.
@@ -72,7 +84,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
     let cfg = t.config;
     let release = section(t);
     let shape = Shape::of(&cfg.product.name, release);
-    let (candidate, tags) = match newest(t, &shape) {
+    let (mut candidate, tags) = match newest(t, &shape) {
         Ok(Some(found)) => found,
         Ok(None) => return false,
         Err(e) => {
@@ -107,6 +119,13 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
     }
     let Some(item) = release_item(t, log, report, &shape, version) else {
         return false;
+    };
+    candidate.first_rc = match cycle_start(t, &shape, version, candidate.rc) {
+        Ok(first) => first,
+        Err(e) => {
+            t.unreadable(report, &object, e);
+            return false;
+        }
     };
     if item.state.is_resolved() {
         // A closed cycle: what its archiving left is retried (BR-ASDLC-019).
@@ -502,9 +521,49 @@ fn read_candidate(t: &Tick, tag: &GitRef, version: Version, rc: u64) -> Result<C
             .name()
             .to_string(),
         tagged_at,
+        first_rc: 1,
     })
 }
 
+/// The rc of the first candidate of `version`'s cycle in flight, below or at
+/// `rc`: 1, or, when cycles of the version were abandoned, the candidate
+/// after the last one their release items recorded (spec 05 §13: the next
+/// cut starts a new cycle, whose passes count from its own first candidate).
+pub fn cycle_start(t: &Tick, shape: &Shape, version: Version, rc: u64) -> Result<u64, String> {
+    let v = version.to_string();
+    let label = vocabulary::release_label(&shape.product, &v);
+    let want = BridgeItem::Release {
+        product: shape.product.clone(),
+        version: vocabulary::normalise_version(&v),
+    };
+    let abandoned: Vec<Item> = t
+        .tracker
+        .list_by_label(&label)
+        .map_err(|e| format!("the items labelled {label}: {e}"))?
+        .into_iter()
+        .filter(|i| i.state.status == Some(Status::Canceled))
+        .filter(|i| texts::bridge_item(&i.description, i.parent.as_deref()).as_ref() == Some(&want))
+        .collect();
+    let mut last = 0;
+    for item in &abandoned {
+        let comments = t
+            .tracker
+            .comments(&item.key)
+            .map_err(|e| format!("the comments of {}: {e}", item.key))?;
+        for n in (last + 1)..rc {
+            let marker = texts::marker("candidate", &[("tag", &shape.candidate_tag(version, n))]);
+            if comments
+                .iter()
+                .any(|c| c.by_bridge && texts::has_marker(&c.body, &marker))
+            {
+                last = n;
+            }
+        }
+    }
+    Ok(last + 1)
+}
+
+/// The candidate before `c` in its cycle; none for a cycle's first.
 fn previous_candidate(shape: &Shape, tags: &[GitRef], c: &Candidate) -> Option<String> {
     tags.iter()
         .filter_map(|r| {
@@ -512,7 +571,7 @@ fn previous_candidate(shape: &Shape, tags: &[GitRef], c: &Candidate) -> Option<S
                 .parse_candidate(&r.name)
                 .map(|(v, rc)| (r.name.clone(), v, rc))
         })
-        .filter(|(_, v, rc)| *v == c.version && *rc < c.rc)
+        .filter(|(_, v, rc)| *v == c.version && *rc < c.rc && *rc >= c.first_rc)
         .max_by_key(|(_, _, rc)| *rc)
         .map(|(n, _, _)| n)
 }
@@ -561,8 +620,13 @@ fn release_item(
         product: product.clone(),
         version: vocabulary::normalise_version(&v),
     };
-    let found = match t.tracker.list_by_label(&label) {
-        Ok(items) => items,
+    let found: Vec<Item> = match t.tracker.list_by_label(&label) {
+        // An abandoned cycle's item: the next cycle of the version gets its
+        // own (spec 05 §13), as `find_release_item` reads it.
+        Ok(items) => items
+            .into_iter()
+            .filter(|i| i.state.status != Some(Status::Canceled))
+            .collect(),
         Err(e) => {
             t.unreadable(report, &object, format!("the items labelled {label}: {e}"));
             return None;
@@ -795,7 +859,7 @@ pub fn without_angles(t: &Tick, item: &Item, c: &Candidate) -> Result<bool, Stri
 /// (`later_passes = "gate-and-coordinator"`): it offers no angle, and its GO
 /// counts the angles of the first pass (spec 05 §7-8).
 pub fn lighter_pass(release: &Release, c: &Candidate) -> bool {
-    c.rc > 1 && release.later_passes == LaterPasses::GateAndCoordinator
+    c.pass() > 1 && release.later_passes == LaterPasses::GateAndCoordinator
 }
 
 /// The angles offered on this candidate (spec 05 §7, `later_passes`).
@@ -822,7 +886,7 @@ pub fn first_pass_angles(
     open: &[PullRequest],
 ) -> Result<(Vec<(String, AngleState)>, bool), String> {
     let release = section(t);
-    let first = shape.candidate_tag(c.version, 1);
+    let first = shape.candidate_tag(c.version, c.first_rc);
     if tracker_said(t, &item.key, &texts::no_qa_angle_marker(&first))? {
         return Ok((Vec::new(), true));
     }
@@ -3532,7 +3596,7 @@ fn hold(
 /// is missing while the escalation holds, the comment carrying the marker
 /// posted once. A failed label write costs the label, retried at the next
 /// tick, never the comment.
-fn escalate(
+pub(super) fn escalate(
     t: &Tick,
     log: &mut ActionLog,
     report: &mut Report,
@@ -3544,7 +3608,7 @@ fn escalate(
     let release = section(t);
     let max = release.max_rc_passes;
     let moved = !d.tip_gaps.is_empty();
-    if c.rc < u64::from(max) || !d.every_angle_answered() || (d.blockers.is_empty() && !moved) {
+    if c.pass() < u64::from(max) || !d.every_angle_answered() || (d.blockers.is_empty() && !moved) {
         return;
     }
     let marker = texts::marker("qa-escalation", &[("candidate", &c.tag)]);
@@ -3615,7 +3679,7 @@ fn escalate(
     if said {
         return;
     }
-    let text = texts::escalation_comment(&c.tag, c.rc, max, &d.blockers, moved);
+    let text = texts::escalation_comment(&c.tag, c.pass(), max, &d.blockers, moved);
     // With no channel for it, the comment alone is the notice.
     let sent = t.notify(log, report, &item.key, "escalation", json!({}), &text);
     if sent.is_some() {
