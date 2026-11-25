@@ -1,0 +1,33 @@
+{
+  "schema": "spl-asdlc/qa-report/2",
+  "candidate": "v1.17.0-rc.1",
+  "angle": "security",
+  "item": "ASDLC-9VFD",
+  "verdict": "go",
+  "checked": [
+    "Tag annotation of v1.17.0-rc.1 (Release-Class: routine, reason no reviewed path touched, base v1.16.0, surfaces none) at 9315afd, the head of release/2026-11-25-20-27-utc; git log/diff v1.16.0..v1.17.0-rc.1 (36 files, PRs #198 #200 #201 #204 #207 #211 #212 plus the v1.16.0-rc.3 QA records)",
+    "cargo test --locked at v1.17.0-rc.1: all suites green, 1311 passed, 0 failed, 2 ignored (lib 1070, workflow tests tests/workflows/ 198, other suites 43)",
+    "scripts/check-no-instance-names.sh at v1.17.0-rc.1: exit 0 (identifier forms only; SPL_ASDLC_FORBIDDEN_WORDS is a CI secret, not set locally)",
+    "ASDLC-P8G6 fix (src/tick/release.rs merged_angles): a merged angle PR counts only when not cross_repository and merged_by is a Bot whose login is same_login with the bridge's own identity login (src/job.rs github.identity()); merged_by comes from GraphQL mergedBy with __typename Bot (src/github/rest.rs actor_gql), so a person cannot spell the App's `<slug>[bot]` login; the merged list is read with base = the release branch (merged_pulls). Same check already guards the merged verdict (release.rs is_verdict_pr / trusted merge)",
+    "Mutation test at the tag (restored by git checkout HEAD --): merged_angles guard replaced by `if false` -> tick::release_tests::an_angle_pr_merged_by_someone_other_than_the_bridge_or_from_a_fork_leaves_its_angle_open_and_sub_item_out_of_to_deploy FAILED; the guard is held by its test",
+    "Angle PR flow refactor (release.rs angle_pr / follow_angle_pr, ASDLC-WMTX): the compare against the release branch now runs before follow_angle_pr and only for a valid, unmerged, named PR; a non-report file still returns before any merge; `fault` only moves the sub-item back to In Progress. consolidation_back writes only In Review -> In Progress. Fork angle PRs still skipped before angle_pr (release.rs:304); review::excluded_from_merge_pass keeps every qa/ head into a release branch out of the ordinary merge pass, with the same `qa/` prefix parse_angle_branch uses",
+    "ASDLC-JA74 (merge.rs make_ticket, sweep.rs, tracker/livela.rs is_task/make_ticket, dry.rs): the type change goes through Livela::raw, which refuses an item outside the configured project (in_project), and is written as_bridge; dry-run records an intent only",
+    "ASDLC-HZYJ gate-fix title (texts::gate_fix_title, release.rs failed_jobs_of): suite and job names pass through texts::inert and are cut to TITLE_NAME_CHARS, at most TITLE_FAILURES_SHOWN shown; job names come from the release branch's own workflows; the marker and description are unchanged",
+    "ASDLC-Q2AX approval notices (merge.rs approval_notice): comments interpolate only GitHub logins, the head SHA and configured coordinators, through say_once markers keyed by PR and head",
+    "Delivery chain: the only workflow changes are the PINNED_BLOB of docs/agents/process.md in asdlc-pr-checks.yml and asdlc-pr-guards.yml; no pull_request_target with checkout of untrusted code (pr.yml stays on pull_request); every third-party `uses:` pinned to a full SHA, own units on the pinned v1.15 line as BR-ASDLC-023 requires; Cargo.lock changes only the crate's own version (no new dependency)",
+    "GitHub settings read via the API: rulesets main and release/** (0 required approvals, required checks `title / conventional-title` and `required-check` from GitHub Actions, no bypass actors); Actions fork PR approval policy all_external_contributors; repository public",
+    "Ordinary merge pass for a fork PR (merge.rs pass / one, link::resolve), read in code only: no live fork PR was opened on the public repository",
+    "Open findings of earlier candidates (v1.15.0-rc.1 security-1, v1.16.0-rc.1 security-2) re-read at the tag: code paths unchanged in this candidate, still filed; not re-reported here"
+  ],
+  "findings": [
+    {
+      "id": "security-1",
+      "blocking": false,
+      "summary": "The bridge's ordinary merge pass treats a fork PR like a branch of the repository: one that names a project ticket and has green required checks is squash-merged into main with no human review (review.angles = [], 0 required approvals), and since ASDLC-JA74 the item it names, if a task, is also turned into a ticket.",
+      "anchor": "src/tick/merge.rs pass / one (no cross_repository check before make_ticket, status writes and merge; the only fork check is at :1300, branch deletion) with .spl-asdlc/config.toml [review] angles = []",
+      "evidence": "Read at v1.17.0-rc.1, not reproduced live. The repository is public. A fork PR to main whose title ends `(ASDLC-XXXX)` (ticket keys are public in the commit history) resolves to that ticket through link::resolve (Livela::raw keeps it inside the project, nothing checks the PR's origin). With review.angles = [] the PR 'merges on its CI'. The required checks `required-check` and `title / conventional-title` come from GitHub Actions on `pull_request`, which runs the workflow files of the PR's merge commit, so the fork's own modified pr.yml can report them green. The only barrier left is the Actions approval for external contributors (policy all_external_contributors): once a maintainer clicks 'Approve and run', which reads as permission to run CI and not to merge, the bridge drives the ticket's status, makes a named task a ticket (ASDLC-JA74, new in this candidate), and merges outside code into main. Attacker: anyone with a GitHub account. Impact: outside code in main, which the next release cut ships to every caller, with only the release QA between them. It needs a second step (a maintainer approving the run), hence non-blocking. Obvious fix: leave cross_repository PRs out of the merge pass (as angle PRs from a fork already are), or require a coordinator's approval for them.",
+      "testable": true,
+      "proposed_test": "tick tests: a fork PR (cross_repository) naming a project ticket, with green required checks, is neither merged nor drives its ticket's status or type, and the ticket is left as it was"
+    }
+  ]
+}
