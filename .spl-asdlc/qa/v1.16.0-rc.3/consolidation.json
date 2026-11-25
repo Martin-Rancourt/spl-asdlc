@@ -1,0 +1,8 @@
+{
+  "schema": "spl-asdlc/qa-verdict/1",
+  "candidate": "v1.16.0-rc.3",
+  "item": "ASDLC-SZ4B",
+  "verdict": "go",
+  "between_angles": "Security is still the only release angle configured at the tag (.spl-asdlc/config.toml, one [[release.angles]] key security), so no two angles could each assume the other covered a concern. The v1.16.0-rc.2..v1.16.0-rc.3 change set (git diff --stat) is the rc.2 QA records plus #206 (src/method/texts.rs, src/method/texts/tests.rs, src/tick/release.rs, src/tick/release_tests/abandoned_cycle.rs); every changed source file is in the report's checked scope. I re-read the fix of rc.2 security-1 at the tag: the brief now passes ticket id, title, state and checkbox lines through texts::inert (which breaks spl-asdlc: and <!--) and paths through inert_code; both readers of the abandon gesture (cycle_start and cycle_was_abandoned in src/tick/release.rs) now use texts::records_abandon, which counts the marker only as a whole line; the verb in src/verbs.rs still writes it on its own line. The fix commit c974fb9 is the tag's own commit, so the blocker accepted at rc.2 is embarked in this candidate. The other by_bridge marker reader the change does not touch (src/tick/identity.rs, has_marker) can no longer be fed a forged marker through the brief, since inert breaks the token; the report covers it as well. Build, tests and packaging stay with the gate (cargo test green per the report; not a finding). Open findings of earlier candidates (v1.15.0-rc.1 security-1/2, v1.16.0-rc.1 security-2) are already filed and untouched by #206. Nothing found unowned.",
+  "findings": []
+}
