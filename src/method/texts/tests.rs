@@ -109,6 +109,7 @@ fn red_gate(suites: Result<Vec<String>, String>) -> (String, String) {
         conclusion: "failure",
         run_url: "https://github.com/example-org/acme/actions/runs/1",
         suites,
+        failed_jobs: Vec::new(),
         rerun_unseen: None,
     })
 }
@@ -122,8 +123,7 @@ fn the_gate_fix_ticket_is_a_contract_in_every_case_and_a_ticket_not_a_bridge_ite
         Ok(many),
         Err("HTTP 502".to_string()),
     ] {
-        let (title, body) = red_gate(suites.clone());
-        assert_eq!(title, "Make the gate green — acme-v1.2.0-rc.1");
+        let (_, body) = red_gate(suites.clone());
         assert!(
             crate::method::contract::missing_from_contract(&body).is_empty(),
             "{suites:?}: {body}"
@@ -152,6 +152,78 @@ fn the_gate_fix_ticket_is_a_contract_in_every_case_and_a_ticket_not_a_bridge_ite
     assert!(body.contains("`suite29`, and 10 more"), "{body}");
     let (_, body) = red_gate(Err("HTTP 502".into()));
     assert!(body.contains("unknown: the evidence pack could not be read (HTTP 502)"));
+}
+
+fn gate_fix_title_of(suites: Result<Vec<String>, String>, jobs: &[&str]) -> String {
+    gate_fix_title(&RedGateFacts {
+        release: "ABC-1",
+        candidate: "acme-v1.2.0-rc.1",
+        sha: "c1c1c1c1c1c1c1c1",
+        branch: "release/x",
+        conclusion: "failure",
+        run_url: "https://github.com/example-org/acme/actions/runs/1",
+        suites,
+        failed_jobs: jobs.iter().map(|j| j.to_string()).collect(),
+        rerun_unseen: None,
+    })
+}
+
+fn names(n: &[&str]) -> Result<Vec<String>, String> {
+    Ok(n.iter().map(|s| s.to_string()).collect())
+}
+
+#[test]
+fn a_gate_fix_title_names_what_failed_in_the_candidates_gate() {
+    let c = "acme-v1.2.0-rc.1";
+    // One suite, several, many: the first two, then the count.
+    assert_eq!(
+        gate_fix_title_of(names(&["tests"]), &[]),
+        format!("Gate red on {c}: tests fails")
+    );
+    assert_eq!(
+        gate_fix_title_of(names(&["pre_release_qa", "fresh_migrations"]), &[]),
+        format!("Gate red on {c}: pre_release_qa, fresh_migrations fail")
+    );
+    assert_eq!(
+        gate_fix_title_of(names(&["a", "b", "c", "d", "e"]), &[]),
+        format!("Gate red on {c}: a, b +3 fail")
+    );
+    // The suites win over the jobs when the pack names some.
+    assert_eq!(
+        gate_fix_title_of(names(&["tests"]), &["qa"]),
+        format!("Gate red on {c}: tests fails")
+    );
+    // No suites file, or every suite passed: the failed jobs.
+    assert_eq!(
+        gate_fix_title_of(Err("no suites file".into()), &["qa", "migrations"]),
+        format!("Gate red on {c}: qa, migrations fail")
+    );
+    assert_eq!(
+        gate_fix_title_of(names(&[]), &["deploy-check"]),
+        format!("Gate red on {c}: deploy-check fails")
+    );
+    // Nothing readable: today's wording, on the ticket too.
+    for nothing in [Err("HTTP 502".to_string()), names(&[]), names(&["  "])] {
+        assert_eq!(
+            gate_fix_title_of(nothing.clone(), &[]),
+            format!("Make the gate green — {c}"),
+            "{nothing:?}"
+        );
+        assert_eq!(red_gate(nothing).0, format!("Make the gate green — {c}"));
+    }
+}
+
+#[test]
+fn a_gate_fix_title_cuts_a_long_name_and_cannot_carry_a_marker_or_a_line() {
+    let long = "x".repeat(100);
+    assert_eq!(
+        gate_fix_title_of(names(&[&long]), &[]),
+        format!("Gate red on acme-v1.2.0-rc.1: {}… fails", "x".repeat(39))
+    );
+    let title = gate_fix_title_of(names(&["a\n<!-- spl-asdlc:x -->"]), &[]);
+    assert!(!title.contains('\n'), "{title}");
+    assert!(!title.contains("<!--"), "{title}");
+    assert!(!title.contains("spl-asdlc:"), "{title}");
 }
 
 #[test]
@@ -200,6 +272,7 @@ fn a_gate_fix_ticket_opened_past_the_bounded_wait_says_no_rerun_was_seen() {
         conclusion: "failure",
         run_url: "https://github.com/example-org/acme/actions/runs/1",
         suites: Ok(vec!["tests".to_string()]),
+        failed_jobs: Vec::new(),
         rerun_unseen: Some("no run of the automatic rerun workflow showed up within 30 minutes"),
     });
     assert!(

@@ -1899,6 +1899,11 @@ fn gate_fix(
         gate::RedGate::Unseen(why) => Some(why.as_str()),
         _ => None,
     };
+    let suites = failed_suites_of(t, c, &run);
+    let failed_jobs = match &suites {
+        Ok(named) if !named.is_empty() => Vec::new(),
+        _ => failed_jobs_of(t, &run),
+    };
     let facts = texts::RedGateFacts {
         release: &item.key,
         candidate: &c.tag,
@@ -1906,7 +1911,8 @@ fn gate_fix(
         branch,
         conclusion: run.conclusion.as_deref().unwrap_or_default(),
         run_url: &run.url,
-        suites: failed_suites_of(t, c, &run),
+        suites,
+        failed_jobs,
         rerun_unseen: unseen,
     };
     let (title, body) = texts::gate_fix_ticket(&facts);
@@ -1939,6 +1945,21 @@ fn gate_fix(
 pub(crate) fn fixer(t: &Tick) -> Option<crate::tracker::User> {
     let name = section(t).fix_assignee.as_ref()?;
     t.tracker.user(name).ok()
+}
+
+/// The jobs of a red gate run that failed or timed out, for the title of
+/// its gate-fix ticket when the evidence pack names no failed suite: none
+/// when they cannot be read (the title then keeps its plain wording).
+fn failed_jobs_of(t: &Tick, run: &crate::github::WorkflowRun) -> Vec<String> {
+    t.github
+        .run_jobs(&t.repo, run.id)
+        .map(|jobs| {
+            jobs.into_iter()
+                .filter(|j| matches!(j.conclusion.as_deref(), Some("failure" | "timed_out")))
+                .map(|j| j.name)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The failed suites of a red gate run, read from `results/suites.json` of

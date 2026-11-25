@@ -3350,7 +3350,7 @@ fn a_red_gate_opens_one_urgent_gate_fix_ticket_once_its_rerun_settled() {
     let fixes = w.gate_fixes();
     assert_eq!(fixes.len(), 1, "{:?}", w.tracker.writes());
     let fix = &fixes[0];
-    assert_eq!(fix.title, format!("Make the gate green — {CAND}"));
+    assert_eq!(fix.title, format!("Gate red on {CAND}: tests, lint fail"));
     assert_eq!(fix.state.status, Some(Status::Ready));
     assert_eq!(fix.assignee, None, "taken by role, nobody named");
     assert_eq!(fix.parent.as_deref(), Some(release.key.as_str()));
@@ -3536,9 +3536,7 @@ fn a_rerun_still_running_past_the_bound_keeps_the_wait() {
         "the rerun it shows may still rerun the gate"
     );
     assert!(
-        !writes
-            .iter()
-            .any(|l| l.starts_with("create Make the gate green")),
+        !writes.iter().any(|l| l.starts_with("create Gate red on")),
         "{writes:?}"
     );
     // It completed without rerunning: settled, and nothing says it was unseen.
@@ -3629,6 +3627,59 @@ fn an_unreadable_rerun_workflow_opens_nothing_and_says_why() {
     assert!(w.gate_fixes().is_empty());
 }
 
+/// The jobs of a gate run, by name and conclusion.
+fn gate_jobs(jobs: &[(&str, &str)]) -> Vec<crate::github::Job> {
+    jobs.iter()
+        .map(|(name, c)| crate::github::Job {
+            name: (*name).into(),
+            conclusion: Some((*c).into()),
+        })
+        .collect()
+}
+
+#[test]
+fn a_gate_fix_title_names_the_failed_jobs_when_the_pack_has_no_suites_file() {
+    let w = World::new();
+    w.gate(vec![gate_run(1, CAND, "c1", Some("failure"))]);
+    w.reruns(vec![rerun_run(91, "completed")]);
+    w.github.state.borrow_mut().artifact_files.insert(
+        (repo(), 7, gate::SUITES_FILE.into()),
+        Err(crate::github::ReadError::NotFound {
+            what: "results/suites.json in artifact 7".into(),
+        }),
+    );
+    w.github.state.borrow_mut().jobs.insert(
+        (repo(), 1),
+        Ok(gate_jobs(&[
+            ("build", "success"),
+            ("pre_release_qa", "failure"),
+            ("deploy", "skipped"),
+            ("fresh_migrations", "timed_out"),
+            ("cleanup", "cancelled"),
+        ])),
+    );
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    let fixes = w.gate_fixes();
+    assert_eq!(fixes.len(), 1, "{:?}", w.tracker.writes());
+    assert_eq!(
+        fixes[0].title,
+        format!("Gate red on {CAND}: pre_release_qa, fresh_migrations fail")
+    );
+    // The title only: the contract still says the pack could not be read.
+    assert!(
+        fixes[0]
+            .description
+            .contains("unknown: the evidence pack could not be read"),
+        "{}",
+        fixes[0].description
+    );
+    assert_eq!(
+        texts::gate_fix_candidate(&fixes[0].description).as_deref(),
+        Some(CAND)
+    );
+}
+
 #[test]
 fn a_red_gate_whose_evidence_cannot_be_read_still_opens_its_ticket() {
     let w = World::new();
@@ -3645,6 +3696,8 @@ fn a_red_gate_whose_evidence_cannot_be_read_still_opens_its_ticket() {
     assert!(r.ok(), "{r:?}");
     let fixes = w.gate_fixes();
     assert_eq!(fixes.len(), 1, "never a silence");
+    // Neither the pack nor the jobs read: today's wording.
+    assert_eq!(fixes[0].title, format!("Make the gate green — {CAND}"));
     let d = &fixes[0].description;
     assert!(
         d.contains("unknown: the evidence pack could not be read"),
@@ -3954,8 +4007,7 @@ fn a_dry_run_prints_the_urgent_gate_fix_ticket_it_would_open() {
     let w = World::new();
     w.red_settled(1, CAND, "c1", r#""tests""#);
     // The release item exists; its gate-fix ticket does not yet.
-    w.tracker
-        .fail_writes_starting_with("create Make the gate green");
+    w.tracker.fail_writes_starting_with("create Gate red on");
     w.tick();
     assert!(w.gate_fixes().is_empty());
     let release = w.release_item();
@@ -3979,7 +4031,7 @@ fn a_dry_run_prints_the_urgent_gate_fix_ticket_it_would_open() {
     assert!(r.ok(), "{r:?}");
     assert_eq!(w.tracker.writes().len(), before, "the tracker saw no write");
     let want = format!(
-        "tracker: create \"Make the gate green — {CAND}\" [Ready] priority urgent under {}",
+        "tracker: create \"Gate red on {CAND}: tests fails\" [Ready] priority urgent under {}",
         release.key
     );
     assert!(intents.lines().contains(&want), "{:?}", intents.lines());
