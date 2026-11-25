@@ -190,6 +190,14 @@ impl FakeTracker {
         st.item.description = f(&st.item.description);
     }
 
+    /// Someone other than the bridge (the agent served the item, a person)
+    /// moves it to `status`: no write of the bridge is recorded.
+    pub fn moved_by_someone(&self, key: &str, status: Status) {
+        let mut s = self.state.borrow_mut();
+        let st = s.items.get_mut(key).expect("a seeded item");
+        st.item.state = ItemState::of(status);
+    }
+
     pub fn writes(&self) -> Vec<String> {
         self.state.borrow().writes.clone()
     }

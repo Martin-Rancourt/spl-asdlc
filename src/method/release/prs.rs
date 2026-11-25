@@ -66,23 +66,29 @@ pub struct AnglePrFacts {
     pub green: bool,
     /// A configured coordinator's request for changes stands at its head.
     pub sent_back: bool,
+    /// Something at its head only the angle can mend (ASDLC-WMTX): a
+    /// required check red, its report missing or invalid, or a change
+    /// besides its report. Pending checks are no fault.
+    pub fault: bool,
 }
 
 /// The status a release angle sub-item goes to for its open angle PR
-/// (spec 03, `05-release-cycle.md` §4): a bridge item, not a ticket, whose
-/// work starts when the PR is opened (Ready → In Progress; a draft is out of
-/// the flow and drives nothing); the PR with its required checks green and
-/// not sent back is In Review; a coordinator's
-/// request for changes at its head sends it back In Progress. `None` when it
-/// stays: a status the flow does not drive (Triage, Backlog, a resolved
-/// item) is never touched, and Done comes only from the merge.
+/// (spec 03, `05-release-cycle.md` §4): a ticket of the bridge's whose work
+/// starts when the PR is opened (Ready → In Progress; a draft is out of the
+/// flow and drives nothing). Its agent moves it In Review once its PR is
+/// opened (ASDLC-WMTX), so that it is not served again while the bridge
+/// checks the PR; the bridge does too once the PR's required checks are
+/// green with no fault and it is not sent back. A coordinator's request
+/// for changes at its head, or a fault, sends it back In Progress. `None`
+/// when it stays: a status the flow does not drive (Triage, Backlog, a
+/// resolved item) is never touched, and Done comes only from the merge.
 pub fn angle_item_status(current: Option<Status>, pr: AnglePrFacts) -> Option<Status> {
-    let ready = pr.green && !pr.sent_back;
+    let ready = pr.green && !pr.sent_back && !pr.fault;
     let to = match current? {
         Status::Ready if ready => Status::InReview,
         Status::Ready => Status::InProgress,
         Status::InProgress if ready => Status::InReview,
-        Status::InReview if pr.sent_back => Status::InProgress,
+        Status::InReview if pr.sent_back || pr.fault => Status::InProgress,
         _ => return None,
     };
     Some(to)

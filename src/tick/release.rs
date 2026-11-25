@@ -2136,8 +2136,8 @@ fn angle_pr(
             return AngleState::InReview;
         }
     };
-    let green = checks::pr_state(pr, &required.contexts) == CheckState::Green;
-    follow_angle_pr(t, log, report, pr, sub, angle, green);
+    let checks = checks::pr_state(pr, &required.contexts);
+    let green = checks == CheckState::Green;
     let path = report::report_path(&release.record, &c.tag, angle);
     let valid = match t.github.file(&t.repo, &path, &pr.head_sha) {
         Ok(text) => report::validate(&text, &c.tag, angle).map_err(|e| e.join("; ")),
@@ -2147,6 +2147,29 @@ fn angle_pr(
             return AngleState::InReview;
         }
     };
+    // An angle PR carries its report and nothing else (BR-ASDLC-022): an
+    // angle fixes nothing, so a PR with any other file is not merged. The
+    // PR's own changes are those since it left the release branch; read
+    // only for a valid report of a PR that names its sub-item.
+    let others: Vec<String> = if valid.is_ok() && !*merged && prs::names_sub_item(pr, &sub.key) {
+        match t.github.compare(&t.repo, branch, &pr.head_sha) {
+            Ok(cmp) => cmp.files.into_iter().filter(|f| *f != path).collect(),
+            Err(e) => {
+                t.unreadable(
+                    report,
+                    &object,
+                    format!("the changes of the angle PR against {branch}: {e}"),
+                );
+                return AngleState::InReview;
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    // What only the angle can mend sends its item back to work, In Review
+    // included, where its agent puts it at the PR's opening (ASDLC-WMTX).
+    let fault = checks == CheckState::Red || valid.is_err() || !others.is_empty();
+    follow_angle_pr(t, log, report, pr, sub, angle, green, fault);
     if let Err(why) = &valid {
         let marker = texts::marker(
             "report-invalid",
@@ -2180,51 +2203,34 @@ fn angle_pr(
     if *merged || !prs::names_sub_item(pr, &sub.key) {
         return AngleState::InReview;
     }
-    // An angle PR carries its report and nothing else (BR-ASDLC-022): an
-    // angle fixes nothing, so a PR with any other file is not merged, and
-    // is told once per head. The PR's own changes are those since it left
-    // the release branch.
-    match t.github.compare(&t.repo, branch, &pr.head_sha) {
-        Ok(cmp) => {
-            let others: Vec<&String> = cmp.files.iter().filter(|f| **f != path).collect();
-            if !others.is_empty() {
-                let listed: Vec<String> = others
-                    .iter()
-                    .take(10)
-                    .map(|f| format!("`{}`", texts::inert(f).replace('`', "'")))
-                    .collect();
-                super::merge::say_once(
-                    t,
-                    log,
-                    report,
-                    pr,
-                    "angle-not-report-only",
-                    &[("pr", &pr.url), ("head", texts::short(&pr.head_sha))],
-                    &format!(
-                        "This angle PR changes {} file(s) besides its report `{path}`, so the bridge does not \
-                         merge it: an angle documents its findings and fixes nothing (`docs/agents/review-release.md`). \
-                         Remove the other changes from the branch; a blocking finding is fixed from its own ticket. \
-                         Files: {}{}.",
-                        others.len(),
-                        listed.join(", "),
-                        if others.len() > listed.len() {
-                            ", …"
-                        } else {
-                            ""
-                        }
-                    ),
-                );
-                return AngleState::InReview;
-            }
-        }
-        Err(e) => {
-            t.unreadable(
-                report,
-                &object,
-                format!("the changes of the angle PR against {branch}: {e}"),
-            );
-            return AngleState::InReview;
-        }
+    if !others.is_empty() {
+        let listed: Vec<String> = others
+            .iter()
+            .take(10)
+            .map(|f| format!("`{}`", texts::inert(f).replace('`', "'")))
+            .collect();
+        super::merge::say_once(
+            t,
+            log,
+            report,
+            pr,
+            "angle-not-report-only",
+            &[("pr", &pr.url), ("head", texts::short(&pr.head_sha))],
+            &format!(
+                "This angle PR changes {} file(s) besides its report `{path}`, so the bridge does not \
+                 merge it: an angle documents its findings and fixes nothing (`docs/agents/review-release.md`). \
+                 Remove the other changes from the branch; a blocking finding is fixed from its own ticket. \
+                 Files: {}{}.",
+                others.len(),
+                listed.join(", "),
+                if others.len() > listed.len() {
+                    ", …"
+                } else {
+                    ""
+                }
+            ),
+        );
+        return AngleState::InReview;
     }
     // No approval is asked (BR-ASDLC-020): a valid report-only PR merges on
     // the bridge's own checks. A coordinator's request for changes at its
@@ -2310,15 +2316,17 @@ fn angle_pr(
 
 /// A release angle sub-item follows its open angle PR as a ticket follows
 /// its PR (BR-ASDLC-020): In Progress when the PR is opened, In Review once
-/// its required checks are green (a draft is out of the flow and never gets
-/// here), back In Progress when a
-/// configured coordinator requests changes at its head; To Deploy comes
+/// its agent moves it there or its required checks are green (a draft is
+/// out of the flow and never gets here), back In Progress when a
+/// configured coordinator requests changes at its head or a fault at its
+/// head is the angle's to mend (ASDLC-WMTX); To Deploy comes
 /// from the merge. In Review keeps the assignee: it is the bridge's step,
 /// served to nobody; sent back, the item goes to its angle's `assignee`, or
 /// to nobody (taken by role), in the status's own write. Only a PR
 /// that names its sub-item drives it (the link the merge reads too), and
 /// one that does not is told once per head which key to name; a status
 /// already right is not written again.
+#[allow(clippy::too_many_arguments)]
 fn follow_angle_pr(
     t: &Tick,
     log: &mut ActionLog,
@@ -2327,6 +2335,7 @@ fn follow_angle_pr(
     sub: &Item,
     angle: &str,
     green: bool,
+    fault: bool,
 ) {
     if !prs::names_sub_item(pr, &sub.key) {
         // Neither driven nor merged until it does: said once per head.
@@ -2348,6 +2357,7 @@ fn follow_angle_pr(
     let facts = prs::AnglePrFacts {
         green,
         sent_back: review::changes_requested_at_head(pr, &section(t).coordinators).is_some(),
+        fault,
     };
     let Some(to) = prs::angle_item_status(sub.state.status, facts) else {
         return;
@@ -2508,6 +2518,28 @@ fn is_verdict_pr(pr: &PullRequest, c: &Candidate) -> bool {
     prs::parse_angle_branch(&pr.head_ref) == Some((c.tag.clone(), verdict::KEY.to_string()))
 }
 
+/// The candidate's consolidation item back In Progress from In Review,
+/// where its agent puts it at its verdict PR's opening (ASDLC-WMTX), when
+/// what keeps the verdict from the merge is its coordinator's to mend: the
+/// item is served again. Any other status is left as it is.
+fn consolidation_back(t: &Tick, log: &mut ActionLog, report: &mut Report, cons: &Item, why: &str) {
+    if cons.state.status != Some(Status::InReview) {
+        return;
+    }
+    t.act(
+        log,
+        report,
+        &cons.key,
+        &format!("status In Progress ({why})"),
+        json!({}),
+        || {
+            t.tracker
+                .set_status(&cons.key, Status::InProgress, None)
+                .map_err(|e| e.to_string())
+        },
+    );
+}
+
 /// Whether a merged verdict PR is the coordinator's (BR-ASDLC-020): a
 /// release coordinator authored it or approved it at its merged head, or
 /// the bridge's App merged it (it merges only such a verdict). A verdict
@@ -2613,13 +2645,17 @@ fn candidate_verdict(
         let signed = super::tracker_verdict::pass(
             t, log, report, item, c, branch, cons, states, reports, open, &path,
         );
-        if let (Some(pr), false) = (
+        match (
             open.iter().find(|p| is_verdict_pr(p, c)),
             signed == super::tracker_verdict::Outcome::Wrote,
         ) {
-            verdict_pr(
+            (Some(pr), false) => verdict_pr(
                 t, log, report, pr, c, branch, cons, states, reports, &path, &signed, merged,
-            );
+            ),
+            // Moved In Review by its agent at its PR's opening, it has no
+            // PR left for the bridge to check (ASDLC-WMTX).
+            (None, false) => consolidation_back(t, log, report, cons, "no verdict PR open"),
+            _ => {}
         }
     }
     if any_merged {
@@ -2730,14 +2766,17 @@ fn verdict_pr(
     let object = format!("pr#{}", pr.number);
     let head = texts::short(&pr.head_sha);
     let fields = [("pr", pr.url.as_str()), ("head", head)];
-    let mut say = |kind: &str, text: String| {
+    let say = |log: &mut ActionLog, report: &mut Report, kind: &str, text: String| {
         super::merge::say_once(t, log, report, pr, kind, &fields, &text);
     };
     if *merged {
         return;
     }
     if !prs::names_sub_item(pr, &cons.key) {
+        consolidation_back(t, log, report, cons, "its verdict PR names no item");
         say(
+            log,
+            report,
             "verdict-unnamed",
             format!(
                 "This verdict PR names no coordination item, so the bridge does not merge it: name `{}` in its title or description (`docs/agents/consolidate.md`).",
@@ -2753,6 +2792,8 @@ fn verdict_pr(
         .collect();
     if !open.is_empty() {
         say(
+            log,
+            report,
             "verdict-early",
             format!(
                 "The bridge merges the verdict once every angle PR of `{}` is merged; still open: {}.",
@@ -2766,7 +2807,10 @@ fn verdict_pr(
         Ok(cmp) => {
             let others = cmp.files.iter().filter(|f| *f != path).count();
             if others > 0 {
+                consolidation_back(t, log, report, cons, "its verdict PR changes other files");
                 say(
+                    log,
+                    report,
                     "verdict-not-only",
                     format!(
                         "This verdict PR changes {others} file(s) besides the verdict `{path}`, so the bridge does not merge it: the verdict judges, it fixes nothing."
@@ -2812,7 +2856,10 @@ fn verdict_pr(
         }
     };
     if let Err(errors) = valid {
+        consolidation_back(t, log, report, cons, "its verdict is not valid");
         say(
+            log,
+            report,
             "verdict-invalid",
             format!(
                 "This verdict is not valid, so the bridge does not merge it (`docs/reference/06-qa-report.md`, \"The verdict\"):\n\n{}",
@@ -2840,6 +2887,8 @@ fn verdict_pr(
     };
     if !by_author && approved.is_none() {
         say(
+            log,
+            report,
             "verdict-unapproved",
             "The verdict is the coordinator's: the bridge merges it when a release coordinator authored this PR or approved it at its head.".to_string(),
         );
@@ -2855,8 +2904,13 @@ fn verdict_pr(
             return;
         }
     };
-    if checks::pr_state(pr, &required.contexts) != CheckState::Green {
-        return;
+    match checks::pr_state(pr, &required.contexts) {
+        CheckState::Green => {}
+        CheckState::Red => {
+            consolidation_back(t, log, report, cons, "its verdict PR's checks are red");
+            return;
+        }
+        _ => return,
     }
     match review::branch_state(pr) {
         BranchState::Conflicting => return,

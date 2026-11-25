@@ -4,7 +4,7 @@ Status: Enforced
 
 ## Rule
 
-A person reviews a PR from an angle whose `assignee` is that person, asked by its paths or by its ticket label; the angle's sub-item is done when it is resolved in the tracker (Done or Canceled) or when a submitted review names its key. `review.human_approval` and `review.human_reviewer` are retired: `human_approval = "never"` and `human_reviewer` are accepted, read nowhere and reported by `doctor`; any other value of `human_approval` makes the configuration invalid, so that a project that asked for a human approval is never read as asking none.
+A person reviews a PR from an angle whose `assignee` is that person, asked by its paths or by its ticket label; the angle's sub-item is done when it is resolved in the tracker (Done or Canceled), by its reviewer once the review is submitted; a submitted review alone never closes it (BR-ASDLC-018). `review.human_approval` and `review.human_reviewer` are retired: `human_approval = "never"` and `human_reviewer` are accepted, read nowhere and reported by `doctor`; any other value of `human_approval` makes the configuration invalid, so that a project that asked for a human approval is never read as asking none.
 
 ## Evidence
 

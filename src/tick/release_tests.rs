@@ -16,6 +16,7 @@ use crate::method::release::gate;
 use crate::method::release::go::VerdictState;
 use crate::method::texts::{self, BridgeItem, protocol};
 use crate::method::vocabulary::Status;
+use crate::tracker::ItemKind;
 
 const POST_DEPLOY_LABEL: &str = "post-deploy-validation/acme";
 use crate::notify::Recorder;
@@ -4617,6 +4618,129 @@ fn a_release_angle_item_follows_its_pr_to_review_back_to_work_and_to_deploy_at_t
         pr.head_sha
     )));
     assert_eq!(w.sub_item("security").state.status, Some(Status::ToDeploy));
+    w.quiet();
+}
+
+/// ASDLC-WMTX: the angle's agent moves its ticket In Review at its PR's
+/// opening, so that it is not served again while the bridge checks the
+/// PR; pending checks leave it there, a fault only the angle can mend (a
+/// red check, an invalid report) sends it back to work.
+#[test]
+fn an_angle_item_its_agent_moved_in_review_goes_back_to_work_on_a_fault() {
+    let w = World::new();
+    w.tick();
+    let sub = w.sub_item("security").key;
+    // Its code is its report: a ticket, as the consolidation, whose code is
+    // the verdict; a PR's review items are tasks (ASDLC-TDXM).
+    assert_eq!(w.tracker.kind(&sub), ItemKind::Ticket);
+    assert_eq!(w.tracker.kind(&w.consolidation(CAND).key), ItemKind::Ticket);
+    let mut pr = w.angle_pr(30, "security", &report_json("security", ""));
+    pr.reviews.clear();
+    pr.checks[0].status = Some("IN_PROGRESS".into());
+    pr.checks[0].conclusion = None;
+    w.tracker.moved_by_someone(&sub, Status::InReview);
+    w.open_on_branch(vec![pr.clone()]);
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert!(writes.is_empty(), "pending checks: {writes:?}");
+    assert_eq!(w.sub_item("security").state.status, Some(Status::InReview));
+
+    // A required check red: back to its angle, its assignee kept.
+    pr.checks[0].status = Some("COMPLETED".into());
+    pr.checks[0].conclusion = Some("FAILURE".into());
+    w.open_on_branch(vec![pr.clone()]);
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(writes, vec![format!("status {sub} In Progress")]);
+    w.quiet();
+
+    // Pushed again and moved In Review by its agent, its checks green but
+    // its report invalid: back to work too.
+    pr = green(pr);
+    pr.head_sha = "invalidhead00001".into();
+    w.report_only(&pr.head_sha, "security");
+    w.github.state.borrow_mut().files.insert(
+        (
+            repo(),
+            pr.head_sha.clone(),
+            format!(".spl-asdlc/qa/{CAND}/security.json"),
+        ),
+        Ok("{}".into()),
+    );
+    w.tracker.moved_by_someone(&sub, Status::InReview);
+    w.open_on_branch(vec![pr.clone()]);
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        writes.first(),
+        Some(&format!("status {sub} In Progress")),
+        "{writes:?}"
+    );
+    assert_eq!(
+        w.sub_item("security").state.status,
+        Some(Status::InProgress)
+    );
+    assert!(!w.github.writes().iter().any(|x| x.starts_with("merge ")));
+}
+
+/// ASDLC-WMTX: the coordinator moves the candidate's consolidation ticket
+/// In Review at its verdict PR's opening; a verdict the bridge cannot merge
+/// for a fault of the coordinator's, or no verdict PR open, sends it back
+/// to work.
+#[test]
+fn a_consolidation_its_agent_moved_in_review_goes_back_to_work_on_a_fault() {
+    let w = World::new();
+    w.tick();
+    let cons = w.consolidation(CAND).key;
+    w.merged_with_verdict(
+        &[
+            (30, "security", report_json("security", "")),
+            (31, "product", report_json("product", "")),
+        ],
+        None,
+    );
+    w.tick();
+    // A verdict PR that names no item: back to work.
+    let mut pr = w.verdict_pr(32, &verdict_json("go", ""));
+    pr.body = "Verdict".into();
+    w.github
+        .state
+        .borrow_mut()
+        .comments
+        .insert((repo(), 32), Ok(Vec::new()));
+    w.tracker.moved_by_someone(&cons, Status::InReview);
+    w.open_on_branch(vec![pr.clone()]);
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(writes, vec![format!("status {cons} In Progress")]);
+    // Named and valid, In Review: left to the bridge's merge, Done there.
+    let pr = w.verdict_pr(32, &verdict_json("go", ""));
+    w.tracker.moved_by_someone(&cons, Status::InReview);
+    w.open_on_branch(vec![pr]);
+    w.tick();
+    assert!(
+        w.github
+            .writes()
+            .iter()
+            .any(|x| x.starts_with("merge example-org/acme#32 "))
+    );
+    // In Review with no verdict PR open (closed unmerged): back to work.
+    let w = World::new();
+    w.tick();
+    let cons = w.consolidation(CAND).key;
+    w.merged_with_verdict(
+        &[
+            (30, "security", report_json("security", "")),
+            (31, "product", report_json("product", "")),
+        ],
+        None,
+    );
+    w.tick();
+    w.tracker.moved_by_someone(&cons, Status::InReview);
+    w.open_on_branch(Vec::new());
+    let (r, writes) = w.writes_of_a_tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(writes, vec![format!("status {cons} In Progress")]);
     w.quiet();
 }
 

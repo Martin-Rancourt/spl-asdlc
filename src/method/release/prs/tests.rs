@@ -71,7 +71,11 @@ fn an_angle_pr_names_its_sub_item_by_identifier() {
 // ---- BR-ASDLC-020 ----
 
 fn facts(green: bool, sent_back: bool) -> AnglePrFacts {
-    AnglePrFacts { green, sent_back }
+    AnglePrFacts {
+        green,
+        sent_back,
+        fault: false,
+    }
 }
 
 #[test]
@@ -105,7 +109,30 @@ fn an_angle_item_follows_its_pr_through_the_normal_flow() {
     assert_eq!(
         angle_item_status(Some(Status::InReview), red),
         None,
-        "red checks alone do not send it back"
+        "pending checks do not send it back: its agent moved it In Review at the PR's opening"
+    );
+    // ASDLC-WMTX: a fault at its head (a red check, an invalid report, a
+    // change besides the report) sends the item its agent moved In Review
+    // back to work, and keeps it from In Review.
+    let fault = AnglePrFacts { fault: true, ..red };
+    assert_eq!(
+        angle_item_status(Some(Status::InReview), fault),
+        Some(Status::InProgress)
+    );
+    assert_eq!(
+        angle_item_status(
+            Some(Status::InProgress),
+            AnglePrFacts {
+                fault: true,
+                ..ready
+            }
+        ),
+        None,
+        "a fault keeps it with its angle"
+    );
+    assert_eq!(
+        angle_item_status(Some(Status::Ready), fault),
+        Some(Status::InProgress)
     );
     for s in [
         Status::Triage,
