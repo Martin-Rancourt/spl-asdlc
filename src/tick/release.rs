@@ -2372,6 +2372,16 @@ fn merged_angles(
     let mut out = Vec::new();
     let mut whole = true;
     for pr in merged {
+        // A report becomes part of the release's evidence only when this
+        // bridge merged it. A writer may merge a lookalike branch by hand,
+        // but that must neither close its angle nor pre-empt the reviewer.
+        if pr.cross_repository
+            || !pr.merged_by.as_ref().is_some_and(|merged_by| {
+                merged_by.is_bot && same_login(&t.github_login, &merged_by.login)
+            })
+        {
+            continue;
+        }
         let Some((cand, angle)) = prs::parse_angle_branch(&pr.head_ref) else {
             continue;
         };
