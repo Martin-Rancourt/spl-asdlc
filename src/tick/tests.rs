@@ -1519,17 +1519,30 @@ fn a_refused_merge_does_not_starve_the_next_candidate() {
 }
 
 #[test]
-fn a_fork_branch_is_never_deleted_in_the_base_repository() {
-    let w = World::new();
-    let mut pr = in_review(&w, 7);
+fn a_fork_pr_does_not_merge_or_mutate_the_task_it_names() {
+    let mut w = World::new();
+    no_review(&mut w);
+    let mut pr = green(pull_request(7));
+    w.ticket("ABC-7", Status::InProgress, &pr);
+    w.tracker.set_kind("ABC-7", ItemKind::Task);
     pr.cross_repository = true;
-    w.open(approved(&w, pr));
-    w.tick(false);
-    assert!(w.github_writes().iter().any(|l| l.starts_with("merge")));
-    assert!(
-        !w.github_writes()
-            .iter()
-            .any(|l| l.starts_with("delete-branch"))
+    w.open(pr);
+    let tracker_writes = w.tracker.writes().len();
+
+    let (report, _) = w.tick(false);
+
+    assert!(report.ok(), "{report:?}");
+    assert!(!merged(&w), "{:?}", w.github_writes());
+    assert_eq!(w.tracker.kind("ABC-7"), ItemKind::Task);
+    assert_eq!(
+        w.tracker.item("ABC-7").state.status,
+        Some(Status::InProgress)
+    );
+    assert_eq!(
+        w.tracker.writes().len(),
+        tracker_writes,
+        "the fork PR must not drive any tracker write: {:?}",
+        w.tracker.writes()
     );
 }
 
