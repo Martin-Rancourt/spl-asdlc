@@ -104,10 +104,6 @@ jobs:
       resume-from: ${{ inputs.resume-from }}
       replay: ${{ inputs.replay || false }}
       publish-result: ${{ needs.publish.result }}
-      # Optional: repositories under this owner that react to
-      # `repository_dispatch` / `spl-asdlc-published` (for example by opening
-      # a normal dependency-bump PR).
-      dependent-repositories: '[]'
     secrets:
       SPL_ASDLC_APP_ID: ${{ secrets.SPL_ASDLC_APP_ID }}
       SPL_ASDLC_APP_PRIVATE_KEY: ${{ secrets.SPL_ASDLC_APP_PRIVATE_KEY }}

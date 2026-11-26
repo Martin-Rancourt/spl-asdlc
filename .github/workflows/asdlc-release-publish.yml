@@ -154,12 +154,6 @@ on:
         description: A runner label, or a JSON array of labels (verify).
         type: string
         default: ubuntu-latest
-      dependent-repositories:
-        description: >-
-          JSON array of repository names in this owner that receive a
-          `spl-asdlc-published` repository_dispatch after publication. Empty by default.
-        type: string
-        default: '[]'
     secrets:
       SPL_ASDLC_APP_ID:
         description: The App's id; needed by close.
@@ -770,41 +764,6 @@ jobs:
             fi
           fi
           echo "target=$TARGET" >> "$out"
-
-      - name: Mint the dependency notification token
-        id: dependency-token
-        if: github.event_name == 'release' && inputs.release-tag != '' && inputs.dependent-repositories != '[]'
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          app-id: ${{ secrets.SPL_ASDLC_APP_ID }}
-          private-key: ${{ secrets.SPL_ASDLC_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          permission-contents: write
-
-      - name: Notify dependent repositories
-        id: dependents
-        if: github.event_name == 'release' && inputs.release-tag != '' && inputs.dependent-repositories != '[]'
-        env:
-          GH_TOKEN: ${{ steps.dependency-token.outputs.token }}
-          OWNER: ${{ github.repository_owner }}
-          SOURCE: ${{ github.repository }}
-          RELEASE_TAG: ${{ inputs.release-tag }}
-          DEPENDENTS: ${{ inputs.dependent-repositories }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! jq -e 'type == "array" and all(.[]; type == "string" and test("^[A-Za-z0-9_.-]+$")) and (unique | length) == length' \
-                > /dev/null 2>&1 <<< "$DEPENDENTS"; then
-            echo "::error title=Invalid dependent-repositories::expected a JSON array of unique repository names in $OWNER."
-            exit 1
-          fi
-          while IFS= read -r repository; do
-            gh api -X POST "repos/$OWNER/$repository/dispatches" \
-              -f event_type=spl-asdlc-published \
-              -F "client_payload[source]=$SOURCE" \
-              -F "client_payload[tag]=$RELEASE_TAG"
-            echo "Notified $OWNER/$repository of $RELEASE_TAG."
-          done < <(jq -r '.[]' <<< "$DEPENDENTS")
 
       - name: Merge the release branch back
         id: mergeback
