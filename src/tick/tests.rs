@@ -4125,6 +4125,35 @@ fn a_ticket_whose_merge_already_shipped_goes_to_done_not_to_deploy() {
     quiet(&w);
 }
 
+#[test]
+fn a_ticket_stranded_in_to_deploy_after_its_release_is_recovered() {
+    let w = World::new();
+    let pr = merged_with_a_box_open(&w);
+    check_every_box(&w, "ABC-7");
+    w.tick(false);
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::ToDeploy));
+
+    shipped(&w, "merge-of-7");
+    crate::tracker::Tracker::record_pr_status(
+        &w.tracker,
+        "ABC-7",
+        &pr.url,
+        &crate::tracker::PrStatus::Released("acme-v1.0.0".into()),
+    )
+    .unwrap();
+    let (report, _) = w.tick(false);
+
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(w.tracker.item("ABC-7").state.status, Some(Status::Done));
+    let comments = said(&w, "ABC-7", &texts::settled_marker(&pr.url, "Done"));
+    assert_eq!(comments.len(), 1, "{comments:?}");
+    assert!(
+        comments[0].contains("That PR already shipped in `acme-v1.0.0`."),
+        "{}",
+        comments[0]
+    );
+}
+
 /// ABC-9 as the closure leaves it: shipped in `acme-v1.0.0`, sent back In
 /// Progress with `description`'s box open.
 fn sent_back_by_the_closure(w: &World, description: &str) -> PullRequest {
