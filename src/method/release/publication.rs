@@ -120,6 +120,26 @@ pub fn judge(run: &WorkflowRun, jobs: &[Job]) -> Publication {
     }
 }
 
+/// The merge back of a concluded publication run that failed: the name of
+/// its `close` job when that job concluded red (`failure`, `timed_out`,
+/// `cancelled`), `None` while the run or a job has not concluded, or when
+/// no merge back failed (ASDLC-PQ5J). A release whose close is red and whose
+/// branch is not in the default branch is a blocked merge back.
+pub fn merge_back_failed(run: &WorkflowRun, jobs: &[Job]) -> Option<String> {
+    if run.status != "completed" || jobs.iter().any(|j| j.conclusion.is_none()) {
+        return None;
+    }
+    jobs.iter()
+        .find(|j| {
+            stage_job(&j.name) == Some("close")
+                && matches!(
+                    j.conclusion.as_deref(),
+                    Some("failure" | "timed_out" | "cancelled")
+                )
+        })
+        .map(|j| j.name.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,6 +247,46 @@ mod tests {
         assert!(
             matches!(&p, Publication::Kept { why } if why.contains("`publish` ran")),
             "{p:?}"
+        );
+    }
+
+    #[test]
+    fn a_red_merge_back_is_read_under_every_name_and_only_once_concluded() {
+        let job = |name: &str, c: Option<&str>| Job {
+            name: name.into(),
+            conclusion: c.map(str::to_string),
+        };
+        for name in [
+            "close / close",
+            "close / merge-back",
+            "close / merge back into main branch",
+        ] {
+            for c in ["failure", "timed_out", "cancelled"] {
+                let jobs = [job("verify / verify", Some("success")), job(name, Some(c))];
+                assert_eq!(
+                    merge_back_failed(&run("completed", Some("failure")), &jobs).as_deref(),
+                    Some(name)
+                );
+                assert_eq!(merge_back_failed(&run("in_progress", None), &jobs), None);
+            }
+            let green = [job(name, Some("success"))];
+            assert_eq!(
+                merge_back_failed(&run("completed", Some("success")), &green),
+                None
+            );
+            let pending = [job(name, Some("failure")), job("publish", None)];
+            assert_eq!(
+                merge_back_failed(&run("completed", Some("failure")), &pending),
+                None
+            );
+        }
+        // The project's own job of that name is not the merge back.
+        assert_eq!(
+            merge_back_failed(
+                &run("completed", Some("failure")),
+                &[job("close", Some("failure"))]
+            ),
+            None
         );
     }
 
