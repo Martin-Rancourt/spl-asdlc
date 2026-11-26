@@ -926,6 +926,32 @@ fn the_release_branch_is_read_off_the_refs() {
 }
 
 #[test]
+fn a_patch_targets_the_other_release_branch_and_never_main() {
+    let rem = remote_cycle();
+    let open = "release/2026-10-02-10-00-utc";
+    rem.repo.git(&["branch", open, "main"]);
+    rem.repo.git(&[
+        "tag",
+        "-f",
+        "-a",
+        "acme-v1.2.0",
+        "-m",
+        "Release-Patch-From: acme-v1.1.0",
+        BRANCH,
+    ]);
+    rem.repo.git(&["push", "-q", "origin", open]);
+    rem.repo
+        .git(&["push", "-q", "--force", "origin", "acme-v1.2.0"]);
+    let dir = Scratch::new("patch-refs");
+    refs_gh(&dir.0);
+    let r = refs(&dir.0, &rem.repo.dir.0, &[]);
+    assert_eq!(r.code, 0, "{}", r.log);
+    assert_eq!(r.output("branch").as_deref(), Some(BRANCH));
+    assert_eq!(r.output("target").as_deref(), Some(open));
+    assert!(r.log.contains("main stays untouched"), "{}", r.log);
+}
+
+#[test]
 fn no_release_branch_is_fine_only_when_the_tag_is_already_on_main() {
     let rem = remote_cycle();
     let dir = Scratch::new("refs");

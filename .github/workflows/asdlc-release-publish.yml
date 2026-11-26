@@ -620,6 +620,7 @@ jobs:
       contents: read
     outputs:
       branch: ${{ steps.refs.outputs.branch }}
+      target: ${{ steps.refs.outputs.target }}
       number: ${{ steps.mergeback.outputs.number }}
       merged: ${{ steps.mergeback.outputs.merged }}
       last-state: ${{ steps.mergeback.outputs.last-state }}
@@ -681,6 +682,10 @@ jobs:
               > "$work/holding"
             sed -n 's#^[[:space:]]*origin/##p' "$work/holding"
           }
+          patch_from() {
+            git for-each-ref --format='%(contents)' "refs/tags/$1" |
+              sed -n 's/^Release-Patch-From:[[:space:]]*//p' | tail -n 1
+          }
 
           if [ -n "$RESUME_FROM" ]; then
             # A resume redeploys an RC; the cycle's merge back belongs to the
@@ -723,6 +728,27 @@ jobs:
           fi
           echo "Release branch: $BRANCH"
           echo "branch=$BRANCH" >> "$out"
+          TARGET="$DEFAULT_BRANCH"
+          if [ -n "$RELEASE_TAG" ] && [ -n "$(patch_from "$RELEASE_TAG")" ]; then
+            # A patch never goes back to the default branch. Carry its tag
+            # into the one other cycle in flight; that branch's candidate is
+            # thereby overtaken and the bridge cuts its replacement.
+            git for-each-ref --format='%(refname:strip=3)' "refs/remotes/origin/$BRANCH_PREFIX*" |
+              grep -Fvx "$BRANCH" > "$work/targets" || true
+            count="$(grep -c . "$work/targets" || true)"
+            if [ "$count" -gt 1 ]; then
+              echo "::error title=Several open cycles::the patch cannot choose among $(tr '\n' ' ' < "$work/targets")."
+              exit 1
+            fi
+            if [ "$count" -eq 1 ]; then
+              TARGET="$(head -n 1 "$work/targets")"
+              echo "Patch release: merge $RELEASE_TAG into the open cycle $TARGET; $DEFAULT_BRANCH stays untouched."
+            else
+              echo "Patch release with no other cycle open: $DEFAULT_BRANCH stays untouched."
+              TARGET=""
+            fi
+          fi
+          echo "target=$TARGET" >> "$out"
 
       - name: Merge the release branch back
         id: mergeback
@@ -733,6 +759,7 @@ jobs:
           BRANCH: ${{ steps.refs.outputs.branch }}
           RELEASE_TAG: ${{ inputs.release-tag }}
           DEFAULT_BRANCH: ${{ inputs.default-branch }}
+          TARGET_BRANCH: ${{ steps.refs.outputs.target }}
           REQUIRED_CONTEXT: ${{ inputs.required-context }}
           POLL_INTERVAL: ${{ inputs.poll-interval-seconds }}
           POLL_TIMEOUT: ${{ inputs.poll-timeout-minutes }}
@@ -742,6 +769,15 @@ jobs:
           set -euo pipefail
           out="${GITHUB_OUTPUT:-/dev/stdout}"
           summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
+          TARGET_BRANCH="${TARGET_BRANCH-$DEFAULT_BRANCH}"
+          if [ -z "$TARGET_BRANCH" ]; then
+            gh api -X DELETE "repos/$REPO/git/refs/heads/$BRANCH" > /dev/null ||
+              ! gh api "repos/$REPO/git/refs/heads/$BRANCH" > /dev/null 2>&1
+            echo "merged=true" >> "$out"
+            printf -- '- Patch branch `%s` deleted; no other cycle was open and `%s` was not changed.\n' "$BRANCH" "$DEFAULT_BRANCH" >> "$summary"
+            exit 0
+          fi
+          DEFAULT_BRANCH="$TARGET_BRANCH"
           if ! [[ "$POLL_INTERVAL" =~ ^[0-9]+$ && "$POLL_TIMEOUT" =~ ^[0-9]+$ ]] \
               || [ "$POLL_INTERVAL" -lt 1 ] || [ "$POLL_TIMEOUT" -lt 1 ] || [ "$POLL_TIMEOUT" -gt 35 ]; then
             echo "::error title=Invalid poll::poll-interval-seconds must be at least 1 and poll-timeout-minutes 1 to 35 (the job stops at 45)."
