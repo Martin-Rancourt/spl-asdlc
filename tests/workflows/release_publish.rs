@@ -143,7 +143,11 @@ fn the_app_token_is_minted_right_before_the_writes_and_only_there() {
         );
         for s in &steps[first..] {
             if let Some(t) = s["env"]["GH_TOKEN"].as_str() {
-                assert!(t.contains("steps.app-token.outputs.token"), "{job}: {t}");
+                assert!(
+                    t.contains("steps.app-token.outputs.token")
+                        || t.contains("steps.dependency-token.outputs.token"),
+                    "{job}: {t}"
+                );
             }
         }
     }
@@ -157,6 +161,78 @@ fn the_app_token_is_minted_right_before_the_writes_and_only_there() {
         perms["pull-requests"].is_badvalue(),
         "verify reads the release, never a PR"
     );
+}
+
+#[test]
+fn publication_notifies_each_named_dependent_with_the_release_fact() {
+    let d = doc();
+    let inputs = &d["on"]["workflow_call"]["inputs"];
+    assert_eq!(
+        inputs["dependent-repositories"]["default"].as_str(),
+        Some("[]")
+    );
+
+    let step = step(&d, "close", "dependents");
+    let condition = step["if"].as_str().unwrap();
+    assert!(condition.contains("github.event_name == 'release'"));
+    assert!(condition.contains("inputs.release-tag != ''"));
+    let token = d["jobs"]["close"]["steps"]
+        .as_vec()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"].as_str() == Some("dependency-token"))
+        .unwrap();
+    assert_eq!(
+        token["with"]["owner"].as_str(),
+        Some("${{ github.repository_owner }}")
+    );
+    assert_eq!(token["with"]["permission-contents"].as_str(), Some("write"));
+
+    let dir = Scratch::new("dependents");
+    stub(&dir.0, "gh", "printf '%s\n' \"$*\" >> \"$CALLS\"");
+    let calls = dir.0.join("calls");
+    let calls_s = calls.to_str().unwrap();
+    let r = run(
+        &body("close", "dependents"),
+        &[
+            ("PATH", &path_with(&dir.0)),
+            ("CALLS", calls_s),
+            ("OWNER", "acme"),
+            ("SOURCE", "acme/spl-asdlc"),
+            ("RELEASE_TAG", "v1.16.1"),
+            ("DEPENDENTS", r#"["livela","another-runner"]"#),
+        ],
+        &dir.0,
+    );
+    assert_eq!(r.code, 0, "{}", r.log);
+    let made = read(&dir.0, "calls");
+    assert!(made.contains("repos/acme/livela/dispatches"), "{made}");
+    assert!(
+        made.contains("repos/acme/another-runner/dispatches"),
+        "{made}"
+    );
+    assert!(made.contains("event_type=spl-asdlc-published"), "{made}");
+    assert!(
+        made.contains("client_payload[source]=acme/spl-asdlc"),
+        "{made}"
+    );
+    assert!(made.contains("client_payload[tag]=v1.16.1"), "{made}");
+
+    for invalid in [r#"["owner/repo"]"#, r#"["same","same"]"#, "{}"] {
+        let r = run(
+            &body("close", "dependents"),
+            &[
+                ("PATH", &path_with(&dir.0)),
+                ("CALLS", calls_s),
+                ("OWNER", "acme"),
+                ("SOURCE", "acme/spl-asdlc"),
+                ("RELEASE_TAG", "v1.16.1"),
+                ("DEPENDENTS", invalid),
+            ],
+            &dir.0,
+        );
+        assert_eq!(r.code, 1, "{invalid}: {}", r.log);
+    }
 }
 
 #[test]
