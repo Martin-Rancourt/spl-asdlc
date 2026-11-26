@@ -34,8 +34,43 @@ pub fn release_cycle<'a>(t: &Tick<'a>) -> &'a Release {
 
 /// Read the cycle in flight; nothing is created.
 pub fn cycle(t: &Tick) -> Result<Cycle, String> {
+    cycle_on(t, None)
+}
+
+/// Read the cycle in flight on `branch`, the newest cycle when none is
+/// named; nothing is created. A named branch selects among the newest cycle
+/// and the patches in flight beside it (ASDLC-MG26); a branch that holds
+/// none of their candidates is refused.
+pub fn cycle_on(t: &Tick, branch: Option<&str>) -> Result<Cycle, String> {
     let shape = Shape::of(&t.config.product.name, release_cycle(t));
-    let (mut candidate, _) = release::newest(t, &shape)?.ok_or("no release candidate tag")?;
+    let (newest, tags) = release::newest(t, &shape)?.ok_or("no release candidate tag")?;
+    let mut candidate = match branch {
+        None => newest,
+        Some(b) => {
+            let mut cycles = release::patches_in_flight(t, &shape, &tags, &newest)?;
+            cycles.insert(0, newest);
+            let mut held = Vec::new();
+            let mut found = None;
+            for c in cycles {
+                let on = release::release_branch(t, &shape, &c).ok();
+                if on.as_deref() == Some(b) {
+                    found = Some(c);
+                    break;
+                }
+                held.extend(on);
+            }
+            found.ok_or_else(|| {
+                format!(
+                    "{b} holds no cycle in flight: {}",
+                    if held.is_empty() {
+                        "no release branch holds a candidate".to_string()
+                    } else {
+                        held.join(", ")
+                    }
+                )
+            })?
+        }
+    };
     let item = release::find_release_item(t, &shape, candidate.version)?
         .ok_or("no release item yet: the next tick creates it")?;
     candidate.first_rc = release::cycle_start(t, &shape, candidate.version, candidate.rc)?;
@@ -64,10 +99,18 @@ pub enum CycleStatus {
 /// newest candidate's release is published and its cycle closed, that no
 /// cycle is in flight and which release closed the last one.
 pub fn release_status(t: &Tick) -> Result<CycleStatus, String> {
-    if let Some((release_tag, item)) = closed_cycle(t)? {
-        return Ok(CycleStatus::Over { release_tag, item });
+    release_status_on(t, None)
+}
+
+/// `release status [--branch <b>]`: as [`release_status`], for the cycle on
+/// `branch` when one is named (a patch beside an open cycle, ASDLC-MG26).
+pub fn release_status_on(t: &Tick, branch: Option<&str>) -> Result<CycleStatus, String> {
+    if branch.is_none() {
+        if let Some((release_tag, item)) = closed_cycle(t)? {
+            return Ok(CycleStatus::Over { release_tag, item });
+        }
     }
-    let (cycle, decision) = status(t)?;
+    let (cycle, decision) = status_on(t, branch)?;
     Ok(CycleStatus::InFlight(Box::new(cycle), Box::new(decision)))
 }
 
@@ -96,9 +139,15 @@ fn closed_cycle(t: &Tick) -> Result<Option<(String, String)>, String> {
 
 /// The GO of the cycle in flight and its inputs, read-only.
 pub fn status(t: &Tick) -> Result<(Cycle, GoDecision), String> {
+    status_on(t, None)
+}
+
+/// The GO of the cycle in flight on `branch` (the newest cycle when none is
+/// named) and its inputs, read-only.
+pub fn status_on(t: &Tick, branch: Option<&str>) -> Result<(Cycle, GoDecision), String> {
     let release_cfg = release_cycle(t);
     let record = &release_cfg.record;
-    let cy = cycle(t)?;
+    let cy = cycle_on(t, branch)?;
     let branch = cy
         .branch
         .clone()
@@ -596,17 +645,52 @@ pub fn requalify(
 /// back into the default branch, cancel the release item, and turn the
 /// remaining blockers into ordinary tickets.
 pub fn abandon(t: &Tick, log: &mut ActionLog, who: &str) -> Result<String, String> {
-    let cy = cycle(t)?;
+    abandon_on(t, log, None, who)
+}
+
+/// `release abandon [--branch <b>]`: as [`abandon`], for the cycle on
+/// `branch`. While a patch is in flight beside the open cycle a branch must
+/// be named: abandoning the wrong cycle is not undone. A patch cycle's
+/// branch is deleted without a merge back: it carries only PRs already
+/// merged into the default branch (ASDLC-MG26).
+pub fn abandon_on(
+    t: &Tick,
+    log: &mut ActionLog,
+    branch: Option<&str>,
+    who: &str,
+) -> Result<String, String> {
+    if branch.is_none() {
+        let shape = Shape::of(&t.config.product.name, release_cycle(t));
+        if let Some((newest, tags)) = release::newest(t, &shape)? {
+            let patches = release::patches_in_flight(t, &shape, &tags, &newest)?;
+            if !patches.is_empty() {
+                return Err(format!(
+                    "several cycles in flight ({}, {}): name one with `--branch`",
+                    newest.tag,
+                    patches
+                        .iter()
+                        .map(|c| c.tag.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+        }
+    }
+    let cy = cycle_on(t, branch)?;
+    let patch = release::cycle_patches(t, &cy.shape, &cy.candidate)?.is_some();
     let mut report = Report::default();
     let default = t
         .github
         .default_branch(&t.repo)
         .map_err(|e| e.to_string())?;
     if let Some(branch) = &cy.branch {
-        let status = t
-            .github
-            .compare_status(&t.repo, &default, branch)
-            .map_err(|e| e.to_string())?;
+        let status = if patch {
+            CompareStatus::Identical
+        } else {
+            t.github
+                .compare_status(&t.repo, &default, branch)
+                .map_err(|e| e.to_string())?
+        };
         if matches!(status, CompareStatus::Ahead | CompareStatus::Diverged) {
             // The merge is pinned to the branch as read now.
             let head = t

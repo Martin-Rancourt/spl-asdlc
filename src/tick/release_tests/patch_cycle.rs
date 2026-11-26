@@ -396,3 +396,101 @@ fn a_published_patch_not_yet_in_the_open_cycle_waits() {
     w.tick();
     assert!(!closure_said(&w, &patch.key));
 }
+
+/// Business rule: once the patch is published and its tag merged into the
+/// open cycle's branch, the open cycle's candidate no longer goes (the branch
+/// moved past it) and, with `auto_candidate`, the bridge cuts the next one on
+/// that branch. The open cycle takes the new production version by the
+/// merge, never by a cherry-pick.
+#[test]
+fn the_patch_merged_into_the_open_cycle_cancels_its_candidate_and_cuts_the_next() {
+    let mut w = with_patch(true);
+    let text = crate::config::spec_example::repository()
+        .replace("auto_candidate = false", "auto_candidate = true");
+    w.config = crate::config::spec_example::parse(&text);
+    w.tick();
+    patch_published(&w);
+    // The publication merged the patch tag into the open branch (its fix is
+    // past the open candidate) and deleted the patch branch.
+    w.moved_past("c1", &["src/fix.rs"]);
+    {
+        let mut s = w.github.state.borrow_mut();
+        let branches = s.branches.get_mut(&repo()).unwrap();
+        branches.retain(|b| b.name != PATCH_BRANCH && b.name != BRANCH);
+        branches.push(tag(BRANCH, "merged-patch"));
+        s.compares.insert(
+            (repo(), "acme-v1.1.1".into(), BRANCH.into()),
+            cmp(CompareStatus::Ahead, &[], &[]),
+        );
+    }
+    let r = w.tick();
+    assert!(r.failures.is_empty(), "{:?}", r.failures);
+    let gaps = w.tip_gaps();
+    assert!(
+        gaps.iter()
+            .any(|g| g.contains(&format!("moved past {CAND}"))),
+        "the open candidate gets no GO: {gaps:?}"
+    );
+    let dispatched: Vec<String> = w
+        .github
+        .writes()
+        .into_iter()
+        .filter(|l| l.contains("dispatch "))
+        .collect();
+    assert_eq!(
+        dispatched,
+        vec![format!(
+            "dispatch example-org/acme release-cut.yml on {BRANCH} action=candidate"
+        )],
+        "the next candidate is cut on the open branch only"
+    );
+}
+
+#[test]
+fn release_status_reads_the_patch_cycle_on_its_branch() {
+    let w = with_patch(true);
+    w.tick();
+    let t = w.tick_ctx();
+    let (open, _) = crate::verbs::status_on(&t, None).unwrap();
+    assert_eq!(open.candidate.tag, CAND, "the newest cycle by default");
+    let (patch, _) = crate::verbs::status_on(&t, Some(PATCH_BRANCH)).unwrap();
+    assert_eq!(patch.candidate.tag, PATCH_CAND);
+    assert_eq!(patch.branch.as_deref(), Some(PATCH_BRANCH));
+    let refused = crate::verbs::status_on(&t, Some("release/elsewhere"))
+        .err()
+        .unwrap();
+    assert!(refused.contains("holds no cycle in flight"), "{refused}");
+}
+
+#[test]
+fn abandoning_a_patch_names_its_branch_and_never_merges_it_into_main() {
+    let w = with_patch(true);
+    w.tick();
+    let patch = release_item_of(&w, PATCH_LABEL).unwrap();
+    let open = release_item_of(&w, LABEL).unwrap();
+    let t = w.tick_ctx();
+    let mut log = ActionLog::in_memory();
+    let refused = crate::verbs::abandon_on(&t, &mut log, None, "me").unwrap_err();
+    assert!(refused.contains("name one with `--branch`"), "{refused}");
+    let before = w.github.writes().len();
+    let done = crate::verbs::abandon_on(&t, &mut log, Some(PATCH_BRANCH), "me").unwrap();
+    assert!(done.contains(PATCH_CAND), "{done}");
+    let writes: Vec<String> = w.github.writes().into_iter().skip(before).collect();
+    assert!(
+        !writes
+            .iter()
+            .any(|l| l.contains("create_pull") || l.contains("merge")),
+        "no merge back of a patch: {writes:?}"
+    );
+    assert!(
+        writes
+            .iter()
+            .any(|l| l.contains("delete") && l.contains(PATCH_BRANCH)),
+        "{writes:?}"
+    );
+    assert!(w.tracker.get(&patch.key).unwrap().state.is_resolved());
+    assert!(
+        !w.tracker.get(&open.key).unwrap().state.is_resolved(),
+        "the open cycle is untouched"
+    );
+}
