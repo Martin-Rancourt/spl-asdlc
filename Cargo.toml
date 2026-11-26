@@ -28,8 +28,10 @@ crc32fast = "1.5"
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 jsonwebtoken = { version = "11.1", default-features = false, features = ["use_pem", "rust_crypto"] }
 regex = "1.13"
+semver = "1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
 thiserror = "2.0"
 time = { version = "0.3", features = ["parsing", "formatting", "macros"] }
 toml = "1.1"

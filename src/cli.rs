@@ -21,6 +21,16 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Run ticks continuously, updating within the major chosen in runner config.
+    Runner {
+        #[arg(long, default_value = "spl-asdlc-runner.toml")]
+        file: PathBuf,
+    },
+    /// Install the newest stable binary of the explicitly requested major.
+    Update {
+        #[arg(long)]
+        major: u64,
+    },
     /// Configuration commands.
     Config {
         #[command(subcommand)]
@@ -232,6 +242,32 @@ where
     let mut out = std::io::stdout().lock();
     let mut err = std::io::stderr().lock();
     match cli.command {
+        Command::Runner { file } => match crate::update::runner(&file) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                let _ = writeln!(err, "runner: {e}");
+                ExitCode::from(2)
+            }
+        },
+        Command::Update { major } => {
+            match std::env::current_exe()
+                .map_err(|e| e.to_string())
+                .and_then(|path| crate::update::update(&path, major))
+            {
+                Ok(Some(version)) => {
+                    let _ = writeln!(out, "installed {version}");
+                    ExitCode::SUCCESS
+                }
+                Ok(None) => {
+                    let _ = writeln!(out, "no newer stable release in major {major}");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    let _ = writeln!(err, "update: {e}");
+                    ExitCode::from(2)
+                }
+            }
+        }
         Command::Config {
             command: ConfigCommand::Check { file, instance },
         } => config_check(&file, instance.as_deref(), &mut out, &mut err),
