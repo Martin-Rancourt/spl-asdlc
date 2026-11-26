@@ -171,14 +171,47 @@ pub fn patches_in_flight(
 /// Whether a cycle's first candidate was cut as a patch: its annotation (a
 /// real tag object only) carries `Release-Patch-From:`.
 fn opens_a_patch(t: &Tick, tag: &GitRef) -> Result<bool, String> {
+    Ok(patch_from_tag(t, tag)?.is_some())
+}
+
+/// The release a tag's annotation says it patches (`Release-Patch-From:`),
+/// a real tag object only.
+fn patch_from_tag(t: &Tick, tag: &GitRef) -> Result<Option<String>, String> {
     if tag.object_type != ObjectType::Tag {
-        return Ok(false);
+        return Ok(None);
     }
     let o = t
         .github
         .tag_object(&t.repo, &tag.sha)
         .map_err(|e| e.to_string())?;
-    Ok(gate::patch_from_annotation(Some(&o.message)).is_some())
+    Ok(gate::patch_from_annotation(Some(&o.message)))
+}
+
+/// The release the cycle of `c` patches, when it is a patch cycle: read off
+/// its first candidate (`c.first_rc`), which the cut workflow's `patch`
+/// action annotated (ASDLC-MG26). `None` for a normal cycle.
+pub(crate) fn cycle_patches(
+    t: &Tick,
+    shape: &Shape,
+    c: &Candidate,
+) -> Result<Option<String>, String> {
+    let first = shape.candidate_tag(c.version, c.first_rc.max(1));
+    let refs = t.github.tags(&t.repo, &first).map_err(|e| e.to_string())?;
+    match refs.iter().find(|r| r.name == first) {
+        Some(r) => patch_from_tag(t, r),
+        None => Ok(None),
+    }
+}
+
+/// The release a published release tag says it patches: the GO copies the
+/// patch cycle's `Release-Patch-From:` line into it, which the publication
+/// workflow reads to carry the patch into the open cycle, never `main`.
+pub(crate) fn release_patches(t: &Tick, tag: &str) -> Result<Option<String>, String> {
+    let refs = t.github.tags(&t.repo, tag).map_err(|e| e.to_string())?;
+    match refs.iter().find(|r| r.name == tag) {
+        Some(r) => patch_from_tag(t, r),
+        None => Ok(None),
+    }
 }
 
 /// The release in production: the highest release tag of the product with a
@@ -3653,7 +3686,24 @@ fn on_go(
             return;
         }
         None => {
-            let message = format!("Release {tag}\n\nCandidate: {}", c.tag);
+            // A patch's release tag says so, as its first candidate did: the
+            // publication carries it into the open cycle, never the default
+            // branch (ASDLC-MG26).
+            let patches = match cycle_patches(t, shape, c) {
+                Ok(p) => p,
+                Err(e) => {
+                    t.unreadable(
+                        report,
+                        &item.key,
+                        format!("the cycle's first candidate: {e}"),
+                    );
+                    return;
+                }
+            };
+            let mut message = format!("Release {tag}\n\nCandidate: {}", c.tag);
+            if let Some(from) = patches {
+                message.push_str(&format!("\nRelease-Patch-From: {from}"));
+            }
             let made = t.act(
                 log,
                 report,

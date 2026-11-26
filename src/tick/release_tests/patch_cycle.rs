@@ -267,3 +267,132 @@ fn release_cut_names_the_branch_while_a_patch_is_in_flight() {
         "{writes:?}"
     );
 }
+
+#[test]
+fn a_patch_cycle_is_read_off_its_first_candidate() {
+    let w = with_patch(true);
+    let t = w.tick_ctx();
+    let shape = crate::method::release::shape::Shape::of(&t.config.product.name, &t.config.release);
+    let (newest, tags) = crate::tick::release::newest(&t, &shape).unwrap().unwrap();
+    let mut patches = crate::tick::release::patches_in_flight(&t, &shape, &tags, &newest).unwrap();
+    let mut patch = patches.remove(0);
+    patch.first_rc = 1;
+    assert_eq!(
+        crate::tick::release::cycle_patches(&t, &shape, &patch)
+            .unwrap()
+            .as_deref(),
+        Some("acme-v1.1.0"),
+        "the GO copies this line into the patch's release tag"
+    );
+    let mut open = newest;
+    open.first_rc = 1;
+    assert_eq!(
+        crate::tick::release::cycle_patches(&t, &shape, &open).unwrap(),
+        None
+    );
+}
+
+/// The patch `acme-v1.1.1` published: its release tag carries the GO's
+/// `Release-Patch-From:` line, and its branch still holds its candidate.
+fn patch_published(w: &World) {
+    let mut s = w.github.state.borrow_mut();
+    let published = s
+        .releases
+        .get(&(repo(), "acme-v1.1.0".into()))
+        .unwrap()
+        .clone()
+        .unwrap();
+    s.releases.insert(
+        (repo(), "acme-v1.1.1".into()),
+        Ok(Release {
+            tag: "acme-v1.1.1".into(),
+            ..published
+        }),
+    );
+    s.tag_objects.insert(
+        (repo(), "patch-release-object".into()),
+        AnnotatedTag {
+            name: "acme-v1.1.1".into(),
+            message: format!(
+                "Release acme-v1.1.1\n\nCandidate: {PATCH_CAND}\nRelease-Patch-From: acme-v1.1.0"
+            ),
+            tagger_date: Timestamp::parse("2026-10-05T18:00:00Z"),
+            target_sha: "p1".into(),
+            target_type: ObjectType::Commit,
+        },
+    );
+    s.tags.get_mut(&repo()).unwrap().push(GitRef {
+        name: "acme-v1.1.1".into(),
+        sha: "patch-release-object".into(),
+        object_type: ObjectType::Tag,
+    });
+}
+
+fn closure_said(w: &World, key: &str) -> bool {
+    w.tracker.comments(key).unwrap().iter().any(|c| {
+        texts::has_marker(
+            &c.body,
+            &texts::marker("closure", &[("tag", "acme-v1.1.1")]),
+        )
+    })
+}
+
+#[test]
+fn a_published_patch_closes_once_merged_into_the_open_cycle_never_main() {
+    let w = with_patch(true);
+    let r = w.tick();
+    assert!(r.failures.is_empty(), "{:?}", r.failures);
+    let patch = release_item_of(&w, PATCH_LABEL).expect("the patch's release item");
+    patch_published(&w);
+    // Its branch still holds the candidate: the closure waits.
+    w.tick();
+    assert!(
+        !closure_said(&w, &patch.key),
+        "the patch branch is still there"
+    );
+    // The publication merged the patch tag into the open cycle and deleted
+    // the patch branch; `main` was never asked about.
+    {
+        let mut s = w.github.state.borrow_mut();
+        s.branches
+            .get_mut(&repo())
+            .unwrap()
+            .retain(|b| b.name != PATCH_BRANCH);
+        s.compares.insert(
+            (repo(), "p1".into(), BRANCH.into()),
+            cmp(CompareStatus::Ahead, &[], &[]),
+        );
+        s.compares.insert(
+            (repo(), "acme-v1.1.1".into(), BRANCH.into()),
+            cmp(CompareStatus::Ahead, &[], &[]),
+        );
+    }
+    let r = w.tick();
+    assert!(
+        !r.failures.iter().any(|f| f.contains("main")),
+        "{:?}",
+        r.failures
+    );
+    assert!(closure_said(&w, &patch.key), "{:?}", r.failures);
+}
+
+#[test]
+fn a_published_patch_not_yet_in_the_open_cycle_waits() {
+    let w = with_patch(true);
+    w.tick();
+    let patch = release_item_of(&w, PATCH_LABEL).unwrap();
+    patch_published(&w);
+    {
+        let mut s = w.github.state.borrow_mut();
+        s.branches
+            .get_mut(&repo())
+            .unwrap()
+            .retain(|b| b.name != PATCH_BRANCH);
+        s.compares.insert(
+            (repo(), "acme-v1.1.1".into(), BRANCH.into()),
+            cmp(CompareStatus::Diverged, &[], &[]),
+        );
+    }
+    w.tick();
+    assert!(!closure_said(&w, &patch.key));
+}

@@ -729,7 +729,22 @@ jobs:
           echo "Release branch: $BRANCH"
           echo "branch=$BRANCH" >> "$out"
           TARGET="$DEFAULT_BRANCH"
-          if [ -n "$RELEASE_TAG" ] && [ -n "$(patch_from "$RELEASE_TAG")" ]; then
+          # The release this close carries: the published tag, or on a replay
+          # the highest release tag of the bridge's GO (its `Candidate:` line)
+          # the branch holds, so a replay on a patch branch never takes it
+          # back to the default branch either.
+          CARRIED="$RELEASE_TAG"
+          if [ -z "$CARRIED" ]; then
+            fetch_branches
+            while IFS= read -r t; do
+              contents="$(git for-each-ref --format='%(contents)' "refs/tags/$t")"
+              if [[ $'\n'"$contents" == *$'\nCandidate: '* ]]; then
+                CARRIED="$t"
+                break
+              fi
+            done < <(git tag --merged "refs/remotes/origin/$BRANCH" --sort=-v:refname)
+          fi
+          if [ -n "$CARRIED" ] && [ -n "$(patch_from "$CARRIED")" ]; then
             # A patch never goes back to the default branch. Carry its tag
             # into the one other cycle in flight; that branch's candidate is
             # thereby overtaken and the bridge cuts its replacement.
@@ -742,7 +757,7 @@ jobs:
             fi
             if [ "$count" -eq 1 ]; then
               TARGET="$(head -n 1 "$work/targets")"
-              echo "Patch release: merge $RELEASE_TAG into the open cycle $TARGET; $DEFAULT_BRANCH stays untouched."
+              echo "Patch release: merge $CARRIED into the open cycle $TARGET; $DEFAULT_BRANCH stays untouched."
             else
               echo "Patch release with no other cycle open: $DEFAULT_BRANCH stays untouched."
               TARGET=""

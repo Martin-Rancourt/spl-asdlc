@@ -68,7 +68,10 @@ pub fn block_of(
 
 /// The tick's part while the closure waits for the merge back of a
 /// published release (`super::closure::close`). `branch` is the release
-/// branch that still holds the candidate.
+/// branch that still holds the candidate; `into` the branch it is merged
+/// into when it is not the default branch: a patch's open cycle
+/// (ASDLC-MG26). A patch with no other cycle open merges nowhere, and a
+/// replay would take it back to the default branch: the bridge leaves it.
 #[allow(clippy::too_many_arguments)]
 pub fn when_blocked(
     t: &Tick,
@@ -79,6 +82,7 @@ pub fn when_blocked(
     item: &Item,
     published: &Release,
     branch: &str,
+    into: Option<&str>,
 ) {
     let tag = &published.tag;
     let object = item.key.clone();
@@ -105,12 +109,15 @@ pub fn when_blocked(
     }) else {
         return;
     };
-    let default = match t.github.default_branch(&t.repo) {
-        Ok(d) => d,
-        Err(e) => {
-            t.unreadable(report, &object, format!("the default branch: {e}"));
-            return;
-        }
+    let default = match into {
+        Some(b) => b.to_string(),
+        None => match t.github.default_branch(&t.repo) {
+            Ok(d) => d,
+            Err(e) => {
+                t.unreadable(report, &object, format!("the default branch: {e}"));
+                return;
+            }
+        },
     };
     let tip = match t.github.branches(&t.repo, branch) {
         Ok(refs) => match refs.into_iter().find(|r| r.name == branch) {
