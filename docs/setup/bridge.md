@@ -10,8 +10,23 @@ The bridge is the `spl-asdlc` binary (or the library linked into a tracker's run
 
 **The binary**: the bridge follows the stable channel, the published releases of `spl-asdlc`, never a build from a branch, so that only code that went through a release gate runs against the repositories.
 - Install: the archive of the host's target from the latest GitHub release (`spl-asdlc-v<version>-<target>.tar.gz`, or `.zip` on Windows) and its `SHA256SUMS`; verify the checksum before extracting; check that `spl-asdlc --version` prints the release's version.
-- Update: before a tick, or on a slower timer, look at the latest release; install it only when its version is strictly newer than the installed one, never older (a host never downgrades by itself). Replace the binary atomically (write beside it, then rename) and keep the previous one for a one-command rollback. A failed check or download is logged and the tick runs with the binary already installed.
-- A Livela runner gets the bridge with the runner's own releases (`tracker-livela.md`).
+- Update automatically with `spl-asdlc runner --file <host>/spl-asdlc-runner.toml` (below). Before every pass it installs the highest stable version of the requested major, including minor releases. It searches releases of that major even when a newer major has been published. Drafts, prereleases, and versions older than or equal to the installed version are never installed.
+- The host configuration explicitly selects the major. Changing it is the user's action to authorize a new major; publication alone never changes it. A dependent host supplies its own chosen major through `spl-asdlc update --major <N>` before launching the installed binary. The library itself never updates its host.
+
+**Standalone runner**: install the binary in a directory writable by the runner's account, with `tar` on PATH (GNU tar on Linux, the system bsdtar on macOS/Windows). Keep a host configuration separate from repository configuration:
+
+```toml
+# spl-asdlc-runner.toml — changing major authorizes that major's stable releases.
+major = 1
+files = ["/srv/project/.spl-asdlc/config.toml"]
+interval_seconds = 300
+```
+
+Run `spl-asdlc runner --file <host>/spl-asdlc-runner.toml` under the host's service manager. Paths in `files` are relative to its working directory. The configuration is reread before each pass. The supervisor invokes the installed executable for updates and ticks, so the next pass runs the updated code. A failed check, download, checksum, extraction or version verification logs an error and the tick uses the installed binary. For a timer or another supervisor, run `spl-asdlc update --major <N>` before each tick instead.
+
+The updater verifies `SHA256SUMS` and the extracted binary's `--version`, takes a lock beside the binary, and stages in a private directory on the same filesystem. On Unix the final rename is atomic; on Windows it moves the mapped executable aside before installing, restoring it if installation fails. It keeps the previous version as `<binary>.previous-<version>` for a manual rollback (stop the service and move that file back). Windows hosts must serialize their updater invocations. A rollback is a manual action; auto-update never downgrades, even when the requested major is lower than the installed one. Restart the supervisor after an explicit major upgrade so its supervision code also moves to that major.
+
+Every stable release's publication workflow also publishes the crate from the same tag, after verifying that `Cargo.toml` carries that version. Existing versions are skipped on reruns; a missing registry token fails publication rather than silently skipping it. Dependents monitor crates.io; the bridge sends no repository dispatch.
 
 **The cut's binary**: the release cut runs the binary too, for `release prepare`: its caller names the release (`spl-asdlc-version`: `latest`, a minor line `v<X.Y>` for its newest patch, or a release tag), and the cut downloads that archive and checks it against `SHA256SUMS` the same way (`repository.md`, "The binary the cut runs"). Keep the cut on the release its bridge runs.
 
