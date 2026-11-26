@@ -65,14 +65,6 @@ pub fn close(
             return;
         }
     }
-    let label = vocabulary::release_label(&shape.product, &c.version.to_string());
-    let members = match members(t, item, &label) {
-        Ok(m) => m,
-        Err(e) => {
-            t.unreadable(report, &object, format!("the release's members: {e}"));
-            return;
-        }
-    };
     // What this release shipped, ticket by ticket (its PRs in the range): a
     // ticket whose latest merged PR is not among them waits for the release
     // that ships it (several PRs per ticket, spec 04 §10).
@@ -86,6 +78,14 @@ pub fn close(
     let delivered = range.delivered;
     let sub_items = range.sub_items;
     let shipped: std::collections::BTreeMap<String, Vec<u64>> = range.tickets.into_iter().collect();
+    let label = vocabulary::release_label(&shape.product, &c.version.to_string());
+    let members = match members(t, item, &label, shipped.keys()) {
+        Ok(m) => m,
+        Err(e) => {
+            t.unreadable(report, &object, format!("the release's members: {e}"));
+            return;
+        }
+    };
     let registry = read_registry(t, &published.tag);
     let mut result = CloseResult::default();
     for m in &members {
@@ -228,21 +228,22 @@ pub fn archive_closed(
             return;
         }
     }
+    let range = match embarked_items(t, shape, c) {
+        Ok(e) => e,
+        Err(e) => {
+            t.unreadable(report, &item.key, format!("the shipped tickets: {e}"));
+            return;
+        }
+    };
     let label = vocabulary::release_label(&shape.product, &c.version.to_string());
-    let members = match members(t, item, &label) {
+    let members = match members(t, item, &label, range.tickets.iter().map(|(key, _)| key)) {
         Ok(m) => m,
         Err(e) => {
             t.unreadable(report, &item.key, format!("the release's members: {e}"));
             return;
         }
     };
-    let delivered = match embarked_items(t, shape, c) {
-        Ok(e) => e.delivered,
-        Err(e) => {
-            t.unreadable(report, &item.key, format!("the shipped tickets: {e}"));
-            return;
-        }
-    };
+    let delivered = range.delivered;
     if let Some(members) = with_delivered(t, report, members, &delivered) {
         archive_resolved(t, log, report, c, item, &members);
     }
@@ -428,12 +429,24 @@ fn round_item(m: &Item, release: &Item, sub_items: &[String]) -> bool {
             ))
 }
 
-/// The release item's children and every item carrying the release label.
-fn members(t: &Tick, item: &Item, label: &str) -> TResult<Vec<Item>> {
+/// The release item's children, every item carrying the release label, and
+/// every ticket whose PR is in the released range. The range is the durable
+/// fact: a missing label must never strand a shipped ticket in To Deploy.
+fn members<'a>(
+    t: &Tick,
+    item: &Item,
+    label: &str,
+    shipped: impl Iterator<Item = &'a String>,
+) -> TResult<Vec<Item>> {
     let mut out = super::release::release_children(t, item)?;
     for i in t.tracker.list_by_label(label)? {
         if i.key != item.key && !out.iter().any(|o| o.key == i.key) {
             out.push(i);
+        }
+    }
+    for key in shipped {
+        if key != &item.key && !out.iter().any(|o| &o.key == key) {
+            out.push(t.tracker.get(key)?);
         }
     }
     Ok(out)

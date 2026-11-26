@@ -24,7 +24,7 @@ use crate::method::review;
 use crate::method::texts;
 use crate::method::ticket_state::{self, Facts, OpenPr, Why};
 use crate::method::vocabulary::Status;
-use crate::tracker::Item;
+use crate::tracker::{Item, PrStatus};
 
 use super::identity;
 use super::link::{self, Linked};
@@ -317,16 +317,18 @@ fn merged(t: &Tick, log: &mut ActionLog, report: &mut Report, open: &OpenPrs) {
     }
 }
 
-/// The tickets left In Progress past a merge (spec 04 §10): merged while a
-/// box was open, or sent back by the closure, their last box checked since.
-/// Nothing else moves them, so each tick settles them by the state rules:
+/// The tickets left In Progress past a merge (spec 04 §10), and the tickets
+/// stranded in To Deploy after their release closed: merged while a box was
+/// open, sent back by the closure, or missed by an older closure because its
+/// release label was absent. Nothing else moves them, so each tick settles
+/// them by the state rules:
 /// with no PR of theirs open, every box outside `## Post deploy` checked and
 /// a merge recorded, To Deploy while their last merged PR waits for a
 /// release; once a release tag holds it, judged as the closure judges, Done
 /// or Post Deploy (never To Deploy: no later closure would judge them); with
 /// nothing to deploy, as at a merge. A box still open leaves the ticket
 /// where it is, and says nothing. The reads go from the cheapest: the
-/// tickets In Progress, their PRs and boxes as the tick already has them,
+/// tickets In Progress and To Deploy, their PRs and boxes as the tick already has them,
 /// then the comments of the complete ones, then GitHub only for one about
 /// to move.
 fn settle_merged(t: &Tick, log: &mut ActionLog, report: &mut Report, open: &OpenPrs) {
@@ -334,17 +336,20 @@ fn settle_merged(t: &Tick, log: &mut ActionLog, report: &mut Report, open: &Open
     if !open.known {
         return;
     }
-    let items = match t.tracker.list_by_status(Status::InProgress) {
-        Ok(i) => i,
-        Err(e) => {
-            t.unreadable(
-                report,
-                "merged tickets",
-                format!("the items in {}: {e}", Status::InProgress),
-            );
-            return;
+    let mut items = Vec::new();
+    for status in [Status::InProgress, Status::ToDeploy] {
+        match t.tracker.list_by_status(status) {
+            Ok(mut found) => items.append(&mut found),
+            Err(e) => {
+                t.unreadable(
+                    report,
+                    "merged tickets",
+                    format!("the items in {status}: {e}"),
+                );
+                return;
+            }
         }
-    };
+    }
     for ticket in items {
         if !t.in_time() {
             report.out_of_time = true;
@@ -393,6 +398,18 @@ fn settle_merged_one(
     let Some(pr_url) = merge::latest_merge(&comments) else {
         return;
     };
+    let recorded_release = if ticket.state.status == Some(Status::ToDeploy) {
+        match t.tracker.pr_status(&ticket.key, &pr_url) {
+            Ok(Some(PrStatus::Released(tag))) => Some(tag),
+            Ok(_) => return,
+            Err(e) => {
+                t.unreadable(report, &object, format!("the PR's recorded status: {e}"));
+                return;
+            }
+        }
+    } else {
+        None
+    };
     let (to, why, shipped) = if merge::nothing_to_deploy(t, ticket) {
         match merge::delivered(t, ticket, Status::ToDeploy, why) {
             Ok((to, why)) => (to, Judged::State(why), None),
@@ -402,7 +419,10 @@ fn settle_merged_one(
             }
         }
     } else {
-        match shipped_in(t, &pr_url) {
+        match recorded_release
+            .map(|tag| Ok(Some(tag)))
+            .unwrap_or_else(|| shipped_in(t, &pr_url))
+        {
             Ok(None) => (Status::ToDeploy, Judged::State(why), None),
             Ok(Some(tag)) => match judge_shipped(t, ticket, &tag) {
                 Ok((to, why)) => (to, why, Some(tag)),

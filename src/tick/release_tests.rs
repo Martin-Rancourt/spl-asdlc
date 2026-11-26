@@ -2455,6 +2455,27 @@ fn a_reopened_ticket_is_said_once_while_the_closure_retries() {
 }
 
 #[test]
+fn a_shipped_ticket_without_its_release_label_is_closed_from_the_range() {
+    let w = World::new();
+    w.tick();
+    w.tracker.remove_label("ABC-5", LABEL).unwrap();
+    assert!(
+        !w.tracker.item("ABC-5").labels.contains(&LABEL.to_string()),
+        "the regression starts with the release label missing"
+    );
+
+    publish(&w);
+    let r = w.tick();
+
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.tracker.item("ABC-5").state.status,
+        Some(Status::Done),
+        "the PR in the released range is the membership fact"
+    );
+}
+
+#[test]
 fn a_merged_pr_ships_while_its_ticket_is_still_in_progress() {
     // BR-ASDLC-005: every merged PR is deployable; its ticket, back In
     // Progress for the boxes a later PR delivers, is embarked and left alone.
