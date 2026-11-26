@@ -7,8 +7,13 @@ name: asdlc-release-cut
 # from the commits since the last release along the git graph, written into
 # the version files, and the CHANGELOG section that is the release notes),
 # commits `chore(release): v<X.Y.Z>`, and pushes the branch and its first
-# candidate tag, rc.1, at once. `candidate` tags the next RC on the one
-# release branch in flight, whose version is already committed. Nothing
+# candidate tag, rc.1, at once. `candidate` tags the next RC on the release
+# branch it is dispatched on, whose version is already committed. `patch`
+# (ASDLC-MG26) opens a patch's release branch from the tag of the release in
+# production (the release tag of `version` minus one patch), cherry-picks
+# with `-x` the merge commits of `pulls` (PRs already merged into the default
+# branch), prepares `version` on it and pushes it with its rc.1, beside any
+# cycle in flight; a conflict refuses the patch. Nothing
 # else: no tracker, no notification, no wait for another workflow's run (on
 # one runner, a job that waits holds the runner the awaited run needs), no
 # wait for the gate, no merge. The tag push starts the gate.
@@ -26,18 +31,20 @@ name: asdlc-release-cut
 # The caller owns the trigger, the concurrency group and the job id. The
 # bridge dispatches the caller by its file name (`[release] cut_workflow`,
 # default `release-cut.yml`) with ONE input, `action`, on the default branch
-# for `open` and on the release branch for `candidate`: every other dispatch
-# input must have a default. Example caller (in full: docs/setup/examples/):
+# for `open` and `patch` and on the release branch for `candidate`: every
+# other dispatch input must have a default. `release patch` adds `version`
+# and `pulls`. Example caller (in full: docs/setup/examples/):
 #
 #   name: release-cut
 #   on:
 #     workflow_dispatch:
 #       inputs:
-#         action: {type: choice, options: [open, candidate], default: open, required: true}
+#         action: {type: choice, options: [open, candidate, patch], default: open, required: true}
 #         class: {type: string, default: '', description: 'routine, sensible, or empty to compute it'}
 #         routine_because: {type: string, default: ''}
 #         main_merge_because: {type: string, default: ''}
-#         version: {type: string, default: '', description: 'X.Y.Z to force on open, or empty to compute it'}
+#         version: {type: string, default: '', description: 'X.Y.Z to force on open, or empty to compute it; the patch version on patch'}
+#         pulls: {type: string, default: '', description: 'patch only: the merged PRs it carries, n[,n...]'}
 #         dry_run: {type: boolean, default: false}
 #   concurrency: {group: release-cut, cancel-in-progress: false}
 #   permissions: {contents: read}
@@ -50,6 +57,7 @@ name: asdlc-release-cut
 #         routine-because: ${{ inputs.routine_because }}
 #         main-merge-because: ${{ inputs.main_merge_because }}
 #         version: ${{ inputs.version }}
+#         pulls: ${{ inputs.pulls }}
 #         dry-run: ${{ inputs.dry_run == true }}
 #         candidate-tag: acme-v{version}-rc.{rc}
 #         release-tag: acme-v{version}
@@ -65,7 +73,7 @@ on:
   workflow_call:
     inputs:
       action:
-        description: '`open` (a new release branch from the default branch, prepared, with its first candidate) or `candidate` (the next RC on the release branch in flight).'
+        description: '`open` (a new release branch from the default branch, prepared, with its first candidate), `candidate` (the next RC on the release branch dispatched on) or `patch` (a release branch from the tag in production, the merged PRs `pulls` cherry-picked on it, prepared at `version`, with its first candidate).'
         type: string
         required: true
       candidate-tag:
@@ -101,7 +109,11 @@ on:
         type: string
         default: ''
       version:
-        description: '`open` only: `X.Y.Z` to force instead of the computed version, passed to `release prepare --version`; empty computes it.'
+        description: '`open`: `X.Y.Z` to force instead of the computed version, passed to `release prepare --version`; empty computes it. `patch`: the patch version, required; the release in production is its previous patch.'
+        type: string
+        default: ''
+      pulls:
+        description: '`patch` only: the numbers of the PRs merged into the default branch it carries, comma-separated.'
         type: string
         default: ''
       dry-run:
@@ -186,6 +198,7 @@ jobs:
           CLASS: ${{ inputs.class }}
           ROUTINE_BECAUSE: ${{ inputs.routine-because }}
           FORCE_VERSION: ${{ inputs.version }}
+          PULLS: ${{ inputs.pulls }}
           CANDIDATE_TAG: ${{ inputs.candidate-tag }}
           RELEASE_TAG: ${{ inputs.release-tag }}
           SPL_REPOSITORY: ${{ inputs.spl-asdlc-repository }}
@@ -203,8 +216,9 @@ jobs:
           }
           case "$ACTION" in
             open) echo "Opening a cycle: ${BRANCH_PREFIX}<YYYY-MM-DD-HH-MM>-utc from $DEFAULT_BRANCH, prepared by spl-asdlc ($SPL_VERSION), with its first candidate." ;;
-            candidate) echo "Cutting the next candidate on the release branch in flight." ;;
-            *) refuse "Unknown action '$ACTION'. Expected 'open' or 'candidate'." ;;
+            candidate) echo "Cutting the next candidate on the release branch dispatched on." ;;
+            patch) echo "Patching the release in production: ${BRANCH_PREFIX}<YYYY-MM-DD-HH-MM>-utc from its tag, carrying the PRs ${PULLS:-?}, with its first candidate." ;;
+            *) refuse "Unknown action '$ACTION'. Expected 'open', 'candidate' or 'patch'." ;;
           esac
           # An unknown class must never become "cut with no class".
           case "$CLASS" in
@@ -215,10 +229,21 @@ jobs:
           if [ -n "${ROUTINE_BECAUSE//[[:space:]]/}" ] && [ "$CLASS" != routine ]; then
             refuse "routine-because only applies to the class 'routine' (the class is '${CLASS:-computed}')."
           fi
-          # A forced version opens a cycle; a candidate takes the one committed.
-          if [ -n "${FORCE_VERSION:-}" ]; then
+          # A forced version opens a cycle; a candidate takes the one
+          # committed; a patch names its version, the next patch of the
+          # release in production.
+          if [ "$ACTION" = patch ]; then
+            if ! [[ "${FORCE_VERSION:-}" =~ ^[0-9]+\.[0-9]+\.[1-9][0-9]*$ ]]; then
+              refuse "A patch names its version X.Y.Z with Z of at least 1 (the release in production is X.Y.Z-1); got '${FORCE_VERSION:-}'."
+            fi
+            if ! [[ "${PULLS:-}" =~ ^[1-9][0-9]*(,[1-9][0-9]*)*$ ]]; then
+              refuse "A patch names the PRs it carries, n[,n...]; got '${PULLS:-}'."
+            fi
+          elif [ -n "${PULLS:-}" ]; then
+            refuse "pulls only applies to 'patch'."
+          elif [ -n "${FORCE_VERSION:-}" ]; then
             if [ "$ACTION" != open ]; then
-              refuse "version only applies to 'open': a candidate takes the version committed on its release branch."
+              refuse "version only applies to 'open' and 'patch': a candidate takes the version committed on its release branch."
             elif ! [[ "$FORCE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
               refuse "version '$FORCE_VERSION' is not X.Y.Z."
             fi
@@ -327,6 +352,7 @@ jobs:
         id: cycle
         env:
           DISPATCHED_REF: ${{ github.ref_name }}
+          FORCE_VERSION: ${{ inputs.version }}
         shell: bash
         run: |
           set -euo pipefail
@@ -376,14 +402,50 @@ jobs:
             # UTC to the minute: cycles stay distinguishable, and UTC never
             # repeats a minute at a daylight-saving fold.
             branch="${BRANCH_PREFIX}$(date -u +%Y-%m-%d-%H-%M)-utc"
+          elif [ "$ACTION" = patch ]; then
+            # A patch starts from the tag of the release in production, never
+            # from the default branch, beside any cycle in flight: that cycle
+            # is untouched until the patch is published.
+            IFS=. read -r major minor patch <<< "$FORCE_VERSION"
+            production="$(printf '%s' "$RELEASE_TAG" | sed -e "s/{version}/$major.$minor.$((patch - 1))/")"
+            released="$(printf '%s' "$RELEASE_TAG" | sed -e "s/{version}/$FORCE_VERSION/")"
+            if ! git rev-parse --quiet --verify "refs/tags/$production^{commit}" > /dev/null; then
+              refuse "No tag $production: a patch $FORCE_VERSION starts from the release in production $production."
+            fi
+            if git rev-parse --quiet --verify "refs/tags/$released" > /dev/null; then
+              refuse "$FORCE_VERSION is already published ($released)."
+            fi
+            first="$(printf '%s' "$CANDIDATE_TAG" | sed -e "s/{version}/$FORCE_VERSION/" -e "s/{rc}/1/")"
+            if git rev-parse --quiet --verify "refs/tags/$first" > /dev/null; then
+              refuse "$FORCE_VERSION already has a cycle ($first): finish or abandon it before patching $production."
+            fi
+            branch="${BRANCH_PREFIX}$(date -u +%Y-%m-%d-%H-%M)-utc"
+            for name in "${names[@]}"; do
+              if [ "$name" = "$branch" ]; then
+                refuse "$branch is already in flight (a cycle opened this minute): dispatch the patch again in a minute."
+              fi
+            done
+            git checkout --quiet -B "$branch" "refs/tags/$production^{commit}"
+            head="$(git rev-parse HEAD)"
+            echo "production=$production" >> "$out"
           else
             if [ "${#names[@]}" -eq 0 ]; then
               refuse "No release branch is in flight on origin: there is nothing to cut a candidate on. Open a cycle with the action 'open'."
             fi
-            if [ "${#names[@]}" -gt 1 ]; then
-              refuse "Several release branches are in flight (${names[*]}): the one-cycle invariant is broken. Delete the abandoned one by hand, then cut again."
+            # Several cycles may be in flight (a patch beside a release): a
+            # candidate is cut on the one it is dispatched on.
+            branch=''
+            for name in "${names[@]}"; do
+              if [ "$name" = "$DISPATCHED_REF" ]; then
+                branch="$name"
+              fi
+            done
+            if [ -z "$branch" ]; then
+              if [ "${#names[@]}" -gt 1 ]; then
+                refuse "Several release branches are in flight (${names[*]}): dispatch the cut on the one to cut, not on '$DISPATCHED_REF': gh workflow run <the cut workflow> --ref <branch> -f action=candidate"
+              fi
+              branch="${names[0]}"
             fi
-            branch="${names[0]}"
             stamp="${branch#"$BRANCH_PREFIX"}"
             if ! [[ "$stamp" =~ $stamp_re ]]; then
               refuse "'$branch' is not a release branch (${BRANCH_PREFIX}<YYYY-MM-DD-HH-MM>-utc)."
@@ -412,6 +474,80 @@ jobs:
             echo "proceed=true"
           } >> "$out"
 
+      # A patch only carries PRs already merged into the default branch,
+      # through their normal review: each one's merge commit, in the order
+      # the default branch took them, is cherry-picked with `-x`, so the
+      # bridge maps the copy back to its PR and its ticket. Nothing is pushed
+      # here; a conflict refuses the patch.
+      - name: Cherry-pick the patch's PRs
+        id: pick
+        if: inputs.action == 'patch' && steps.cycle.outputs.proceed == 'true'
+        env:
+          PULLS: ${{ inputs.pulls }}
+          PRODUCTION: ${{ steps.cycle.outputs.production }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${GITHUB_OUTPUT:-/dev/stdout}"
+          refuse() {
+            echo "::error title=Patch refused::$1"
+            exit 1
+          }
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          if ! git fetch --quiet --no-tags origin "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"; then
+            refuse "Could not read origin/$DEFAULT_BRANCH: whether each PR is merged into it cannot be known."
+          fi
+          git rev-list --reverse --topo-order "refs/remotes/origin/$DEFAULT_BRANCH" > "$work/order"
+          : > "$work/picks"
+          IFS=, read -ra numbers <<< "$PULLS"
+          for n in "${numbers[@]}"; do
+            if ! gh api "repos/$GH_REPO/pulls/$n" > "$work/pr"; then
+              refuse "Could not read PR #$n."
+            fi
+            merged="$(jq -r '.merged' "$work/pr")"
+            base="$(jq -r '.base.ref' "$work/pr")"
+            sha="$(jq -r '.merge_commit_sha // ""' "$work/pr")"
+            if [ "$merged" != true ]; then
+              refuse "#$n is not merged: a patch only carries PRs already merged, through their normal review."
+            fi
+            if [ "$base" != "$DEFAULT_BRANCH" ]; then
+              refuse "#$n was merged into $base, not $DEFAULT_BRANCH."
+            fi
+            if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || ! git merge-base --is-ancestor "$sha" "refs/remotes/origin/$DEFAULT_BRANCH" 2> /dev/null; then
+              refuse "The merge commit of #$n (${sha:-none}) is not on origin/$DEFAULT_BRANCH."
+            fi
+            if git merge-base --is-ancestor "$sha" HEAD; then
+              refuse "#$n is already in production ($PRODUCTION)."
+            fi
+            position="$(grep -n -x -F "$sha" "$work/order" | cut -d: -f1)"
+            printf '%012d %s %s\n' "$position" "$sha" "$n" >> "$work/picks"
+          done
+          sort -u "$work/picks" > "$work/sorted"
+          committer="${APP_SLUG}[bot]"
+          while read -r _ sha n; do
+            args=(cherry-pick -x)
+            # A merge commit is taken as the change it brought to the
+            # default branch: its first parent is the mainline.
+            if [ "$(git rev-list --parents -n 1 "$sha" | wc -w)" -gt 2 ]; then
+              args+=(-m 1)
+            fi
+            if ! git -c user.name="$committer" -c user.email="${committer}@users.noreply.github.com" \
+              "${args[@]}" "$sha" > "$work/picked" 2>&1; then
+              sed 's/^/  /' "$work/picked"
+              git cherry-pick --abort 2> /dev/null || true
+              refuse "#$n ($sha) does not apply on $PRODUCTION: a patch is made of PRs that apply cleanly on the release in production. Nothing was pushed."
+            fi
+            echo "Picked #$n: $(git log -1 --format='%h %s')"
+          done < "$work/sorted"
+          pulls="$(awk '{ print $3 }' "$work/sorted" | paste -sd, -)"
+          {
+            echo "pulls=$pulls"
+            echo "proceed=true"
+          } >> "$out"
+
       # The App token above is scoped to this repository. The method's
       # releases may live in a private repository the same App is installed
       # on: a second token, scoped to it, reads them. When the App is not
@@ -419,7 +555,7 @@ jobs:
       # this repository's App token, which reads public releases.
       - name: Name the method's repository
         id: method-repo
-        if: inputs.action == 'open' && steps.cycle.outputs.proceed == 'true'
+        if: (inputs.action == 'open' && steps.cycle.outputs.proceed == 'true') || steps.pick.outputs.proceed == 'true'
         env:
           SPL_REPOSITORY: ${{ inputs.spl-asdlc-repository }}
         shell: bash
@@ -432,7 +568,7 @@ jobs:
           } >> "$out"
       - name: Mint a token that reads the method's releases
         id: method-token
-        if: inputs.action == 'open' && steps.cycle.outputs.proceed == 'true'
+        if: (inputs.action == 'open' && steps.cycle.outputs.proceed == 'true') || steps.pick.outputs.proceed == 'true'
         continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
@@ -446,7 +582,7 @@ jobs:
       # the release's SHA256SUMS (docs/setup/bridge.md, "The binary").
       - name: Fetch spl-asdlc
         id: binary
-        if: inputs.action == 'open' && steps.cycle.outputs.proceed == 'true'
+        if: (inputs.action == 'open' && steps.cycle.outputs.proceed == 'true') || steps.pick.outputs.proceed == 'true'
         env:
           SPL_REPOSITORY: ${{ inputs.spl-asdlc-repository }}
           SPL_VERSION: ${{ inputs.spl-asdlc-version }}
@@ -551,7 +687,7 @@ jobs:
           work="$(mktemp -d)"
           trap 'rm -rf "$work"' EXIT
           if ! git cat-file -e "HEAD:$CONFIG_FILE" 2> /dev/null; then
-            refuse "$DEFAULT_BRANCH carries no $CONFIG_FILE: release prepare reads the release's shape there."
+            refuse "$(git rev-parse --abbrev-ref HEAD) carries no $CONFIG_FILE: release prepare reads the release's shape there."
           fi
           args=(release prepare --file "$CONFIG_FILE" --repository "$GH_REPO" --notes "$work/notes.md")
           if [ -n "${FORCE_VERSION:-}" ]; then
@@ -559,8 +695,9 @@ jobs:
           fi
           if [ "$DRY_RUN" = true ]; then
             args+=(--dry-run)
-          else
+          elif [ "$ACTION" = open ]; then
             # -B: a leftover local branch of the same minute is overwritten.
+            # A patch is already on its branch, from the tag in production.
             git checkout --quiet -B "$BRANCH"
           fi
           if ! "$BIN" "${args[@]}" > "$work/prepared"; then
@@ -650,6 +787,8 @@ jobs:
           ROUTINE_BECAUSE: ${{ inputs.routine-because }}
           MAIN_MERGE_BECAUSE: ${{ inputs.main-merge-because }}
           CONFIG_FILE: ${{ inputs.config-file }}
+          PRODUCTION: ${{ steps.cycle.outputs.production }}
+          PICKED: ${{ steps.pick.outputs.pulls }}
         shell: bash
         run: |
           set -euo pipefail
@@ -881,6 +1020,11 @@ jobs:
               echo "Release-Main-Merge-Commits: $merged_in"
               echo "Release-Main-Merge-Justification: $main_because"
             fi
+            # A patch names the release it patches and the PRs it carries.
+            if [ "$ACTION" = patch ]; then
+              echo "Release-Patch-From: ${PRODUCTION:-}"
+              echo "Release-Patch-Pulls: ${PICKED:-}"
+            fi
           } > "$work/trailers"
 
           echo "Candidate: $tag"
@@ -910,7 +1054,7 @@ jobs:
             echo "$delimiter"
           } >> "$out"
           if [ "$DRY_RUN" = true ]; then
-            if [ "$ACTION" = open ]; then
+            if [ "$ACTION" != candidate ]; then
               echo "(dry run: $BRANCH not created, nothing committed, tagged or pushed)"
             else
               echo "(dry run: nothing tagged, nothing pushed)"
@@ -918,7 +1062,7 @@ jobs:
           fi
 
       # Tag locally, push last: nothing irreversible happens before the push.
-      # For `open`, the new branch and its first candidate go in one atomic
+      # For `open` and `patch`, the new branch and its first candidate go in one atomic
       # push: a cycle never exists without its rc.1, nor rc.1 without its
       # branch.
       - name: Tag and push the candidate
@@ -952,7 +1096,7 @@ jobs:
             tag -a "$TAG" -m "Release candidate $TAG" -m "$TRAILERS"
           refs=("refs/tags/$TAG")
           what="$TAG"
-          if [ "$ACTION" = open ]; then
+          if [ "$ACTION" != candidate ]; then
             refs=("refs/heads/$BRANCH" "${refs[@]}")
             what="$BRANCH and $TAG"
           fi
@@ -963,7 +1107,7 @@ jobs:
             echo "::error title=Release cut failed::Could not push $what; nothing of it reached origin."
             exit 1
           fi
-          if [ "$ACTION" = open ]; then
+          if [ "$ACTION" != candidate ]; then
             echo "Pushed $BRANCH and its first candidate $TAG: the gate starts on it."
             echo "Every later candidate is a dispatch on $BRANCH (never on $DEFAULT_BRANCH):"
             echo "  gh workflow run <the cut workflow> --ref $BRANCH -f action=candidate"
@@ -1016,7 +1160,9 @@ jobs:
           {
             echo "## Release cut ($ACTION)"
             echo
-            if [ -n "$PUSHED" ] && [ "$ACTION" = open ]; then
+            if [ -n "$PUSHED" ] && [ "$ACTION" = patch ]; then
+              echo "Opened the patch \`$BRANCH\` from the release in production, prepared \`$VERSION\` on it, and pushed its first candidate \`$PUSHED\`."
+            elif [ -n "$PUSHED" ] && [ "$ACTION" = open ]; then
               echo "Opened \`$BRANCH\`, prepared \`$VERSION\` on it, and pushed its first candidate \`$PUSHED\`."
             elif [ -n "$PUSHED" ]; then
               echo "Pushed \`$PUSHED\` on \`$BRANCH\`."

@@ -734,7 +734,8 @@ fn the_callers_pass_the_tag_patterns_of_the_configuration_template() {
 
 #[test]
 fn the_cut_is_dispatched_with_one_input() {
-    // The bridge dispatches it with `action` only: every other input has a default.
+    // The bridge dispatches it with `action` (and `release patch` with
+    // `version` and `pulls`): every other input has a default.
     let cut = example("release-cut.yml");
     let inputs = cut["on"]["workflow_dispatch"]["inputs"].as_hash().unwrap();
     for (k, v) in inputs {
@@ -746,7 +747,7 @@ fn the_cut_is_dispatched_with_one_input() {
                 .iter()
                 .filter_map(Yaml::as_str)
                 .collect();
-            assert_eq!(options, ["open", "candidate"]);
+            assert_eq!(options, ["open", "candidate", "patch"]);
         } else {
             assert!(!v["default"].is_badvalue(), "input {k} has no default");
             assert_ne!(v["required"].as_bool(), Some(true), "input {k} is required");
