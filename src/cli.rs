@@ -94,11 +94,25 @@ enum ReleaseCommand {
     Status {
         #[arg(long)]
         json: bool,
+        /// The release branch of the cycle to read, while several cycles
+        /// are in flight (a patch beside an open cycle).
+        #[arg(long)]
+        branch: Option<String>,
     },
     /// Dispatch the cut workflow: the next candidate, or a new cycle.
     Cut {
-        #[arg(long)]
+        #[arg(long, conflicts_with = "branch")]
         open: bool,
+        /// The release branch to cut the next candidate on, while several
+        /// cycles are in flight (a patch beside an open cycle).
+        #[arg(long)]
+        branch: Option<String>,
+    },
+    /// Start a patch release from the published release, carrying merged PRs.
+    Patch {
+        /// A PR already merged into the default branch; repeat for several PRs.
+        #[arg(long = "pr", required = true, value_delimiter = ',')]
+        pulls: Vec<u64>,
     },
     /// Prepare the next release in a checkout of the release branch: compute
     /// its version from the commits since the last release, write it into the
@@ -136,7 +150,12 @@ enum ReleaseCommand {
         reason: String,
     },
     /// Abandon the cycle in flight.
-    Abandon,
+    Abandon {
+        /// The release branch of the cycle to abandon, required while
+        /// several cycles are in flight (a patch beside an open cycle).
+        #[arg(long)]
+        branch: Option<String>,
+    },
     /// Retract a release whose publication failed before anything was
     /// deployed: delete its GitHub release and its tag, say so on the release
     /// issue; the next candidate takes the version. Refused when a deploy or
@@ -535,9 +554,13 @@ fn release(
         }
     };
     let outcome = match command {
-        ReleaseCommand::Status { json } => {
+        ReleaseCommand::Status { json, branch } => {
             use crate::embed::ReleaseStatus;
-            return match project.release_status() {
+            let status = match branch {
+                Some(b) => project.release_status_on(&b),
+                None => project.release_status(),
+            };
+            return match status {
                 Ok(status) if json => {
                     let _ = writeln!(out, "{}", status.as_json());
                     status_code(&status)
@@ -578,14 +601,21 @@ fn release(
                 }
             };
         }
-        ReleaseCommand::Cut { open } => project.cut(open, &who()),
+        ReleaseCommand::Cut { open, branch } => match branch {
+            Some(b) => project.cut_on(&b, &who()),
+            None => project.cut(open, &who()),
+        },
+        ReleaseCommand::Patch { pulls } => project.patch(&pulls, &who()),
         ReleaseCommand::Prepare { .. } => unreachable!("prepared above, with no connection"),
         ReleaseCommand::Requalify {
             ticket,
             blocking,
             reason,
         } => project.requalify(&ticket, blocking, &reason, &who()),
-        ReleaseCommand::Abandon => project.abandon(&who()),
+        ReleaseCommand::Abandon { branch } => match branch {
+            Some(b) => project.abandon_on(&b, &who()),
+            None => project.abandon(&who()),
+        },
         ReleaseCommand::Retract { tag } => project.retract(&tag, &who()),
     };
     if outcome.done {

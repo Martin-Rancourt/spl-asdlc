@@ -9,6 +9,12 @@ name: release-cut
 # input has a default. Run by hand, `dry_run` prints the plan and pushes
 # nothing, and `version` forces the version `open` prepares.
 #
+# `patch` (dispatched by `spl-asdlc release patch --pr <n>`, on the default
+# branch) opens a release branch from the tag of the release in production,
+# cherry-picks the merge commits of `pulls` (PRs merged into the default
+# branch), prepares `version` (the next patch) and pushes it with its rc.1,
+# beside any cycle in flight.
+#
 # `open` creates the release branch, prepares the release on it with the
 # published `spl-asdlc` binary of the channel `spl-asdlc-version` names
 # (`spl-asdlc release prepare`: the version, the version files and the
@@ -24,7 +30,7 @@ on:
       action:
         description: '`open` a cycle from the default branch, or cut the next `candidate` on the release branch.'
         type: choice
-        options: [open, candidate]
+        options: [open, candidate, patch]
         default: open
         required: true
       class:
@@ -41,7 +47,11 @@ on:
         type: string
         default: ''
       version:
-        description: '`open` only: the version `X.Y.Z` to force; empty computes it from the commits since the last release.'
+        description: '`open`: the version `X.Y.Z` to force; empty computes it from the commits since the last release. `patch`: the patch version.'
+        type: string
+        default: ''
+      pulls:
+        description: '`patch` only: the PRs merged into the default branch it carries, `n[,n...]`.'
         type: string
         default: ''
       dry_run:
@@ -67,6 +77,7 @@ jobs:
       routine-because: ${{ inputs.routine_because }}
       main-merge-because: ${{ inputs.main_merge_because }}
       version: ${{ inputs.version }}
+      pulls: ${{ inputs.pulls }}
       dry-run: ${{ inputs.dry_run == true }}
       candidate-tag: acme-v{version}-rc.{rc}
       release-tag: acme-v{version}

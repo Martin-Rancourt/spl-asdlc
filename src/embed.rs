@@ -263,9 +263,30 @@ impl<'a> Project<'a> {
         verbs::release_status(&t).map(ReleaseStatus::of)
     }
 
+    /// `release status --branch <b>`: the cycle in flight on `branch` and
+    /// its GO, for a cycle among several (ASDLC-MG26).
+    pub fn release_status_on(&self, branch: &str) -> Result<ReleaseStatus, String> {
+        let signal = crate::job::channels(self.config, self.env);
+        let t = self.tick(signal.as_ref())?;
+        verbs::release_status_on(&t, Some(branch)).map(ReleaseStatus::of)
+    }
+
     /// `release cut [--open]`, by `who`.
     pub fn cut(&self, open: bool, who: &str) -> Outcome {
         self.gesture("release cut", |t, log| verbs::cut(t, log, open, who))
+    }
+
+    /// `release cut --branch <b>`, by `who`: the next candidate on `branch`,
+    /// for a cycle among several in flight (ASDLC-MG26).
+    pub fn cut_on(&self, branch: &str, who: &str) -> Outcome {
+        self.gesture("release cut", |t, log| {
+            verbs::cut_on(t, log, false, Some(branch), who)
+        })
+    }
+
+    /// Start a patch cycle carrying PRs already merged into the default branch.
+    pub fn patch(&self, pulls: &[u64], who: &str) -> Outcome {
+        self.gesture("release patch", |t, log| verbs::patch(t, log, pulls, who))
     }
 
     /// `release requalify <ticket> --blocking <b> --reason <r>`, by `who`.
@@ -278,6 +299,14 @@ impl<'a> Project<'a> {
     /// `release abandon`, by `who`.
     pub fn abandon(&self, who: &str) -> Outcome {
         self.gesture("release abandon", |t, log| verbs::abandon(t, log, who))
+    }
+
+    /// `release abandon --branch <b>`, by `who`: the cycle on `branch`, for
+    /// a cycle among several (ASDLC-MG26).
+    pub fn abandon_on(&self, branch: &str, who: &str) -> Outcome {
+        self.gesture("release abandon", |t, log| {
+            verbs::abandon_on(t, log, Some(branch), who)
+        })
     }
 
     /// `release retract <tag>`, by `who`.

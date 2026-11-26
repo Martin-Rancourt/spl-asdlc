@@ -7,12 +7,12 @@ use serde_json::json;
 
 use crate::action_log::ActionLog;
 use crate::config::Release;
-use crate::github::{CompareStatus, MergeMethod};
+use crate::github::{CompareStatus, MergeMethod, PrState};
 use crate::method::release::findings::{self, RequalifyStep};
 use crate::method::release::go::{AngleState, GoDecision, VerdictState};
 use crate::method::release::prs;
 use crate::method::release::report;
-use crate::method::release::shape::Shape;
+use crate::method::release::shape::{Shape, Version};
 use crate::method::vocabulary::{self, Status};
 use crate::tick::merge::for_tracker;
 use crate::tick::release::{self, Candidate};
@@ -34,8 +34,43 @@ pub fn release_cycle<'a>(t: &Tick<'a>) -> &'a Release {
 
 /// Read the cycle in flight; nothing is created.
 pub fn cycle(t: &Tick) -> Result<Cycle, String> {
+    cycle_on(t, None)
+}
+
+/// Read the cycle in flight on `branch`, the newest cycle when none is
+/// named; nothing is created. A named branch selects among the newest cycle
+/// and the patches in flight beside it (ASDLC-MG26); a branch that holds
+/// none of their candidates is refused.
+pub fn cycle_on(t: &Tick, branch: Option<&str>) -> Result<Cycle, String> {
     let shape = Shape::of(&t.config.product.name, release_cycle(t));
-    let (mut candidate, _) = release::newest(t, &shape)?.ok_or("no release candidate tag")?;
+    let (newest, tags) = release::newest(t, &shape)?.ok_or("no release candidate tag")?;
+    let mut candidate = match branch {
+        None => newest,
+        Some(b) => {
+            let mut cycles = release::patches_in_flight(t, &shape, &tags, &newest)?;
+            cycles.insert(0, newest);
+            let mut held = Vec::new();
+            let mut found = None;
+            for c in cycles {
+                let on = release::release_branch(t, &shape, &c).ok();
+                if on.as_deref() == Some(b) {
+                    found = Some(c);
+                    break;
+                }
+                held.extend(on);
+            }
+            found.ok_or_else(|| {
+                format!(
+                    "{b} holds no cycle in flight: {}",
+                    if held.is_empty() {
+                        "no release branch holds a candidate".to_string()
+                    } else {
+                        held.join(", ")
+                    }
+                )
+            })?
+        }
+    };
     let item = release::find_release_item(t, &shape, candidate.version)?
         .ok_or("no release item yet: the next tick creates it")?;
     candidate.first_rc = release::cycle_start(t, &shape, candidate.version, candidate.rc)?;
@@ -64,10 +99,18 @@ pub enum CycleStatus {
 /// newest candidate's release is published and its cycle closed, that no
 /// cycle is in flight and which release closed the last one.
 pub fn release_status(t: &Tick) -> Result<CycleStatus, String> {
-    if let Some((release_tag, item)) = closed_cycle(t)? {
-        return Ok(CycleStatus::Over { release_tag, item });
+    release_status_on(t, None)
+}
+
+/// `release status [--branch <b>]`: as [`release_status`], for the cycle on
+/// `branch` when one is named (a patch beside an open cycle, ASDLC-MG26).
+pub fn release_status_on(t: &Tick, branch: Option<&str>) -> Result<CycleStatus, String> {
+    if branch.is_none() {
+        if let Some((release_tag, item)) = closed_cycle(t)? {
+            return Ok(CycleStatus::Over { release_tag, item });
+        }
     }
-    let (cycle, decision) = status(t)?;
+    let (cycle, decision) = status_on(t, branch)?;
     Ok(CycleStatus::InFlight(Box::new(cycle), Box::new(decision)))
 }
 
@@ -96,9 +139,15 @@ fn closed_cycle(t: &Tick) -> Result<Option<(String, String)>, String> {
 
 /// The GO of the cycle in flight and its inputs, read-only.
 pub fn status(t: &Tick) -> Result<(Cycle, GoDecision), String> {
+    status_on(t, None)
+}
+
+/// The GO of the cycle in flight on `branch` (the newest cycle when none is
+/// named) and its inputs, read-only.
+pub fn status_on(t: &Tick, branch: Option<&str>) -> Result<(Cycle, GoDecision), String> {
     let release_cfg = release_cycle(t);
     let record = &release_cfg.record;
-    let cy = cycle(t)?;
+    let cy = cycle_on(t, branch)?;
     let branch = cy
         .branch
         .clone()
@@ -179,6 +228,20 @@ pub fn status(t: &Tick) -> Result<(Cycle, GoDecision), String> {
 /// cycle from the default branch or for the next candidate on the release
 /// branch.
 pub fn cut(t: &Tick, log: &mut ActionLog, open: bool, who: &str) -> Result<String, String> {
+    cut_on(t, log, open, None, who)
+}
+
+/// `release cut [--open] [--branch <b>]` by `who`: as [`cut`], the next
+/// candidate on `branch` when one is named. A named branch is needed only
+/// while several cycles are in flight (a patch beside an open cycle,
+/// ASDLC-MG26), and must be one of their release branches.
+pub fn cut_on(
+    t: &Tick,
+    log: &mut ActionLog,
+    open: bool,
+    branch: Option<&str>,
+    who: &str,
+) -> Result<String, String> {
     let cfg = release_cycle(t);
     let shape = Shape::of(&t.config.product.name, cfg);
     let branches: Vec<String> = t
@@ -189,7 +252,24 @@ pub fn cut(t: &Tick, log: &mut ActionLog, open: bool, who: &str) -> Result<Strin
         .filter(|b| shape.is_release_branch(&b.name))
         .map(|b| b.name)
         .collect();
-    let (git_ref, action) = if open {
+    if open && branch.is_some() {
+        return Err(
+            "`--open` cuts a new cycle from the default branch: it takes no `--branch`".into(),
+        );
+    }
+    let (git_ref, action) = if let Some(b) = branch {
+        if !branches.iter().any(|x| x == b) {
+            return Err(format!(
+                "{b} is not a release branch in flight: {}",
+                if branches.is_empty() {
+                    "there is none".to_string()
+                } else {
+                    branches.join(", ")
+                }
+            ));
+        }
+        (b.to_string(), "candidate")
+    } else if open {
         if let Some(b) = branches.first() {
             return Err(format!(
                 "a cycle is in flight on {b}: one release branch at a time"
@@ -205,7 +285,12 @@ pub fn cut(t: &Tick, log: &mut ActionLog, open: bool, who: &str) -> Result<Strin
         match branches.as_slice() {
             [b] => (b.clone(), "candidate"),
             [] => return Err("no release branch: open a cycle with `release cut --open`".into()),
-            _ => return Err(format!("several release branches: {}", branches.join(", "))),
+            _ => {
+                return Err(format!(
+                    "several release branches: {}; name one with `--branch`",
+                    branches.join(", ")
+                ));
+            }
         }
     };
     let workflow = &cfg.cut_workflow;
@@ -230,6 +315,135 @@ pub fn cut(t: &Tick, log: &mut ActionLog, open: bool, who: &str) -> Result<Strin
     .ok_or_else(|| report.failures.join("; "))?;
     Ok(format!(
         "{workflow} dispatched on {git_ref} (action {action}); the bridge takes it from the next tick"
+    ))
+}
+
+/// The release in production (see [`release::production`]).
+pub fn production(t: &Tick, shape: &Shape) -> Result<Option<(String, Version)>, String> {
+    release::production(t, shape)
+}
+
+/// The version a patch of `production` ships: its next patch version.
+pub fn patch_version(production: Version) -> Version {
+    Version {
+        patch: production.patch + 1,
+        ..production
+    }
+}
+
+/// `release patch --pr <n>...` by `who`: check that each PR is merged into
+/// the default branch and not yet in production, then dispatch the cut
+/// workflow with the action `patch`. The workflow opens the patch's release
+/// branch from the tag in production, cherry-picks the PRs' merge commits,
+/// prepares the patch version and tags its first candidate as the App; the
+/// bridge carries that cycle beside any cycle in flight (ASDLC-MG26).
+pub fn patch(t: &Tick, log: &mut ActionLog, pulls: &[u64], who: &str) -> Result<String, String> {
+    let cfg = release_cycle(t);
+    let shape = Shape::of(&t.config.product.name, cfg);
+    let mut numbers: Vec<u64> = Vec::new();
+    for n in pulls {
+        if !numbers.contains(n) {
+            numbers.push(*n);
+        }
+    }
+    if numbers.is_empty() {
+        return Err("a patch carries at least one PR merged into the default branch".into());
+    }
+    let (prod_tag, prod) = production(t, &shape)?.ok_or(
+        "no release is in production: a patch starts from the published release, so cut a normal cycle with `release cut --open`",
+    )?;
+    let version = patch_version(prod);
+    let default = t
+        .github
+        .default_branch(&t.repo)
+        .map_err(|e| e.to_string())?;
+    let mut refused = Vec::new();
+    for n in &numbers {
+        let pr = t
+            .github
+            .pull(&t.repo, *n)
+            .map_err(|e| format!("PR #{n}: {e}"))?;
+        if pr.state != PrState::Merged {
+            refused.push(format!(
+                "#{n} is not merged: a patch only carries PRs already merged, through their normal review"
+            ));
+            continue;
+        }
+        if pr.base_ref != default {
+            refused.push(format!(
+                "#{n} was merged into {}, not {default}: a patch only carries PRs merged into the default branch",
+                pr.base_ref
+            ));
+            continue;
+        }
+        let Some(sha) = pr.merge_commit_sha.as_deref() else {
+            refused.push(format!("#{n} has no merge commit GitHub can name"));
+            continue;
+        };
+        let status = t
+            .github
+            .compare_status(&t.repo, sha, &prod_tag)
+            .map_err(|e| format!("whether {prod_tag} holds #{n}: {e}"))?;
+        if matches!(status, CompareStatus::Ahead | CompareStatus::Identical) {
+            refused.push(format!("#{n} is already in production ({prod_tag})"));
+        }
+    }
+    if !refused.is_empty() {
+        return Err(format!("no patch: {}", refused.join("; ")));
+    }
+    // One cycle per version: the patch's version must be free. A cycle in
+    // flight at that very version (a patch already launched, or a normal
+    // cycle that is itself a patch bump) is finished first.
+    let candidates = t
+        .github
+        .tags(&t.repo, shape.candidate_tag_prefix())
+        .map_err(|e| e.to_string())?;
+    if let Some(taken) = candidates.iter().find(|r| {
+        shape
+            .parse_candidate(&r.name)
+            .is_some_and(|(v, _)| v == version)
+    }) {
+        return Err(format!(
+            "{version} already has a cycle ({}): finish or abandon it before patching {prod_tag}",
+            taken.name
+        ));
+    }
+    let list = numbers
+        .iter()
+        .map(u64::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let workflow = &cfg.cut_workflow;
+    let mut report = Report::default();
+    t.act(
+        log,
+        &mut report,
+        "release patch",
+        &format!("dispatch {workflow} (patch {version} from {prod_tag})"),
+        json!({"ref": default, "by": who, "from": prod_tag, "version": version.to_string(), "pulls": numbers}),
+        || {
+            t.github
+                .dispatch_workflow(
+                    &t.repo,
+                    workflow,
+                    &default,
+                    &[
+                        ("action".to_string(), "patch".to_string()),
+                        ("version".to_string(), version.to_string()),
+                        ("pulls".to_string(), list.clone()),
+                    ],
+                )
+                .map_err(|e| e.to_string())
+        },
+    )
+    .ok_or_else(|| report.failures.join("; "))?;
+    Ok(format!(
+        "{workflow} dispatched on {default} (action patch): {version} from {prod_tag}, carrying {}; the bridge takes it from the next tick",
+        numbers
+            .iter()
+            .map(|n| format!("#{n}"))
+            .collect::<Vec<_>>()
+            .join(", ")
     ))
 }
 
@@ -431,17 +645,52 @@ pub fn requalify(
 /// back into the default branch, cancel the release item, and turn the
 /// remaining blockers into ordinary tickets.
 pub fn abandon(t: &Tick, log: &mut ActionLog, who: &str) -> Result<String, String> {
-    let cy = cycle(t)?;
+    abandon_on(t, log, None, who)
+}
+
+/// `release abandon [--branch <b>]`: as [`abandon`], for the cycle on
+/// `branch`. While a patch is in flight beside the open cycle a branch must
+/// be named: abandoning the wrong cycle is not undone. A patch cycle's
+/// branch is deleted without a merge back: it carries only PRs already
+/// merged into the default branch (ASDLC-MG26).
+pub fn abandon_on(
+    t: &Tick,
+    log: &mut ActionLog,
+    branch: Option<&str>,
+    who: &str,
+) -> Result<String, String> {
+    if branch.is_none() {
+        let shape = Shape::of(&t.config.product.name, release_cycle(t));
+        if let Some((newest, tags)) = release::newest(t, &shape)? {
+            let patches = release::patches_in_flight(t, &shape, &tags, &newest)?;
+            if !patches.is_empty() {
+                return Err(format!(
+                    "several cycles in flight ({}, {}): name one with `--branch`",
+                    newest.tag,
+                    patches
+                        .iter()
+                        .map(|c| c.tag.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+        }
+    }
+    let cy = cycle_on(t, branch)?;
+    let patch = release::cycle_patches(t, &cy.shape, &cy.candidate)?.is_some();
     let mut report = Report::default();
     let default = t
         .github
         .default_branch(&t.repo)
         .map_err(|e| e.to_string())?;
     if let Some(branch) = &cy.branch {
-        let status = t
-            .github
-            .compare_status(&t.repo, &default, branch)
-            .map_err(|e| e.to_string())?;
+        let status = if patch {
+            CompareStatus::Identical
+        } else {
+            t.github
+                .compare_status(&t.repo, &default, branch)
+                .map_err(|e| e.to_string())?
+        };
         if matches!(status, CompareStatus::Ahead | CompareStatus::Diverged) {
             // The merge is pinned to the branch as read now.
             let head = t

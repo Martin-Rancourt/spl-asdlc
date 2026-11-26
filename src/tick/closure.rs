@@ -55,8 +55,18 @@ pub fn close(
             // A merge back the close could not do gets its fix ticket, its
             // resolution merged and its replay (ASDLC-PQ5J).
             super::retract::when_undeployed(t, log, report, item, published);
-            if let Some(branch) = waiting.branch {
-                super::merge_back::when_blocked(t, log, report, shape, c, item, published, &branch);
+            if let (Some(branch), Some(into)) = (waiting.branch, waiting.into) {
+                super::merge_back::when_blocked(
+                    t,
+                    log,
+                    report,
+                    shape,
+                    c,
+                    item,
+                    published,
+                    &branch,
+                    into.as_deref(),
+                );
             }
             return;
         }
@@ -359,6 +369,10 @@ struct Waiting {
     #[allow(dead_code)]
     why: String,
     branch: Option<String>,
+    /// Where the release is merged: `Some(None)` the default branch,
+    /// `Some(Some(b))` a patch's open cycle `b` (ASDLC-MG26), `None` nowhere
+    /// the bridge can help with (a patch with no single open cycle).
+    into: Option<Option<String>>,
 }
 
 fn ready_to_close(
@@ -385,19 +399,59 @@ fn ready_to_close(
             CompareStatus::Ahead | CompareStatus::Identical
         ))
     };
-    for b in branches.iter().filter(|b| shape.is_release_branch(&b.name)) {
-        if !holds(&c.sha, &b.name)? {
+    // A patch is merged into the open cycle, never the default branch
+    // (ASDLC-MG26): its release tag says so, as the GO wrote it.
+    let patch = super::release::release_patches(t, &published.tag)?.is_some();
+    let release_branches: Vec<&str> = branches
+        .iter()
+        .filter(|b| shape.is_release_branch(&b.name))
+        .map(|b| b.name.as_str())
+        .collect();
+    let mut own: Option<&str> = None;
+    for b in &release_branches {
+        if !holds(&c.sha, b)? {
             continue;
         }
         match newer {
-            Some(n) if holds(&n.sha, &b.name)? => continue,
+            Some(n) if holds(&n.sha, b)? => continue,
             _ => {
+                own = Some(b);
+                break;
+            }
+        }
+    }
+    if patch {
+        // The open cycles: every other release branch. The publication
+        // refuses to choose among several; the closure waits on each.
+        let open: Vec<&str> = release_branches
+            .iter()
+            .copied()
+            .filter(|b| Some(*b) != own)
+            .collect();
+        if let Some(b) = own {
+            return Ok(Some(Waiting {
+                why: format!("{b} still holds the candidate"),
+                branch: Some(b.to_string()),
+                into: (open.len() == 1).then(|| Some(open[0].to_string())),
+            }));
+        }
+        for b in open {
+            if !holds(&published.tag, b)? {
                 return Ok(Some(Waiting {
-                    why: format!("{} still holds the candidate", b.name),
-                    branch: Some(b.name.clone()),
+                    why: format!("{} is not merged into the open cycle {b}", published.tag),
+                    branch: None,
+                    into: Some(Some(b.to_string())),
                 }));
             }
         }
+        return Ok(None);
+    }
+    if let Some(b) = own {
+        return Ok(Some(Waiting {
+            why: format!("{b} still holds the candidate"),
+            branch: Some(b.to_string()),
+            into: Some(None),
+        }));
     }
     let default = t
         .github
@@ -411,6 +465,7 @@ fn ready_to_close(
         return Ok(Some(Waiting {
             why: format!("{} is not merged back into {default}", published.tag),
             branch: None,
+            into: Some(None),
         }));
     }
     Ok(None)

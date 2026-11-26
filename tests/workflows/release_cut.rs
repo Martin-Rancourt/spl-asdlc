@@ -295,7 +295,7 @@ fn a_candidate_is_cut_on_the_one_release_branch_from_origin() {
         "main:refs/heads/release/2026-10-08-09-00-utc",
     ]);
     refused(
-        &find(&repo, "candidate", BRANCH),
+        &find(&repo, "candidate", "main"),
         "Several release branches",
     );
     // The retired date-only shape is not a release branch.
@@ -1436,6 +1436,7 @@ fn the_cut_waits_for_no_other_workflow() {
         [
             "app-token",
             "cycle",
+            "pick",
             "method-repo",
             "method-token",
             "binary",
@@ -1467,7 +1468,9 @@ fn the_cut_waits_for_no_other_workflow() {
     // with the binary it fetched, `candidate` reads the committed version.
     assert_eq!(
         step(&doc, "cut", "binary")["if"].as_str(),
-        Some("inputs.action == 'open' && steps.cycle.outputs.proceed == 'true'")
+        Some(
+            "(inputs.action == 'open' && steps.cycle.outputs.proceed == 'true') || steps.pick.outputs.proceed == 'true'"
+        )
     );
     assert_eq!(
         step(&doc, "cut", "open")["if"].as_str(),
@@ -1476,6 +1479,10 @@ fn the_cut_waits_for_no_other_workflow() {
     assert_eq!(
         step(&doc, "cut", "version")["if"].as_str(),
         Some("inputs.action == 'candidate' && steps.cycle.outputs.proceed == 'true'")
+    );
+    assert_eq!(
+        step(&doc, "cut", "pick")["if"].as_str(),
+        Some("inputs.action == 'patch' && steps.cycle.outputs.proceed == 'true'")
     );
     assert_eq!(
         step(&doc, "cut", "candidate")["if"].as_str(),
@@ -1592,4 +1599,370 @@ fn the_summary_names_the_configured_gate_unless_the_caller_names_one() {
         default.contains("--workflow=release-gate.yml "),
         "{default}"
     );
+}
+
+// -------------------------------------------------------------------- patch
+
+#[test]
+fn preflight_accepts_a_patch_that_names_its_version_and_its_prs() {
+    ok(&preflight(&[
+        ("ACTION", "patch"),
+        ("FORCE_VERSION", "1.17.1"),
+        ("PULLS", "12"),
+    ]));
+    ok(&preflight(&[
+        ("ACTION", "patch"),
+        ("FORCE_VERSION", "1.17.10"),
+        ("PULLS", "12,7,301"),
+    ]));
+    let cases: &[(&[(&'static str, &str)], &str)] = &[
+        (&[("ACTION", "patch"), ("PULLS", "12")], "names its version"),
+        (
+            &[
+                ("ACTION", "patch"),
+                ("FORCE_VERSION", "1.18.0"),
+                ("PULLS", "12"),
+            ],
+            "Z of at least 1",
+        ),
+        (
+            &[("ACTION", "patch"), ("FORCE_VERSION", "1.17.1")],
+            "names the PRs it carries",
+        ),
+        (
+            &[
+                ("ACTION", "patch"),
+                ("FORCE_VERSION", "1.17.1"),
+                ("PULLS", "12, 13"),
+            ],
+            "names the PRs it carries",
+        ),
+        (
+            &[
+                ("ACTION", "patch"),
+                ("FORCE_VERSION", "1.17.1"),
+                ("PULLS", "#12"),
+            ],
+            "names the PRs it carries",
+        ),
+        (&[("PULLS", "12")], "pulls only applies to 'patch'"),
+        (
+            &[("ACTION", "candidate"), ("FORCE_VERSION", "1.17.1")],
+            "only applies to 'open' and 'patch'",
+        ),
+    ];
+    for (extra, words) in cases {
+        refused(&preflight(extra), words);
+    }
+}
+
+/// A product in production at `acme-v1.0.0`, then on `main`: #11 (a squash
+/// commit), #12 (a merge commit), #13 (a feature that creates `src/big.rs`)
+/// and #14 (a change to `src/big.rs`, which the release in production has
+/// not got). Returns the merge commits by PR number.
+fn production() -> (Repo, Scratch, std::collections::BTreeMap<u64, String>) {
+    let (repo, origin) = Repo::with_origin();
+    repo.write(
+        CONFIG,
+        "schema = 1\n[product]\nname = \"acme\"\n\n[release]\nangles = []\n\n[[release.version_files]]\npath = \"VERSION\"\npattern = \"acme {version}\"\n",
+    );
+    repo.write("VERSION", "acme 1.0.0\n");
+    repo.commit("chore(release): v1.0.0");
+    repo.git(&["tag", "acme-v1.0.0"]);
+    let mut merged = std::collections::BTreeMap::new();
+    repo.write("src/fix.rs", "pub fn fixed() {}\n");
+    merged.insert(11, repo.commit("fix: the crash on login (#11)"));
+    repo.git(&["checkout", "-q", "-b", "fix-two"]);
+    repo.write("src/other.rs", "pub fn other() {}\n");
+    repo.commit("fix: the other bug");
+    repo.git(&["checkout", "-q", "main"]);
+    repo.git(&[
+        "merge",
+        "-q",
+        "--no-ff",
+        "fix-two",
+        "-m",
+        "Merge pull request #12 from example-org/fix-two",
+    ]);
+    merged.insert(12, repo.git(&["rev-parse", "HEAD"]));
+    repo.write("src/big.rs", "pub fn big() {}\n");
+    merged.insert(13, repo.commit("feat: the big feature (#13)"));
+    repo.write("src/big.rs", "pub fn big() { todo!() }\n");
+    merged.insert(14, repo.commit("fix: the big feature (#14)"));
+    repo.git(&["push", "-q", "origin", "main", "--tags"]);
+    (repo, origin, merged)
+}
+
+/// A `gh` stub answering `gh api repos/example-org/acme/pulls/<n>` from the
+/// PRs given (number, merged, base, merge commit).
+fn gh_pulls(stubs: &Path, pulls: &[(u64, bool, &str, &str)]) {
+    let mut cases = String::new();
+    for (n, merged, base, sha) in pulls {
+        let file = stubs.join(format!("pull-{n}.json"));
+        std::fs::write(
+            &file,
+            format!(r#"{{"number":{n},"merged":{merged},"base":{{"ref":"{base}"}},"merge_commit_sha":"{sha}"}}"#),
+        )
+        .unwrap();
+        cases.push_str(&format!(
+            "  \"api repos/example-org/acme/pulls/{n}\") cat \"{}\" ;;\n",
+            file.display()
+        ));
+    }
+    stub(
+        stubs,
+        "gh",
+        &format!("case \"$1 $2\" in\n{cases}  *) echo \"unexpected gh $*\" >&2; exit 1 ;;\nesac"),
+    );
+}
+
+fn find_patch(repo: &Repo, version: &str) -> Ran {
+    let stubs = Scratch::new("stubs");
+    exec(
+        "cut",
+        "cycle",
+        repo,
+        &stubs.0,
+        &[
+            ("ACTION", "patch"),
+            ("DISPATCHED_REF", "main"),
+            ("FORCE_VERSION", version),
+        ],
+    )
+}
+
+fn pick(repo: &Repo, stubs: &Path, pulls: &str) -> Ran {
+    exec(
+        "cut",
+        "pick",
+        repo,
+        stubs,
+        &[
+            ("ACTION", "patch"),
+            ("PULLS", pulls),
+            ("PRODUCTION", "acme-v1.0.0"),
+            ("APP_SLUG", "example-app"),
+            ("GH_TOKEN", "a-token"),
+        ],
+    )
+}
+
+#[test]
+fn a_patch_starts_from_the_tag_in_production_beside_a_cycle_in_flight() {
+    let (repo, _origin, _merged) = production();
+    // A normal cycle is in flight: the patch leaves it alone.
+    repo.git(&[
+        "push",
+        "-q",
+        "origin",
+        "main:refs/heads/release/2026-10-01-08-30-utc",
+    ]);
+    let r = find_patch(&repo, "1.0.1");
+    ok(&r);
+    assert_eq!(r.output("production").as_deref(), Some("acme-v1.0.0"));
+    let branch = r.output("branch").unwrap();
+    assert_ne!(branch, "release/2026-10-01-08-30-utc");
+    assert_eq!(repo.git(&["rev-parse", "--abbrev-ref", "HEAD"]), branch);
+    assert_eq!(
+        repo.git(&["rev-parse", "HEAD"]),
+        repo.git(&["rev-parse", "acme-v1.0.0^{commit}"])
+    );
+    // Never from main, never without the release it patches.
+    let (repo, _origin, _merged) = production();
+    refused(&find_patch(&repo, "1.0.2"), "No tag acme-v1.0.1");
+    // One cycle per version.
+    let (repo, _origin, _merged) = production();
+    repo.git(&["tag", "acme-v1.0.1-rc.1", "main"]);
+    refused(
+        &find_patch(&repo, "1.0.1"),
+        "already has a cycle (acme-v1.0.1-rc.1)",
+    );
+    let (repo, _origin, _merged) = production();
+    repo.git(&["tag", "acme-v1.0.1", "main"]);
+    refused(
+        &find_patch(&repo, "1.0.1"),
+        "already published (acme-v1.0.1)",
+    );
+}
+
+#[test]
+fn a_candidate_is_cut_on_the_cycle_it_is_dispatched_on_when_several_are_in_flight() {
+    let (repo, _origin) = cycle(true);
+    repo.git(&[
+        "push",
+        "-q",
+        "origin",
+        "main:refs/heads/release/2026-10-08-09-00-utc",
+    ]);
+    let r = find(&repo, "candidate", "release/2026-10-08-09-00-utc");
+    ok(&r);
+    assert_eq!(
+        r.output("branch").as_deref(),
+        Some("release/2026-10-08-09-00-utc")
+    );
+    let r = find(&repo, "candidate", BRANCH);
+    ok(&r);
+    assert_eq!(r.output("branch").as_deref(), Some(BRANCH));
+    refused(
+        &find(&repo, "candidate", "main"),
+        "dispatch the cut on the one to cut, not on 'main'",
+    );
+}
+
+#[test]
+fn a_patch_cherry_picks_its_merged_prs_in_the_order_main_took_them() {
+    let (repo, _origin, merged) = production();
+    assert!(find_patch(&repo, "1.0.1").code == 0);
+    let stubs = Scratch::new("stubs");
+    gh_pulls(
+        &stubs.0,
+        &[
+            (11, true, "main", &merged[&11]),
+            (12, true, "main", &merged[&12]),
+        ],
+    );
+    let r = pick(&repo, &stubs.0, "12,11");
+    ok(&r);
+    assert_eq!(r.output("pulls").as_deref(), Some("11,12"));
+    let log = repo.git(&["log", "--format=%s", "acme-v1.0.0..HEAD"]);
+    assert_eq!(
+        log,
+        "Merge pull request #12 from example-org/fix-two\nfix: the crash on login (#11)"
+    );
+    // `-x` names the commit each copy came from: the bridge maps it to its PR.
+    for n in [11, 12] {
+        let body = repo.git(&["log", "--format=%B", "acme-v1.0.0..HEAD"]);
+        assert!(
+            body.contains(&format!("(cherry picked from commit {})", merged[&n])),
+            "{body}"
+        );
+    }
+    // The merge commit is taken as the change it brought to main.
+    assert_eq!(
+        repo.git(&["show", "HEAD:src/other.rs"]),
+        "pub fn other() {}"
+    );
+    assert!(repo.git(&["ls-files", "src/big.rs"]).is_empty());
+    assert_eq!(
+        repo.git(&["log", "-1", "--format=%cn"]),
+        format!("{}[bot]", "example-app")
+    );
+}
+
+#[test]
+fn a_patch_refuses_a_pr_it_cannot_carry_and_pushes_nothing() {
+    let other = "0123456789abcdef0123456789abcdef01234567";
+    let cases: &[(u64, bool, &str, Option<&str>, &str)] = &[
+        (21, false, "main", Some(other), "#21 is not merged"),
+        (
+            22,
+            true,
+            "release/x",
+            Some(other),
+            "#22 was merged into release/x, not main",
+        ),
+        (23, true, "main", Some(other), "is not on origin/main"),
+        (14, true, "main", None, "#14 ("),
+    ];
+    for (n, merged_flag, base, sha, words) in cases {
+        let (repo, origin, merged) = production();
+        assert!(find_patch(&repo, "1.0.1").code == 0);
+        let stubs = Scratch::new("stubs");
+        let sha = sha.map(str::to_string).unwrap_or_else(|| merged[n].clone());
+        gh_pulls(&stubs.0, &[(*n, *merged_flag, base, &sha)]);
+        let r = pick(&repo, &stubs.0, &n.to_string());
+        refused(&r, words);
+        assert!(git_in(&origin.0, &["branch", "--list", "release/*"]).is_empty());
+        assert_eq!(
+            repo.git(&["rev-parse", "HEAD"]),
+            repo.git(&["rev-parse", "acme-v1.0.0^{commit}"]),
+            "a refused patch leaves the tag's commit checked out"
+        );
+    }
+    // Already in production: the tag holds it.
+    let (repo, _origin, _merged) = production();
+    assert!(find_patch(&repo, "1.0.1").code == 0);
+    let stubs = Scratch::new("stubs");
+    let prod = repo.git(&["rev-parse", "acme-v1.0.0^{commit}"]);
+    gh_pulls(&stubs.0, &[(9, true, "main", &prod)]);
+    refused(
+        &pick(&repo, &stubs.0, "9"),
+        "#9 is already in production (acme-v1.0.0)",
+    );
+}
+
+#[test]
+fn a_patch_is_prepared_classed_since_production_and_pushed_with_its_first_candidate() {
+    let (repo, origin, merged) = production();
+    let found = find_patch(&repo, "1.0.1");
+    ok(&found);
+    let branch = found.output("branch").unwrap();
+    let stubs = Scratch::new("stubs");
+    gh_pulls(&stubs.0, &[(11, true, "main", &merged[&11])]);
+    ok(&pick(&repo, &stubs.0, "11"));
+    let r = open_step(
+        &repo,
+        &[
+            ("ACTION", "patch"),
+            ("BRANCH", &branch),
+            ("FORCE_VERSION", "1.0.1"),
+        ],
+    );
+    ok(&r);
+    assert_eq!(r.output("version").as_deref(), Some("1.0.1"), "{}", r.log);
+    assert_eq!(repo.git(&["show", "HEAD:VERSION"]), "acme 1.0.1");
+    let changelog = repo.git(&["show", "HEAD:CHANGELOG.md"]);
+    assert!(changelog.contains("the crash on login"), "{changelog}");
+    assert!(!changelog.contains("big feature"), "{changelog}");
+    let computed = compute(
+        &repo,
+        &[
+            ("ACTION", "patch"),
+            ("BRANCH", &branch),
+            ("VERSION", "1.0.1"),
+            ("PRODUCTION", "acme-v1.0.0"),
+            ("PICKED", "11"),
+        ],
+    );
+    ok(&computed);
+    assert_eq!(computed.output("tag").as_deref(), Some("acme-v1.0.1-rc.1"));
+    // The delta since the release in production, never since main.
+    assert_eq!(computed.output("base").as_deref(), Some("acme-v1.0.0"));
+    assert_eq!(
+        computed.output("previous-tag").as_deref(),
+        Some("acme-v1.0.0")
+    );
+    let t = trailers(&computed);
+    assert!(t.contains("Release-Patch-From: acme-v1.0.0"), "{t}");
+    assert!(t.contains("Release-Patch-Pulls: 11"), "{t}");
+    let stubs = Scratch::new("stubs");
+    let get = |k: &str| computed.output(k).unwrap_or_default();
+    let r = run_owned(
+        &body("cut", "tag"),
+        &[
+            ("PATH", path_with(&stubs.0)),
+            ("ACTION", "patch".to_string()),
+            ("DEFAULT_BRANCH", "main".to_string()),
+            ("BRANCH", branch.clone()),
+            ("VERSION", "1.0.1".to_string()),
+            ("TAG", get("tag")),
+            ("ROUND", get("round")),
+            ("CLASS_OUT", get("class")),
+            ("CLASS_REASON", get("class-reason")),
+            ("PREVIOUS", get("previous-tag")),
+            ("COMMIT", get("commit")),
+            ("TRAILERS", trailers(&computed)),
+            ("APP_SLUG", "example-app".to_string()),
+        ],
+        &repo.dir.0,
+    );
+    ok(&r);
+    let head = repo.git(&["rev-parse", "HEAD"]);
+    assert_eq!(git_in(&origin.0, &["rev-parse", &branch]), head);
+    assert_eq!(
+        git_in(&origin.0, &["rev-parse", "acme-v1.0.1-rc.1^{commit}"]),
+        head
+    );
+    // main is untouched.
+    assert_eq!(git_in(&origin.0, &["rev-parse", "main"]), merged[&14]);
 }
