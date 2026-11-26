@@ -33,6 +33,9 @@ mod cut_file_list;
 /// A cycle abandoned, then the same version cut again (ASDLC-R7K6).
 mod abandoned_cycle;
 
+/// A release whose merge back into main is blocked (ASDLC-PQ5J).
+mod merge_back;
+
 const BRANCH: &str = "release/2026-10-05-14-03-utc";
 const CAND: &str = "acme-v1.2.0-rc.1";
 const LABEL: &str = "release/acme-v1.2.0";
@@ -6453,6 +6456,11 @@ impl World {
         let mut s = w.github.state.borrow_mut();
         s.jobs.insert((repo(), run.id), jobs);
         s.runs.insert((repo(), PUBLISH_WF.into()), Ok(vec![run]));
+        // `main` does not hold the release yet.
+        s.compares.insert(
+            (repo(), RELEASE_TAG.into(), "main".into()),
+            cmp(CompareStatus::Behind, &[], &[]),
+        );
         drop(s);
         w
     }

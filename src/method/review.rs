@@ -25,7 +25,7 @@ pub fn excluded_from_merge_pass(pr: &PullRequest, branch_prefix: &str) -> Option
     }
     if head.starts_with(MERGE_BACK_RESOLUTION_PREFIX) {
         return Some(
-            "resolution of a merge-back conflict — merged by hand, as a merge commit, never squashed",
+            "resolution of a blocked merge back — the release close merges it, as a merge commit, never squashed",
         );
     }
     if head.starts_with(branch_prefix) {

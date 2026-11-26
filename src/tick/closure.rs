@@ -52,8 +52,12 @@ pub fn close(
             // job log matter until the owner settles REQ-REL-082). But a
             // publication that failed before deploying never merges back:
             // its release is retracted, and the cycle awaits its GO again.
-            let _ = waiting;
+            // A merge back the close could not do gets its fix ticket, its
+            // resolution merged and its replay (ASDLC-PQ5J).
             super::retract::when_undeployed(t, log, report, item, published);
+            if let Some(branch) = waiting.branch {
+                super::merge_back::when_blocked(t, log, report, shape, c, item, published, &branch);
+            }
             return;
         }
         Err(e) => {
@@ -348,13 +352,21 @@ fn archive_resolved(
 
 /// `Ok(None)` when every fact of the closure is there; `Ok(Some(why))` when
 /// one is still awaited.
+/// What the closure waits for: why, and the release branch that still holds
+/// the candidate, when it is that.
+struct Waiting {
+    #[allow(dead_code)]
+    why: String,
+    branch: Option<String>,
+}
+
 fn ready_to_close(
     t: &Tick,
     shape: &Shape,
     c: &Candidate,
     published: &Release,
     newer: Option<&Candidate>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<Waiting>, String> {
     // No release branch still holds the candidate: the branch was merged back
     // and deleted. The next cycle's branch holds it too, and is not this
     // cycle's.
@@ -378,7 +390,12 @@ fn ready_to_close(
         }
         match newer {
             Some(n) if holds(&n.sha, &b.name)? => continue,
-            _ => return Ok(Some(format!("{} still holds the candidate", b.name))),
+            _ => {
+                return Ok(Some(Waiting {
+                    why: format!("{} still holds the candidate", b.name),
+                    branch: Some(b.name.clone()),
+                }));
+            }
         }
     }
     let default = t
@@ -390,10 +407,10 @@ fn ready_to_close(
         .compare_status(&t.repo, &published.tag, &default)
         .map_err(|e| e.to_string())?;
     if !matches!(status, CompareStatus::Ahead | CompareStatus::Identical) {
-        return Ok(Some(format!(
-            "{} is not merged back into {default}",
-            published.tag
-        )));
+        return Ok(Some(Waiting {
+            why: format!("{} is not merged back into {default}", published.tag),
+            branch: None,
+        }));
     }
     Ok(None)
 }
@@ -469,6 +486,34 @@ fn judge_member(
         )
         .is_some()
     };
+    // The fix ticket of a blocked merge back: the closure runs only once the
+    // release is merged back and its branch gone, by the bridge or by a
+    // person, so its work is done whatever its boxes say (ASDLC-PQ5J).
+    if m.parent.as_deref() == Some(release.key.as_str())
+        && texts::merge_back_fix_tag(&m.description).is_some()
+    {
+        if !m.state.is_resolved() {
+            let tag = texts::merge_back_fix_tag(&m.description).unwrap_or_default();
+            let body = for_tracker(t, &texts::merge_back_fix_closed_comment(&tag));
+            if set(Status::Done, None, log, report) {
+                result.children_closed.push(m.key.clone());
+                t.act(
+                    log,
+                    report,
+                    &m.key,
+                    "comment merge-back fix closed",
+                    json!({}),
+                    || {
+                        t.tracker
+                            .comment(&m.key, &body)
+                            .map(|_| ())
+                            .map_err(|e| e.to_string())
+                    },
+                );
+            }
+        }
+        return;
+    }
     match closure::classify(&member) {
         Action::Untouched => {}
         Action::KeepFinding => result.kept_findings.push(m.key.clone()),

@@ -180,7 +180,7 @@ fn marked_item(description: &str) -> Option<BridgeItem> {
 /// never a fact about it.
 static IDENTITY_MARKER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"spl-asdlc:(release-note|release|angle|consolidation|gate-fix|finding|pr-ticket|post-deploy-validation)((?: [a-z]+=[^\s`>]+)*)(?:[\s`]|$)",
+        r"spl-asdlc:(release-note|release|angle|consolidation|gate-fix|merge-back-fix|finding|pr-ticket|post-deploy-validation)((?: [a-z]+=[^\s`>]+)*)(?:[\s`]|$)",
     )
     .unwrap()
 });
@@ -672,6 +672,157 @@ pub fn gate_fix_closed_comment(candidate: &str, green: &str, run_url: &str) -> S
             &[("candidate", candidate), ("green", green)]
         )
     )
+}
+
+// ---- a blocked merge back (ASDLC-PQ5J) ----
+
+/// Why the merge back of a published release is blocked, read off its
+/// merge-back PR once the publication's close concluded red.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeBackBlock {
+    /// GitHub reports a real conflict (`DIRTY`).
+    Dirty,
+    /// A required check of the default branch is red on the PR's head.
+    RedCheck(Vec<String>),
+    /// The required checks are green and GitHub still refused the App's
+    /// merge (`BLOCKED`, `BEHIND`): the App is not on the ruleset's bypass list.
+    AppRefused(String),
+}
+
+impl MergeBackBlock {
+    /// The cause in one line, for the release item and the fix ticket.
+    pub fn cause(&self) -> String {
+        match self {
+            MergeBackBlock::Dirty => {
+                "a real conflict: GitHub reports the merge-back PR `DIRTY`".to_string()
+            }
+            MergeBackBlock::RedCheck(names) => format!(
+                "a required check is red on the merge-back PR's head: {}",
+                names
+                    .iter()
+                    .map(|n| format!("`{}`", inert(n).replace('`', "'")))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            MergeBackBlock::AppRefused(state) => format!(
+                "the required checks are green and the merge-back PR stays `{}`: GitHub refused the App's merge \
+                 (the App is not on the bypass list of the default branch's ruleset)",
+                inert(state).replace('`', "'")
+            ),
+        }
+    }
+
+    /// The short key of the cause, for the action log.
+    pub fn key(&self) -> &'static str {
+        match self {
+            MergeBackBlock::Dirty => "dirty",
+            MergeBackBlock::RedCheck(_) => "red-check",
+            MergeBackBlock::AppRefused(_) => "app-refused",
+        }
+    }
+}
+
+/// The marker of the fix ticket of a release whose merge back is blocked:
+/// one per release tag, ever.
+pub fn merge_back_fix_marker(tag: &str) -> String {
+    marker("merge-back-fix", &[("tag", tag)])
+}
+
+/// The release tag a merge-back fix ticket was opened for, read off its marker.
+pub fn merge_back_fix_tag(description: &str) -> Option<String> {
+    static FIX: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"spl-asdlc:merge-back-fix tag=([^\s`>]+)").unwrap());
+    FIX.captures(description).map(|c| c[1].to_string())
+}
+
+/// The facts of a blocked merge back the fix ticket carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockedMergeBack<'a> {
+    /// The release item's key.
+    pub release: &'a str,
+    pub tag: &'a str,
+    pub branch: &'a str,
+    pub default_branch: &'a str,
+    /// The merge-back PR the publication opened.
+    pub pr_url: &'a str,
+    pub run_url: &'a str,
+    pub block: &'a MergeBackBlock,
+}
+
+/// The comment on the release item that says why its merge back is blocked.
+pub fn merge_back_blocked_comment(f: &BlockedMergeBack) -> String {
+    format!(
+        "### Merge back of `{tag}` blocked\n\nThe publication's close could not merge `{branch}` back into \
+         `{default}` ({run}): {cause}. Merge-back PR: {pr}. The release is out; it is `{default}` that is \
+         behind. The bridge opens one fix ticket under this item; once its `chore/merge-back-*` PR is merged \
+         as a merge commit, the bridge dispatches the publication on `{branch}` with `replay: true`, and the \
+         closure goes on.",
+        tag = inert(f.tag),
+        branch = inert(f.branch),
+        default = inert(f.default_branch),
+        run = f.run_url,
+        cause = f.block.cause(),
+        pr = f.pr_url,
+    )
+}
+
+/// The fix ticket of a blocked merge back: the recipe of « Release close »
+/// (`docs/setup/repository.md`) as a contract, served like a gate-fix.
+pub fn merge_back_fix_ticket(f: &BlockedMergeBack) -> (String, String) {
+    let tag = inert(f.tag);
+    let branch = inert(f.branch);
+    let default = inert(f.default_branch);
+    let title = format!("Make the merge back green — {tag}");
+    let body = format!(
+        "{marker}\n\n## Goal\nThe release `{tag}` is published, and its release branch `{branch}` could not be \
+         merged back into `{default}`: {cause}. Land the release branch in `{default}` as a merge commit, through a \
+         `chore/merge-back-*` PR the bridge merges, so that the release tag becomes an ancestor of `{default}` and \
+         the release closes.\n\n\
+         ## Non-goals\n- No new feature, no change beyond what the merge back needs.\n\
+         - Republishing: the release is out.\n\
+         - Merging the PR or dispatching the replay: the bridge does both.\n\n\
+         ## Acceptance criteria\n\
+         - [ ] A branch `chore/merge-back-<stamp>` is cut from the tip of `{branch}` (`<stamp>` the UTC date and time, \
+         such as `2026-11-25-18-30-utc`), `{default}` is merged into it, and the fix is committed on top: the conflict resolved, or what \
+         makes the required checks green.\n\
+         - [ ] Its PR into `{default}` is open and ready, titled as a Conventional Commit naming this ticket, such as \
+         `chore(release): merge back {tag} (<this ticket's id>)`.\n\n\
+         ## Business rules\n{absence}\n\n\
+         ## Context\n- Release: {release}\n- Release branch: `{branch}`\n- Merge-back PR: {pr}\n\
+         - Publication run: {run}\n\
+         - Never bring `{default}` into `release/**`: no PR from `{default}` into `{branch}`, no branch update from \
+         the base, no local merge pushed to `{branch}`. It adds code no candidate covered.\n\
+         - The bridge merges the `chore/merge-back-*` PR as a merge commit, never a squash, once its required checks \
+         and its title check are green, and only when its branch contains the tip of `{branch}`. Then it dispatches \
+         the publication on `{branch}` with `replay: true`, which deletes the branch and publishes nothing, and the \
+         release closes.\n\
+         - A person who resolves the merge back by hand (the recipe of « Release close » in \
+         `docs/setup/repository.md`) does the same: the bridge takes it as done and closes this ticket.\n\
+         - Tick each box once it is met, before the merge.\n- {keep}",
+        marker = merge_back_fix_marker(f.tag),
+        cause = f.block.cause(),
+        release = f.release,
+        pr = f.pr_url,
+        run = f.run_url,
+        absence = crate::method::business_rules::ABSENCE_DECLARATION,
+        keep = KEEP_MARKER,
+    );
+    (title, body)
+}
+
+/// The comment of the closure closing a merge-back fix ticket: the release
+/// is in the default branch, by the bridge or by a person.
+pub fn merge_back_fix_closed_comment(tag: &str) -> String {
+    format!(
+        "Done: the release `{}` is merged back and its release branch is gone, so the closure closes this ticket.\n\n{}",
+        inert(tag),
+        marker("merge-back-fix-closed", &[("tag", tag)])
+    )
+}
+
+/// The marker of the replay the bridge dispatched for a release.
+pub fn merge_back_replay_marker(tag: &str) -> String {
+    marker("merge-back-replay", &[("tag", tag)])
 }
 
 /// The marker of the validation sub-task earlier versions created under a

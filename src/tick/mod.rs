@@ -17,6 +17,7 @@ pub mod contract_decision;
 pub mod identity;
 pub mod link;
 pub mod merge;
+pub mod merge_back;
 pub mod method_texts;
 pub mod pause;
 pub mod post_deploy;
