@@ -97,8 +97,12 @@ enum ReleaseCommand {
     },
     /// Dispatch the cut workflow: the next candidate, or a new cycle.
     Cut {
-        #[arg(long)]
+        #[arg(long, conflicts_with = "branch")]
         open: bool,
+        /// The release branch to cut the next candidate on, while several
+        /// cycles are in flight (a patch beside an open cycle).
+        #[arg(long)]
+        branch: Option<String>,
     },
     /// Start a patch release from the published release, carrying merged PRs.
     Patch {
@@ -584,7 +588,10 @@ fn release(
                 }
             };
         }
-        ReleaseCommand::Cut { open } => project.cut(open, &who()),
+        ReleaseCommand::Cut { open, branch } => match branch {
+            Some(b) => project.cut_on(&b, &who()),
+            None => project.cut(open, &who()),
+        },
         ReleaseCommand::Patch { pulls } => project.patch(&pulls, &who()),
         ReleaseCommand::Prepare { .. } => unreachable!("prepared above, with no connection"),
         ReleaseCommand::Requalify {

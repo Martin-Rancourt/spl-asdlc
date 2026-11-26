@@ -36,6 +36,9 @@ mod abandoned_cycle;
 /// A release whose merge back into main is blocked (ASDLC-PQ5J).
 mod merge_back;
 
+/// A patch cycle beside an open cycle (ASDLC-MG26).
+mod patch_cycle;
+
 const BRANCH: &str = "release/2026-10-05-14-03-utc";
 const CAND: &str = "acme-v1.2.0-rc.1";
 const LABEL: &str = "release/acme-v1.2.0";

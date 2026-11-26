@@ -268,6 +268,14 @@ impl<'a> Project<'a> {
         self.gesture("release cut", |t, log| verbs::cut(t, log, open, who))
     }
 
+    /// `release cut --branch <b>`, by `who`: the next candidate on `branch`,
+    /// for a cycle among several in flight (ASDLC-MG26).
+    pub fn cut_on(&self, branch: &str, who: &str) -> Outcome {
+        self.gesture("release cut", |t, log| {
+            verbs::cut_on(t, log, false, Some(branch), who)
+        })
+    }
+
     /// Start a patch cycle carrying PRs already merged into the default branch.
     pub fn patch(&self, pulls: &[u64], who: &str) -> Outcome {
         self.gesture("release patch", |t, log| verbs::patch(t, log, pulls, who))

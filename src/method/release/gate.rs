@@ -209,6 +209,18 @@ pub fn class_of_annotation(message: Option<&str>) -> Class {
     Class::Unclassified
 }
 
+/// The release a patch candidate patches, read from the annotation of a real
+/// tag object only: its `Release-Patch-From:` line, set by the cut workflow's
+/// `patch` action on the patch's first candidate (ASDLC-MG26). An empty
+/// value is no patch.
+pub fn patch_from_annotation(message: Option<&str>) -> Option<String> {
+    message?
+        .lines()
+        .find_map(|l| l.strip_prefix("Release-Patch-From:"))
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
 /// The class a candidate is briefed and reviewed with (rule X4PV): its
 /// tag's, unless GitHub cut a file list of its range at 300. A cut list
 /// counts as touching every reviewed path, so the candidate is `sensible`:

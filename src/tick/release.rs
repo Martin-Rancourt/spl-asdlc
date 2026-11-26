@@ -80,11 +80,17 @@ pub(crate) fn section<'a>(t: &Tick<'a>) -> &'a Release {
 }
 
 /// Run the pass. Returns whether it merged a PR (the tick's one merge).
+///
+/// Every cycle in flight gets its pass (ASDLC-MG26): the newest candidate's,
+/// and each patch cycle opened beside it from the release in production
+/// (`patches_in_flight`). A patch goes first, since it carries a fix to
+/// production; the tick still merges one PR at most, so the first cycle that
+/// merged ends it. The cycles never touch each other: each has its own
+/// release item, release branch and candidate.
 pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
-    let cfg = t.config;
     let release = section(t);
-    let shape = Shape::of(&cfg.product.name, release);
-    let (mut candidate, tags) = match newest(t, &shape) {
+    let shape = Shape::of(&t.config.product.name, release);
+    let (candidate, tags) = match newest(t, &shape) {
         Ok(Some(found)) => found,
         Ok(None) => return false,
         Err(e) => {
@@ -93,6 +99,122 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
         }
     };
     overtaken(t, log, report, &shape, &tags, &candidate);
+    let patches = match patches_in_flight(t, &shape, &tags, &candidate) {
+        Ok(p) => p,
+        Err(e) => {
+            // The newest cycle's pass does not wait on the patches' read.
+            t.unreadable(report, "the patch cycles", e);
+            Vec::new()
+        }
+    };
+    for patch in patches {
+        if cycle_pass(t, log, report, &shape, &tags, patch) {
+            return true;
+        }
+    }
+    cycle_pass(t, log, report, &shape, &tags, candidate)
+}
+
+/// The patch cycles in flight below the newest candidate (ASDLC-MG26):
+/// versions above the release in production whose first candidate the cut
+/// workflow tagged as a patch (`Release-Patch-From:`), each with its newest
+/// candidate, highest version first. A lower version without that line is
+/// an older cycle, left to `overtaken`; one at or below production was
+/// published or abandoned, never in flight.
+pub fn patches_in_flight(
+    t: &Tick,
+    shape: &Shape,
+    tags: &[GitRef],
+    newest: &Candidate,
+) -> Result<Vec<Candidate>, String> {
+    let mut lower: Vec<(Version, &GitRef, u64)> = Vec::new();
+    let mut first: Vec<(Version, &GitRef, u64)> = Vec::new();
+    for r in tags {
+        let Some((v, rc)) = shape.parse_candidate(&r.name) else {
+            continue;
+        };
+        if v >= newest.version {
+            continue;
+        }
+        match lower.iter_mut().find(|(lv, _, _)| *lv == v) {
+            Some(l) if rc > l.2 => *l = (v, r, rc),
+            Some(_) => {}
+            None => lower.push((v, r, rc)),
+        }
+        match first.iter_mut().find(|(fv, _, _)| *fv == v) {
+            Some(f) if rc < f.2 => *f = (v, r, rc),
+            Some(_) => {}
+            None => first.push((v, r, rc)),
+        }
+    }
+    if lower.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some((_, production)) = production(t, shape)? else {
+        return Ok(Vec::new());
+    };
+    lower.retain(|(v, _, _)| *v > production);
+    lower.sort_by_key(|(v, _, _)| std::cmp::Reverse(*v));
+    let mut patches = Vec::new();
+    for (version, tag, rc) in lower {
+        let Some((_, opening, _)) = first.iter().find(|(v, _, _)| *v == version) else {
+            continue;
+        };
+        if !opens_a_patch(t, opening)? {
+            continue;
+        }
+        patches.push(read_candidate(t, tag, version, rc)?);
+    }
+    Ok(patches)
+}
+
+/// Whether a cycle's first candidate was cut as a patch: its annotation (a
+/// real tag object only) carries `Release-Patch-From:`.
+fn opens_a_patch(t: &Tick, tag: &GitRef) -> Result<bool, String> {
+    if tag.object_type != ObjectType::Tag {
+        return Ok(false);
+    }
+    let o = t
+        .github
+        .tag_object(&t.repo, &tag.sha)
+        .map_err(|e| e.to_string())?;
+    Ok(gate::patch_from_annotation(Some(&o.message)).is_some())
+}
+
+/// The release in production: the highest release tag of the product with a
+/// published (not draft) GitHub release.
+pub fn production(t: &Tick, shape: &Shape) -> Result<Option<(String, Version)>, String> {
+    let tags = t
+        .github
+        .tags(&t.repo, shape.release_tag_prefix())
+        .map_err(|e| e.to_string())?;
+    let mut releases: Vec<(String, Version)> = tags
+        .iter()
+        .filter_map(|r| shape.parse_release(&r.name).map(|v| (r.name.clone(), v)))
+        .collect();
+    releases.sort_by_key(|a| std::cmp::Reverse(a.1));
+    for (tag, version) in releases {
+        match t.github.release(&t.repo, &tag) {
+            Ok(r) if !r.draft => return Ok(Some((tag, version))),
+            Ok(_) => continue,
+            Err(e) if e.is_not_found() => continue,
+            Err(e) => return Err(format!("the release {tag}: {e}")),
+        }
+    }
+    Ok(None)
+}
+
+/// One cycle's pass, for its newest candidate. Returns whether it merged.
+fn cycle_pass(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    shape: &Shape,
+    tags: &[GitRef],
+    mut candidate: Candidate,
+) -> bool {
+    let cfg = t.config;
+    let release = section(t);
     let version = candidate.version;
     let object = format!("release {} {version}", cfg.product.name);
     let release_tag = shape.release_tag(version);
@@ -108,7 +230,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
     if published.is_some() {
         // Released without a release item of the bridge's (before it took
         // the product over): not its cycle, nothing to do.
-        match find_release_item(t, &shape, version) {
+        match find_release_item(t, shape, version) {
             Ok(Some(_)) => {}
             Ok(None) => return false,
             Err(e) => {
@@ -117,10 +239,10 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
             }
         }
     }
-    let Some(item) = release_item(t, log, report, &shape, version) else {
+    let Some(item) = release_item(t, log, report, shape, version) else {
         return false;
     };
-    candidate.first_rc = match cycle_start(t, &shape, version, candidate.rc) {
+    candidate.first_rc = match cycle_start(t, shape, version, candidate.rc) {
         Ok(first) => first,
         Err(e) => {
             t.unreadable(report, &object, e);
@@ -130,7 +252,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
     if item.state.is_resolved() {
         // A closed cycle: what its archiving left is retried (BR-ASDLC-019).
         if let Some(published) = &published {
-            closure::archive_closed(t, log, report, &shape, &candidate, &item, published);
+            closure::archive_closed(t, log, report, shape, &candidate, &item, published);
         }
         return false;
     }
@@ -141,10 +263,10 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
             Ok(children) => end_consolidations(t, log, report, &children, None),
             Err(e) => t.unreadable(report, &item.key, format!("children: {e}")),
         }
-        closure::close(t, log, report, &shape, &candidate, &item, &published, None);
+        closure::close(t, log, report, shape, &candidate, &item, &published, None);
         return false;
     }
-    let branch = match release_branch(t, &shape, &candidate) {
+    let branch = match release_branch(t, shape, &candidate) {
         Ok(b) => b,
         Err(e) => {
             t.unreadable(report, &object, e);
@@ -152,7 +274,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
         }
     };
     let label = vocabulary::release_label(&cfg.product.name, &version.to_string());
-    let previous = previous_candidate(&shape, &tags, &candidate);
+    let previous = previous_candidate(shape, tags, &candidate);
     // The range is walked (commit → PR → ticket) once per candidate: until
     // its comment is recorded, which happens only after every embarked
     // ticket carries the label.
@@ -174,7 +296,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
     // angles configured later apply from the next candidate.
     let without_angles =
         release.angles.is_empty() || said(&texts::no_qa_angle_marker(&candidate.tag));
-    if recorded || label_embarked(t, log, report, &shape, &candidate, &label) {
+    if recorded || label_embarked(t, log, report, shape, &candidate, &label) {
         record_candidate(t, log, report, &item, &candidate, previous.as_deref());
     }
     // The unified release note's tasks, from the first candidate on: each
@@ -216,7 +338,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
         t,
         log,
         report,
-        &shape,
+        shape,
         &item,
         &candidate,
         &branch,
@@ -228,7 +350,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
     let round = qa_round(
         t,
         report,
-        &shape,
+        shape,
         &item,
         &candidate,
         previous.as_deref(),
@@ -255,7 +377,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
             match open_round(t, log, report, &item, &candidate, &branch, &label, &offered) {
                 Some((children, true)) => {
                     post_brief(t, log, report, &item, &candidate, &b);
-                    note_into_item(t, log, report, &shape, &item, &candidate);
+                    note_into_item(t, log, report, shape, &item, &candidate);
                     children
                 }
                 Some((children, false)) => children,
@@ -369,7 +491,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
     // A later pass under the lighter policy offers no angle: its GO counts
     // the angle PRs merged in the first pass (spec 05 §7-8).
     let (states, without_angles) = if !without_angles && lighter_pass(release, &candidate) {
-        match first_pass_angles(t, &shape, &item, &candidate, &branch, &angle_prs) {
+        match first_pass_angles(t, shape, &item, &candidate, &branch, &angle_prs) {
             Ok(x) => x,
             Err(e) => {
                 t.unreadable(report, &item.key, e);
@@ -392,7 +514,7 @@ pub fn pass(t: &Tick, log: &mut ActionLog, report: &mut Report) -> bool {
         return false;
     };
     if decision.go && notes_ready {
-        on_go(t, log, report, &shape, &item, &candidate, &branch);
+        on_go(t, log, report, shape, &item, &candidate, &branch);
         return false;
     }
     hold(t, log, report, &item, &candidate, &decision);

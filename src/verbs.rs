@@ -179,6 +179,20 @@ pub fn status(t: &Tick) -> Result<(Cycle, GoDecision), String> {
 /// cycle from the default branch or for the next candidate on the release
 /// branch.
 pub fn cut(t: &Tick, log: &mut ActionLog, open: bool, who: &str) -> Result<String, String> {
+    cut_on(t, log, open, None, who)
+}
+
+/// `release cut [--open] [--branch <b>]` by `who`: as [`cut`], the next
+/// candidate on `branch` when one is named. A named branch is needed only
+/// while several cycles are in flight (a patch beside an open cycle,
+/// ASDLC-MG26), and must be one of their release branches.
+pub fn cut_on(
+    t: &Tick,
+    log: &mut ActionLog,
+    open: bool,
+    branch: Option<&str>,
+    who: &str,
+) -> Result<String, String> {
     let cfg = release_cycle(t);
     let shape = Shape::of(&t.config.product.name, cfg);
     let branches: Vec<String> = t
@@ -189,7 +203,24 @@ pub fn cut(t: &Tick, log: &mut ActionLog, open: bool, who: &str) -> Result<Strin
         .filter(|b| shape.is_release_branch(&b.name))
         .map(|b| b.name)
         .collect();
-    let (git_ref, action) = if open {
+    if open && branch.is_some() {
+        return Err(
+            "`--open` cuts a new cycle from the default branch: it takes no `--branch`".into(),
+        );
+    }
+    let (git_ref, action) = if let Some(b) = branch {
+        if !branches.iter().any(|x| x == b) {
+            return Err(format!(
+                "{b} is not a release branch in flight: {}",
+                if branches.is_empty() {
+                    "there is none".to_string()
+                } else {
+                    branches.join(", ")
+                }
+            ));
+        }
+        (b.to_string(), "candidate")
+    } else if open {
         if let Some(b) = branches.first() {
             return Err(format!(
                 "a cycle is in flight on {b}: one release branch at a time"
@@ -205,7 +236,12 @@ pub fn cut(t: &Tick, log: &mut ActionLog, open: bool, who: &str) -> Result<Strin
         match branches.as_slice() {
             [b] => (b.clone(), "candidate"),
             [] => return Err("no release branch: open a cycle with `release cut --open`".into()),
-            _ => return Err(format!("several release branches: {}", branches.join(", "))),
+            _ => {
+                return Err(format!(
+                    "several release branches: {}; name one with `--branch`",
+                    branches.join(", ")
+                ));
+            }
         }
     };
     let workflow = &cfg.cut_workflow;
@@ -233,28 +269,9 @@ pub fn cut(t: &Tick, log: &mut ActionLog, open: bool, who: &str) -> Result<Strin
     ))
 }
 
-/// The release in production: the highest release tag whose GitHub release
-/// is published (not a draft), with its version. A tag with no release, or a
-/// draft, is not in production; unreadable is an error, never "none".
+/// The release in production (see [`release::production`]).
 pub fn production(t: &Tick, shape: &Shape) -> Result<Option<(String, Version)>, String> {
-    let tags = t
-        .github
-        .tags(&t.repo, shape.release_tag_prefix())
-        .map_err(|e| e.to_string())?;
-    let mut releases: Vec<(String, Version)> = tags
-        .iter()
-        .filter_map(|r| shape.parse_release(&r.name).map(|v| (r.name.clone(), v)))
-        .collect();
-    releases.sort_by_key(|a| std::cmp::Reverse(a.1));
-    for (tag, version) in releases {
-        match t.github.release(&t.repo, &tag) {
-            Ok(r) if !r.draft => return Ok(Some((tag, version))),
-            Ok(_) => continue,
-            Err(e) if e.is_not_found() => continue,
-            Err(e) => return Err(format!("the release {tag}: {e}")),
-        }
-    }
-    Ok(None)
+    release::production(t, shape)
 }
 
 /// The version a patch of `production` ships: its next patch version.

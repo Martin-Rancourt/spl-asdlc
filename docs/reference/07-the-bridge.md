@@ -62,7 +62,8 @@ Notices are in English, as everything the bridge writes, with no message catalog
 | Verb | Purpose |
 |---|---|
 | `tick` | One pass; `--dry-run` writes only the log of what it would do |
-| `release cut --product <p> [--open]` | Dispatch the cut workflow (new cycle or next RC). A configuration without a `[release]` section is refused by every verb |
+| `release cut --product <p> [--open \| --branch <release branch>]` | Dispatch the cut workflow (new cycle or next RC). While several cycles are in flight (a patch beside an open cycle), the next RC names its release branch with `--branch`. A configuration without a `[release]` section is refused by every verb |
+| `release patch --product <p> --pr <n>[,<n>…]` | Dispatch the cut workflow's `patch` on the default branch: a patch of the release in production carrying PRs already merged into it, refused for a PR not merged, merged elsewhere or already in production, and when the patch version already has a cycle (`05-release-cycle.md`) |
 | `release status --product <p>` | The GO decision and its inputs, as text and JSON (exit 0 on a GO, 1 otherwise); once the newest candidate's cycle is closed, that no cycle is in flight and which release closed the last one (exit 0) |
 | `release prepare [--version <X.Y.Z>] [--notes <file>] [--dir <path>] [--repository <owner>/<repo>] [--date <YYYY-MM-DD>] [--dry-run]` | Run by the cut's `open` in a checkout of the new release branch: the next version from the commits since the last release, along the git graph, written into the version files and the CHANGELOG, and the release notes; prints `version=`, `tag=`, `previous-tag=`. Reads the repository's file only, never an instance overlay, and talks to no service (`05-release-cycle.md` §1) |
 | `release requalify <ticket> --blocking <true\|false> --reason <r>` | Human requalification of a finding: blocking or not |
