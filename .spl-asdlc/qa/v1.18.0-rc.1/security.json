@@ -1,0 +1,59 @@
+{
+  "schema": "spl-asdlc/qa-report/2",
+  "candidate": "v1.18.0-rc.1",
+  "angle": "security",
+  "item": "ASDLC-3A55",
+  "verdict": "go",
+  "checked": [
+    "Tag annotation of v1.18.0-rc.1 at ff4573e (the tip of release/2026-11-27-23-17-utc): Release-Class routine, reason no reviewed path touched, base v1.17.0; brief of the release item (14 tickets, PRs #172, #219-#231, 13 business rules touched); git diff --stat v1.17.0..v1.18.0-rc.1 (97 files)",
+    "cargo test --locked at v1.18.0-rc.1: all suites green, 1389 passed, 0 failed, 2 ignored (lib 1130, tests/workflows/ 216)",
+    "scripts/check-no-instance-names.sh at v1.18.0-rc.1: exit 0 (identifier forms only; SPL_ASDLC_FORBIDDEN_WORDS is a CI secret, not set locally)",
+    "GitHub rulesets read via the API: main and release/** (PR required, 0 approvals, required checks title / conventional-title and required-check, no bypass actors), tags v*.*.* (deletion, update, non-fast-forward; creation not restricted)",
+    "Delivery chain: diff of .github/workflows/ since v1.17.0. asdlc-release-cut.yml patch action (version and pulls validated by regex before use, every PR checked merged into the default branch with its merge commit an ancestor of it and not already in production, cherry-pick -x as the App, conflict refuses with nothing pushed); asdlc-pr-checks/guards rules-check step (published binary fetched with gh release download and SHA256SUMS, run on the checkout as data, GITHUB_TOKEN only); pr.yml: pull_request only, fork PRs routed to ubuntu-latest, never the self-hosted runner; third-party actions still pinned to full commits; TMPDIR=$RUNNER_TEMP steps and scripts/sweep-runner-tmp.sh (own user, tmp.*/.tmp*/spl-asdlc-wf-* names, idle a day, no sockets or pipes)",
+    "src/tick/merge_back.rs (ASDLC-PQ5J): resolution_pr excludes drafts and cross-repository PRs; land() requires the release tip contained in the head, no conflict and green required checks, merges as a merge commit pinned to the head sha; replay dispatched once per tag by marker",
+    "src/update.rs (ASDLC-AE9F): candidate() filters drafts, prereleases, other majors and versions not above the installed one; archive checked against the release's SHA256SUMS; single-member tar -xO extraction; --version of the staged binary must equal the chosen version; download() sends no credential",
+    "src/tracker/livela/socket.rs and docs/reference/livela-contract.md (ASDLC-4Z4G): major checked before the call is parsed (K3TZ), client side only used by the program (host.rs), server side (handle/serve) only used by tests in this crate",
+    "src/break_glass.rs (ASDLC-KEUY): local command, refuses a dirty tree, every commit must be on the default branch and not in production, stops before any push or tag; --test is the operator's own shell command",
+    "src/tick/release.rs embarked_items and src/github/types.rs picked_from (patch mapping, ASDLC-MG26); patch cycles read from the Release-Patch-From annotation of a real tag object; lighter-pass verdict when a blocking finding is freed (ASDLC-DF2Q) and its tests in src/tick/release_tests/lighter_pass_verdict.rs",
+    "src/tick/merge.rs superseded rounds (ASDLC-FB79): stale items scoped by the PR url prefix, consolidations canceled before angles, comment then cancel, idempotent by marker",
+    "Open findings of earlier candidates (v1.15.0-rc.1 security-1, v1.16.0-rc.1 security-2 now ASDLC-DF2Q in this candidate): not re-reported"
+  ],
+  "findings": [
+    {
+      "id": "security-1",
+      "blocking": false,
+      "summary": "The release mapping reads a `(cherry picked from commit <sha>)` line from every commit of the range, not only from a patch cycle's commits, so any merged PR's commit message can redirect its own commit to another PR.",
+      "anchor": "src/tick/release.rs:1224 (embarked_items) and src/github/types.rs:240 (picked_from), read at src/github/rest.rs:971 and :1053",
+      "evidence": "Read at v1.18.0-rc.1. embarked_items takes `commit.picked_from.unwrap_or(commit.sha)` for every commit between the previous release and the candidate, whatever the cycle. picked_from takes the last line of the message that looks like `(cherry picked from commit <hex of 7+ chars>)`. A squash commit's message is built from the PR's title, body or commit messages, all written by the PR's author. Attacker: a PR author whose PR is merged through its normal review, who puts that line, naming the merge commit of another PR, at the end of the message. Impact: the commit is mapped to the other PR, so the real PR and its ticket vanish from the brief, the release note and the closure (the change ships unannounced, which is what the angles and the coordinator read), and the other PR's ticket is labelled, embarked and closed as shipped in this release even though its code may not be in the range. Needs a merged PR, hence non-blocking. Obvious fix: read picked_from only on the commits of a patch cycle (Release-Patch-From), and only when the copied sha is a merge commit on the default branch and not in the range itself.",
+      "testable": true,
+      "proposed_test": "release_tests: a squash commit of an ordinary cycle whose message ends with `(cherry picked from commit <merge sha of another PR>)` embarks its own PR's ticket, not the other PR's"
+    },
+    {
+      "id": "security-2",
+      "blocking": false,
+      "summary": "The bridge merges any ready same-repository `chore/merge-back-*` PR into the default branch with only green checks: no review round, no approval, and the PR need not name the fix ticket; its content is then set apart as release bookkeeping.",
+      "anchor": "src/tick/merge_back.rs:162-181 (fix exists → land every resolution_pr), :285 resolution_pr, :297 land; src/method/review.rs:26 excluded_from_merge_pass; src/tick/release.rs:1161 release_bookkeeping",
+      "evidence": "Read at v1.18.0-rc.1 (ASDLC-PQ5J). Once a merge-back fix ticket exists, every open, non-draft, non-fork PR whose head starts with `chore/merge-back-` and whose base is the default branch is merged by the App as soon as its head contains the release tip, it does not conflict and its required checks are green. The ordinary merge pass excludes these heads (so no review round, no coordinator approval), the PR is not required to name the fix ticket, and release_bookkeeping later drops a merged `chore/merge-back-*` PR from the brief and the note whatever it links. Attacker: anyone who can push a branch to the repository (an agent identity, a leaked token with contents:write) while a merge back is blocked. Impact: arbitrary code reaches main merged by the App, reviewed by nobody and absent from the next release's ticket list. Today the main ruleset requires 0 approvals, so a writer can already merge a green PR himself; this is a bypass of the method, not of GitHub, hence non-blocking. Obvious fix: land only the PR that names the fix ticket, and bound its diff to the release tip plus the default branch plus the fix (or give it a review round).",
+      "testable": true,
+      "proposed_test": "merge_back: with a fix ticket open, a green `chore/merge-back-*` PR that does not name the fix ticket is not merged"
+    },
+    {
+      "id": "security-3",
+      "blocking": false,
+      "summary": "The runner auto-update installs any non-prerelease GitHub release of the requested major above the installed one, trusting only a SHA256SUMS uploaded to the same release: no signature, attestation or check of who published it.",
+      "anchor": "src/update.rs:41 candidate, :97 verify, :137 update; runner loop at :228",
+      "evidence": "Read at v1.18.0-rc.1 (ASDLC-AE9F). The archive and SHA256SUMS come from the same release, so the checksum proves integrity in transit only, not origin. The tag ruleset v*.*.* restricts deletion, update and non-fast-forward but not creation, and release assets are writable with contents:write. Attacker: a writer or any token with contents:write on this repository (a workflow's GITHUB_TOKEN with that scope, a leaked agent token) creates a release v1.<higher>.0 with a crafted binary and its checksum. Impact: within interval_seconds (300 by default) every `spl-asdlc runner` on major 1 installs and runs it with the App private key and the tracker key of each host, bypassing the gate and the release cycle. Before this candidate the same trust (gh release download + SHA256SUMS) applied to CI callers through the moving minor tag; the runner now extends it to long-lived hosts that hold the bridge's credentials. Needs write access, hence non-blocking. Obvious fix: accept only a release published by the App (its bot login as author) and verify a build provenance attestation or signature of the archive; restrict tag creation of v* to the App in the ruleset.",
+      "testable": true,
+      "proposed_test": "update: a release whose author is not the configured App, or whose archive has no valid attestation, is not installed"
+    },
+    {
+      "id": "security-4",
+      "blocking": false,
+      "summary": "The published socket server signs every write with the `author` the client puts in the request (and the `author`/`by` arguments of comment, log, request_decision, withdraw_decision), so any process that can open the socket writes as any participant, a person included.",
+      "anchor": "src/tracker/livela/socket.rs:356 respond, :421-470 call; docs/reference/livela-contract.md:156-166 (Socket protocol, Identity)",
+      "evidence": "Read at v1.18.0-rc.1 (ASDLC-4Z4G). In-process, the adapter only ever signs as bridge_participant (src/tracker/livela.rs:332 as_bridge). Over the socket, respond() swaps to `request.author` when present, unchecked, and the protocol documents no socket file mode, peer credential check or allowed authors; serve_stream also reads lines with no size limit. The crate ships handle/serve for the Livela runner to reuse as-is (LVL-8U74 not live yet: only tests serve it today). Attacker: any local process or account that can connect to the runner's socket. Impact: comments, decisions and status writes signed as a human participant; a by_person comment is what the bridge reads as a person's verdict, so a forged person's verdict could reach a GO. Needs local access to the socket, hence non-blocking. Obvious fix: the server signs every write as bridge_participant and ignores client-supplied authors, and the contract requires a socket mode 0600 or a peer-uid check and a line-size cap.",
+      "testable": true,
+      "proposed_test": "socket: a write request naming another participant as author (or as the comment's author) is signed by the spl-asdlc participant or refused"
+    }
+  ]
+}
