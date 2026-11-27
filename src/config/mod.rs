@@ -145,6 +145,10 @@ pub struct Tracker {
     /// it goes Done at the merge of its PR rather than To Deploy, and no
     /// release embarks it (spec 04 §10). The bridge reads it, never writes it.
     pub no_deploy_label: String,
+    /// The Livela runner's local socket (a path on the host): how the
+    /// program, run apart from the runner, reaches a Livela tracker
+    /// (`docs/reference/livela-contract.md`, "Socket protocol"). A host key.
+    pub socket: Option<String>,
 }
 
 /// The default of `release.hold_label`.
@@ -893,6 +897,7 @@ impl Validator {
         let no_deploy_label = self
             .optional("tracker.no_deploy_label", raw.no_deploy_label)
             .unwrap_or_else(|| DEFAULT_NO_DEPLOY_LABEL.to_string());
+        let socket = self.optional("tracker.socket", raw.socket);
         Some(Tracker {
             kind: kind?,
             team: team?,
@@ -901,6 +906,7 @@ impl Validator {
             project,
             link_fallback: link_fallback?,
             no_deploy_label,
+            socket,
         })
     }
 

@@ -24,19 +24,26 @@
 //! store's author for the write and restores the previous author after it,
 //! so the runner's other writers keep their own signature.
 //!
+//! Outside the Livela runner, the program reaches the store through the
+//! runner's local socket ([`socket`], contract, "Socket protocol"): the
+//! runner stays the store's only owner.
+//!
 //! Missing from the contract (said, never guessed around): editing a
 //! comment. `update_comment` is refused; the caller posts its fact anew.
 
 use std::cell::RefCell;
 
 use super::*;
+
+#[cfg(unix)]
+pub mod socket;
 use crate::method::vocabulary::StateKind;
 
 /// The name of the bridge's agent participant (contract, item 4).
 pub const PARTICIPANT: &str = "spl-asdlc";
 
 /// An item as the Livela core describes it.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct LivelaItem {
     pub id: String,
     pub short_id: String,
@@ -64,7 +71,7 @@ pub struct LivelaItem {
 
 /// A Livela project: an item of type `project`, whose prefix its items'
 /// short ids carry.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct LivelaProject {
     pub id: String,
     pub prefix: String,
@@ -74,7 +81,7 @@ pub struct LivelaProject {
 /// A decision request of an item as the Livela core keeps it: a comment of
 /// kind `decision_request`, answered by a comment that `resolves` it, or
 /// `withdrawn` by its author (`Store::request_decision`).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct LivelaDecision {
     /// The id of the request (its comment).
     pub id: String,
@@ -87,7 +94,8 @@ pub struct LivelaDecision {
 }
 
 /// The relation kinds the Livela core stores (from the item that holds them).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LivelaRelation {
     BlockedBy,
     RelatedTo,

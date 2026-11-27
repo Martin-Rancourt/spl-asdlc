@@ -1491,3 +1491,196 @@ fn a_comment_is_a_persons_only_when_the_store_says_its_author_is_human() {
         ]
     );
 }
+
+/// The socket protocol (contract, "Socket protocol"): the program's
+/// [`socket::SocketStore`] against the fake store served through a real
+/// Unix socket.
+mod over_the_socket {
+    use super::*;
+    use crate::tracker::livela::socket::{self, MAJOR, SocketStore};
+    use std::os::unix::net::UnixListener;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    type Served = Arc<Mutex<MemStore>>;
+
+    /// A short socket path (a Unix socket path is at most 108 bytes).
+    fn socket_path() -> std::path::PathBuf {
+        static N: AtomicU32 = AtomicU32::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("lv-{}-{n}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    /// Serve `connections` connections of a new socket from `store`, as the
+    /// runner would, its lock taken one request at a time.
+    fn serve(store: &Served, connections: usize) -> std::path::PathBuf {
+        let path = socket_path();
+        let listener = UnixListener::bind(&path).unwrap();
+        let store = store.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(connections) {
+                let store = store.clone();
+                let stream = stream.unwrap();
+                std::thread::spawn(move || {
+                    socket::serve_stream_with(stream, |line| {
+                        socket::handle(&mut *store.lock().unwrap(), line)
+                    })
+                    .unwrap();
+                });
+            }
+        });
+        path
+    }
+
+    #[test]
+    fn the_conformance_suite_passes_through_the_runner_socket() {
+        let store: Served = Arc::new(Mutex::new(MemStore::default()));
+        let path = serve(&store, 2);
+        let facts = || store.lock().unwrap().facts.len() as u64;
+        for prefix in ["TD", "QA"] {
+            let client = SocketStore::connect(&path).unwrap();
+            let t = Livela::new(client, prefix, StatusTable::identity());
+            let report =
+                conformance::run_with(&t, &StatusTable::identity(), "1", Some(&facts)).unwrap();
+            assert_eq!(
+                report.not_offered,
+                vec!["comment edit", "decision request", "task to ticket"]
+            );
+            assert!(
+                report
+                    .passed
+                    .contains(&"unchanged writes record nothing".to_string())
+            );
+        }
+        let s = store.lock().unwrap();
+        let bridge = s.existing_bridge_participant().unwrap();
+        assert!(
+            s.facts
+                .iter()
+                .filter(|(_, what)| !what.starts_with("participant "))
+                .all(|(author, _)| *author == bridge),
+            "every write over the socket is signed spl-asdlc"
+        );
+        assert_eq!(s.author, "runner", "the runner's author is restored");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_write_with_no_author_is_signed_spl_asdlc_and_the_author_restored() {
+        let mut store = MemStore::default();
+        let created = socket::handle(
+            &mut store,
+            &format!(
+                r#"{{"major":{MAJOR},"call":{{"op":"create_ticket","args":{{"project":"project-td","title":"t","description":"","tags":[],"assignee":null,"parent":null,"priority":null,"status":"Backlog"}}}}}}"#
+            ),
+        );
+        let response = socket::decode_response(&created).unwrap();
+        assert!(response.error.is_none(), "{created}");
+        let bridge = store.existing_bridge_participant().unwrap();
+        assert_eq!(store.facts.last().unwrap().0, bridge);
+        assert_eq!(store.author, "runner");
+    }
+
+    #[test]
+    fn a_request_of_another_major_is_refused_never_interpreted() {
+        let mut store = MemStore::default();
+        let before = store.facts.len();
+        // A write the store would do at this major, and an op no major has:
+        // both refused by their major alone.
+        for call in [
+            r#"{"op":"create_ticket","args":{"project":"project-td","title":"t","description":"","tags":[],"assignee":null,"parent":null,"priority":null,"status":"Backlog"}}"#,
+            r#"{"op":"drop_everything"}"#,
+        ] {
+            let other = MAJOR + 1;
+            let line = socket::handle(&mut store, &format!(r#"{{"major":{other},"call":{call}}}"#));
+            let response = socket::decode_response(&line).unwrap();
+            let error = response.error.expect("refused");
+            assert!(
+                error.contains(&format!("major {MAJOR}"))
+                    && error.contains(&format!("major {other}"))
+                    && error.contains("not interpreted"),
+                "{error}"
+            );
+            assert!(response.ok.is_none());
+            let line = socket::handle(&mut store, &format!(r#"{{"call":{call}}}"#));
+            let error = socket::decode_response(&line).unwrap().error.unwrap();
+            assert!(error.contains("no major"), "{error}");
+        }
+        assert_eq!(store.facts.len(), before, "nothing written");
+    }
+
+    #[test]
+    fn the_program_refuses_a_runner_of_another_major() {
+        let line = format!(r#"{{"major":{},"ok":{}}}"#, MAJOR + 1, MAJOR + 1);
+        let error = socket::decode_response(&line).unwrap_err();
+        assert!(
+            error.contains(&format!("this program is major {MAJOR}")),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_socket_nobody_serves_is_said_at_connection() {
+        let path = socket_path();
+        let error = SocketStore::connect(&path).err().unwrap();
+        assert!(error.contains("could not be opened"), "{error}");
+        assert!(error.contains(&path.display().to_string()), "{error}");
+    }
+
+    #[test]
+    fn the_host_opens_a_livela_tracker_by_its_socket_and_names_the_missing_key() {
+        let mut config = crate::config::spec_example::config();
+        config.tracker.kind = crate::config::TrackerKind::Livela;
+        config.tracker.project = Some("TD".into());
+        config.tracker.socket = None;
+        let none = |_: &str| None;
+        let error = crate::host::tracker(&config, &none).err().unwrap();
+        assert_eq!(error, crate::host::NO_SOCKET);
+        assert!(error.contains("socket = "), "it names the key to add");
+
+        let store: Served = Arc::new(Mutex::new(MemStore::default()));
+        let path = serve(&store, 1);
+        config.tracker.socket = Some(path.display().to_string());
+        let tracker = crate::host::tracker(&config, &none).unwrap();
+        assert_eq!(tracker.team_key().unwrap(), "TD");
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+/// Rule FDQ8: outside its tests, the crate holds no store of its own: the
+/// only `LivelaStore` it implements is the socket client, so the program
+/// reaches the Livela store through the runner's socket alone.
+#[test]
+fn the_only_livela_store_the_program_holds_is_the_runner_socket() {
+    fn walk(dir: &std::path::Path, found: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, found);
+            } else if path.extension().is_some_and(|e| e == "rs")
+                && !path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .contains("tests")
+            {
+                let text = std::fs::read_to_string(&path).unwrap();
+                for line in text.lines().filter(|l| l.contains("impl LivelaStore for ")) {
+                    found.push(format!("{}: {}", path.display(), line.trim()));
+                }
+            }
+        }
+    }
+    let mut found = Vec::new();
+    walk(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut found,
+    );
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(
+        found[0].contains("socket.rs") && found[0].contains("SocketStore"),
+        "{found:?}"
+    );
+}
