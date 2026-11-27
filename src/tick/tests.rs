@@ -219,6 +219,119 @@ fn a_green_pr_with_a_complete_contract_opens_a_review_round_then_nothing_more() 
     quiet(&w);
 }
 
+#[test]
+fn a_new_round_supersedes_open_items_and_retries_cancellation_before_angles() {
+    for interrupted in [false, true] {
+        use crate::tracker::Tracker;
+        let w = World::new();
+        let mut pr = green(pull_request(7));
+        w.ticket("ABC-1", Status::InProgress, &pr);
+        w.open(pr.clone());
+        assert!(w.tick(false).0.ok());
+        let old = children_of(&w, "ABC-1");
+        let consolidation = old
+            .iter()
+            .find(|c| {
+                matches!(
+                    texts::bridge_item(&c.description, c.parent.as_deref()),
+                    Some(BridgeItem::Consolidation { .. })
+                )
+            })
+            .unwrap();
+        pr.mergeable = crate::github::Mergeable::Conflicting;
+        w.open(pr.clone());
+        w.github
+            .state
+            .borrow_mut()
+            .conflict_files
+            .insert((repo(), 7), Ok(vec!["src/lib.rs".into()]));
+        assert!(w.tick(false).0.ok());
+        assert_eq!(
+            w.tracker.item("ABC-1").state.status,
+            Some(Status::InProgress)
+        );
+        assert!(w.open_pr(7).unwrap().draft);
+        pr.mergeable = crate::github::Mergeable::Mergeable;
+        pr.draft = false;
+        pr.head_sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into();
+        w.open(pr.clone());
+        if interrupted {
+            w.tracker
+                .fail_writes_starting_with(&format!("status {} Canceled", consolidation.key));
+            assert!(!w.tick(false).0.ok());
+            for child in &old {
+                assert!(!w.tracker.item(&child.key).state.is_resolved());
+            }
+            // The next pass may already see the ticket In Review and all new
+            // items, even though the opening stopped before its round comment.
+            w.tracker
+                .set_status("ABC-1", Status::InReview, None)
+                .unwrap();
+            w.tracker.clear_failing_writes();
+        }
+        assert!(w.tick(false).0.ok());
+        for child in &old {
+            assert_eq!(
+                w.tracker.item(&child.key).state.status,
+                Some(Status::Canceled)
+            );
+            let comments = w.tracker.comments(&child.key).unwrap();
+            let superseded: Vec<_> = comments
+                .iter()
+                .filter(|c| c.body.contains("spl-asdlc:superseded"))
+                .collect();
+            assert_eq!(superseded.len(), 1);
+            assert!(superseded[0].body.contains("bbbbbbbbbbbb"));
+            for new in children_of(&w, "ABC-1")
+                .iter()
+                .filter(|c| !old.iter().any(|o| o.key == c.key))
+            {
+                assert!(superseded[0].body.contains(&new.key));
+            }
+        }
+        assert!(
+            w.tracker
+                .comments("ABC-1")
+                .unwrap()
+                .iter()
+                .any(|c| c.body.contains("Supersedes earlier round items:"))
+        );
+        quiet(&w);
+    }
+}
+
+#[test]
+fn a_new_round_leaves_resolved_earlier_items_unchanged() {
+    use crate::tracker::Tracker;
+    let w = World::new();
+    let mut pr = green(pull_request(7));
+    w.ticket("ABC-1", Status::InProgress, &pr);
+    w.open(pr.clone());
+    assert!(w.tick(false).0.ok());
+    let old = children_of(&w, "ABC-1");
+    for (child, status) in old.iter().zip([Status::Done, Status::Canceled]) {
+        w.tracker.set_status(&child.key, status, None).unwrap();
+    }
+    w.tracker
+        .set_status("ABC-1", Status::InProgress, None)
+        .unwrap();
+    let before: Vec<_> = old
+        .iter()
+        .map(|c| (w.tracker.item(&c.key), w.tracker.comments(&c.key).unwrap()))
+        .collect();
+    pr.head_sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into();
+    w.open(pr);
+    assert!(w.tick(false).0.ok());
+    for (child, (item, comments)) in old.iter().zip(before) {
+        assert_eq!(w.tracker.item(&child.key).state.status, item.state.status);
+        assert_eq!(
+            w.tracker.comments(&child.key).unwrap().len(),
+            comments.len()
+        );
+    }
+    quiet(&w);
+}
+
 // ---- ASDLC-JA74: the item a PR names is a ticket ----
 
 #[test]

@@ -879,15 +879,39 @@ fn one(
         }
         return unreviewed(t, report, pr, ticket, &plan, branch);
     }
+    // Items may exist after an interrupted opening, before its round comment.
+    // Complete that opening before taking the normal In Review path.
+    let opening_incomplete = read_children.as_ref().is_some_and(|children| {
+        let scope = texts::round_scope(&pr.url, &pr.head_sha);
+        !stale_round_items(children, &pr).is_empty() && children.iter().any(|c| matches!(
+            texts::bridge_item(&c.description, c.parent.as_deref()),
+            Some(BridgeItem::Angle { scope: s, .. } | BridgeItem::Consolidation { scope: s }) if s == scope))
+    }) && match tracker_said(t, &ticket.key, &texts::marker("review-round", &[("pr", &pr.url), ("head", head)])) {
+        Ok(said) => !said,
+        Err(e) => {
+            t.unreadable(report, &object, format!("the ticket's comments: {e}"));
+            return None;
+        }
+    };
     // A ticket In Review for another of its PRs: this PR gets its own round
     // (a round is scoped to its PR, BR-ASDLC-007).
-    if status != Some(Status::InReview) || !has_round {
+    if status != Some(Status::InReview) || !has_round || opening_incomplete {
         if let Some(by) = &changes_at_head {
             t.wait(report, &pr, changes_wait(by));
             return None;
         }
         enter_review(t, log, report, &pr, &ticket, status, &plan);
         return None;
+    }
+    if let Some(children) = &read_children {
+        let scope = texts::round_scope(&pr.url, &pr.head_sha);
+        let current: Vec<String> = children.iter().filter(|c| {
+            matches!(texts::bridge_item(&c.description, c.parent.as_deref()),
+                Some(BridgeItem::Angle { scope: s, .. } | BridgeItem::Consolidation { scope: s }) if s == scope)
+        }).map(|c| c.key.clone()).collect();
+        if !current.is_empty() && !supersede_rounds(t, log, report, &pr, children, &current) {
+            return None;
+        }
     }
     // Fewer angles than the round has: the angle sub-items the current
     // configuration no longer asks for are canceled, the rest of the round
@@ -1680,6 +1704,98 @@ fn approval_wait(pr: &PullRequest, approval: &Approval) -> String {
     }
 }
 
+// Consolidations first: canceling an angle must never make its stale
+// consolidation available, even if a later write fails.
+fn stale_round_items<'a>(children: &'a [Item], pr: &PullRequest) -> Vec<&'a Item> {
+    let scope = texts::round_scope(&pr.url, &pr.head_sha);
+    let prefix = format!("{}@", pr.url);
+    let mut stale: Vec<_> = children
+        .iter()
+        .filter(|c| {
+            matches!(texts::bridge_item(&c.description, c.parent.as_deref()),
+            Some(BridgeItem::Angle { scope: s, .. } | BridgeItem::Consolidation { scope: s })
+            if s.starts_with(&prefix) && s != scope)
+        })
+        .collect();
+    stale.sort_by_key(|c| {
+        !matches!(
+            texts::bridge_item(&c.description, c.parent.as_deref()),
+            Some(BridgeItem::Consolidation { .. })
+        )
+    });
+    stale
+}
+
+fn supersede_rounds(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    pr: &PullRequest,
+    children: &[Item],
+    replacements: &[String],
+) -> bool {
+    let marker = texts::marker(
+        "superseded",
+        &[("pr", &pr.url), ("head", texts::short(&pr.head_sha))],
+    );
+    for child in stale_round_items(children, pr)
+        .into_iter()
+        .filter(|c| !c.state.is_resolved())
+    {
+        match tracker_said(t, &child.key, &marker) {
+            Ok(true) => {}
+            Ok(false) => {
+                let body = for_tracker(
+                    t,
+                    &format!(
+                        "Superseded by the review round at `{}`: {}. The bridge cancels this earlier round item.\n\n{marker}",
+                        texts::short(&pr.head_sha),
+                        replacements.join(", ")
+                    ),
+                );
+                if t.act(
+                    log,
+                    report,
+                    &child.key,
+                    "comment superseded",
+                    json!({"pr": pr.url}),
+                    || {
+                        t.tracker
+                            .comment(&child.key, &body)
+                            .map(|_| ())
+                            .map_err(|e| e.to_string())
+                    },
+                )
+                .is_none()
+                {
+                    return false;
+                }
+            }
+            Err(e) => {
+                t.unreadable(report, &child.key, format!("its comments: {e}"));
+                return false;
+            }
+        }
+        if t.act(
+            log,
+            report,
+            &child.key,
+            "status Canceled (superseded)",
+            json!({"pr": pr.url}),
+            || {
+                t.tracker
+                    .set_status(&child.key, Status::Canceled, None)
+                    .map_err(|e| e.to_string())
+            },
+        )
+        .is_none()
+        {
+            return false;
+        }
+    }
+    true
+}
+
 /// Open the review round once CI is green: the angle sub-items and the
 /// consolidation item (each linked to the PR), the consolidation item
 /// blocked by every angle sub-item (BR-ASDLC-018), the round comment, then
@@ -1877,13 +1993,28 @@ fn enter_review(
     if !block_consolidation(t, log, report, &consolidation, &angle_keys) {
         return;
     }
-    let round = texts::review_round_comment(
+    let mut replacements = angle_keys.clone();
+    replacements.push(consolidation.clone());
+    let supersedes = stale_round_items(&children, pr)
+        .iter()
+        .map(|c| c.key.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if !supersede_rounds(t, log, report, pr, &children, &replacements) {
+        return;
+    }
+    let mut round = texts::review_round_comment(
         &pr.url,
         &pr.head_sha,
         &items,
         &plan.reasons,
         texts::short(&pr.head_sha),
     );
+    if !supersedes.is_empty() {
+        round.push_str(&format!(
+            "\n\nSupersedes earlier round items: {supersedes}."
+        ));
+    }
     let marker = texts::marker(
         "review-round",
         &[("pr", &pr.url), ("head", texts::short(&pr.head_sha))],
