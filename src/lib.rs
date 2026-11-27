@@ -3,6 +3,7 @@
 //! (`docs/reference/07-the-bridge.md`). It contains no model call.
 
 pub mod action_log;
+pub mod break_glass;
 pub mod cli;
 pub mod config;
 pub mod doctor;

@@ -22,7 +22,7 @@ A configuration key the new line adds enters `.spl-asdlc/config.toml` only after
 
 ## When the method breaks
 
-If the pinned version cannot serve a fix of its own (the bridge stopped on this repository, a check refuses every PR), the fallback is a manual merge on GitHub: the owner merges the fix's PR by hand, and, when a release is needed, dispatches the cut, or tags and publishes the release by hand (`docs/setup/manual-gestures.md`). The bridge takes each gesture as done. Then fix forward through the cycle.
+If the pinned version cannot serve a fix of its own (the bridge stopped on this repository, a check refuses every PR), the fallback is a manual merge on GitHub: the owner merges the fix's PR by hand, and, when a release is needed, dispatches the cut, or tags and publishes the release by hand (`docs/setup/manual-gestures.md`). When the bridge cannot ship that fix at all, `spl-asdlc release patch --break-glass` prepares the patch in a checkout and stops before the tag (`docs/setup/manual-gestures.md`, "Patch when the bridge is down"). The bridge takes each gesture as done. Then fix forward through the cycle.
 
 **The crate on crates.io**: the `crates-io` job of `publish.yml` runs `cargo publish --locked` from the release's tag, once the binaries are built and tested, and publishes nothing for a version crates.io already holds or a tag that is not `v<X.Y.Z>`. It reads its token from the GitHub environment `crates-io`, set up once by the owner:
 - on crates.io (Account settings → API Tokens), a token scoped to the crate `spl-asdlc` with the `publish-update` scope only, and an expiry the owner chooses;

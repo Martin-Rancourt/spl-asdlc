@@ -119,10 +119,52 @@ enum ReleaseCommand {
         branch: Option<String>,
     },
     /// Start a patch release from the published release, carrying merged PRs.
+    /// With `--break-glass`, when the bridge itself is broken: prepare the
+    /// patch in a checkout instead, with no bridge and no workflow, and stop
+    /// before the tag with the commands of the go (ASDLC-KEUY).
     Patch {
         /// A PR already merged into the default branch; repeat for several PRs.
-        #[arg(long = "pr", required = true, value_delimiter = ',')]
+        #[arg(
+            long = "pr",
+            required_unless_present = "break_glass",
+            conflicts_with = "break_glass",
+            value_delimiter = ','
+        )]
         pulls: Vec<u64>,
+        /// Prepare the patch in the checkout `--dir`, without the bridge: a
+        /// release branch from the tag in production, the `--commit`s
+        /// cherry-picked on it, the patch version and its notes, the
+        /// `--test`s run. Pushes and tags nothing; prints the go's commands.
+        #[arg(long, requires_all = ["commits", "tests"])]
+        break_glass: bool,
+        /// `--break-glass`: a commit merged into the default branch; repeat
+        /// for several.
+        #[arg(long = "commit", requires = "break_glass", value_delimiter = ',')]
+        commits: Vec<String>,
+        /// `--break-glass`: the project's tests, run with `sh -c` in the
+        /// checkout; repeat for several.
+        #[arg(long = "test", requires = "break_glass")]
+        tests: Vec<String>,
+        /// `--break-glass`: the release tag in production (default: the
+        /// highest release tag).
+        #[arg(long, requires = "break_glass")]
+        from: Option<String>,
+        /// `--break-glass`: the repository's working tree.
+        #[arg(long, default_value = ".", requires = "break_glass")]
+        dir: PathBuf,
+        /// `--break-glass`: the remote to fetch from and push to.
+        #[arg(long, default_value = "origin", requires = "break_glass")]
+        remote: String,
+        /// `--break-glass`: the default branch (default: the remote's HEAD).
+        #[arg(long, requires = "break_glass")]
+        default_branch: Option<String>,
+        /// `--break-glass`: `<owner>/<repo>` for the notes' links (default:
+        /// `product.repository`).
+        #[arg(long, requires = "break_glass")]
+        repository: Option<String>,
+        /// `--break-glass`: read the remote as last fetched.
+        #[arg(long, requires = "break_glass")]
+        no_fetch: bool,
     },
     /// Prepare the next release in a checkout of the release branch: compute
     /// its version from the commits since the last release, write it into the
@@ -565,6 +607,33 @@ fn release(
         };
         return prepare(file, instance, product, &options, out, err);
     }
+    if let ReleaseCommand::Patch {
+        break_glass: true,
+        commits,
+        tests,
+        from,
+        dir,
+        remote,
+        default_branch,
+        repository,
+        no_fetch,
+        ..
+    } = command
+    {
+        let options = crate::break_glass::Options {
+            dir,
+            commits,
+            from,
+            tests,
+            remote,
+            default_branch,
+            repository,
+            date: None,
+            stamp: None,
+            no_fetch,
+        };
+        return break_glass(file, instance, product, &options, out, err);
+    }
     let c = match connect(file, instance) {
         Ok(c) => c,
         Err(e) => {
@@ -641,7 +710,7 @@ fn release(
             Some(b) => project.cut_on(&b, &who()),
             None => project.cut(open, &who()),
         },
-        ReleaseCommand::Patch { pulls } => project.patch(&pulls, &who()),
+        ReleaseCommand::Patch { pulls, .. } => project.patch(&pulls, &who()),
         ReleaseCommand::Prepare { .. } => unreachable!("prepared above, with no connection"),
         ReleaseCommand::Requalify {
             ticket,
@@ -673,26 +742,27 @@ fn status_code(status: &crate::embed::ReleaseStatus) -> ExitCode {
 
 /// `release prepare`: the repository's file alone, read in a checkout; no
 /// overlay, no client.
-fn prepare(
+/// The repository's file read for a verb that runs in a checkout with no
+/// connection (`release prepare`, `release patch --break-glass`).
+fn preparation(
+    verb: &str,
     file: &std::path::Path,
     instance: Option<&std::path::Path>,
     product: Option<&str>,
-    options: &crate::prepare::Options,
-    out: &mut dyn Write,
     err: &mut dyn Write,
-) -> ExitCode {
+) -> Result<crate::config::Preparation, ExitCode> {
     if instance.is_some() {
         let _ = writeln!(
             err,
-            "release prepare reads the repository's file only: --instance is not taken"
+            "{verb} reads the repository's file only: --instance is not taken"
         );
-        return ExitCode::from(2);
+        return Err(ExitCode::from(2));
     }
     let text = match std::fs::read_to_string(file) {
         Ok(t) => t,
         Err(e) => {
             let _ = writeln!(err, "{} could not be read: {e}", file.display());
-            return ExitCode::from(2);
+            return Err(ExitCode::from(2));
         }
     };
     let prep = match Config::preparation(&text) {
@@ -702,7 +772,7 @@ fn prepare(
             for e in &errors.0 {
                 let _ = writeln!(err, "  {e}");
             }
-            return ExitCode::from(2);
+            return Err(ExitCode::from(2));
         }
     };
     if let Some(p) = product.filter(|p| *p != prep.product) {
@@ -712,8 +782,76 @@ fn prepare(
             file.display(),
             prep.product
         );
-        return ExitCode::from(2);
+        return Err(ExitCode::from(2));
     }
+    Ok(prep)
+}
+
+/// `release patch --break-glass`: the patch prepared in a checkout, stopped
+/// before the tag, with the go's commands (ASDLC-KEUY).
+fn break_glass(
+    file: &std::path::Path,
+    instance: Option<&std::path::Path>,
+    product: Option<&str>,
+    options: &crate::break_glass::Options,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> ExitCode {
+    let prep = match preparation("release patch --break-glass", file, instance, product, err) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    match crate::break_glass::run(&prep, options) {
+        Ok(r) => {
+            let _ = writeln!(
+                out,
+                "Break-glass patch {} ready on {} (local only), from {}:",
+                r.tag, r.branch, r.from
+            );
+            for (sha, subject) in &r.carried {
+                let _ = writeln!(out, "  {} {subject}", &sha[..sha.len().min(12)]);
+            }
+            let _ = writeln!(
+                out,
+                "  {} chore(release): v{}",
+                &r.head[..r.head.len().min(12)],
+                r.version
+            );
+            let _ = writeln!(out, "Tests passed: {}", r.tests.join("; "));
+            let _ = writeln!(out, "Notes: {}", r.notes.display());
+            let _ = writeln!(
+                out,
+                "Nothing was pushed nor tagged. Read the commits above; once a person gives the go, run:"
+            );
+            for c in &r.go {
+                let _ = writeln!(out, "  {c}");
+            }
+            let _ = writeln!(
+                out,
+                "Then the project's publication runs on the published release and merges {} back; record the gesture on the ticket.",
+                r.branch
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            let _ = writeln!(err, "release patch --break-glass refused: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn prepare(
+    file: &std::path::Path,
+    instance: Option<&std::path::Path>,
+    product: Option<&str>,
+    options: &crate::prepare::Options,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> ExitCode {
+    let prep = match preparation("release prepare", file, instance, product, err) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
     match crate::prepare::run(&prep, options) {
         Ok(p) => {
             let _ = writeln!(out, "version={}", p.version);
@@ -1076,6 +1214,86 @@ mod tests {
         assert!(
             requalify(&["ABC-7", "--severity", "nit", "--reason", "r"]).is_err(),
             "the severities are gone"
+        );
+    }
+
+    #[test]
+    fn the_patch_verb_takes_prs_or_a_break_glass_with_commits_and_tests() {
+        let parse = |args: &[&str]| {
+            let mut argv = vec!["spl-asdlc", "release", "patch"];
+            argv.extend_from_slice(args);
+            Cli::try_parse_from(argv).map(|c| c.command)
+        };
+        match parse(&["--pr", "12,13"]) {
+            Ok(Command::Release {
+                command:
+                    ReleaseCommand::Patch {
+                        pulls, break_glass, ..
+                    },
+                ..
+            }) => {
+                assert_eq!(pulls, [12, 13]);
+                assert!(!break_glass);
+            }
+            other => panic!("{other:?}"),
+        }
+        match parse(&[
+            "--break-glass",
+            "--commit",
+            "abc123",
+            "--commit",
+            "def456",
+            "--test",
+            "cargo test --locked",
+            "--from",
+            "v0.28.0",
+        ]) {
+            Ok(Command::Release {
+                command:
+                    ReleaseCommand::Patch {
+                        pulls,
+                        break_glass,
+                        commits,
+                        tests,
+                        from,
+                        remote,
+                        ..
+                    },
+                ..
+            }) => {
+                assert!(pulls.is_empty());
+                assert!(break_glass);
+                assert_eq!(commits, ["abc123", "def456"]);
+                assert_eq!(tests, ["cargo test --locked"]);
+                assert_eq!(from.as_deref(), Some("v0.28.0"));
+                assert_eq!(remote, "origin");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(parse(&[]).is_err(), "PRs or a break-glass");
+        assert!(
+            parse(&["--break-glass", "--test", "true"]).is_err(),
+            "its commits"
+        );
+        assert!(
+            parse(&["--break-glass", "--commit", "abc"]).is_err(),
+            "its tests"
+        );
+        assert!(
+            parse(&[
+                "--pr",
+                "12",
+                "--break-glass",
+                "--commit",
+                "a",
+                "--test",
+                "t"
+            ])
+            .is_err()
+        );
+        assert!(
+            parse(&["--pr", "12", "--commit", "abc"]).is_err(),
+            "commits are break-glass only"
         );
     }
 
