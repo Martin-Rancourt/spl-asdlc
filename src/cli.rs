@@ -249,6 +249,22 @@ enum RulesCommand {
         #[arg(long, default_value = crate::method::business_rules::REGISTRY_DIR)]
         out: PathBuf,
     },
+    /// Check the registry at a commit of a checkout: each rule file's
+    /// format, and the tests each `Enforced` rule cites. With `--base`,
+    /// only the errors the commit brings fail (a PR); without it, every
+    /// error does (a release candidate). Exit 1 on an error, 2 when the
+    /// registry cannot be read.
+    Check {
+        /// The checkout.
+        #[arg(long, default_value = ".")]
+        dir: PathBuf,
+        /// The commit to check.
+        #[arg(long, default_value = "HEAD")]
+        rev: String,
+        /// The commit to compare with (a PR's base): its errors do not fail.
+        #[arg(long)]
+        base: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -332,6 +348,9 @@ where
         Command::Rules {
             command: RulesCommand::Split { register, out: dir },
         } => rules_split(&register, &dir, &mut out, &mut err),
+        Command::Rules {
+            command: RulesCommand::Check { dir, rev, base },
+        } => rules_check(&dir, &rev, base.as_deref(), &mut out, &mut err),
         Command::Watch { file, instance } => watch(&file, instance.as_deref(), &mut out, &mut err),
         Command::Tick {
             files,
@@ -980,6 +999,65 @@ fn rules_split(
         let _ = writeln!(out, "kept, their file already exists: {}", kept.join(", "));
     }
     ExitCode::SUCCESS
+}
+
+fn rules_check(
+    dir: &std::path::Path,
+    rev: &str,
+    base: Option<&str>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> ExitCode {
+    use crate::method::business_rules::{REGISTRY_DIR, check::new_errors};
+    use crate::rules_check::{check_at, resolve};
+    let checked = (|| {
+        let head = resolve(dir, rev)?;
+        // One label for both sides, so an error reads the same on each.
+        let report = check_at(dir, &head, rev)?;
+        let base = match base {
+            Some(b) => Some((b, check_at(dir, &resolve(dir, b)?, rev)?)),
+            None => None,
+        };
+        Ok::<_, String>((report, base))
+    })();
+    let (report, base) = match checked {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = writeln!(err, "{e}");
+            return ExitCode::from(2);
+        }
+    };
+    let failing = match &base {
+        Some((_, b)) => new_errors(&report, b),
+        None => report.errors.clone(),
+    };
+    for e in &failing {
+        let _ = writeln!(err, "{e}");
+    }
+    let _ = writeln!(
+        out,
+        "{REGISTRY_DIR}/ at {rev}: {} rule(s), {} enforced, {} error(s)",
+        report.rules,
+        report.enforced,
+        report.errors.len()
+    );
+    if let Some((b, _)) = &base {
+        let _ = writeln!(
+            out,
+            "{} error(s) brought since {b}; {} already there, which this change does not have to fix",
+            failing.len(),
+            report.errors.len() - failing.len()
+        );
+    }
+    if failing.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        let _ = writeln!(
+            err,
+            "Fix each rule file under {REGISTRY_DIR}/ (title, `Status:` line, `## Rule`, `## Evidence`, `## Test`) and the tests it cites."
+        );
+        ExitCode::from(1)
+    }
 }
 
 fn ticket_check(
