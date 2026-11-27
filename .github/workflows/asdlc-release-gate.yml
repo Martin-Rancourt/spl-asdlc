@@ -114,6 +114,20 @@ on:
         description: JSON object of static, non-secret environment for the setup and the suites.
         type: string
         default: '{}'
+      spl-asdlc-repository:
+        description: >-
+          `<owner>/spl-asdlc`, whose published binary checks the business-rule
+          registry at the candidate; empty: the repository a caller of this
+          workflow names.
+        type: string
+        default: ''
+      spl-asdlc-version:
+        description: >-
+          That binary's version: a minor line `v<X.Y>`, a release tag
+          `v<X.Y.Z>` or `latest`; empty: the ref a caller of this workflow
+          names (a branch or a commit reads as `latest`).
+        type: string
+        default: ''
       runs-on:
         description: A runner label, or a JSON array of labels, for the suites job.
         type: string
@@ -363,6 +377,7 @@ jobs:
                   else
                     (if ($s.id | type) != "string" or ($s.id | test("^[a-z][a-z0-9_]*$") | not) then err($i; "id must match ^[a-z][a-z0-9_]*$") else empty end),
                     (if $s.id == "pr_guards" then err($i; "the id pr_guards is reserved for the PR guards") else empty end),
+                    (if $s.id == "business_rules" then err($i; "the id business_rules is reserved for the business-rule registry") else empty end),
                     (if ([$all[] | objects | select(.id == $s.id)] | length) > 1 then err($i; "duplicate id") else empty end),
                     (if ($s.run | type) != "string" or ($s.run | length) == 0 then err($i; "run must be a command") else empty end),
                     (if $s.shell != null and $s.shell != "bash" then err($i; "shell must be bash") else empty end),
@@ -471,6 +486,96 @@ jobs:
           fi
           echo "Evidence prepared since $since."
 
+      # The binary that checks the business-rule registry at the candidate
+      # (ASDLC-YX9K): the published one of the version the callers pin, its
+      # checksum verified. Its failure is the `business_rules` suite's, which
+      # then never reads as green.
+      - name: Fetch spl-asdlc for the business-rule registry
+        id: spl
+        if: steps.prepare.outcome == 'success'
+        continue-on-error: true
+        env:
+          SPL_REPOSITORY: ${{ inputs.spl-asdlc-repository }}
+          SPL_VERSION: ${{ inputs.spl-asdlc-version }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          refuse() {
+            echo "::error title=Business-rule registry::$1"
+            exit 1
+          }
+          # The method's repository and version: the inputs, else those of a
+          # caller of the method's workflows in this repository.
+          calls="$(mktemp)"
+          trap 'rm -f "$calls"' EXIT
+          grep -rhoE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/\.github/workflows/asdlc-release-gate\.yml@[A-Za-z0-9_./-]+' .github/workflows > "$calls" 2>/dev/null || true
+          call="$(sed -n 1p "$calls")"
+          if [ -z "$SPL_REPOSITORY" ] && [ -n "$call" ]; then
+            SPL_REPOSITORY="${call%%/.github/*}"
+          fi
+          if [ -z "$SPL_VERSION" ] && [ -n "$call" ]; then
+            SPL_VERSION="${call##*@}"
+          fi
+          if [ -z "$SPL_REPOSITORY" ]; then
+            refuse "No caller of asdlc-release-gate.yml under .github/workflows names the method's repository: pass spl-asdlc-repository."
+          fi
+          case "$(uname -s)/$(uname -m)" in
+            Linux/x86_64) target=x86_64-unknown-linux-gnu ;;
+            Darwin/arm64) target=aarch64-apple-darwin ;;
+            Darwin/x86_64) target=x86_64-apple-darwin ;;
+            *) refuse "No spl-asdlc binary is published for this runner ($(uname -s)/$(uname -m)): run the gate on a Linux x86_64 runner (runs-on)." ;;
+          esac
+          # A minor line is its newest published release, a release tag is
+          # itself, anything else (a branch, a commit) is the latest release.
+          if [[ "$SPL_VERSION" =~ ^v[0-9]+\.[0-9]+$ ]]; then
+            listed="$(mktemp)"
+            if ! gh api --paginate "repos/$SPL_REPOSITORY/releases?per_page=100" > "$listed"; then
+              refuse "Could not list the releases of $SPL_REPOSITORY: gh api repos/$SPL_REPOSITORY/releases"
+            fi
+            patch="$(jq -r --arg line "$SPL_VERSION." '.[]
+              | select((.draft | not) and (.prerelease | not))
+              | .tag_name | select(startswith($line)) | ltrimstr($line)
+              | select(test("^(0|[1-9][0-9]*)$"))' "$listed" | sort -n | tail -n 1)"
+            if [ -z "$patch" ]; then
+              refuse "$SPL_REPOSITORY has no published release of the line $SPL_VERSION."
+            fi
+            tag="$SPL_VERSION.$patch"
+          elif [[ "$SPL_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            tag="$SPL_VERSION"
+          else
+            if ! tag="$(gh release view --repo "$SPL_REPOSITORY" --json tagName --jq .tagName)" || [ -z "$tag" ]; then
+              refuse "Could not read the latest release of $SPL_REPOSITORY: gh release view --repo $SPL_REPOSITORY"
+            fi
+          fi
+          name="spl-asdlc-$tag-$target"
+          dir="${RUNNER_TEMP:?}/asdlc-gate-spl"
+          rm -rf "$dir"
+          mkdir -p "$dir"
+          if ! gh release download "$tag" --repo "$SPL_REPOSITORY" --pattern "$name.tar.gz" --pattern SHA256SUMS --dir "$dir"; then
+            refuse "Could not download $name.tar.gz and SHA256SUMS from the release $tag of $SPL_REPOSITORY."
+          fi
+          if ! grep -E "^[0-9a-f]{64}  $name\.tar\.gz$" "$dir/SHA256SUMS" > "$dir/expected"; then
+            refuse "The SHA256SUMS of $tag lists no $name.tar.gz: nothing unverified runs."
+          fi
+          if command -v sha256sum > /dev/null; then
+            sum() { sha256sum -c "$1"; }
+          else
+            sum() { shasum -a 256 -c "$1"; }
+          fi
+          if ! (cd "$dir" && sum expected > /dev/null); then
+            refuse "$name.tar.gz does not match its SHA256SUMS line: nothing unverified runs."
+          fi
+          tar -xzf "$dir/$name.tar.gz" -C "$dir"
+          bin="$dir/$name/spl-asdlc"
+          if ! [ -x "$bin" ]; then
+            refuse "$name.tar.gz holds no spl-asdlc that runs here."
+          fi
+          {
+            echo "bin=$bin"
+            echo "tag=$tag"
+          } >> "${GITHUB_OUTPUT:-/dev/stdout}"
+
       - name: Set up the suites
         id: setup
         if: steps.prepare.outcome == 'success' && inputs.upstream-result == 'success' && inputs.setup-command != ''
@@ -492,6 +597,8 @@ jobs:
         env:
           SETUP_OUTCOME: ${{ steps.setup.outcome }}
           HAS_SETUP: ${{ inputs.setup-command != '' }}
+          SPL_BIN: ${{ steps.spl.outputs.bin }}
+          SPL_TAG: ${{ steps.spl.outputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
@@ -559,6 +666,37 @@ jobs:
               record pr_guards failure "failed: ${failed[*]}"
             else
               record pr_guards success
+            fi
+          fi
+
+          # The business-rule registry, clean as a whole (ASDLC-YX9K): an
+          # error blocks the release, however old. A PR is only refused the
+          # errors it brings; the candidate answers for every one.
+          record business_rules started
+          if [ -z "$SPL_BIN" ]; then
+            echo "::error title=Business-rule registry::spl-asdlc could not be fetched (the step 'Fetch spl-asdlc for the business-rule registry'): the registry is not checked, and the gate is not green."
+            record business_rules failure "spl-asdlc could not be fetched"
+          elif ! "$SPL_BIN" rules check --help > /dev/null 2>&1; then
+            echo "::warning title=Business-rule registry::spl-asdlc $SPL_TAG has no \`rules check\`: the registry is checked from the version that brings it."
+            echo "spl-asdlc $SPL_TAG has no rules check." > "$pack/business_rules.log"
+            record business_rules success "spl-asdlc $SPL_TAG has no rules check"
+          else
+            echo "::group::suite business_rules"
+            set +e
+            "$SPL_BIN" rules check --rev "$GITHUB_SHA" > "$pack/business_rules.log" 2>&1
+            rc=$?
+            set -e
+            cat "$pack/business_rules.log"
+            echo "::endgroup::"
+            if [ "$rc" -eq 0 ]; then
+              record business_rules success
+            else
+              while IFS= read -r line; do
+                case "$line" in
+                  .spl-asdlc/business-rules/*:* | [A-Z0-9]*:*) echo "::error title=Business-rule registry::${line//%/%25}" ;;
+                esac
+              done < "$pack/business_rules.log"
+              record business_rules failure "the business-rule registry has errors: see business_rules.log"
             fi
           fi
 
@@ -701,6 +839,9 @@ jobs:
             echo '{}' > "$work/artifacts"
             printf 'suites_input\tfailure\tthe suites input is not a JSON array of suites with ids\t\n' >> "$outcomes"
           fi
+          # The registry's suite is always declared: one that never ran is not green.
+          jq -c '["business_rules"] + .' "$work/declared" > "$work/declared.new"
+          mv "$work/declared.new" "$work/declared"
           if [ "$RERUN_GUARDS" = true ] && jq -e 'type == "array" and length > 0' > /dev/null 2>&1 <<< "$GUARDS"; then
             jq -c '["pr_guards"] + .' "$work/declared" > "$work/declared.new"
             mv "$work/declared.new" "$work/declared"
