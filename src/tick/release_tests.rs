@@ -39,6 +39,10 @@ mod merge_back;
 /// A patch cycle beside an open cycle (ASDLC-MG26).
 mod patch_cycle;
 
+/// A later pass under the lighter policy that frees a blocking finding
+/// (ASDLC-DF2Q).
+mod lighter_pass_verdict;
+
 const BRANCH: &str = "release/2026-10-05-14-03-utc";
 const CAND: &str = "acme-v1.2.0-rc.1";
 const LABEL: &str = "release/acme-v1.2.0";
