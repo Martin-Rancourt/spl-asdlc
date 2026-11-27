@@ -37,7 +37,7 @@ impl AngleState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum VerdictState {
     /// The candidate has no QA angle, or is a later pass under the lighter
-    /// policy: no verdict is asked.
+    /// policy that frees no blocking finding: no verdict is asked.
     #[default]
     NotNeeded,
     /// No verdict of the candidate is merged yet.

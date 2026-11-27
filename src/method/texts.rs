@@ -988,6 +988,28 @@ pub enum AngleScope {
     NoQaAngle,
 }
 
+/// The marker of the comment that says why a later pass under the lighter
+/// policy asks a verdict (ASDLC-DF2Q).
+pub fn lighter_verdict_marker(candidate: &str) -> String {
+    marker("lighter-verdict", &[("candidate", candidate)])
+}
+
+/// Why a later pass under `later_passes = "gate-and-coordinator"`, which
+/// offers no angle, asks the coordinator's verdict: it frees blocking
+/// findings of the release, and only a person judges that their merged fix
+/// fixes them (ASDLC-DF2Q).
+pub fn lighter_verdict_comment(candidate: &str, findings: &[String]) -> String {
+    let which = if findings.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", findings.join(", "))
+    };
+    format!(
+        "`{candidate}` is a later pass under `later_passes = \"gate-and-coordinator\"`: it offers no angle, but it frees blocking findings of the release{which}, their fix merged and in it. Ticked boxes and a merged PR do not prove a finding fixed: read each fix against its finding (its proposed test included), then give the verdict on `{candidate}` as for any candidate. The GO waits for it.\n\n{}",
+        lighter_verdict_marker(candidate)
+    )
+}
+
 /// The marker of a candidate recorded while no QA angle was configured:
 /// angles configured later apply from the next candidate, never to it.
 pub fn no_qa_angle_marker(candidate: &str) -> String {

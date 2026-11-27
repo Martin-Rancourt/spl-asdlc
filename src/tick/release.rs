@@ -354,6 +354,13 @@ fn cycle_pass(
     } else {
         offered(t, &candidate)
     };
+    // A later pass under the lighter policy asks the coordinator's verdict
+    // when it frees a blocking finding (ASDLC-DF2Q); blockers that cannot be
+    // read ask it too, fail-closed, though no item is opened for it.
+    let lighter = !without_angles && lighter_pass(release, &candidate);
+    let freeing = asks_verdict(t, &item, &candidate, without_angles);
+    let verdict_asked = freeing.unwrap_or(!without_angles);
+    let verdict_round = lighter && freeing == Some(true);
     let gate = match gate_run(t, &candidate) {
         Ok(run) => run,
         Err(e) => {
@@ -398,16 +405,36 @@ fn cycle_pass(
                 Vec::new()
             }
         },
-        Round::Open => open_round(t, log, report, &item, &candidate, &branch, &label, &offered)
-            .map(|(children, _)| children)
-            .unwrap_or_default(),
+        Round::Open => open_round(
+            t,
+            log,
+            report,
+            &item,
+            &candidate,
+            &branch,
+            &label,
+            &offered,
+            verdict_round,
+        )
+        .map(|(children, _)| children)
+        .unwrap_or_default(),
         Round::Brief(b) => {
             // The round first, its relations, the brief last (REQ-REL-046).
             // A relation not written holds the brief, fail-closed: the brief
             // is what starts the angles' work, and a consolidation item not
             // yet blocked by them could be served first. The next tick lays
             // the relations, then posts the brief.
-            match open_round(t, log, report, &item, &candidate, &branch, &label, &offered) {
+            match open_round(
+                t,
+                log,
+                report,
+                &item,
+                &candidate,
+                &branch,
+                &label,
+                &offered,
+                verdict_round,
+            ) {
                 Some((children, true)) => {
                     post_brief(t, log, report, &item, &candidate, &b);
                     note_into_item(t, log, report, shape, &item, &candidate);
@@ -497,8 +524,9 @@ fn cycle_pass(
     );
     // The coordinator's verdict, for a candidate that offered its angles;
     // a later pass under the lighter policy counts the first pass's angles
-    // and asks no verdict of its own.
-    let verdict = if without_angles || lighter_pass(release, &candidate) {
+    // and asks a verdict of its own only when it frees a blocking finding
+    // (ASDLC-DF2Q).
+    let verdict = if !verdict_asked {
         VerdictState::NotNeeded
     } else {
         candidate_verdict(
@@ -1360,7 +1388,10 @@ fn qa_round(
 /// the items, repaired at every later tick; one that fails is reported and
 /// retried). Returns the release item's children after the creations, with
 /// `false` when a relation could not be read or written (the brief then
-/// waits), or `None` when the children could not be read.
+/// waits), or `None` when the children could not be read. With
+/// `verdict_round` (a later pass under the lighter policy that frees a
+/// blocking finding, ASDLC-DF2Q), the consolidation item alone, with no
+/// angle.
 #[allow(clippy::too_many_arguments)]
 fn open_round(
     t: &Tick,
@@ -1371,6 +1402,7 @@ fn open_round(
     branch: &str,
     label: &str,
     offered: &[String],
+    verdict_round: bool,
 ) -> Option<(Vec<Item>, bool)> {
     let release = section(t);
     let mut children = match release_children(t, item) {
@@ -1462,7 +1494,9 @@ fn open_round(
             return None;
         }
     };
-    if !offered.is_empty() && !consolidated {
+    // A later pass under the lighter policy offers no angle, but opens the
+    // consolidation item when it frees a blocking finding (ASDLC-DF2Q).
+    if (!offered.is_empty() || verdict_round) && !consolidated {
         let of = texts::Consolidating::Candidate;
         let pinned = match method_texts::texts(t, &c.tag, of.job(), None) {
             Ok(p) => p,
@@ -1489,8 +1523,54 @@ fn open_round(
             children.push(as_release_child(created, item));
         }
     }
+    if verdict_round {
+        lighter_verdict_asked(t, log, report, item, &children, c);
+    }
     let blocked = gate_consolidation(t, log, report, &children, &c.tag, offered);
     Some((children, blocked))
+}
+
+/// On the consolidation item of a later pass under the lighter policy, once:
+/// why a verdict is asked of a pass that offers no angle, and which blocking
+/// findings it judges (ASDLC-DF2Q).
+fn lighter_verdict_asked(
+    t: &Tick,
+    log: &mut ActionLog,
+    report: &mut Report,
+    item: &Item,
+    children: &[Item],
+    c: &Candidate,
+) {
+    let want = Some(BridgeItem::Consolidation {
+        scope: c.tag.clone(),
+    });
+    let Some(cons) = children.iter().find(|ch| {
+        !ch.state.is_resolved() && texts::bridge_item(&ch.description, ch.parent.as_deref()) == want
+    }) else {
+        return;
+    };
+    let marker = texts::lighter_verdict_marker(&c.tag);
+    match tracker_said(t, &cons.key, &marker) {
+        Ok(true) => {}
+        Ok(false) => {
+            let freed = freed_findings(t, item, c);
+            let body = for_tracker(t, &texts::lighter_verdict_comment(&c.tag, &freed));
+            t.act(
+                log,
+                report,
+                &cons.key,
+                "comment lighter-pass verdict",
+                json!({"candidate": c.tag, "findings": freed}),
+                || {
+                    t.tracker
+                        .comment(&cons.key, &body)
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
+                },
+            );
+        }
+        Err(e) => t.unreadable(report, &cons.key, format!("comments: {e}")),
+    }
 }
 
 /// The release item's children as the method reads them (BR-ASDLC-038): a
@@ -3314,46 +3394,12 @@ pub fn decide(
             None
         }
     };
-    let relations = match t.tracker.relations(&item.key) {
-        Ok(r) => r,
-        Err(e) => {
-            t.unreadable(report, &item.key, e);
-            return None;
-        }
-    };
-    let label = vocabulary::release_label(&cfg.product.name, &c.version.to_string());
-    let mut blockers = Vec::new();
-    let mut fix_gaps = Vec::new();
-    for b in &relations.blocked_by {
-        match t.tracker.get(&b.other) {
-            Ok(i) if i.state.is_resolved() => {}
-            Ok(i) => match blocker_fix(t, report, item, &label, c, &i) {
-                Fix::InCandidate => {}
-                Fix::Gap(gap) => fix_gaps.push(gap),
-                Fix::NotMerged => blockers.push(b.other.clone()),
-            },
-            Err(e) => {
-                t.unreadable(report, &b.other, e);
-                return None;
-            }
-        }
-    }
-    let unlinked_blockers: Vec<String> = match t.tracker.list_by_label(&label) {
-        Ok(items) => items
-            .into_iter()
-            .filter(|i| !i.state.is_resolved())
-            .filter(|i| {
-                findings::parse_blocker_marker(&i.description).as_deref() == Some(item.key.as_str())
-            })
-            .filter(|i| !relations.blocked_by.iter().any(|b| b.other == i.key))
-            .filter(|i| !matches!(blocker_fix(t, report, item, &label, c, i), Fix::InCandidate))
-            .map(|i| i.key)
-            .collect(),
-        Err(e) => {
-            t.unreadable(report, &item.key, e);
-            return None;
-        }
-    };
+    let Blockers {
+        blockers,
+        unlinked: unlinked_blockers,
+        fix_gaps,
+        ..
+    } = blockers_of(t, report, item, c)?;
     // The branch moved past the candidate with more than bookkeeping: fixes
     // no gate and no QA has seen (REQ-REL-070). A report of the candidate's
     // own angles is never a gap: its angle PR is merged after the candidate
@@ -3441,6 +3487,98 @@ pub fn decide(
         policy,
     };
     Some(go::evaluate(&facts))
+}
+
+/// The open blockers of the release item, as the GO reads them (spec 05
+/// §8): open blocking issues, blocking findings whose `blocks` relation is
+/// missing, fix gaps, and the blocking findings this candidate frees (their
+/// fix merged and in it). `None` when the relations or the release's items
+/// cannot be read (said in `report`).
+struct Blockers {
+    blockers: Vec<String>,
+    unlinked: Vec<String>,
+    fix_gaps: Vec<String>,
+    freed: Vec<String>,
+}
+
+fn blockers_of(t: &Tick, report: &mut Report, item: &Item, c: &Candidate) -> Option<Blockers> {
+    let label = vocabulary::release_label(&t.config.product.name, &c.version.to_string());
+    let relations = match t.tracker.relations(&item.key) {
+        Ok(r) => r,
+        Err(e) => {
+            t.unreadable(report, &item.key, e);
+            return None;
+        }
+    };
+    let mut out = Blockers {
+        blockers: Vec::new(),
+        unlinked: Vec::new(),
+        fix_gaps: Vec::new(),
+        freed: Vec::new(),
+    };
+    for b in &relations.blocked_by {
+        match t.tracker.get(&b.other) {
+            Ok(i) if i.state.is_resolved() => {}
+            Ok(i) => match blocker_fix(t, report, item, &label, c, &i) {
+                Fix::InCandidate => out.freed.push(i.key),
+                Fix::Gap(gap) => out.fix_gaps.push(gap),
+                Fix::NotMerged => out.blockers.push(b.other.clone()),
+            },
+            Err(e) => {
+                t.unreadable(report, &b.other, e);
+                return None;
+            }
+        }
+    }
+    let items = match t.tracker.list_by_label(&label) {
+        Ok(items) => items,
+        Err(e) => {
+            t.unreadable(report, &item.key, e);
+            return None;
+        }
+    };
+    for i in items
+        .into_iter()
+        .filter(|i| !i.state.is_resolved())
+        .filter(|i| {
+            findings::parse_blocker_marker(&i.description).as_deref() == Some(item.key.as_str())
+        })
+        .filter(|i| !relations.blocked_by.iter().any(|b| b.other == i.key))
+    {
+        match blocker_fix(t, report, item, &label, c, &i) {
+            Fix::InCandidate => out.freed.push(i.key),
+            _ => out.unlinked.push(i.key),
+        }
+    }
+    Some(out)
+}
+
+/// Whether the coordinator's verdict is asked on the candidate (spec 05
+/// §8, rule V7QD): never on a candidate with no QA angle; on every first
+/// pass and every pass under `later_passes = "full"`; on a later pass under
+/// the lighter policy only when the candidate frees a blocking finding of
+/// the release (ASDLC-DF2Q): the GO it frees then rests on a person
+/// judging that the merged fix fixes the finding, never on the boxes and
+/// the merge alone. `None` when the blockers cannot be read: the GO waits.
+pub fn asks_verdict(t: &Tick, item: &Item, c: &Candidate, without_angles: bool) -> Option<bool> {
+    if without_angles {
+        return Some(false);
+    }
+    if !lighter_pass(section(t), c) {
+        return Some(true);
+    }
+    // Read quietly: what cannot be read is said once, by the GO's own read.
+    let mut quiet = Report::default();
+    blockers_of(t, &mut quiet, item, c).map(|b| !b.freed.is_empty())
+}
+
+/// The blocking findings a later pass under the lighter policy frees, for
+/// the coordinator's item (ASDLC-DF2Q).
+fn freed_findings(t: &Tick, item: &Item, c: &Candidate) -> Vec<String> {
+    let mut quiet = Report::default();
+    blockers_of(t, &mut quiet, item, c)
+        .map(|b| b.freed)
+        .unwrap_or_default()
 }
 
 /// Where an open blocker of the release stands against the candidate

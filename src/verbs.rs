@@ -198,13 +198,16 @@ pub fn status_on(t: &Tick, branch: Option<&str>) -> Result<(Cycle, GoDecision), 
             (angle, state)
         })
         .collect();
+    // A later pass under the lighter policy owes a verdict only when it
+    // frees a blocking finding (ASDLC-DF2Q); unreadable blockers ask it.
+    let asked = release::asks_verdict(t, &cy.item, c, without_angles).unwrap_or(!without_angles);
     // A later pass under the lighter policy: the angles of the first pass.
     let (states, without_angles) = if !without_angles && release::lighter_pass(release_cfg, c) {
         release::first_pass_angles(t, &cy.shape, &cy.item, c, &branch, &open)?
     } else {
         (states, without_angles)
     };
-    let verdict = if without_angles || release::lighter_pass(release_cfg, c) {
+    let verdict = if !asked {
         VerdictState::NotNeeded
     } else {
         release::merged_verdict_state(t, c, &merged)?
