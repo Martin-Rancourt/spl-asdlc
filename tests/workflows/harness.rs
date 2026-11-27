@@ -176,6 +176,11 @@ pub fn run(script: &str, env: &[(&str, &str)], cwd: &Path) -> Ran {
     std::fs::write(&file, script).unwrap();
     let outputs = scratch.0.join("output");
     std::fs::write(&outputs, "").unwrap();
+    // The step's own `mktemp -d` lands in the scratch, removed with it: with
+    // TMPDIR cleared it would land in the system's /tmp and stay there (a
+    // published-binary step leaves a 30 MB archive per run).
+    let tmp = scratch.0.join("tmp");
+    std::fs::create_dir_all(&tmp).unwrap();
     let mut cmd = std::process::Command::new("bash");
     cmd.args(["--noprofile", "--norc", "-eo", "pipefail"])
         .arg(&file)
@@ -183,6 +188,7 @@ pub fn run(script: &str, env: &[(&str, &str)], cwd: &Path) -> Ran {
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", &scratch.0)
+        .env("TMPDIR", &tmp)
         .env("GITHUB_OUTPUT", &outputs);
     // A PATH in `env` (stubs first) replaces the inherited one.
     for (k, v) in env {

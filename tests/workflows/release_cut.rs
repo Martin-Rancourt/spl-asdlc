@@ -446,6 +446,12 @@ fn open_runs_the_published_binary_of_its_channel_checked_against_its_sums() {
     ok(&r);
     let bin = r.output("bin").expect("the binary's path");
     assert!(bin.ends_with(&format!("{name}/spl-asdlc")), "{bin}");
+    // The download's `mktemp -d` is the run's own scratch, gone with it: a
+    // run leaves no archive in the system's temporary directory.
+    assert!(
+        !std::path::Path::new(&bin).exists(),
+        "{bin} outlived its run"
+    );
     assert!(r.log.contains("checksum verified"), "{}", r.log);
     let seen = calls(&stubs.0, "gh");
     assert_eq!(
