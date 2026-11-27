@@ -28,5 +28,7 @@ mod release_gate;
 mod release_publish;
 #[cfg(unix)]
 mod required_check;
+#[cfg(unix)]
+mod runner_cleanup;
 #[path = "../support/template.rs"]
 mod template;

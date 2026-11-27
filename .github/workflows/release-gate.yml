@@ -38,6 +38,17 @@ jobs:
     permissions:
       contents: read
     steps:
+      # The job's temporary files and Cargo's build go to the runner's temp
+      # folder, which the runner empties when the job ends, whatever its
+      # outcome (ASDLC-3YRA). `target` is that build seen from the workspace,
+      # the form Swatinem/rust-cache takes.
+      - name: Temporary files in the runner's temp
+        id: scratch
+        shell: bash
+        run: |
+          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target" >> "$GITHUB_ENV"
+          echo "target=$(realpath -m --relative-to="$GITHUB_WORKSPACE" "$RUNNER_TEMP/target")" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
@@ -59,7 +70,9 @@ jobs:
       release-tag: v{version}
       upstream-result: ${{ needs.preflight.result }}
       dispatch-class: ${{ inputs.release_class }}
-      setup-command: rustup toolchain install stable --profile minimal --component rustfmt,clippy && rustup default stable
+      # Cargo's build goes to the runner's temp folder, which the runner
+      # empties when the job ends (ASDLC-3YRA).
+      setup-command: rustup toolchain install stable --profile minimal --component rustfmt,clippy && rustup default stable && echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target" >> "$GITHUB_ENV"
       suites: >-
         [{"id": "fmt", "run": "cargo fmt --all --check 2>&1 | tee \"$EVIDENCE_DIR/fmt.log\""},
          {"id": "clippy", "run": "cargo clippy --all-targets --locked -- -D warnings 2>&1 | tee \"$EVIDENCE_DIR/clippy.log\""},

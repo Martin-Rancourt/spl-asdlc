@@ -68,6 +68,11 @@ jobs:
       decision: ${{ steps.decide.outputs.rerun }}
       reason: ${{ steps.decide.outputs.reason }}
     steps:
+      # The job's temporary files go to the runner's temp folder, which the
+      # runner empties when the job ends, whatever its outcome (ASDLC-3YRA).
+      - name: Temporary files in the runner's temp
+        shell: bash
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Check out the known flakes from the default branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

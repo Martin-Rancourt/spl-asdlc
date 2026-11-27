@@ -162,7 +162,9 @@ fn the_app_token_is_minted_right_before_the_writes_and_only_there() {
 #[test]
 fn the_reference_guard_is_the_first_step_of_verify() {
     let d = doc();
-    let steps = d["jobs"]["verify"]["steps"].as_vec().unwrap();
+    // After the scratch step, which runs no code of the repository.
+    let steps =
+        crate::harness::after_scratch(d["jobs"]["verify"]["steps"].as_vec().unwrap().clone());
     assert_eq!(steps[0]["id"].as_str(), Some("reference"));
     assert!(
         steps[1]["uses"]
