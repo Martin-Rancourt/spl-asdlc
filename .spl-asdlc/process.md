@@ -95,7 +95,7 @@ Then stop the work that depends on the answer; go on with the rest of the ticket
 
 ## Review, consolidate, release QA
 
-These jobs come as items the bridge creates and serves to their reviewer or coordinator: an angle sub-item of a PR or of a release candidate, a consolidation item. Each item carries its whole protocol under its `## Protocol` section, at the version that created it. Follow that protocol; it says what to leave behind (a review on the PR, a report file, an approval) and what closes the item. Never move such an item's status: the bridge does, from what you leave on GitHub.
+These jobs come as items the bridge creates and serves to their reviewer or coordinator: an angle sub-item of a PR or of a release candidate, a consolidation item. Each item carries its whole protocol under its `## Protocol` section, at the version that created it. Follow that protocol; it says what to leave behind (a review on the PR, a report file, an approval) and what closes the item. An item that opens its own PR (a release angle's report, a candidate's verdict) is a ticket: move it to In Review once its PR is opened, before you give it back; the bridge closes it, or moves it back to In Progress when something is missing. An item with no PR of its own (a PR review from an angle, a PR's consolidation) is a task: close it yourself once your review is submitted. Never move such an item's status otherwise: the bridge does, from what you leave on GitHub.
 
 ## The release cycle
 
@@ -127,5 +127,5 @@ A person may take any step of the flow by hand, in GitHub or in the tracker, and
 
 - merge a PR, or push to the default branch or a release branch;
 - move a ticket to Ready, In Review, To Deploy, Post Deploy or Done, or close it;
-- move the status of an item the bridge created (angle sub-item, consolidation item, release issue);
+- move the status of an item the bridge created (angle sub-item, consolidation item, release issue), but the one move its protocol asks of you (In Review for an item with its own PR, Done for a review task);
 - cut a release, cut a candidate (but the one your consolidation protocol asks of you), tag or publish a release, or declare the GO.
