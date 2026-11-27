@@ -712,3 +712,141 @@ fn the_rules_step_and_the_doctor_read_a_status_alike() {
         );
     }
 }
+
+// ---- the errors a PR brings to the business-rule registry (ASDLC-YX9K) ----
+
+/// Run the registry step in `repo`, the published binary served by a `gh`
+/// stub, as a caller pinning `v9.9` would.
+fn check_registry(repo: &Repo, base: &str, head: &str, env: &[(&str, &str)]) -> (Ran, Vec<String>) {
+    use crate::harness::{Scratch, calls, path_with};
+    use crate::release_cut::{gh_releases, published};
+    let serve = Scratch::new("serve");
+    let stubs = Scratch::new("stubs");
+    published(&serve.0, "v9.9.1", false);
+    std::fs::write(
+        serve.0.join("releases.json"),
+        r#"[{"tag_name":"v9.9.1","draft":false,"prerelease":false},
+            {"tag_name":"v9.9.0","draft":false,"prerelease":false},
+            {"tag_name":"v9.9.2","draft":true,"prerelease":false}]"#,
+    )
+    .unwrap();
+    gh_releases(&stubs.0, &serve.0, "v9.9.1");
+    let path = path_with(&stubs.0);
+    let mut all = vec![
+        ("BASE_SHA", base),
+        ("HEAD_SHA", head),
+        ("SPL_REPOSITORY", ""),
+        ("SPL_VERSION", ""),
+        ("GH_TOKEN", "a-token"),
+        ("PATH", path.as_str()),
+    ];
+    for (k, v) in env {
+        all.retain(|(key, _)| key != k);
+        all.push((k, v));
+    }
+    let r = run(&step_body("registry"), &all, &repo.dir.0);
+    (r, calls(&stubs.0, "gh"))
+}
+
+const DIR: &str = spl_asdlc::method::business_rules::REGISTRY_DIR;
+
+fn enforced(id: &str, test: &str) -> String {
+    format!(
+        "# {id} — A rule.\n\nStatus: Enforced\n\n## Rule\n\nThe rule.\n\n## Evidence\n\nA decision.\n\n## Test\n\n{test}\n"
+    )
+}
+
+#[test]
+fn a_pr_fails_only_on_the_registry_errors_it_brings() {
+    if crate::release_cut::target().is_none() {
+        return;
+    }
+    let repo = Repo::new();
+    repo.write(
+        ".github/workflows/pr.yml",
+        "jobs:\n  guards:\n    uses: example-org/spl-asdlc/.github/workflows/asdlc-pr-checks.yml@v9.9\n",
+    );
+    // Before the PR: a rule without Evidence, and one whose test is absent.
+    repo.write(
+        &format!("{DIR}/G6HT-old.md"),
+        &enforced("G6HT", "`tests/a.rs`").replace("## Evidence\n\nA decision.\n\n", ""),
+    );
+    repo.write(
+        &format!("{DIR}/H8LW-old.md"),
+        &enforced("H8LW", "`tests/gone.rs`"),
+    );
+    repo.write(
+        &format!("{DIR}/K3MP-fine.md"),
+        &enforced("K3MP", "`tests/a.rs`: `a_case`"),
+    );
+    repo.write("tests/a.rs", "fn a_case() {}\n");
+    let base = repo.commit("the registry before the PR");
+
+    // A PR that leaves the old errors alone passes.
+    repo.write("src/other.rs", "pub fn o() {}\n");
+    let quiet = repo.commit("unrelated");
+    let (r, seen) = check_registry(&repo, &base, &quiet, &[]);
+    assert_eq!(r.code, 0, "{}", r.log);
+    assert!(r.log.contains("0 error(s) brought since"), "{}", r.log);
+    // The caller's pin, `v9.9`, is its newest published release.
+    assert_eq!(
+        seen[0],
+        "api --paginate repos/example-org/spl-asdlc/releases?per_page=100"
+    );
+    assert!(seen[1].starts_with("release download v9.9.1 "), "{seen:?}");
+
+    // A PR whose rule cites a test it does not add fails, naming it alone.
+    repo.write(
+        &format!("{DIR}/J2CS-new.md"),
+        &enforced("J2CS", "`tests/a.rs`: `a_new_case`"),
+    );
+    let bad = repo.commit("a rule without its test");
+    let (r, _) = check_registry(&repo, &base, &bad, &[]);
+    assert_eq!(r.code, 1, "{}", r.log);
+    assert!(
+        r.log.contains(
+            "::error title=Business-rule registry::J2CS: `a_new_case` is not in `tests/a.rs`"
+        ),
+        "{}",
+        r.log
+    );
+    assert!(
+        !r.log.contains("G6HT"),
+        "an old error never blocks: {}",
+        r.log
+    );
+    assert!(
+        !r.log.contains("H8LW"),
+        "an old error never blocks: {}",
+        r.log
+    );
+
+    // Breaking a rule that was fine is the PR's error too.
+    repo.git(&["rm", "-q", &format!("{DIR}/J2CS-new.md")]);
+    repo.write("tests/a.rs", "fn renamed() {}\n");
+    let broke = repo.commit("the cited test renamed");
+    let (r, _) = check_registry(&repo, &base, &broke, &[]);
+    assert_eq!(r.code, 1, "{}", r.log);
+    assert!(
+        r.log.contains("K3MP: `a_case` is not in `tests/a.rs`"),
+        "{}",
+        r.log
+    );
+
+    // A release tag in the input is that release; outside a PR, nothing runs.
+    let (r, seen) = check_registry(&repo, &base, &quiet, &[("SPL_VERSION", "v9.9.1")]);
+    assert_eq!(r.code, 0, "{}", r.log);
+    assert!(seen[0].starts_with("release download v9.9.1 "), "{seen:?}");
+    let (r, seen) = check_registry(&repo, "", &quiet, &[]);
+    assert_eq!(r.code, 0, "{}", r.log);
+    assert!(seen.is_empty(), "{seen:?}");
+}
+
+#[test]
+fn the_registry_step_needs_the_methods_repository() {
+    let repo = Repo::new();
+    let head = repo.git(&["rev-parse", "HEAD"]);
+    let (r, _) = check_registry(&repo, &head, &head, &[]);
+    assert_eq!(r.code, 1, "{}", r.log);
+    assert!(r.log.contains("pass spl-asdlc-repository"), "{}", r.log);
+}
