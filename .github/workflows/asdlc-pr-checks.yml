@@ -5,7 +5,8 @@ name: asdlc-pr-checks
 # (asdlc-pr-guards.yml, REQ-CI-022..034): the "does anything beyond prose
 # change?" detector, the project's extra detectors, the method check of the
 # process page, the check of the branch's name, the status line of the
-# business-rule files the PR changes, and its guard commands. Each
+# business-rule files the PR changes, the errors it brings to the
+# business-rule registry (`spl-asdlc rules check`), and its guard commands. Each
 # job a workflow starts is billed at least a minute on a hosted runner: one
 # job instead of two halves what the method's checks cost on every PR event.
 # Its steps are those of the two workflows, as they ship (the tests compare
@@ -132,6 +133,19 @@ on:
           open PRs stay green.
         type: string
         default: warn
+      spl-asdlc-repository:
+        description: >-
+          `<owner>/spl-asdlc`, whose published binary checks the business-rule
+          registry; empty: the repository a caller of this workflow names.
+        type: string
+        default: ''
+      spl-asdlc-version:
+        description: >-
+          That binary's version: a minor line `v<X.Y>`, a release tag
+          `v<X.Y.Z>` or `latest`; empty: the ref a caller of this workflow
+          names (a branch or a commit reads as `latest`).
+        type: string
+        default: ''
       setup-command:
         description: Run once before the guard commands.
         type: string
@@ -522,11 +536,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # The doctor refuses a rule file without a `Status: Proposed` or
-          # `Status: Enforced` line (`parse_rule_file`), and the bridge then
-          # stops serving the repository: refuse it at the PR instead, prose
-          # or not. Only the files the PR adds or modifies; the same reading
-          # as the doctor (the first `Status:` line outside a closed code
+          # The registry check refuses a rule file without a `Status:
+          # Proposed` or `Status: Enforced` line (`parse_rule_file`): refuse
+          # it at the PR with the file named, prose or not, even when the
+          # binary cannot run. Only the files the PR adds or modifies; the
+          # same reading as `parse_rule_file` (the first `Status:` line outside a closed code
           # fence, bold markers allowed), which tests/workflows/pr_guards.rs
           # keeps in step with it.
           if [ -z "$BASE_SHA" ] || [ -z "$HEAD_SHA" ]; then
@@ -578,13 +592,13 @@ jobs:
             case "$verdict" in
               ok) ;;
               missing)
-                echo "::error file=$at,title=Business rule status::$at has no \`Status: Proposed\` or \`Status: Enforced\` line outside a code fence: add one under its title. The doctor refuses the file, and the bridge stops serving the repository."
+                echo "::error file=$at,title=Business rule status::$at has no \`Status: Proposed\` or \`Status: Enforced\` line outside a code fence: add one under its title. The registry check (\`spl-asdlc rules check\`) refuses the file at the release gate."
                 failed=1
                 ;;
               *)
                 seen="${verdict#invalid }"
                 seen="${seen//%/%25}"
-                echo "::error file=$at,title=Business rule status::$at: its status line \`$seen\` is not \`Status: Proposed\` nor \`Status: Enforced\`. The doctor refuses the file, and the bridge stops serving the repository."
+                echo "::error file=$at,title=Business rule status::$at: its status line \`$seen\` is not \`Status: Proposed\` nor \`Status: Enforced\`. The registry check (\`spl-asdlc rules check\`) refuses the file at the release gate."
                 failed=1
                 ;;
             esac
@@ -593,6 +607,112 @@ jobs:
             exit 1
           fi
           echo "$checked changed business rule(s), each with a status."
+
+      # The registry as a whole (ASDLC-YX9K): each rule file's format and the
+      # tests each `Enforced` rule cites, judged by `spl-asdlc rules check`
+      # at the head against the base, so that only the errors the PR brings
+      # fail it; an error already on the base never blocks a PR (the release
+      # gate requires the whole registry clean). The binary is the published
+      # one of the version the callers pin, its checksum verified; a version
+      # without the command only warns.
+      - name: The PR brings no error to the business-rule registry
+        id: registry
+        if: steps.skip.outputs.skipped != 'true'
+        env:
+          BASE_SHA: ${{ inputs.base-sha }}
+          HEAD_SHA: ${{ inputs.head-sha }}
+          SPL_REPOSITORY: ${{ inputs.spl-asdlc-repository }}
+          SPL_VERSION: ${{ inputs.spl-asdlc-version }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          refuse() {
+            echo "::error title=Business-rule registry::$1"
+            exit 1
+          }
+          if [ -z "$BASE_SHA" ] || [ -z "$HEAD_SHA" ]; then
+            echo "No base or head commit: the business-rule registry is not checked."
+            exit 0
+          fi
+          # The method's repository and version: the inputs, else those of a
+          # caller of the method's workflows in this repository.
+          calls="$(mktemp)"
+          trap 'rm -f "$calls"' EXIT
+          grep -rhoE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/\.github/workflows/asdlc-pr-(checks|guards)\.yml@[A-Za-z0-9_./-]+' .github/workflows > "$calls" 2>/dev/null || true
+          call="$(sed -n 1p "$calls")"
+          if [ -z "$SPL_REPOSITORY" ] && [ -n "$call" ]; then
+            SPL_REPOSITORY="${call%%/.github/*}"
+          fi
+          if [ -z "$SPL_VERSION" ] && [ -n "$call" ]; then
+            SPL_VERSION="${call##*@}"
+          fi
+          if [ -z "$SPL_REPOSITORY" ]; then
+            refuse "No caller of asdlc-pr-checks.yml or asdlc-pr-guards.yml under .github/workflows names the method's repository: pass spl-asdlc-repository."
+          fi
+          case "$(uname -s)/$(uname -m)" in
+            Linux/x86_64) target=x86_64-unknown-linux-gnu ;;
+            Darwin/arm64) target=aarch64-apple-darwin ;;
+            Darwin/x86_64) target=x86_64-apple-darwin ;;
+            *) refuse "No spl-asdlc binary is published for this runner ($(uname -s)/$(uname -m)): run the guards on a Linux x86_64 runner (runs-on)." ;;
+          esac
+          # A minor line is its newest published release, a release tag is
+          # itself, anything else (a branch, a commit) is the latest release.
+          if [[ "$SPL_VERSION" =~ ^v[0-9]+\.[0-9]+$ ]]; then
+            listed="$(mktemp)"
+            if ! gh api --paginate "repos/$SPL_REPOSITORY/releases?per_page=100" > "$listed"; then
+              refuse "Could not list the releases of $SPL_REPOSITORY: gh api repos/$SPL_REPOSITORY/releases"
+            fi
+            patch="$(jq -r --arg line "$SPL_VERSION." '.[]
+              | select((.draft | not) and (.prerelease | not))
+              | .tag_name | select(startswith($line)) | ltrimstr($line)
+              | select(test("^(0|[1-9][0-9]*)$"))' "$listed" | sort -n | tail -n 1)"
+            if [ -z "$patch" ]; then
+              refuse "$SPL_REPOSITORY has no published release of the line $SPL_VERSION."
+            fi
+            tag="$SPL_VERSION.$patch"
+          elif [[ "$SPL_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            tag="$SPL_VERSION"
+          else
+            if ! tag="$(gh release view --repo "$SPL_REPOSITORY" --json tagName --jq .tagName)" || [ -z "$tag" ]; then
+              refuse "Could not read the latest release of $SPL_REPOSITORY: gh release view --repo $SPL_REPOSITORY"
+            fi
+          fi
+          name="spl-asdlc-$tag-$target"
+          dir="$(mktemp -d)"
+          if ! gh release download "$tag" --repo "$SPL_REPOSITORY" --pattern "$name.tar.gz" --pattern SHA256SUMS --dir "$dir"; then
+            refuse "Could not download $name.tar.gz and SHA256SUMS from the release $tag of $SPL_REPOSITORY."
+          fi
+          if ! grep -E "^[0-9a-f]{64}  $name\.tar\.gz$" "$dir/SHA256SUMS" > "$dir/expected"; then
+            refuse "The SHA256SUMS of $tag lists no $name.tar.gz: nothing unverified runs."
+          fi
+          if command -v sha256sum > /dev/null; then
+            sum() { sha256sum -c "$1"; }
+          else
+            sum() { shasum -a 256 -c "$1"; }
+          fi
+          if ! (cd "$dir" && sum expected > /dev/null); then
+            refuse "$name.tar.gz does not match its SHA256SUMS line: nothing unverified runs."
+          fi
+          tar -xzf "$dir/$name.tar.gz" -C "$dir"
+          bin="$dir/$name/spl-asdlc"
+          if ! [ -x "$bin" ]; then
+            refuse "$name.tar.gz holds no spl-asdlc that runs here."
+          fi
+          if ! "$bin" rules check --help > /dev/null 2>&1; then
+            echo "::warning title=Business-rule registry::spl-asdlc $tag has no \`rules check\`: the registry is checked from the version that brings it."
+            exit 0
+          fi
+          if "$bin" rules check --rev "$HEAD_SHA" --base "$BASE_SHA" 2> "$dir/errors"; then
+            exit 0
+          else
+            rc=$?
+          fi
+          while IFS= read -r line; do
+            line="${line//%/%25}"
+            echo "::error title=Business-rule registry::$line"
+          done < "$dir/errors"
+          exit "$rc"
 
       - name: Set up the guard commands
         if: steps.skip.outputs.skipped != 'true' && inputs.setup-command != ''

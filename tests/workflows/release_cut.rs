@@ -320,7 +320,7 @@ fn modified_tracked_files_refuse_the_cut() {
 // ------------------------------------- open: the published binary, prepared
 
 /// This host's target, as the binary step maps `uname`.
-fn target() -> Option<&'static str> {
+pub(crate) fn target() -> Option<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("linux", "x86_64") => Some("x86_64-unknown-linux-gnu"),
         ("macos", "aarch64") => Some("aarch64-apple-darwin"),
@@ -350,7 +350,7 @@ fn sha256(path: &Path) -> String {
 /// `serve/<tag>/`: the archive of this host's target, holding this crate's
 /// own binary, and its SHA256SUMS. `tamper` changes the archive after its
 /// sum was taken.
-fn published(serve: &Path, tag: &str, tamper: bool) -> String {
+pub(crate) fn published(serve: &Path, tag: &str, tamper: bool) -> String {
     let t = target().expect("a published target");
     let name = if tag == "staging" {
         format!("spl-asdlc-staging-{t}")
@@ -390,7 +390,7 @@ fn published(serve: &Path, tag: &str, tamper: bool) -> String {
 /// A `gh` that names `latest` the latest release, lists `serve/releases.json`
 /// for the releases API (failing when there is none), and serves
 /// `serve/<tag>/` for `release download`.
-fn gh_releases(stubs: &Path, serve: &Path, latest: &str) {
+pub(crate) fn gh_releases(stubs: &Path, serve: &Path, latest: &str) {
     stub(
         stubs,
         "gh",

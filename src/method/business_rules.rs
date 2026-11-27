@@ -504,6 +504,7 @@ pub fn skip_reason(gate: &RuleGate) -> String {
     reasons.join("; ")
 }
 
+pub mod check;
 pub mod split;
 
 #[cfg(test)]

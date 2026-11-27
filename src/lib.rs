@@ -18,6 +18,7 @@ pub mod method;
 pub mod notify;
 pub mod prepare;
 pub mod quota;
+pub mod rules_check;
 pub mod setup;
 pub mod sync;
 pub mod tick;

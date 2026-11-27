@@ -271,10 +271,21 @@ struct Done {
 }
 
 impl Done {
-    fn suites(&self) -> Value {
+    /// `results/suites.json` as written.
+    fn written(&self) -> Value {
         let text = std::fs::read_to_string(self.pack.join("results/suites.json"))
             .unwrap_or_else(|e| panic!("no suites.json ({e}): {}", self.summary.log));
         serde_json::from_str(&text).unwrap()
+    }
+
+    /// `results/suites.json`, the registry's own suite, `business_rules`,
+    /// left out of `suites` (its tests judge it); `failed` stays as written.
+    fn suites(&self) -> Value {
+        let mut v = self.written();
+        if let Some(all) = v["suites"].as_array_mut() {
+            all.retain(|s| s["name"] != "business_rules");
+        }
+        v
     }
 
     fn outcomes(&self) -> Vec<(String, String)> {
@@ -348,6 +359,9 @@ impl Gate {
             ("CHANGELOG_PATH", String::new()),
             ("STATIC_ENV", "{}".to_string()),
             ("INCLUDE", "[]".to_string()),
+            // The binary the fetch step hands the suites: this crate's own.
+            ("SPL_BIN", env!("CARGO_BIN_EXE_spl-asdlc").to_string()),
+            ("SPL_TAG", "v9.9.9".to_string()),
         ];
         Gate {
             repo,
@@ -553,7 +567,8 @@ fn a_failed_preflight_or_setup_runs_no_suite_and_is_red() {
     }
     let g = Gate::new(suites);
     let d = g.job("exit 1");
-    assert_eq!(d.failed(), ["unit", "e2e"]);
+    // The registry's suite never ran either: not green.
+    assert_eq!(d.failed(), ["business_rules", "unit", "e2e"]);
     assert!(!d.pack.join("ran").exists());
 }
 
@@ -580,7 +595,7 @@ fn the_setup_and_the_static_env_reach_the_suites() {
         g.set("STATIC_ENV", bad);
         let d = g.job("");
         assert_eq!(d.prepare.code, 1, "{bad}");
-        assert_eq!(d.failed(), ["unit"], "{bad}");
+        assert_eq!(d.failed(), ["business_rules", "unit"], "{bad}");
     }
 }
 
@@ -704,6 +719,7 @@ fn suites_that_cannot_be_read_never_make_a_green_gate() {
             "artifacts must be",
         ),
         (r#"[{"id": "pr_guards", "run": "true"}]"#, "reserved"),
+        (r#"[{"id": "business_rules", "run": "true"}]"#, "reserved"),
     ];
     for (suites, words) in cases {
         let g = Gate::new(suites);
@@ -714,7 +730,87 @@ fn suites_that_cannot_be_read_never_make_a_green_gate() {
         assert_eq!(d.enforce.code, 1, "{suites}");
     }
     let g = Gate::new("not json");
-    assert_eq!(g.job("").failed(), ["suites_input"]);
+    assert_eq!(g.job("").failed(), ["business_rules", "suites_input"]);
+}
+
+/// The registry's own suite, as `results/suites.json` writes it.
+fn registry_suite(d: &Done) -> Value {
+    d.written()["suites"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == "business_rules")
+        .cloned()
+        .unwrap_or_else(|| panic!("no business_rules suite: {}", d.written()))
+}
+
+#[test]
+fn the_candidate_answers_for_every_error_of_the_business_rule_registry() {
+    const DIR: &str = spl_asdlc::method::business_rules::REGISTRY_DIR;
+    let rule = |id: &str, test: &str| {
+        format!(
+            "# {id} — A rule.\n\nStatus: Enforced\n\n## Rule\n\nIt holds.\n\n## Evidence\n\nA decision.\n\n## Test\n\n{test}\n"
+        )
+    };
+    let suites = r#"[{"id": "unit", "run": "true"}]"#;
+    // A clean registry is green, its log in the pack.
+    let mut g = Gate::new(suites);
+    g.repo.write(
+        &format!("{DIR}/K7QF-fine.md"),
+        &rule("K7QF", "`src/lib.rs`: `g`"),
+    );
+    let sha = g.repo.commit("a rule and its test");
+    g.set("GITHUB_SHA", &sha);
+    let d = g.job("");
+    assert_eq!(
+        registry_suite(&d)["outcome"],
+        "success",
+        "{}",
+        d.run.as_ref().unwrap().log
+    );
+    assert_eq!(d.enforce.code, 0, "{}", d.enforce.log);
+    assert!(d.pack.join("business_rules.log").is_file());
+
+    // An error, however old (it was already in the last release), blocks.
+    let mut g = Gate::new(suites);
+    g.repo.git(&["tag", "-d", "acme-v1.0.0"]);
+    g.repo.write(
+        &format!("{DIR}/M3RP-old.md"),
+        &rule("M3RP", "`tests/gone.rs`"),
+    );
+    g.repo.commit("an old rule whose test is absent");
+    g.repo.git(&["tag", "acme-v1.0.0"]);
+    g.repo.write("src/lib.rs", "pub fn h() {}\n");
+    let sha = g.repo.commit("feat: h");
+    g.set("GITHUB_SHA", &sha);
+    let d = g.job("");
+    let run = d.run.as_ref().unwrap();
+    assert_eq!(registry_suite(&d)["outcome"], "failure", "{}", run.log);
+    assert_eq!(d.failed(), ["business_rules"]);
+    assert_eq!(d.enforce.code, 1);
+    assert!(
+        run.log
+            .contains("::error title=Business-rule registry::M3RP: `tests/gone.rs` is absent at"),
+        "{}",
+        run.log
+    );
+
+    // No binary: the registry is not checked, and the gate is not green.
+    let mut g = Gate::new(suites);
+    g.set("SPL_BIN", "");
+    let d = g.job("");
+    assert_eq!(d.failed(), ["business_rules"]);
+    assert_eq!(d.enforce.code, 1);
+
+    // A pinned version without the command only warns.
+    let mut g = Gate::new(suites);
+    let old = Scratch::new("old-spl");
+    crate::harness::stub(&old.0, "spl-asdlc", "exit 2");
+    g.set("SPL_BIN", &old.0.join("spl-asdlc").display().to_string());
+    let d = g.job("");
+    assert_eq!(registry_suite(&d)["outcome"], "success");
+    assert!(d.run.as_ref().unwrap().log.contains("has no `rules check`"));
+    assert_eq!(d.enforce.code, 0, "{}", d.enforce.log);
 }
 
 #[test]
@@ -1380,4 +1476,42 @@ fn an_unreadable_artifact_list_decides_no_rerun() {
     let r = rerun_step("evidence", &stubs.0, &dir.0, &[]);
     assert_eq!(r.code, 1, "{}", r.log);
     assert!(r.log.contains("could not be listed"), "{}", r.log);
+}
+
+#[test]
+fn the_gate_fetches_the_binary_its_callers_pin_checked_against_its_sums() {
+    use crate::release_cut::{gh_releases, published, target};
+    if target().is_none() {
+        return;
+    }
+    let mut g = Gate::new(r#"[{"id": "unit", "run": "true"}]"#);
+    g.repo.write(
+        ".github/workflows/release-gate.yml",
+        "jobs:\n  gate:\n    uses: example-org/spl-asdlc/.github/workflows/asdlc-release-gate.yml@v9.9.1\n",
+    );
+    g.repo.commit("the caller");
+    let serve = Scratch::new("serve");
+    let stubs = Scratch::new("gh-stubs");
+    published(&serve.0, "v9.9.1", false);
+    gh_releases(&stubs.0, &serve.0, "v9.9.9");
+    g.set("PATH", &path_with(&stubs.0));
+    let extra = pairs(&[
+        ("SPL_REPOSITORY", ""),
+        ("SPL_VERSION", ""),
+        ("GH_TOKEN", "t"),
+    ]);
+    let r = g.step("spl", &extra);
+    assert_eq!(r.code, 0, "{}", r.log);
+    assert_eq!(r.output("tag").as_deref(), Some("v9.9.1"));
+    let bin = r.output("bin").expect("the binary's path");
+    assert!(std::path::Path::new(&bin).is_file(), "{bin}");
+    // A tampered archive never runs.
+    let serve = Scratch::new("serve");
+    let stubs = Scratch::new("gh-stubs");
+    published(&serve.0, "v9.9.1", true);
+    gh_releases(&stubs.0, &serve.0, "v9.9.9");
+    g.set("PATH", &path_with(&stubs.0));
+    let r = g.step("spl", &extra);
+    assert_eq!(r.code, 1, "{}", r.log);
+    assert!(r.output("bin").is_none());
 }
