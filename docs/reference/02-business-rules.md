@@ -4,7 +4,7 @@
 
 1. **A business rule is a global, permanent invariant of the project.** Unlike an acceptance criterion, which lives and dies with its ticket, a rule applies to the whole current state of the application. If the existing code violates a new rule, fixing it is in scope of the ticket that introduces the rule.
 2. **Rules live in the repository**, in the registry `.spl-asdlc/business-rules/`, one file per rule named `<ID>-<short-slug>.md`, such as `K7QF-green-prs-first.md`. The id is four random characters of the short-id alphabet (capital letters and the digits 2 to 9), at least one letter and one digit, so that no word written in capitals reads as an id; an id is never reused or allocated sequentially. References use the id alone; an id right after a hyphen is the end of a ticket id (`ABC-K7QF`), never a rule's. Existing `BR-<PRODUCT>-<NNN>.md` files stay readable during migration. A legacy rule renamed to a random id keeps its old id as an alias at the start of its slug, `K7QF-br-acme-073-signed-exports.md`: the registry then holds both `K7QF` and `BR-ACME-073`, so a ticket that still cites the old id finds its rule. The title names the new id only; the alias lives in the name because the guard reads only the directory's listing. The place is fixed by the method, never configured. One file per rule means two PRs that touch different rules never conflict.
-3. **A rule is enforced only by a named test that runs in CI.** The rule's file names the test. A rule without a test is `Proposed`; only `Enforced` rules block. `spl-asdlc doctor` checks, on its `business-rule tests` line, that each test an `Enforced` rule cites exists in the repository at the default branch ("The rule file" below says how it reads them). It does not run them: that is CI's.
+3. **A rule is enforced only by a named test that runs in CI.** The rule's file names the test. A rule without a test is `Proposed`; only `Enforced` rules block. `spl-asdlc rules check` checks that each test an `Enforced` rule cites exists in the repository ("The rule file" below says how it reads them). It does not run them: that is CI's.
 4. **A rule born in a ticket is promoted to the registry in the same PR.** The bridge refuses to merge a PR whose ticket states a new rule when the PR adds or changes no rule file (`.spl-asdlc/business-rules/<ID>-<slug>.md`; any other file of the directory does not count).
 5. **A rule cited by id must exist** in the registry of the product it names (a random id names none: it is the project's own registry's), read at the ref being judged: the PR head at merge time, the release tag at closure. The registry is read through the Git host, never from a working tree: the guard reads the directory's listing, and an id is registered when its file `<ID>-<slug>.md` (or a legacy `BR-<PRODUCT>-<NNN>.md`) is there. A directory absent at a ref that exists is a registry with no rule.
 6. **The guard fails closed.** An unreadable registry keeps the PR waiting and, at closure, leaves the ticket in its state and reports the rule as unverified. A ticket that neither cites nor states a rule is judged without reading the registry.
@@ -42,16 +42,25 @@ The test name(s) that enforce it, as CI reports them.
 | `## Evidence` | Why it exists; the incident or decision that created it |
 | `## Test` (or `## Tests`) | The test name(s) that enforce it, as CI reports them |
 
-Only the file's name registers an id; an id mentioned in another file vouches for nothing. A file may carry more sections (domain, owner decision); the parts above are the contract, and none is empty. `spl-asdlc doctor` reads every file of the directory and names each one that breaks the format by its path. There is no committed index: the directory is the register; generate a full view on demand. The reader still ignores a legacy README during migration.
+Only the file's name registers an id; an id mentioned in another file vouches for nothing. A file may carry more sections (domain, owner decision); the parts above are the contract, and none is empty. `spl-asdlc rules check` reads every file of the directory and names each one that breaks the format by its path. There is no committed index: the directory is the register; generate a full view on demand. The reader still ignores a legacy README during migration.
 
-`doctor`'s `business-rule tests` line reads the backticked names of each `Enforced` rule's Test section, in any language:
+`spl-asdlc rules check` reads the backticked names of each `Enforced` rule's Test section, in any language:
 
 - A repository path (`tests/export.rs`, `apps/web/__tests__/export.test.ts`, `scripts/check.sh`) is a file: it must exist.
 - A test name (`a_snake_case_name`, or a nested name `export > signs the file`) is looked for in the file named beside it, in the same paragraph or list item; a list item that names no file takes the file of the paragraph before it.
 - A Rust module path (`export::tests::signs_the_file`) is looked for in the file its modules lead to (`src/export/tests.rs`, `src/export/tests/mod.rs`, `src/export.rs`, then the same under `tests/`). A `*` last segment (`export::tests::*`) only needs the file.
 - A name is found when its last part (after the last `::` or ` > `) appears as written in the file.
 
-The line is `invalid` when a cited file is absent or a name is not in its file, and names each rule and what is absent. A name whose file cannot be located is counted as `not located`, never a failure, and any other token (a job, a task, a word) is ignored. A file that cannot be read makes the line `missing`.
+It reports an error when a cited file is absent or a name is not in its file, and names each rule and what is absent. A name whose file cannot be located is counted as `not located`, never a failure, and any other token (a job, a task, a word) is ignored. A file that cannot be read concludes nothing: the check fails with exit code 2.
+
+### Where the registry is checked
+
+The registry is the CI's, never the setup's: `spl-asdlc doctor` checks the installation (configuration, workflows, rulesets, the method's version), not the rules (ASDLC-YX9K). `spl-asdlc rules check` reads the registry and every cited file at a commit of a checkout, through `git`:
+
+- **On a PR**, the guards (`asdlc-pr-checks.yml`, `asdlc-pr-guards.yml`) run it at the head with `--base` the PR's base: the PR fails only on the errors it brings, a new rule file whose format is wrong, a cited test it removes or never adds. An error already on the base never blocks a PR, so the PR that breaks a rule is refused and its author fixes it on the spot.
+- **At the release gate**, `asdlc-release-gate.yml` runs it at the candidate with no base, as its suite `business_rules`: any error, however old, blocks the release. A suite that never ran is not green.
+
+Both read the published binary of the version the callers pin (`spl-asdlc-repository` and `spl-asdlc-version`, by default those a caller of the workflow names), its checksum verified. A pinned version that has no `rules check` only warns.
 
 ## Transverse rules of the method
 
@@ -68,7 +77,7 @@ The method has its own rules, which hold for every project that uses it. They ar
 | SR-007 | The GO of a release is computed, never declared (or taken on themselves by a person who tags and publishes the release, spec 09). |
 | SR-008 | The angles of a release QA are configured per project, never a shared constant. |
 | SR-009 | A release QA has a configurable number of RC passes; when they are exhausted with blockers left, a human decides. |
-| SR-010 | Every `Enforced` rule names a test that runs in CI; `doctor`'s `business-rule tests` line checks that each test it names exists. |
+| SR-010 | Every `Enforced` rule names a test that runs in CI; `spl-asdlc rules check` checks, in CI, that each test it names exists. |
 | SR-011 | A skipped CI step is never read as a success, except a job the caller lists in `required-check`'s `may-skip`; the method's guards may never be listed there. |
 | SR-012 | Every actor that writes to the Git host does so under its own traceable identity. |
 | SR-013 | The contract of a ticket is every checkbox of its description and of its duplicates. |

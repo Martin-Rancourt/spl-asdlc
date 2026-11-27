@@ -110,7 +110,7 @@ mod tests {
                 "-c",
                 "user.name=t",
                 "-c",
-                "user.email=t@example.invalid",
+                "user.email=test@localhost",
                 "commit",
                 "-q",
                 "--allow-empty",
