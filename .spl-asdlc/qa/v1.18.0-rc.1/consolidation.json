@@ -1,0 +1,37 @@
+{
+  "schema": "spl-asdlc/qa-verdict/1",
+  "candidate": "v1.18.0-rc.1",
+  "item": "ASDLC-PCVW",
+  "verdict": "go",
+  "between_angles": "The candidate config has one QA angle, security. I cross-checked its coverage across the release mapping, merge-back path, runner update trust boundary, Livela socket identity boundary, workflows, rulesets, and the earlier-candidate findings it explicitly revisited. No second angle assumed ownership of any of those concerns, no configured angle was missing, and no unowned gap was identified between the reviewed delivery, release, and tracker surfaces.",
+  "findings": [
+    {
+      "angle": "security",
+      "id": "security-1",
+      "decision": "accepted",
+      "blocking": false,
+      "reason": "The tag applies picked_from to every commit in the release range without first establishing a patch cycle, so the redirect is real. It still requires attacker-controlled content to pass through a merged PR and does not by itself execute unreviewed code, so it does not hold this candidate."
+    },
+    {
+      "angle": "security",
+      "id": "security-2",
+      "decision": "accepted",
+      "blocking": false,
+      "reason": "Once a merge-back fix exists, the release close considers every ready same-repository chore/merge-back-* PR and does not bind it to that fix ticket. This bypasses the method's review and bookkeeping, but under the current zero-approval repository rules a writer can already merge green code, so the candidate need not be held."
+    },
+    {
+      "angle": "security",
+      "id": "security-3",
+      "decision": "accepted",
+      "blocking": false,
+      "reason": "The updater authenticates neither the release publisher nor independent provenance; the archive and checksum share the same writable release trust domain. Exploitation requires repository contents write access, so this is a material hardening gap rather than a blocker for this candidate."
+    },
+    {
+      "angle": "security",
+      "id": "security-4",
+      "decision": "accepted",
+      "blocking": false,
+      "reason": "The socket server honors a client-supplied request author and also forwards author or by fields on write calls, with no peer authorization in the published server contract. The server is not yet used by the live runner and exploitation requires local socket access, so the finding is real but non-blocking."
+    }
+  ]
+}
