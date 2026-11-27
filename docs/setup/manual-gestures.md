@@ -76,6 +76,21 @@ The notes are the version's section of the CHANGELOG the cut committed: copy it 
 
 **What follows**: the publication runs on the published release; it accepts a release published by the App or by a human account, refuses any other bot, and says which (`go-published-by-kind`, its summary). **The bridge, next tick**: a tag a person pushed on the candidate is taken as done, the bridge then only publishes the release; once the release is published it tags and publishes nothing more and posts no GO of its own; it closes the cycle from the published release, and its closure comment records who published it.
 
+## Patch when the bridge is down (break-glass)
+
+When the bridge itself is broken and cannot ship its own fix (it stopped, it cannot dispatch the cut, its tick fails), the fix is first merged into the default branch by hand ("Merge a PR"). Then one command, in a clean checkout of the repository, prepares the patch without the bridge and without any workflow:
+
+```sh
+spl-asdlc release patch --break-glass --commit <merge commit sha> [--commit <sha>…] \
+  --test '<the project's tests>' [--test '<more>'] [--from <release tag in production>] [--repository OWNER/REPO]
+```
+
+It fetches the remote, then refuses the whole patch, before any branch is made, when a commit is not on the remote's default branch (never merged, or only local) or is already in production: nothing unpublished leaves by the side door (business rule L7BG). Otherwise it opens the release branch `<branch_prefix><stamp>-utc` from the release tag in production (`--from`, by default the highest release tag), cherry-picks the commits with `-x` in the order the default branch took them, prepares the patch version (`release prepare`: the version files, the CHANGELOG, the notes written in the git directory), commits `chore(release): v<X.Y.Z>`, and runs each `--test` in the checkout. A commit that does not apply removes the branch; red tests leave it for inspection; neither pushes anything.
+
+It **stops before the tag**: it pushes nothing and creates no tag, and prints what the patch carries, the tests that passed, and the exact commands of the go. A person reads them and, on their go, runs them: push the branch, tag the release commit (the annotation carries `Release-Patch-From:` so that the publication treats it as a patch), push the tag, publish the GitHub release with the notes file. A project whose own release workflow starts on the tag rather than on the published release runs it next, as its release documentation says. Record the gesture on the fix's ticket.
+
+**What follows**: the publication runs on the published release as for "Tag and publish the release by hand", and merges the patch's branch back. **The bridge, once repaired**: the version is published, so it tags and publishes nothing more for it. The patch had no candidate nor release issue: read the fix's ticket after the next tick, and move it as "Move a ticket by hand" says when the bridge left it behind.
+
 ## Publish by hand when the publication's build failed
 
 When the build jobs of the publication run produced their artifacts and only the attach to the release failed. A transient failure needs no gesture: `gh run rerun <run id> --failed` reruns the failed jobs and the stages after them, the merge back included. A build job that failed left no artifact: rerun it first.
@@ -222,7 +237,7 @@ An AI session (Claude Code, for instance) can take these gestures on the owner's
 |---|---|
 | `Bash(gh pr merge *)` | Merge a PR, the merge-back PR |
 | `Bash(gh pr ready *)` | Put a PR in draft, or mark it ready again |
-| `Bash(git push origin <release tag>)`, `Bash(gh release create *)` | Tag and publish the release by hand |
+| `Bash(git push origin <release tag>)`, `Bash(gh release create *)` | Tag and publish the release by hand, the go of a break-glass patch |
 | `Bash(gh workflow run *)` | Open a cycle, cut a candidate, replay the publication |
 | `Bash(gh variable set SPL_ASDLC_PAUSED *)`, `Bash(gh variable delete SPL_ASDLC_PAUSED *)` | Pause the bridge for a project, resume it |
 | `Bash(gh run rerun *)` | Rerun the gate, rerun a failed publication job |

@@ -270,6 +270,8 @@ pub struct Preparation {
     /// `product.repository`, when the repository's file carries it.
     pub repository: Option<String>,
     pub release_tag: String,
+    /// `release.branch_prefix`: where a break-glass patch opens its branch.
+    pub branch_prefix: String,
     pub version_files: Vec<VersionFile>,
     pub changelog_sections: Vec<ChangelogSection>,
     pub changelog_dir: Option<String>,
@@ -527,6 +529,9 @@ impl Config {
             &release_tag,
             &[("{version}", 1), ("{rc}", 0)],
         );
+        let branch_prefix = release
+            .branch_prefix
+            .unwrap_or_else(|| DEFAULT_BRANCH_PREFIX.to_string());
         let version_files = v.version_files(release.version_files);
         let changelog_sections = v.changelog_sections(release.changelog_sections);
         let changelog_dir = v.changelog_dir(release.changelog_dir);
@@ -535,6 +540,7 @@ impl Config {
                 product,
                 repository,
                 release_tag,
+                branch_prefix,
                 version_files,
                 changelog_sections,
                 changelog_dir,
