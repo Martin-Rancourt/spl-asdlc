@@ -60,6 +60,9 @@ pub struct LivelaItem {
     pub duplicate_of: Option<String>,
     /// `(comment id, author participant id, text)`, oldest first.
     pub comments: Vec<(String, String, String)>,
+    /// `(log id, author participant id, text)`, oldest first: a log entry
+    /// written with [`LivelaStore::log`], never among [`Self::comments`].
+    pub logs: Vec<(String, String, String)>,
     pub web_links: Vec<String>,
     /// The status the GitHub sync recorded for a linked PR: `(url, code)`,
     /// the code of [`PrStatus::code`].
@@ -156,6 +159,11 @@ pub trait LivelaStore {
     fn remove_tag(&mut self, id: &str, tag: &str) -> Result<(), String>;
     fn assign(&mut self, id: &str, participant: Option<&str>) -> Result<(), String>;
     fn comment(&mut self, id: &str, author: &str, text: &str) -> Result<String, String>;
+    /// Write a log entry on an item (`Store::write_log`): its own kind of
+    /// activity, shown in the item's activity feed, never among its
+    /// comments — it never raises nor answers a decision request. Returns
+    /// the log entry's id.
+    fn log(&mut self, id: &str, author: &str, text: &str) -> Result<String, String>;
     fn add_relation(&mut self, id: &str, kind: LivelaRelation, target: &str) -> Result<(), String>;
     fn remove_relation(
         &mut self,

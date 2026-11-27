@@ -271,6 +271,16 @@ impl LivelaStore for MemStore {
         ));
         Ok(cid)
     }
+    fn log(&mut self, id: &str, author: &str, text: &str) -> Result<String, String> {
+        self.fact(format!("log {id}"));
+        let lid = format!("l-{}", self.id());
+        self.items.get_mut(id).ok_or("no item")?.logs.push((
+            lid.clone(),
+            author.into(),
+            text.into(),
+        ));
+        Ok(lid)
+    }
     fn add_relation(&mut self, id: &str, kind: LivelaRelation, target: &str) -> Result<(), String> {
         if !self.items.contains_key(target) {
             return Err("no target".into());
@@ -539,6 +549,9 @@ impl LivelaStore for Shared {
     }
     fn comment(&mut self, id: &str, author: &str, text: &str) -> Result<String, String> {
         LivelaStore::comment(&mut *self.borrow_mut(), id, author, text)
+    }
+    fn log(&mut self, id: &str, author: &str, text: &str) -> Result<String, String> {
+        LivelaStore::log(&mut *self.borrow_mut(), id, author, text)
     }
     fn add_relation(&mut self, id: &str, kind: LivelaRelation, target: &str) -> Result<(), String> {
         self.borrow_mut().add_relation(id, kind, target)
@@ -1446,6 +1459,42 @@ fn a_decision_reads_its_answer_and_whose_it_is() {
     );
 }
 
+/// ASDLC-F6D6: a log entry lives apart from an item's comments, and never
+/// answers an open decision request.
+#[test]
+fn a_log_entry_is_never_a_comment_nor_an_answer_to_a_decision_request() {
+    let t = td(MemStore {
+        decides: true,
+        ..MemStore::default()
+    });
+    let a = t.create_item(&new_item("a", Status::InReview)).unwrap();
+    let request = t.request_decision(&a.key, "Which?").unwrap();
+    t.comment(&a.key, "a comment").unwrap();
+
+    let id = { t.store.borrow().items.values().next().unwrap().id.clone() };
+    t.store
+        .borrow_mut()
+        .log(&id, "runner", "moved to In Review")
+        .unwrap();
+
+    assert_eq!(
+        t.comments(&a.key).unwrap().len(),
+        1,
+        "the log did not join the item's comments"
+    );
+    let logs = { t.store.borrow().items.get(&id).unwrap().logs.clone() };
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].2, "moved to In Review");
+
+    let ds = t.decisions(&a.key).unwrap();
+    let d = ds.iter().find(|d| d.id == request).unwrap();
+    assert!(
+        d.is_open(),
+        "the log did not answer nor withdraw the open decision request"
+    );
+    assert_eq!(d.answer, None);
+}
+
 /// A store without decisions refuses a request, before any write.
 #[test]
 fn a_store_without_decisions_refuses_a_request() {
@@ -1581,6 +1630,28 @@ mod over_the_socket {
         let bridge = store.existing_bridge_participant().unwrap();
         assert_eq!(store.facts.last().unwrap().0, bridge);
         assert_eq!(store.author, "runner");
+    }
+
+    /// ASDLC-F6D6: a log entry travels the wire like any other write, and
+    /// never joins the item's comments.
+    #[test]
+    fn a_log_entry_is_dispatched_over_the_socket_and_never_a_comment() {
+        let mut store = MemStore::default();
+        let id = store
+            .create_ticket("project-td", "t", "", &[], None, None, None, "Backlog")
+            .unwrap();
+        let line = socket::handle(
+            &mut store,
+            &format!(
+                r#"{{"major":{MAJOR},"author":"someone","call":{{"op":"log","args":{{"id":"{id}","author":"someone","text":"moved on"}}}}}}"#
+            ),
+        );
+        let response = socket::decode_response(&line).unwrap();
+        assert!(response.error.is_none(), "{line}");
+        let item = store.item(&id).unwrap();
+        assert_eq!(item.logs.len(), 1);
+        assert_eq!(item.logs[0].2, "moved on");
+        assert!(item.comments.is_empty(), "a log never joins the comments");
     }
 
     #[test]
