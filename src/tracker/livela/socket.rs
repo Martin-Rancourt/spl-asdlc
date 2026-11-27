@@ -175,6 +175,11 @@ pub enum Call {
         author: String,
         text: String,
     },
+    Log {
+        id: String,
+        author: String,
+        text: String,
+    },
     AddRelation {
         id: String,
         kind: LivelaRelation,
@@ -264,6 +269,7 @@ impl Call {
                 | Call::RemoveTag { .. }
                 | Call::Assign { .. }
                 | Call::Comment { .. }
+                | Call::Log { .. }
                 | Call::AddRelation { .. }
                 | Call::RemoveRelation { .. }
                 | Call::AddWebLink { .. }
@@ -413,6 +419,7 @@ fn call<S: LivelaStore + ?Sized>(s: &mut S, call: Call) -> Response {
         Call::RemoveTag { id, tag } => answer(s.remove_tag(&id, &tag)),
         Call::Assign { id, participant } => answer(s.assign(&id, participant.as_deref())),
         Call::Comment { id, author, text } => answer(s.comment(&id, &author, &text)),
+        Call::Log { id, author, text } => answer(s.log(&id, &author, &text)),
         Call::AddRelation { id, kind, target } => answer(s.add_relation(&id, kind, &target)),
         Call::RemoveRelation { id, kind, target } => answer(s.remove_relation(&id, kind, &target)),
         Call::AddWebLink { id, url, title } => answer(s.add_web_link(&id, &url, &title)),
@@ -718,6 +725,13 @@ impl LivelaStore for SocketStore {
     }
     fn comment(&mut self, id: &str, author: &str, text: &str) -> Result<String, String> {
         self.request(Call::Comment {
+            id: id.into(),
+            author: author.into(),
+            text: text.into(),
+        })
+    }
+    fn log(&mut self, id: &str, author: &str, text: &str) -> Result<String, String> {
+        self.request(Call::Log {
             id: id.into(),
             author: author.into(),
             text: text.into(),
