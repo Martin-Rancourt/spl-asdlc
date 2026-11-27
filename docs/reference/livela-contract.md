@@ -64,6 +64,10 @@ How the daemon runs the job:
 - What `spl-asdlc` offers the wrapper: the pass (`spl_asdlc::job::pass_from_repository`, and `spl_asdlc::job::pass` for a configuration on disk), the adapter (`spl_asdlc::tracker::livela::Livela`), the slice of the store the adapter needs (`LivelaStore`), `doctor` and the gestures (`spl_asdlc::embed::Project`), and the files of a project's setup PR (`spl_asdlc::setup::files`). `docs/setup/tracker-livela.md` says what the wrapper does, so that another runtime can write its own.
 - Why not a dependency on the core: the Livela repository is private and the crate's license is `UNLICENSED`; a Git dependency would name an account in `Cargo.lock` (BR-ASDLC-001); and it would give the runner two copies of the crate, so that `BridgeJob` would implement a trait the runner does not know.
 
+### The program apart from the runner: the socket
+
+The `spl-asdlc` program may also run on its own, beside the runner, instead of inside it. It then reaches the project's store through the runner's local socket ("Socket protocol" below), named by `[tracker] socket` (an instance key, `08-configuration.md`). The runner stays the store's only owner: the program never reads nor writes the store any other way (rule FDQ8). Without `socket`, a Livela tracker is refused with the key to add.
+
 ### A host with several projects
 
 A Livela workspace holds several projects; each that runs the method has its own repository, its own configuration and its own bridge.
@@ -149,6 +153,20 @@ A ticket shows where each of its PRs stands, kept current by the runner even whe
 - The bridge therefore asks Livela for no archive, and a closed cycle leaves no fact on Livela beyond its transitions and comments.
 - The core needs no archive API for the method. An item Livela reports deleted reads as archived, and the bridge never writes to it.
 
+## Socket protocol
+
+How the `spl-asdlc` program, run apart from the Livela runner, reaches the runner's store. The module is `spl_asdlc::tracker::livela::socket` (Unix only); the runner serves the same protocol with it and copies none of it.
+
+- **Transport**: a Unix socket the runner serves on the host. One JSON request per line, one JSON response per line, in order, on a connection the program keeps for its pass.
+- **Exactly the slice**: the calls are the methods of `LivelaStore` (point 4), named in snake case (`item`, `create_ticket`, `set_pr_status`…), with their arguments by name, plus `hello`, which answers the server's major. Nothing else: no query, no raw access to the store.
+- **Request**: `{"major": <M>, "author": "<participant id>", "call": {"op": "<method>", "args": {..}}}`. `args` is absent for a method with none; `author` is optional.
+- **Response**: `{"major": <M>, "ok": <value>}` (the method's value, `null` included) or `{"major": <M>, "error": "<message>"}` (the method's error, or a refusal).
+- **Identity**: `swap_author` is not on the wire. A write carries its author in `author`; the server signs it with that participant, with `spl-asdlc` (`bridge_participant`) when the request names none, and gives the store back its previous author after the write itself. A read ignores `author`.
+- **Versioning**: every request and response carries `major`, the SPL-ASDLC major of its sender (`socket::MAJOR`, the crate's major). The server reads `major` first: a request of another major, or with none, is refused with an error that names both majors, and its call is never parsed nor run (rule K3TZ). The program refuses a response of another major the same way, and checks the runner's major with `hello` when it connects.
+- **The server**: `socket::handle(store, line)` answers one line from any `LivelaStore`; `socket::serve_stream` and `socket::serve` serve a connection or a listener; `socket::serve_stream_with(stream, answer)` lets a runner that shares its store take its lock per request.
+- **The client**: `socket::SocketStore::connect(path)` is a `LivelaStore`; the program builds `Livela::new(store, project, ..)` on it (`spl_asdlc::host::tracker`). A broken socket is the error of a method that returns one; a method that cannot (a list, a capability) stops the pass instead of reading an empty answer.
+- The conformance suite below runs through a real socket, on the in-memory store, as it runs on the store directly.
+
 ## Conformance
 
 The adapter's suite (`spl_asdlc::tracker::conformance::run_with`) runs the following steps:
@@ -164,6 +182,6 @@ The adapter's suite (`spl_asdlc::tracker::conformance::run_with`) runs the follo
 - list by tag;
 - cancel what it created, also when a step fails.
 
-The glue passes it on `livela-core`. Every write is attributed to the `spl-asdlc` participant and visible in the activity log, and the store's previous author is restored after it.
+The glue passes it on `livela-core`; in this crate, it also passes through the socket protocol, on a real Unix socket served from the in-memory store. Every write is attributed to the `spl-asdlc` participant and visible in the activity log, and the store's previous author is restored after it.
 
 Livela's own replay on its core (`spl_asdlc_contract.rs`) also checks that an item in `validation` still blocks its dependants and is not served by "what's next".

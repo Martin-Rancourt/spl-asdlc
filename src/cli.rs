@@ -392,7 +392,7 @@ struct Connected {
     /// The instance overlay merged into the configuration, if any.
     instance: Option<config::Source>,
     github: crate::github::RestGitHub,
-    tracker: crate::tracker::linear::Linear,
+    tracker: Box<dyn crate::tracker::Tracker>,
     repo: crate::github::RepoSlug,
     login: String,
 }
@@ -423,7 +423,7 @@ fn connect(
     let (config, instance) = load(file, instance)?;
     let env = crate::host::process_env;
     let github = crate::host::github(&config, &env)?;
-    let tracker = crate::host::linear(&config, &env)?;
+    let tracker = crate::host::tracker(&config, &env)?;
     let repo = crate::github::RepoSlug::parse(&config.product.repository)
         .ok_or("product.repository is not <owner>/<repo>")?;
     let login = crate::github::GitHub::identity(&github)
@@ -513,7 +513,9 @@ fn tick(
             }
             None => None,
         };
-        let tracker_name = crate::tracker::Tracker::identity(&c.tracker)
+        let tracker_name = c
+            .tracker
+            .identity()
             .map(|u| u.name)
             .unwrap_or_else(|e| format!("unknown ({e})"));
         let _ = writeln!(
@@ -536,7 +538,7 @@ fn tick(
             intents: &intents,
         };
         let dry_tracker = crate::dry::DryTracker {
-            inner: &c.tracker,
+            inner: c.tracker.as_ref(),
             intents: &intents,
         };
         let dry_signal = crate::dry::DrySignal { intents: &intents };
@@ -544,7 +546,11 @@ fn tick(
             config: &c.config,
             repo: c.repo.clone(),
             github: if dry_run { &dry_github } else { &c.github },
-            tracker: if dry_run { &dry_tracker } else { &c.tracker },
+            tracker: if dry_run {
+                &dry_tracker
+            } else {
+                c.tracker.as_ref()
+            },
             signal: if dry_run {
                 &dry_signal
             } else {
@@ -670,13 +676,14 @@ fn release(
         return ExitCode::from(2);
     }
     let env = crate::host::process_env;
-    let project = match crate::embed::Project::new(&c.config, &c.github, &c.tracker, None, &env) {
-        Ok(p) => p,
-        Err(e) => {
-            let _ = writeln!(err, "{e}");
-            return ExitCode::from(2);
-        }
-    };
+    let project =
+        match crate::embed::Project::new(&c.config, &c.github, c.tracker.as_ref(), None, &env) {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = writeln!(err, "{e}");
+                return ExitCode::from(2);
+            }
+        };
     let outcome = match command {
         ReleaseCommand::Status { json, branch } => {
             use crate::embed::ReleaseStatus;
@@ -927,7 +934,7 @@ fn doctor(
         &c.config,
         c.instance.as_ref(),
         &c.github,
-        &c.tracker,
+        c.tracker.as_ref(),
         "spl-asdlc binary",
     );
     if json {
@@ -1092,14 +1099,14 @@ fn ticket_check(
                     return ExitCode::from(2);
                 }
             };
-            let tracker = match crate::host::linear(&config, &crate::host::process_env) {
+            let tracker = match crate::host::tracker(&config, &crate::host::process_env) {
                 Ok(t) => t,
                 Err(e) => {
                     let _ = writeln!(err, "{e}");
                     return ExitCode::from(2);
                 }
             };
-            match crate::tracker::Tracker::get(&tracker, &key) {
+            match tracker.get(&key) {
                 Ok(item) => (format!("{} {}", item.key, item.title), item.description),
                 Err(e) if e.is_not_found() => {
                     let (text, code) =

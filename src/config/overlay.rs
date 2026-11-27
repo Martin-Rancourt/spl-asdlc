@@ -28,7 +28,7 @@ pub const INSTANCE_KEYS: [(&str, &[&str]); 5] = [
     ("owner", &["tracker_user", "github_login"]),
     (
         "tracker",
-        &["team", "service_identity", "team_keys", "project"],
+        &["team", "service_identity", "team_keys", "project", "socket"],
     ),
     (
         "release",
@@ -166,6 +166,7 @@ pub(super) fn merge(
         );
         m.put("tracker", "team_keys", t.team_keys.map(Value::from));
         m.put("tracker", "project", t.project.map(Value::from));
+        m.put("tracker", "socket", t.socket.map(Value::from));
     }
     // The overlay never creates the `[release]` section, which every
     // repository's file carries: without it, the file is refused for it,

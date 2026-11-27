@@ -1322,3 +1322,21 @@ fn optional_queue_requires_https_and_a_secret_reference() {
         .is_err()
     );
 }
+
+#[test]
+fn the_livela_runner_socket_is_a_host_key_of_the_overlay() {
+    let repository = MINIMAL.replace("kind = \"linear\"", "kind = \"livela\"");
+    let c = Config::parse_with(
+        &source(FILE_NAME, &repository),
+        Some(&source(
+            INSTANCE_FILE_NAME,
+            "schema = 1\n\n[tracker]\nsocket = \"/run/livela/spl-asdlc.sock\"\n",
+        )),
+    )
+    .unwrap();
+    assert_eq!(
+        c.tracker.socket.as_deref(),
+        Some("/run/livela/spl-asdlc.sock")
+    );
+    assert_eq!(Config::parse(MINIMAL).unwrap().tracker.socket, None);
+}
