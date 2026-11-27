@@ -188,6 +188,11 @@ jobs:
       last-tag: ${{ steps.last.outputs.last-tag }}
       candidate: ${{ steps.last.outputs.candidate }}
     steps:
+      # The job's temporary files go to the runner's temp folder, which the
+      # runner empties when the job ends, whatever its outcome (ASDLC-3YRA).
+      - name: Temporary files in the runner's temp
+        shell: bash
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       # The class lives in the tag OBJECT: checkout passes --no-tags unless
       # told otherwise, and `ref:` is a bare commit here.
       - name: Check out the candidate
@@ -343,6 +348,11 @@ jobs:
       CANDIDATE: ${{ needs.candidate.outputs.candidate }}
       RELEASE_CLASS: ${{ needs.candidate.outputs.release-class }}
     steps:
+      # The job's temporary files go to the runner's temp folder, which the
+      # runner empties when the job ends, whatever its outcome (ASDLC-3YRA).
+      - name: Temporary files in the runner's temp
+        shell: bash
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       # The exact candidate commit: the pack, suites.json and the artifact
       # name attest to it. No credentials stay behind for the suites.
       - name: Check out the candidate
@@ -954,6 +964,11 @@ jobs:
       conclusion: ${{ steps.verdict.outputs.conclusion }}
       stage: ${{ steps.verdict.outputs.stage }}
     steps:
+      # The job's temporary files go to the runner's temp folder, which the
+      # runner empties when the job ends, whatever its outcome (ASDLC-3YRA).
+      - name: Temporary files in the runner's temp
+        shell: bash
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Publish the verdict
         id: verdict
         env:
@@ -1056,6 +1071,11 @@ jobs:
       eligible: ${{ steps.decide.outputs.rerun }}
       reason: ${{ steps.decide.outputs.reason }}
     steps:
+      # The job's temporary files go to the runner's temp folder, which the
+      # runner empties when the job ends, whatever its outcome (ASDLC-3YRA).
+      - name: Temporary files in the runner's temp
+        shell: bash
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Check out the known flakes
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

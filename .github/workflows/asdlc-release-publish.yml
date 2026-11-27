@@ -221,6 +221,11 @@ jobs:
       go-published-by-kind: ${{ steps.go.outputs.go-published-by-kind }}
       verified: ${{ steps.go.outputs.verified }}
     steps:
+      # The job's temporary files go to the runner's temp folder, which the
+      # runner empties when the job ends, whatever its outcome (ASDLC-3YRA).
+      - name: Temporary files in the runner's temp
+        shell: bash
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       # Before anything is checked out: what this run is asked to publish.
       - name: Refuse a reference that cannot be published
         id: reference
@@ -625,6 +630,11 @@ jobs:
       merged: ${{ steps.mergeback.outputs.merged }}
       last-state: ${{ steps.mergeback.outputs.last-state }}
     steps:
+      # The job's temporary files go to the runner's temp folder, which the
+      # runner empties when the job ends, whatever its outcome (ASDLC-3YRA).
+      - name: Temporary files in the runner's temp
+        shell: bash
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Check out the release
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -989,6 +999,11 @@ jobs:
     timeout-minutes: 5
     permissions: {}
     steps:
+      # The job's temporary files go to the runner's temp folder, which the
+      # runner empties when the job ends, whatever its outcome (ASDLC-3YRA).
+      - name: Temporary files in the runner's temp
+        shell: bash
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Refuse a publication whose close did not run
         env:
           STAGE: ${{ inputs.stage }}

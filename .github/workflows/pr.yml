@@ -94,9 +94,19 @@ jobs:
     permissions:
       contents: read
     steps:
+      # The job's temporary files go to the runner's temp folder, which the
+      # runner empties when the job ends, whatever its outcome (ASDLC-3YRA).
+      - name: Temporary files in the runner's temp
+        shell: bash
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The leftovers of earlier runs in the system's temporary folder, on a
+      # self-hosted runner, whose disk is kept between jobs (ASDLC-3YRA).
+      - name: Sweep the runner's earlier leftovers
+        if: runner.environment == 'self-hosted'
+        run: bash scripts/sweep-runner-tmp.sh
       - name: Scan every tracked file
         env:
           # A repository secret or, failing that, a repository variable of the same name.
@@ -113,6 +123,11 @@ jobs:
     permissions:
       contents: read
     steps:
+      # The job's temporary files go to the runner's temp folder, which the
+      # runner empties when the job ends, whatever its outcome (ASDLC-3YRA).
+      - name: Temporary files in the runner's temp
+        shell: bash
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -131,6 +146,17 @@ jobs:
     permissions:
       contents: read
     steps:
+      # The job's temporary files and Cargo's build go to the runner's temp
+      # folder, which the runner empties when the job ends, whatever its
+      # outcome (ASDLC-3YRA). `target` is that build seen from the workspace,
+      # the form Swatinem/rust-cache takes.
+      - name: Temporary files in the runner's temp
+        id: scratch
+        shell: bash
+        run: |
+          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target" >> "$GITHUB_ENV"
+          echo "target=$(realpath -m --relative-to="$GITHUB_WORKSPACE" "$RUNNER_TEMP/target")" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -144,6 +170,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-bin: "false"
+          workspaces: ". -> ${{ steps.scratch.outputs.target }}"
       - run: cargo clippy --all-targets --locked -- -D warnings
 
   test:
@@ -155,6 +182,17 @@ jobs:
     permissions:
       contents: read
     steps:
+      # The job's temporary files and Cargo's build go to the runner's temp
+      # folder, which the runner empties when the job ends, whatever its
+      # outcome (ASDLC-3YRA). `target` is that build seen from the workspace,
+      # the form Swatinem/rust-cache takes.
+      - name: Temporary files in the runner's temp
+        id: scratch
+        shell: bash
+        run: |
+          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target" >> "$GITHUB_ENV"
+          echo "target=$(realpath -m --relative-to="$GITHUB_WORKSPACE" "$RUNNER_TEMP/target")" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -167,6 +205,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-bin: "false"
+          workspaces: ". -> ${{ steps.scratch.outputs.target }}"
       - run: cargo test --locked
 
   # The action of the pinned version. always(): it runs whatever its needs
@@ -179,6 +218,11 @@ jobs:
     timeout-minutes: 5
     permissions: {}
     steps:
+      # The job's temporary files go to the runner's temp folder, which the
+      # runner empties when the job ends, whatever its outcome (ASDLC-3YRA).
+      - name: Temporary files in the runner's temp
+        shell: bash
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: Martin-Rancourt/spl-asdlc/actions/required-check@v1.17
         with:
           needs: ${{ toJSON(needs) }}

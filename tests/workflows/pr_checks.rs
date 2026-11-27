@@ -17,13 +17,15 @@ const GUARDS: &str = ".github/workflows/asdlc-pr-guards.yml";
 
 /// The steps of the one job, in order.
 fn job_steps() -> Vec<Yaml> {
-    steps(&workflow(CHECKS))
-        .into_iter()
-        .map(|(job, s)| {
-            assert_eq!(job, "checks");
-            s
-        })
-        .collect()
+    crate::harness::after_scratch(
+        steps(&workflow(CHECKS))
+            .into_iter()
+            .map(|(job, s)| {
+                assert_eq!(job, "checks");
+                s
+            })
+            .collect(),
+    )
 }
 
 /// A step without the keys `skip` names.
@@ -112,10 +114,12 @@ fn the_steps_are_the_title_check_then_the_guards_as_they_ship() {
 
     // Then every step of the guards, in their order; the process check also
     // reads a caller of this workflow to say how to refresh the page.
-    let guards: Vec<Yaml> = steps(&workflow(GUARDS))
-        .into_iter()
-        .map(|(_, s)| s)
-        .collect();
+    let guards: Vec<Yaml> = crate::harness::after_scratch(
+        steps(&workflow(GUARDS))
+            .into_iter()
+            .map(|(_, s)| s)
+            .collect(),
+    );
     assert_eq!(all.len(), 1 + guards.len() + 1);
     for (mine, theirs) in all[1..=guards.len()].iter().zip(&guards) {
         let what = theirs["name"].as_str().unwrap();

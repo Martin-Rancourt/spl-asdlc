@@ -101,6 +101,20 @@ pub fn step(doc: &Yaml, job: &str, id: &str) -> Yaml {
         .unwrap_or_else(|| panic!("no step {id} in job {job}"))
 }
 
+/// The name of the step every job starts with: it moves the job's temporary
+/// files to the runner's temp folder (ASDLC-3YRA).
+pub const SCRATCH: &str = "Temporary files in the runner's temp";
+
+/// A job's steps after its first, which must be the scratch step.
+pub fn after_scratch(all: Vec<Yaml>) -> Vec<Yaml> {
+    assert_eq!(
+        all.first().and_then(|s| s["name"].as_str()),
+        Some(SCRATCH),
+        "the job does not start with `{SCRATCH}`"
+    );
+    all.into_iter().skip(1).collect()
+}
+
 /// The `run:` body of a step.
 pub fn run_body(step: &Yaml) -> String {
     step["run"]

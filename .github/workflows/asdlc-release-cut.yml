@@ -191,6 +191,11 @@ jobs:
     timeout-minutes: 5
     permissions: {}
     steps:
+      # The job's temporary files go to the runner's temp folder, which the
+      # runner empties when the job ends, whatever its outcome (ASDLC-3YRA).
+      - name: Temporary files in the runner's temp
+        shell: bash
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Validate the request
         id: validate
         env:
@@ -326,6 +331,11 @@ jobs:
       DEFAULT_BRANCH: ${{ inputs.default-branch }}
       GH_REPO: ${{ github.repository }}
     steps:
+      # The job's temporary files go to the runner's temp folder, which the
+      # runner empties when the job ends, whatever its outcome (ASDLC-3YRA).
+      - name: Temporary files in the runner's temp
+        shell: bash
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       # Minted right before its first use. Every push below is made with it:
       # GitHub starts no workflow for an event created with GITHUB_TOKEN, and
       # the tag push must start the gate.

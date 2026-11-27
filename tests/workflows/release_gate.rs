@@ -1378,7 +1378,7 @@ fn the_gate_jobs_are_the_interface_and_cannot_read_green_by_skipping() {
         Some("${{ steps.summary.outputs.failed }}")
     );
     for job in ["candidate", "suites"] {
-        let checkout = &doc["jobs"][job]["steps"][0];
+        let checkout = &doc["jobs"][job]["steps"][1];
         assert_eq!(
             checkout["with"]["ref"].as_str(),
             Some("${{ github.sha }}"),
@@ -1445,7 +1445,7 @@ fn the_rerun_runs_trusted_code_once_on_a_failed_first_attempt() {
     assert_eq!(job["permissions"]["contents"].as_str(), Some("read"));
     assert_eq!(job["permissions"]["actions"].as_str(), Some("write"));
     assert_eq!(
-        job["steps"][0]["with"]["ref"].as_str(),
+        job["steps"][1]["with"]["ref"].as_str(),
         Some("${{ github.event.repository.default_branch }}")
     );
     assert_eq!(

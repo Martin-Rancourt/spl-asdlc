@@ -29,7 +29,23 @@ jobs:
       TARGET: x86_64-unknown-linux-gnu
       GH_TOKEN: ${{ github.token }}
     steps:
+      # The job's temporary files and Cargo's build go to the runner's temp
+      # folder, which the runner empties when the job ends, whatever its
+      # outcome (ASDLC-3YRA). `target` is that build seen from the workspace,
+      # the form Swatinem/rust-cache takes.
+      - name: Temporary files in the runner's temp
+        id: scratch
+        shell: bash
+        run: |
+          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target" >> "$GITHUB_ENV"
+          echo "target=$(realpath -m --relative-to="$GITHUB_WORKSPACE" "$RUNNER_TEMP/target")" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The leftovers of earlier runs in the system's temporary folder, on a
+      # self-hosted runner, whose disk is kept between jobs (ASDLC-3YRA).
+      - name: Sweep the runner's earlier leftovers
+        if: runner.environment == 'self-hosted'
+        run: bash scripts/sweep-runner-tmp.sh
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
         with:
           toolchain: stable
@@ -40,7 +56,7 @@ jobs:
           name="spl-asdlc-staging-$TARGET"
           rm -rf dist "$name" && mkdir dist "$name"
           cp README.md LICENSE "$name/"
-          cp "target/$TARGET/release/spl-asdlc" "$name/"
+          cp "$CARGO_TARGET_DIR/$TARGET/release/spl-asdlc" "$name/"
           echo "$GITHUB_SHA" > "$name/COMMIT"
           tar czf "dist/$name.tar.gz" "$name"
           (cd dist && sha256sum * > SHA256SUMS)
@@ -61,3 +77,7 @@ jobs:
             gh release create staging dist/* --repo "$GITHUB_REPOSITORY" --prerelease --latest=false \
               --title "spl-asdlc staging" --notes "$notes"
           fi
+      # The archive's folders, left in the workspace, go too (ASDLC-3YRA).
+      - name: Remove the archive
+        if: always()
+        run: rm -rf dist "spl-asdlc-staging-$TARGET"

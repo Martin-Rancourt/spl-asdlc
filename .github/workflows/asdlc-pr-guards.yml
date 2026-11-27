@@ -135,6 +135,11 @@ jobs:
       detections: ${{ steps.detectors.outputs.detections || '{}' }}
       skipped: ${{ steps.skip.outputs.skipped }}
     steps:
+      # The job's temporary files go to the runner's temp folder, which the
+      # runner empties when the job ends, whatever its outcome (ASDLC-3YRA).
+      - name: Temporary files in the runner's temp
+        shell: bash
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Skip the heads the release chain generates
         id: skip
         env:

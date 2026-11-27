@@ -1373,7 +1373,8 @@ fn the_cut_is_two_called_jobs_with_the_bridges_one_input() {
 #[test]
 fn every_push_is_made_with_the_app_token_and_nothing_dispatches_a_workflow() {
     let doc = workflow(CUT);
-    let steps = doc["jobs"]["cut"]["steps"].as_vec().unwrap();
+    let steps =
+        crate::harness::after_scratch(doc["jobs"]["cut"]["steps"].as_vec().unwrap().clone());
     assert_eq!(steps[0]["id"].as_str(), Some("app-token"));
     assert!(
         steps[0]["uses"]

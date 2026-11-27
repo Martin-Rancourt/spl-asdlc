@@ -284,8 +284,9 @@ fn the_pr_workflow_is_unfiltered_runs_on_prs_only_and_aggregates_every_job() {
         "every job is a need of required-check (REQ-CI-025)"
     );
     let steps = aggregator["steps"].as_vec().unwrap();
-    // The action of the pinned line: nothing to check out (BR-ASDLC-023).
-    assert_eq!(steps.len(), 1);
+    // The scratch step, then the action of the pinned line: nothing to
+    // check out (BR-ASDLC-023).
+    assert_eq!(steps.len(), 2);
     let step = steps.last().unwrap();
     assert_eq!(
         local(step["uses"].as_str().unwrap(), "pr.yml required-check"),

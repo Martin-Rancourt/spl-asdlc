@@ -52,7 +52,8 @@ fn one_job_named_as_the_title_check_with_its_inputs() {
 
 #[test]
 fn the_title_step_is_the_title_check_as_it_ships_then_the_base() {
-    let all: Vec<_> = steps(&workflow(EDIT)).into_iter().map(|(_, s)| s).collect();
+    let all =
+        crate::harness::after_scratch(steps(&workflow(EDIT)).into_iter().map(|(_, s)| s).collect());
     assert_eq!(all.len(), 2);
     assert_eq!(
         all[0],
