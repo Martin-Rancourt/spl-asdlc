@@ -2,45 +2,13 @@
 
 ## [1.18.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.17.0...v1.18.0) (2026-11-27)
 
-
-### Features
-
-* **release:** a blocked merge back gets a fix ticket, the bridge lands it and replays the close (ASDLC-PQ5J) ([#219](https://github.com/Martin-Rancourt/spl-asdlc/issues/219)) ([709f230](https://github.com/Martin-Rancourt/spl-asdlc/commit/709f230041ee0a7d05f2cc8eb0cb2ed4daf9fc19))
-* **release:** prepare a break-glass patch when the bridge is down (ASDLC-KEUY) ([#225](https://github.com/Martin-Rancourt/spl-asdlc/issues/225)) ([966a3d5](https://github.com/Martin-Rancourt/spl-asdlc/commit/966a3d5a0bca90d6798522ffe2c51ef11f4ab8cd))
-* **release:** ship a patch beside an open cycle (ASDLC-MG26) ([#221](https://github.com/Martin-Rancourt/spl-asdlc/issues/221)) ([6bc23b8](https://github.com/Martin-Rancourt/spl-asdlc/commit/6bc23b82b0151b48956d7d292bce837d631c5599))
-* **runner:** update within the requested major (ASDLC-AE9F) ([#222](https://github.com/Martin-Rancourt/spl-asdlc/issues/222)) ([6251408](https://github.com/Martin-Rancourt/spl-asdlc/commit/625140807ced189d25df822a8e5fd0cf9ba87170))
-* **tracker:** open a Livela tracker through the runner's local socket (ASDLC-4Z4G) ([#230](https://github.com/Martin-Rancourt/spl-asdlc/issues/230)) ([557d9cf](https://github.com/Martin-Rancourt/spl-asdlc/commit/557d9cf11b090440b947f217f82a37b7e7b8ada0))
-* **tracker:** the bridge writes log entries on Livela items (ASDLC-F6D6) ([#231](https://github.com/Martin-Rancourt/spl-asdlc/issues/231)) ([91e06af](https://github.com/Martin-Rancourt/spl-asdlc/commit/91e06af46c60df15604252c89d8aec72505a9fcc))
-
-
-### Bug Fixes
-
-* **release:** ask a verdict on a lighter pass that frees a blocking finding (ASDLC-DF2Q) ([#229](https://github.com/Martin-Rancourt/spl-asdlc/issues/229)) ([35eec5d](https://github.com/Martin-Rancourt/spl-asdlc/commit/35eec5df433294376e3c7fa60c04e95c6f4b82c2))
-* **release:** close every shipped ticket (ASDLC-P63X) ([#220](https://github.com/Martin-Rancourt/spl-asdlc/issues/220)) ([2e30354](https://github.com/Martin-Rancourt/spl-asdlc/commit/2e303549ad01a3dca675031285cb32a25694700c))
-* **review:** supersede earlier open PR rounds (ASDLC-FB79) ([#228](https://github.com/Martin-Rancourt/spl-asdlc/issues/228)) ([7603a43](https://github.com/Martin-Rancourt/spl-asdlc/commit/7603a43d5735d2fcb6050018a268149d957dd098))
-
-
-### Documentation
-
-* **contract:** tighten post-deploy criteria (ASDLC-A3D4) ([#172](https://github.com/Martin-Rancourt/spl-asdlc/issues/172)) ([ebce05f](https://github.com/Martin-Rancourt/spl-asdlc/commit/ebce05f3a2c168f2c679c74a3d9a9aad8e050b0d))
-
-
-### Chores
-
-* **release:** pin v1.17 and let the coordinators give the go (ASDLC-NGV2) ([#223](https://github.com/Martin-Rancourt/spl-asdlc/issues/223)) ([2738404](https://github.com/Martin-Rancourt/spl-asdlc/commit/2738404a2e87fd421b6d77e16eda7b596ac2de79))
-* **release:** security report for v1.17.0-rc.2 (ASDLC-H6S4) ([1400a57](https://github.com/Martin-Rancourt/spl-asdlc/commit/1400a570a70dc664aadd25fe140096c992d5f02e))
-* **release:** verdict for v1.17.0-rc.2 (ASDLC-EK6U) ([4c1b3c1](https://github.com/Martin-Rancourt/spl-asdlc/commit/4c1b3c1d90e18b2c8660667f4e038d08be118078))
-
-
-### Tests
-
-* **workflows:** run each step with a TMPDIR inside its scratch (ASDLC-86YY) ([#224](https://github.com/Martin-Rancourt/spl-asdlc/issues/224)) ([ee71fb6](https://github.com/Martin-Rancourt/spl-asdlc/commit/ee71fb6bea20bf8692f7890f209ac99282ca09b5))
-
-
-### Continuous Integration
-
-* keep each CI run's files in the runner's temp and sweep earlier leftovers (ASDLC-3YRA) ([#227](https://github.com/Martin-Rancourt/spl-asdlc/issues/227)) ([a9c204a](https://github.com/Martin-Rancourt/spl-asdlc/commit/a9c204adcdf102f4c8cb958def9b336a69018644))
-* **rules:** check the business-rule registry in CI, out of the doctor (ASDLC-YX9K) ([#226](https://github.com/Martin-Rancourt/spl-asdlc/issues/226)) ([a70a592](https://github.com/Martin-Rancourt/spl-asdlc/commit/a70a592cb2bf6cccbe72dcf05473468d290b6a08))
+- Shipping a fix to production is now one command, with no manual step — and it still works when the usual release automation itself is down: it prepares everything and leaves only your go and the tag.
+- A release that used to stall when its merge back into the main branch was blocked now fixes itself: the fix is created and merged automatically, and the release closes on its own. Tickets that had already shipped no longer get left behind in the pipeline.
+- Self-updates keep installing fixes and smaller improvements on their own, but a new major version never installs without your say — your setup can't break from under you.
+- Business rule violations now surface directly in your pull requests and releases, instead of waiting for a separate check to catch them later.
+- When a pull request goes through another round of review, the previous round's feedback is closed out automatically, so nobody acts on outdated comments.
+- SPL-ASDLC can now run on its own, side by side with Livela, and still reach its tasks.
+- Also in this release: a security hardening fix, a cleanup of stray files left behind by test runs, and a tightened rule for what belongs in a ticket's "after deploy" checklist.
 
 ## [1.17.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.16.0...v1.17.0) (2026-11-25)
 
