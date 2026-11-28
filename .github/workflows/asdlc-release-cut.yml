@@ -436,6 +436,10 @@ jobs:
               fi
             done
             git checkout --quiet -B "$branch" "refs/tags/$production^{commit}"
+            # Some Git/platform combinations can leave the new branch on the
+            # previously checked-out commit. The patch must answer only for
+            # the published tag, so make that starting point explicit.
+            git reset --hard --quiet "refs/tags/$production^{commit}"
             head="$(git rev-parse HEAD)"
             echo "production=$production" >> "$out"
           else

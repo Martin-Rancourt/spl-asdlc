@@ -235,15 +235,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
         with:
           toolchain: stable
-      # macOS runs Git-backed workflow fixtures sequentially, like the real
-      # release cut, because its system Git does not isolate them in parallel.
-      - shell: bash
-        run: |
-          if [ "$RUNNER_OS" = macOS ]; then
-            cargo test --locked -- --test-threads=1
-          else
-            cargo test --locked
-          fi
+      - run: cargo test --locked
+        shell: bash
 
   # The action of the pinned version. always(): it runs whatever its needs
   # gave, but never on a draft.
