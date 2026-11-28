@@ -2,6 +2,7 @@
 //! repository and a bare `origin`, with `gh` stubbed where GitHub answers.
 
 use std::path::Path;
+use std::sync::{Mutex, MutexGuard};
 
 use regex::Regex;
 
@@ -10,6 +11,17 @@ use crate::harness::{
 };
 
 const CUT: &str = ".github/workflows/asdlc-release-cut.yml";
+
+/// The patch fixtures create several short-lived repositories with the same
+/// commits and tags. Keep those scenarios apart: Git's process scheduling on
+/// macOS can otherwise let their shell steps overlap in ways the workflow
+/// itself never does (one cut job handles one patch at a time).
+fn patch_fixture() -> MutexGuard<'static, ()> {
+    static PATCH: Mutex<()> = Mutex::new(());
+    PATCH
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn body(job: &str, id: &str) -> String {
     run_body(&step(&workflow(CUT), job, id))
@@ -1756,6 +1768,7 @@ fn pick(repo: &Repo, stubs: &Path, pulls: &str) -> Ran {
 
 #[test]
 fn a_patch_starts_from_the_tag_in_production_beside_a_cycle_in_flight() {
+    let _fixture = patch_fixture();
     let (repo, _origin, _merged) = production();
     // A normal cycle is in flight: the patch leaves it alone.
     repo.git(&[
@@ -1818,6 +1831,7 @@ fn a_candidate_is_cut_on_the_cycle_it_is_dispatched_on_when_several_are_in_fligh
 
 #[test]
 fn a_patch_cherry_picks_its_merged_prs_in_the_order_main_took_them() {
+    let _fixture = patch_fixture();
     let (repo, _origin, merged) = production();
     assert!(find_patch(&repo, "1.0.1").code == 0);
     let stubs = Scratch::new("stubs");
@@ -1858,6 +1872,7 @@ fn a_patch_cherry_picks_its_merged_prs_in_the_order_main_took_them() {
 
 #[test]
 fn a_patch_refuses_a_pr_it_cannot_carry_and_pushes_nothing() {
+    let _fixture = patch_fixture();
     let other = "0123456789abcdef0123456789abcdef01234567";
     let cases: &[(u64, bool, &str, Option<&str>, &str)] = &[
         (21, false, "main", Some(other), "#21 is not merged"),
@@ -1900,6 +1915,7 @@ fn a_patch_refuses_a_pr_it_cannot_carry_and_pushes_nothing() {
 
 #[test]
 fn a_patch_is_prepared_classed_since_production_and_pushed_with_its_first_candidate() {
+    let _fixture = patch_fixture();
     let (repo, origin, merged) = production();
     let found = find_patch(&repo, "1.0.1");
     ok(&found);
