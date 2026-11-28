@@ -1697,6 +1697,13 @@ fn production() -> (Repo, Scratch, std::collections::BTreeMap<u64, String>) {
     repo.write("src/big.rs", "pub fn big() { todo!() }\n");
     merged.insert(14, repo.commit("fix: the big feature (#14)"));
     repo.git(&["push", "-q", "origin", "main", "--tags"]);
+    let after_production = repo.git(&["rev-list", "acme-v1.0.0..main"]);
+    for (number, commit) in &merged {
+        assert!(
+            after_production.lines().any(|line| line == commit),
+            "PR #{number} commit {commit} must follow the production tag; got {after_production}"
+        );
+    }
     (repo, origin, merged)
 }
 
