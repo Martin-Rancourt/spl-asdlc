@@ -1,0 +1,8 @@
+{
+  "schema": "spl-asdlc/qa-verdict/1",
+  "candidate": "v1.18.0-rc.2",
+  "item": "ASDLC-62YV",
+  "verdict": "go",
+  "between_angles": "The candidate config has one QA angle, security. I cross-checked its report against the complete v1.18.0-rc.1..v1.18.0-rc.2 delta: only the prior candidate's security report and verdict plus the unified CHANGELOG note changed, while code, workflows, dependencies, tests, scripts, configuration, and release mechanics remained byte-identical. I also checked that the report explicitly carried forward the four accepted non-blocking rc.1 findings without duplicating their tickets. No second angle assumed ownership, no configured angle was missing, and no concern fell between angle coverage and the candidate delta.",
+  "findings": []
+}
