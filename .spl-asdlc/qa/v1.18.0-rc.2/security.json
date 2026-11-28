@@ -1,0 +1,18 @@
+{
+  "schema": "spl-asdlc/qa-report/2",
+  "candidate": "v1.18.0-rc.2",
+  "angle": "security",
+  "item": "ASDLC-KT8G",
+  "verdict": "go",
+  "checked": [
+    "Tag annotation of v1.18.0-rc.2 at 6493929 (the tip of release/2026-11-27-23-17-utc): Release-Class routine, reason no reviewed path touched, base v1.17.0, surfaces none; brief of the release item (15 tickets, PRs #172, #219-#231, #237, 13 business rules touched)",
+    "git diff v1.18.0-rc.1..v1.18.0-rc.2: 3 files only (CHANGELOG.md unified note, .spl-asdlc/qa/v1.18.0-rc.1/security.json and consolidation.json); src/, tests/, .github/, actions/, scripts/, Cargo.toml and Cargo.lock byte-identical to v1.18.0-rc.1, so the rc.1 code review stands for this candidate",
+    "The 3 changed files read for rule zero (BR-ASDLC-001) and leaks: no bot login form, email, uuid, token or host path; the unified note describes the update policy (patches and minors only, a new major waits for the user) as src/update.rs implements it",
+    "Project checklist: cargo test --locked at v1.18.0-rc.2 pass (1389 passed, 0 failed, 2 ignored: lib 1130, tests/workflows/ 216); scripts/check-no-instance-names.sh pass (exit 0, identifier forms only; SPL_ASDLC_FORBIDDEN_WORDS is a CI secret, not set locally)",
+    "GitHub rulesets re-read via the API: main and release/** (PR required, required checks title / conventional-title and required-check, no bypass actors), tags refs/tags/v*.*.* and refs/tags/v* (deletion, update, non-fast-forward; creation still not restricted)",
+    "Workflows at the candidate: pull_request_target absent; workflow_run only in release-gate-auto-rerun (checkout of the default branch, sparse, persist-credentials false); every PR title and head ref reaches run steps through env, never interpolated; fork PRs routed to ubuntu-latest; third-party actions pinned to full commits; job permissions scoped (contents write only in binaries, release-publish, staging)",
+    "src/http.rs (max_redirects 0, 64 MiB body cap), src/github/zip.rs (per-entry size limit), src/github/auth.rs (installation tokens cached per repository, dropped 5 min before expiry), src/update.rs download (no credential sent, 64 MiB cap, SHA256SUMS, single-member tar extraction, version check of the staged binary)",
+    "Open findings of v1.18.0-rc.1 (security-1 to security-4, accepted non-blocking by the rc.1 verdict, ticketed, e.g. security-1 as ASDLC-SK34): still present since the code is unchanged, not re-reported to avoid duplicate tickets; earlier open findings likewise not re-reported"
+  ],
+  "findings": []
+}
