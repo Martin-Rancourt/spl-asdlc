@@ -65,7 +65,12 @@ jobs:
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           test "v$version" = "$TAG" || { echo "Cargo.toml says $version, the tag is $TAG"; exit 1; }
       - shell: bash
-        run: cargo test --locked --target "$TARGET"
+        run: |
+          if [[ "$TARGET" == *-apple-darwin ]]; then
+            cargo test --locked --target "$TARGET" -- --test-threads=1
+          else
+            cargo test --locked --target "$TARGET"
+          fi
       - shell: bash
         run: cargo build --locked --release --target "$TARGET"
       - name: Package
