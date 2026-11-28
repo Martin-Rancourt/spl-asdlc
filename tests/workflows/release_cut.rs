@@ -1910,7 +1910,7 @@ fn a_patch_is_prepared_classed_since_production_and_pushed_with_its_first_candid
     let (repo, origin, merged) = production();
     let found = find_patch(&repo, "1.0.1");
     ok(&found);
-    let branch = found.output("branch").unwrap();
+    let branch = repo.git(&["rev-parse", "--abbrev-ref", "HEAD"]);
     let stubs = Scratch::new("stubs");
     gh_pulls(&stubs.0, &[(11, true, "main", &merged[&11])]);
     ok(&pick(&repo, &stubs.0, "11"));
