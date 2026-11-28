@@ -31,7 +31,8 @@ name: pr
 # release branch through a PR to it, so the PR is the only trigger. No run on a push to main: the PR already ran on its merge
 # commit, and the hosted minutes are a budget. Linux only: a macOS minute
 # counts ten and a Windows minute two; binaries.yml builds and tests those
-# once per release.
+# once per release. A small hosted matrix runs the tests on macOS and Windows
+# too: platform-specific test failures must be found on the PR that adds them.
 #
 # The repository variable SPL_ASDLC_RUNS_ON (a JSON string such as
 # "ubuntu-latest", or a JSON array of labels such as
@@ -97,6 +98,7 @@ jobs:
       # The job's temporary files go to the runner's temp folder, which the
       # runner empties when the job ends, whatever its outcome (ASDLC-3YRA).
       - name: Temporary files in the runner's temp
+        id: scratch
         shell: bash
         run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -156,7 +158,7 @@ jobs:
         run: |
           echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
           echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target" >> "$GITHUB_ENV"
-          echo "target=$(realpath -m --relative-to="$GITHUB_WORKSPACE" "$RUNNER_TEMP/target")" >> "$GITHUB_OUTPUT"
+          echo "target=$(python3 -c 'import os,sys; print(os.path.relpath(sys.argv[2], sys.argv[1]))' "$GITHUB_WORKSPACE" "$RUNNER_TEMP/target")" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -192,7 +194,7 @@ jobs:
         run: |
           echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
           echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target" >> "$GITHUB_ENV"
-          echo "target=$(realpath -m --relative-to="$GITHUB_WORKSPACE" "$RUNNER_TEMP/target")" >> "$GITHUB_OUTPUT"
+          echo "target=$(python3 -c 'import os,sys; print(os.path.relpath(sys.argv[2], sys.argv[1]))' "$GITHUB_WORKSPACE" "$RUNNER_TEMP/target")" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -208,12 +210,40 @@ jobs:
           workspaces: ". -> ${{ steps.scratch.outputs.target }}"
       - run: cargo test --locked
 
+  portable-test:
+    name: test (${{ matrix.os }})
+    needs: guards
+    if: github.event.pull_request.draft == false && needs.guards.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Temporary files in the runner's temp
+        id: scratch
+        shell: bash
+        run: |
+          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: stable
+      - run: cargo test --locked
+        shell: bash
+
   # The action of the pinned version. always(): it runs whatever its needs
   # gave, but never on a draft.
   required-check:
     name: required-check
     if: always() && github.event.pull_request.draft == false
-    needs: [guards, rule-zero, fmt, clippy, test]
+    needs: [guards, rule-zero, fmt, clippy, test, portable-test]
     runs-on: ${{ fromJSON(github.event.pull_request.head.repo.full_name == github.repository && vars.SPL_ASDLC_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 5
     permissions: {}
@@ -226,4 +256,4 @@ jobs:
       - uses: Martin-Rancourt/spl-asdlc/actions/required-check@v1.17
         with:
           needs: ${{ toJSON(needs) }}
-          may-skip: fmt,clippy,test
+          may-skip: fmt,clippy,test,portable-test
