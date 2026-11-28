@@ -1151,3 +1151,63 @@ fn the_abandon_marker_counts_only_on_a_line_of_its_own() {
         assert!(!records_abandon(forged), "{forged}");
     }
 }
+
+/// A ticket's body is refined as a tracker that asks every ticket for its
+/// contract reads it: a Goal with text, an Acceptance criteria section with
+/// a box, a Business rules section with text, and a Release note with an
+/// `EN:` and an `FR:` line, each with its text (ASDLC-DJCU).
+pub(crate) fn refined(body: &str) -> Result<(), String> {
+    let section = |name: &str| -> Option<String> {
+        let mut out: Option<String> = None;
+        for line in body.lines() {
+            if let Some(h) = line.strip_prefix("## ") {
+                if out.is_some() {
+                    break;
+                }
+                if h.trim() == name {
+                    out = Some(String::new());
+                }
+            } else if let Some(o) = out.as_mut() {
+                o.push_str(line);
+                o.push('\n');
+            }
+        }
+        out
+    };
+    let text = |name: &str| {
+        section(name)
+            .filter(|s| !s.trim().is_empty())
+            .ok_or(format!("no `## {name}` with text"))
+    };
+    text("Goal")?;
+    if !text("Acceptance criteria")?.contains("- [") {
+        return Err("no box in `## Acceptance criteria`".into());
+    }
+    text("Business rules")?;
+    let note = text("Release note")?;
+    for lang in ["EN:", "FR:"] {
+        if !note.lines().any(|l| {
+            l.trim()
+                .strip_prefix(lang)
+                .is_some_and(|r| !r.trim().is_empty())
+        }) {
+            return Err(format!("no `{lang}` line in `## Release note`"));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn the_merge_back_fix_ticket_is_refined_as_it_is_created() {
+    let block = MergeBackBlock::Dirty;
+    let (_, body) = merge_back_fix_ticket(&BlockedMergeBack {
+        release: "ABC-1",
+        tag: "acme-v1.2.0",
+        branch: "release/1.2.0",
+        default_branch: "main",
+        pr_url: "https://example.test/pr/1",
+        run_url: "https://example.test/run/1",
+        block: &block,
+    });
+    assert_eq!(refined(&body), Ok(()), "{body}");
+}

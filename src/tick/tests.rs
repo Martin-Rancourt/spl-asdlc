@@ -2947,6 +2947,43 @@ fn merged(w: &World) -> bool {
         .contains(&"merge example-org/acme#7 at head-7 squash".to_string())
 }
 
+/// The PR of a release's unified note (ASDLC-DJCU): its ticket as the
+/// bridge creates it, the box ticked when the PR goes ready, merges and is
+/// never returned to draft; left unticked, it is returned to draft.
+#[test]
+fn a_note_pr_whose_box_is_ticked_merges_and_is_never_returned_to_draft() {
+    use super::release_note::{Step, body};
+    use crate::tracker::Tracker;
+    let note = body(
+        Step::Write,
+        "ABC-1",
+        "1.2.0",
+        "release/1.2.0",
+        &["CHANGELOG.md".to_string()],
+    );
+    for ticked in [true, false] {
+        let mut w = World::new();
+        no_review(&mut w);
+        let pr = green(pull_request(7));
+        w.ticket("ABC-7", Status::InProgress, &pr);
+        let description = if ticked {
+            note.replace("- [ ] The unified note", "- [x] The unified note")
+        } else {
+            note.clone()
+        };
+        w.tracker.update_description("ABC-7", &description).unwrap();
+        w.open(pr);
+        let (report, _) = w.tick(false);
+        assert!(report.ok(), "{report:?}");
+        let drafted = w
+            .github_writes()
+            .iter()
+            .any(|s| s == "draft-pull example-org/acme#7");
+        assert_eq!(drafted, !ticked, "{:?}", w.github_writes());
+        assert_eq!(merged(&w), ticked, "{:?}", w.github_writes());
+    }
+}
+
 #[test]
 fn a_pr_with_no_angle_merges_on_green_ci_with_no_round_nor_approval() {
     let mut w = World::new();

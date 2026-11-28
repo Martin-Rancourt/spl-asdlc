@@ -7418,6 +7418,63 @@ fn a_note_writer_gets_a_task_at_the_first_candidate_that_holds_the_go_until_done
     );
 }
 
+/// A tracker that makes the writing step a ticket (no task type): its PR
+/// merged, it waits in To Deploy, which no longer holds the GO, and the
+/// closure closes it once the release is published (ASDLC-DJCU).
+#[test]
+fn a_note_ticket_merged_to_deploy_frees_the_go_and_the_closure_closes_it() {
+    use super::release_note::Step;
+    let mut w = World::new();
+    w.note_people(false);
+    w.tick();
+    let write = w.note_task(Step::Write).expect("the writing task");
+    w.tracker.make_ticket(&write.key).unwrap();
+    all_angles_merged(&w);
+    {
+        let mut s = w.github.state.borrow_mut();
+        s.compares.insert(
+            (repo(), "c1".into(), BRANCH.into()),
+            cmp(CompareStatus::Ahead, &["n1"], &["CHANGELOG.md"]),
+        );
+        s.branches.insert(repo(), vec![tag(BRANCH, "n1")]);
+        s.files.insert(
+            (repo(), "n1".into(), "CHANGELOG.md".into()),
+            Ok("# Changelog\n\n## [1.2.0](x) (2026-10-05)\n\n* You can now ship.\n".into()),
+        );
+    }
+    // The note PR merged by the bridge: the ticket in To Deploy.
+    w.tracker
+        .set_status(&write.key, Status::ToDeploy, None)
+        .unwrap();
+    let r = w.tick();
+    assert_eq!(w.go_writes(), go_lines("n1"), "{r:?}");
+    publish(&w);
+    let r = w.tick();
+    assert!(r.ok(), "{r:?}");
+    assert_eq!(
+        w.tracker.get(&write.key).unwrap().state.status,
+        Some(Status::Done),
+        "the closure closes the note ticket"
+    );
+}
+
+/// A note ticket still open (its PR not merged) holds the GO.
+#[test]
+fn a_note_ticket_in_review_still_holds_the_go() {
+    use super::release_note::Step;
+    let mut w = World::new();
+    w.note_people(false);
+    w.tick();
+    let write = w.note_task(Step::Write).expect("the writing task");
+    w.tracker.make_ticket(&write.key).unwrap();
+    all_angles_merged(&w);
+    w.tracker
+        .set_status(&write.key, Status::InReview, None)
+        .unwrap();
+    w.tick();
+    assert!(w.go_writes().is_empty());
+}
+
 #[test]
 fn a_note_reviewer_gets_a_review_task_blocked_by_the_writing_that_blocks_the_release() {
     use super::release_note::Step;

@@ -42,6 +42,13 @@ pub fn marker(version: &str, step: Step) -> String {
     )
 }
 
+/// Whether a description carries the marker of a release's note task, of
+/// any version and step: the closure closes it as a child of its release,
+/// its PR merged on the release branch after the candidate (ASDLC-DJCU).
+pub fn is_note_task(description: &str) -> bool {
+    description.contains("spl-asdlc:release-note version=")
+}
+
 /// The paths of the release's note in the repository: the CHANGELOG, and the
 /// version's own notes file with `release.changelog_dir`. With a writer
 /// configured they are bookkeeping after the candidate (spec 05 §8): the
@@ -76,12 +83,14 @@ pub fn body(step: Step, release: &str, version: &str, branch: &str, paths: &[Str
              ## What to do\n\n\
              1. Read the release note the cut prepared for {version} on the release branch `{branch}`: its section in {files}, and the release item {release}, whose `## Release note` lists each ticket by its own note.\n\
              2. Rewrite it as one digestible note: tickets about the same thing merged into one entry, in the words of the person who uses the product, without ticket ids or internal vocabulary.\n\
-             3. Commit it on `{branch}`, in {files} only, the version's heading kept: through a PR whose base is `{branch}` and which changes nothing else.\n\
-             4. Mark this task Done once the note is on `{branch}`.\n\n\
+             3. Commit it on `{branch}`, in {files} only, the version's heading kept: through a PR whose base is `{branch}` and which changes nothing else, naming this item.\n\
+             4. Tick the box below when you mark the PR ready, before its merge: the bridge merges a PR only once its ticket ticks every box, and returns it to draft otherwise.\n\n\
              ## Non-goals\n\n\
              No change to any other file, no change to the version, no new candidate: the GO reads the note at the branch's tip.\n\n\
              ## Acceptance criteria\n\n\
-             - [ ] The unified note of {version} is on `{branch}`, in {files}.\n"
+             - [ ] The unified note of {version} is on `{branch}`, in {files}.\n\n\
+             ## What closes this item\n\n\
+             The bridge merges the PR, and this item goes To Deploy: from then on the GO no longer waits for it, and the release's closure closes it once the release is published. Should this item be a task, mark it Done once the note is on `{branch}`.\n"
         ),
         Step::Review => format!(
             "## Goal\n\n\
@@ -96,9 +105,12 @@ pub fn body(step: Step, release: &str, version: &str, branch: &str, paths: &[Str
         ),
     };
     format!(
-        "{work}\nThe release {release} is not published while this task is open.\n\n{}\n\n{}\n",
+        "{work}\n## Business rules\n\n{absence}\n\n## Release note\n\n{note}\n\n\
+         The release {release} is not published until this item is done.\n\n{}\n\n{}\n",
         texts::KEEP_MARKER,
-        marker(version, step)
+        marker(version, step),
+        absence = crate::method::business_rules::ABSENCE_DECLARATION,
+        note = texts::INTERNAL_RELEASE_NOTE,
     )
 }
 
@@ -246,4 +258,45 @@ fn block(t: &Tick, log: &mut ActionLog, report: &mut Report, a: &str, b: &str) -
         },
     )
     .is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::method::texts::tests::refined;
+
+    fn note_body(step: Step) -> String {
+        body(
+            step,
+            "ABC-1",
+            "1.2.0",
+            "release/1.2.0",
+            &["CHANGELOG.md".to_string()],
+        )
+    }
+
+    /// Each note task is refined as it is created: nobody completes its
+    /// contract by hand (ASDLC-DJCU).
+    #[test]
+    fn each_note_task_is_refined_as_it_is_created() {
+        for step in [Step::Write, Step::Review] {
+            let b = note_body(step);
+            assert_eq!(refined(&b), Ok(()), "{b}");
+            assert!(texts::has_marker(&b, &marker("1.2.0", step)));
+            assert!(is_note_task(&b));
+        }
+        assert!(!is_note_task(crate::method::release::note::START));
+    }
+
+    /// The writer ticks the box when the PR goes ready, before its merge,
+    /// as a gate-fix ticket says.
+    #[test]
+    fn the_writing_task_says_to_tick_the_box_when_the_pr_goes_ready() {
+        let b = note_body(Step::Write);
+        assert!(
+            b.contains("Tick the box below when you mark the PR ready, before its merge"),
+            "{b}"
+        );
+        assert!(!b.contains("Mark this task Done once the note"), "{b}");
+    }
 }

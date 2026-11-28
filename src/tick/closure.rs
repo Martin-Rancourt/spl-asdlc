@@ -523,7 +523,8 @@ fn judge_member(
     result: &mut CloseResult,
 ) {
     let bridge_child = m.parent.as_deref() == Some(release.key.as_str())
-        && texts::bridge_item(&m.description, m.parent.as_deref()).is_some();
+        && (texts::bridge_item(&m.description, m.parent.as_deref()).is_some()
+            || super::release_note::is_note_task(&m.description));
     let member = Member {
         id: m.key.clone(),
         state: m.state.clone(),
