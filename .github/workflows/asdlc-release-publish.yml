@@ -383,8 +383,9 @@ jobs:
           # the tip too, which differs from the candidate only by its note
           # files and the latest candidate's report of each angle,
           # `<record>/<angle>.json`: the last pass's reports land after its
-          # candidate by construction. They are rendered for RC_TAG only, so
-          # an earlier candidate's report is a delta like any other.
+          # candidate by construction. The coordinator's verdict lands with
+          # those reports. Every path is rendered for RC_TAG only, so an
+          # earlier candidate's report or verdict is a delta like any other.
           : > "$work/allowed"
           qa_dir="${QA_RECORD%%"{candidate}"*}${RC_TAG}${QA_RECORD#*"{candidate}"}"
           while [[ "$qa_dir" == */ ]]; do qa_dir="${qa_dir%/}"; done
@@ -392,6 +393,7 @@ jobs:
           while IFS= read -r angle; do
             printf '%s/%s.json\n' "$qa_dir" "$angle" >> "$work/allowed"
           done < "$work/angles"
+          printf '%s/consolidation.json\n' "$qa_dir" >> "$work/allowed"
           # The unified release note (spec 05 §12): written on the release
           # branch after the cut, in the CHANGELOG and the version's own
           # notes file under `release.changelog_dir` (read from the

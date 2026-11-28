@@ -378,14 +378,16 @@ fn the_qa_inputs_reach_the_script_through_its_environment() {
 }
 
 #[test]
-fn the_latest_candidates_own_qa_reports_may_follow_it() {
+fn the_latest_candidates_own_qa_reports_and_verdict_may_follow_it() {
     let repo = cycle();
     release(
         &repo,
         "acme-v1.2.0",
         &[
+            ("CHANGELOG.md", "# Changelog\n"),
             (".spl-asdlc/qa/acme-v1.2.0-rc.10/security.json", "{}\n"),
             (".spl-asdlc/qa/acme-v1.2.0-rc.10/product.json", "{}\n"),
+            (".spl-asdlc/qa/acme-v1.2.0-rc.10/consolidation.json", "{}\n"),
         ],
     );
     let r = candidate(&repo, &[("QA_ANGLES", ANGLES)]);
@@ -427,6 +429,21 @@ fn the_latest_candidates_own_qa_reports_may_follow_it() {
     assert!(
         !r.log
             .contains("  .spl-asdlc/qa/acme-v1.2.0-rc.10/security.json"),
+        "{}",
+        r.log
+    );
+
+    let repo = cycle();
+    release(
+        &repo,
+        "acme-v1.2.0",
+        &[(".spl-asdlc/qa/acme-v1.2.0-rc.9/consolidation.json", "{}\n")],
+    );
+    let r = candidate(&repo, &[("QA_ANGLES", ANGLES)]);
+    assert_eq!(r.code, 1, "{}", r.log);
+    assert!(
+        r.log
+            .contains("  .spl-asdlc/qa/acme-v1.2.0-rc.9/consolidation.json"),
         "{}",
         r.log
     );

@@ -1286,13 +1286,16 @@ pub fn digest(text: &str) -> String {
     format!("{h:016x}")
 }
 
-/// The dedupe key of a HOLD (REQ-REL-069): sorted blockers and fix gaps.
-pub fn hold_key(blockers: &[String], fix_gaps: &[String]) -> String {
+/// The dedupe key of a HOLD (REQ-REL-069): sorted blockers, fix gaps and
+/// tip gaps.
+pub fn hold_key(blockers: &[String], fix_gaps: &[String], tip_gaps: &[String]) -> String {
     let mut b = blockers.to_vec();
     b.sort();
     let mut f = fix_gaps.to_vec();
     f.sort();
-    digest(&format!("{}|{}", b.join(","), f.join(",")))
+    let mut t = tip_gaps.to_vec();
+    t.sort();
+    digest(&format!("{}|{}|{}", b.join(","), f.join(","), t.join(",")))
 }
 
 pub fn hold_comment(
