@@ -4,7 +4,7 @@ Status: Enforced
 
 ## Rule
 
-A patch names its PRs by number. Each must be merged, into the default branch, by a merge commit the default branch holds, and not already in production; any other PR refuses the whole patch and nothing is pushed. The chosen merge commits are cherry-picked with `-x` in the order the default branch took them; a conflict refuses the patch. Each cherry-pick embarks the ticket of the PR it copies, read from its `(cherry picked from commit …)` line.
+A patch names its PRs by number. Each must be merged, into the default branch, by a merge commit the default branch holds, and not already in production; any other PR refuses the whole patch and nothing is pushed. The chosen merge commits are cherry-picked with `-x` in the order the default branch took them; a conflict refuses the patch. Each cherry-pick embarks the ticket of the PR it copies, read from its `(cherry picked from commit …)` line. Beside them, a patch carries only the App's own commits named in `carry` (3C74).
 
 ## Evidence
 

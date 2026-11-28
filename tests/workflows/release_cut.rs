@@ -1622,6 +1622,15 @@ fn preflight_accepts_a_patch_that_names_its_version_and_its_prs() {
         ("FORCE_VERSION", "1.17.10"),
         ("PULLS", "12,7,301"),
     ]));
+    ok(&preflight(&[
+        ("ACTION", "patch"),
+        ("FORCE_VERSION", "1.17.1"),
+        ("PULLS", "12"),
+        (
+            "CARRY",
+            "0123456789abcdef0123456789abcdef01234567,89abcdef0123456789abcdef0123456789abcdef",
+        ),
+    ]));
     let cases: &[(&[(&'static str, &str)], &str)] = &[
         (&[("ACTION", "patch"), ("PULLS", "12")], "names its version"),
         (
@@ -1653,6 +1662,26 @@ fn preflight_accepts_a_patch_that_names_its_version_and_its_prs() {
             "names the PRs it carries",
         ),
         (&[("PULLS", "12")], "pulls only applies to 'patch'"),
+        (
+            &[
+                ("ACTION", "patch"),
+                ("FORCE_VERSION", "1.17.1"),
+                ("PULLS", "12"),
+                ("CARRY", "abc123"),
+            ],
+            "carry names full commit SHAs",
+        ),
+        (
+            &[("CARRY", "0123456789abcdef0123456789abcdef01234567")],
+            "carry only applies to 'patch'",
+        ),
+        (
+            &[
+                ("ACTION", "candidate"),
+                ("CARRY", "0123456789abcdef0123456789abcdef01234567"),
+            ],
+            "carry only applies to 'patch'",
+        ),
         (
             &[("ACTION", "candidate"), ("FORCE_VERSION", "1.17.1")],
             "only applies to 'open' and 'patch'",
@@ -1739,6 +1768,10 @@ fn find_patch(repo: &Repo, version: &str) -> Ran {
 }
 
 fn pick(repo: &Repo, stubs: &Path, pulls: &str) -> Ran {
+    pick_carrying(repo, stubs, pulls, "")
+}
+
+fn pick_carrying(repo: &Repo, stubs: &Path, pulls: &str, carry: &str) -> Ran {
     exec(
         "cut",
         "pick",
@@ -1747,6 +1780,7 @@ fn pick(repo: &Repo, stubs: &Path, pulls: &str) -> Ran {
         &[
             ("ACTION", "patch"),
             ("PULLS", pulls),
+            ("CARRY", carry),
             ("PRODUCTION", "acme-v1.0.0"),
             ("APP_SLUG", "example-app"),
             ("GH_TOKEN", "a-token"),
@@ -1972,4 +2006,237 @@ fn a_patch_is_prepared_classed_since_production_and_pushed_with_its_first_candid
     );
     // main is untouched.
     assert_eq!(git_in(&origin.0, &["rev-parse", "main"]), merged[&14]);
+}
+
+// ------------------------------------------------------------ patch carry
+
+/// A commit on the current branch of `repo`, authored and committed as
+/// `name <email>`.
+fn commit_as(repo: &Repo, name: &str, email: &str, message: &str) -> String {
+    commit_by(repo, (name, email), (name, email), message)
+}
+
+/// A commit on the current branch of `repo` by `author`, committed by
+/// `committer` (each a name and an address), whatever the environment says.
+fn commit_by(repo: &Repo, author: (&str, &str), committer: (&str, &str), message: &str) -> String {
+    repo.git(&["add", "-A"]);
+    let out = std::process::Command::new("git")
+        .args(["commit", "-q", "-m", message])
+        .current_dir(&repo.dir.0)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_NAME", author.0)
+        .env("GIT_AUTHOR_EMAIL", author.1)
+        .env("GIT_COMMITTER_NAME", committer.0)
+        .env("GIT_COMMITTER_EMAIL", committer.1)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    repo.git(&["rev-parse", "HEAD"])
+}
+
+/// The App's slug, its bot login and its commit address: built at run time,
+/// so that no bot login nor address is written out (BR-ASDLC-001).
+const APP_SLUG: &str = "example-app";
+
+fn app() -> String {
+    format!("{APP_SLUG}[bot]")
+}
+
+fn app_email() -> String {
+    format!("41898282+{APP_SLUG}[bot]@{}", "users.noreply.github.com")
+}
+
+/// `production()`, then on `main` the caller's notes commit of `1.0.1`, by
+/// the App, pushed: returns its sha beside the PRs' merge commits.
+fn production_with_notes() -> (
+    Repo,
+    Scratch,
+    std::collections::BTreeMap<u64, String>,
+    String,
+) {
+    let (repo, origin, merged) = production();
+    repo.write("changelog/1.0.1.json", "[{\"en\":\"It works again.\"}]\n");
+    let notes = commit_as(
+        &repo,
+        &app(),
+        &app_email(),
+        "chore(changelog): the release notes of v1.0.1",
+    );
+    repo.git(&["push", "-q", "origin", "main"]);
+    (repo, origin, merged, notes)
+}
+
+#[test]
+fn a_patch_carries_the_apps_commit_after_its_prs() {
+    let (repo, _origin, merged, notes) = production_with_notes();
+    ok(&find_patch(&repo, "1.0.1"));
+    let stubs = Scratch::new("stubs");
+    gh_pulls(&stubs.0, &[(11, true, "main", &merged[&11])]);
+    let r = pick_carrying(&repo, &stubs.0, "11", &notes);
+    ok(&r);
+    assert_eq!(r.output("pulls").as_deref(), Some("11"));
+    assert_eq!(r.output("carry").as_deref(), Some(notes.as_str()));
+    // After the PRs, with `-x`: the bridge maps it to a commit no PR merged.
+    assert_eq!(
+        repo.git(&["log", "--format=%s", "acme-v1.0.0..HEAD"]),
+        "chore(changelog): the release notes of v1.0.1\nfix: the crash on login (#11)"
+    );
+    assert!(
+        repo.git(&["log", "-1", "--format=%B"])
+            .contains(&format!("(cherry picked from commit {notes})")),
+    );
+    assert_eq!(
+        repo.git(&["show", "HEAD:changelog/1.0.1.json"]),
+        "[{\"en\":\"It works again.\"}]"
+    );
+    assert!(repo.git(&["ls-files", "src/big.rs"]).is_empty());
+    // The short form of the App's address is its own too.
+    let (repo, _origin, merged) = production();
+    repo.write("changelog/1.0.1.json", "[]\n");
+    let short = commit_as(
+        &repo,
+        &app(),
+        &format!("{APP_SLUG}[bot]@{}", "users.noreply.github.com"),
+        "chore(changelog): the release notes of v1.0.1",
+    );
+    repo.git(&["push", "-q", "origin", "main"]);
+    ok(&find_patch(&repo, "1.0.1"));
+    let stubs = Scratch::new("stubs");
+    gh_pulls(&stubs.0, &[(11, true, "main", &merged[&11])]);
+    ok(&pick_carrying(&repo, &stubs.0, "11", &short));
+}
+
+#[test]
+fn an_empty_carry_carries_nothing() {
+    let (repo, _origin, merged, _notes) = production_with_notes();
+    ok(&find_patch(&repo, "1.0.1"));
+    let stubs = Scratch::new("stubs");
+    gh_pulls(&stubs.0, &[(11, true, "main", &merged[&11])]);
+    let r = pick(&repo, &stubs.0, "11");
+    ok(&r);
+    assert_eq!(r.output("carry").as_deref(), Some(""));
+    assert_eq!(
+        repo.git(&["log", "--format=%s", "acme-v1.0.0..HEAD"]),
+        "fix: the crash on login (#11)"
+    );
+}
+
+/// Picks `carry` on a patch of `1.0.1` carrying #11, expects the refusal
+/// `words`, and that nothing was pushed nor left picked.
+fn carry_refused(
+    repo: &Repo,
+    origin: &Scratch,
+    merged: &std::collections::BTreeMap<u64, String>,
+    carry: &str,
+    words: &str,
+) {
+    ok(&find_patch(repo, "1.0.1"));
+    let stubs = Scratch::new("stubs");
+    gh_pulls(&stubs.0, &[(11, true, "main", &merged[&11])]);
+    refused(&pick_carrying(repo, &stubs.0, "11", carry), words);
+    assert!(git_in(&origin.0, &["branch", "--list", "release/*"]).is_empty());
+    assert!(repo.git(&["status", "--porcelain"]).is_empty());
+}
+
+#[test]
+fn a_patch_refuses_a_commit_not_by_the_app() {
+    let (app, app_email) = (app(), app_email());
+    let someone = format!("someone@{}", "example.org");
+    let github = format!("noreply@{}", "github.com");
+    let cases = [
+        (("someone", someone.as_str()), ("someone", someone.as_str())),
+        (
+            (app.as_str(), someone.as_str()),
+            (app.as_str(), someone.as_str()),
+        ),
+        // Authored by the App, committed by another hand (a PR's squash).
+        (
+            (app.as_str(), app_email.as_str()),
+            ("GitHub", github.as_str()),
+        ),
+    ];
+    for (author, committer) in cases {
+        let (repo, origin, merged) = production();
+        repo.write("changelog/1.0.1.json", "[]\n");
+        let sha = commit_by(&repo, author, committer, "chore(changelog): notes");
+        repo.git(&["push", "-q", "origin", "main"]);
+        carry_refused(&repo, &origin, &merged, &sha, &format!("not {app}"));
+    }
+}
+
+#[test]
+fn a_patch_refuses_a_commit_not_on_the_default_branch() {
+    let (repo, origin, merged) = production();
+    repo.git(&["checkout", "-q", "-b", "elsewhere"]);
+    repo.write("changelog/1.0.1.json", "[]\n");
+    let sha = commit_as(&repo, &app(), &app_email(), "chore(changelog): notes");
+    repo.git(&["push", "-q", "origin", "elsewhere"]);
+    repo.git(&["checkout", "-q", "main"]);
+    carry_refused(&repo, &origin, &merged, &sha, "is not on origin/main");
+    // Nor one no one has.
+    let (repo, origin, merged) = production();
+    carry_refused(
+        &repo,
+        &origin,
+        &merged,
+        "0123456789abcdef0123456789abcdef01234567",
+        "is not on origin/main",
+    );
+    // Nor one already in production.
+    let (repo, origin, merged) = production();
+    let prod = repo.git(&["rev-parse", "acme-v1.0.0^{commit}"]);
+    carry_refused(&repo, &origin, &merged, &prod, "already in production");
+}
+
+#[test]
+fn a_carried_commit_that_does_not_apply_refuses_the_patch() {
+    // The App's commit changes `src/big.rs`, which neither the release in
+    // production nor #11 has.
+    let (repo, origin, merged) = production();
+    repo.write("src/big.rs", "pub fn big() { unimplemented!() }\n");
+    let sha = commit_as(&repo, &app(), &app_email(), "chore: touch big");
+    repo.git(&["push", "-q", "origin", "main"]);
+    carry_refused(&repo, &origin, &merged, &sha, "does not apply on the patch");
+    assert_eq!(
+        repo.git(&["log", "--format=%s", "acme-v1.0.0..HEAD"]),
+        "fix: the crash on login (#11)",
+        "the refusal leaves the PRs picked, nothing more"
+    );
+}
+
+#[test]
+fn the_patch_tag_records_its_carried_commits() {
+    let (repo, _origin, merged, notes) = production_with_notes();
+    let found = find_patch(&repo, "1.0.1");
+    ok(&found);
+    let branch = found.output("branch").unwrap();
+    let stubs = Scratch::new("stubs");
+    gh_pulls(&stubs.0, &[(11, true, "main", &merged[&11])]);
+    ok(&pick_carrying(&repo, &stubs.0, "11", &notes));
+    let patch = |carried: &str| {
+        compute(
+            &repo,
+            &[
+                ("ACTION", "patch"),
+                ("BRANCH", &branch),
+                ("VERSION", "1.0.1"),
+                ("PRODUCTION", "acme-v1.0.0"),
+                ("PICKED", "11"),
+                ("CARRIED", carried),
+            ],
+        )
+    };
+    let r = patch(&notes);
+    ok(&r);
+    let t = trailers(&r);
+    assert!(t.contains(&format!("Release-Patch-Carry: {notes}")), "{t}");
+    assert!(t.contains("Release-Patch-Pulls: 11"), "{t}");
+    let r = patch("");
+    ok(&r);
+    assert!(
+        !trailers(&r).contains("Release-Patch-Carry"),
+        "{}",
+        trailers(&r)
+    );
 }
