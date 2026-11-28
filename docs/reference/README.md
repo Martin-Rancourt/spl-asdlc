@@ -17,3 +17,4 @@ One file per topic. Each file states invariants (numbered), the vocabulary it in
 | `08-configuration.md` | `.spl-asdlc/config.toml`: product, release shape, tracker, angles, `max_rc_passes`, GO policy, merge policy, channels, cadence |
 | `09-requalification-and-human-gestures.md` | Cut, requalify a finding, human GO policy, resume, take a PR out of the flow, move a ticket; the audit of every step a person can do by hand in GitHub |
 | `10-run-journal.md` | The journal of a release cycle: its template, the gestures outside the method, the defects of the chain |
+| `11-feature-flags.md` | `feature-flags.toml`: the flags a project's code may read, and the two checks of the PR guards |

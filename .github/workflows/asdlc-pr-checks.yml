@@ -6,7 +6,8 @@ name: asdlc-pr-checks
 # change?" detector, the project's extra detectors, the method check of the
 # process page, the check of the branch's name, the status line of the
 # business-rule files the PR changes, the errors it brings to the
-# business-rule registry (`spl-asdlc rules check`), and its guard commands. Each
+# business-rule registry (`spl-asdlc rules check`), the feature flags against
+# `feature-flags.toml` when the repository has one, and its guard commands. Each
 # job a workflow starts is billed at least a minute on a hosted runner: one
 # job instead of two halves what the method's checks cost on every PR event.
 # Its steps are those of the two workflows, as they ship (the tests compare
@@ -718,6 +719,119 @@ jobs:
             echo "::error title=Business-rule registry::$line"
           done < "$dir/errors"
           exit "$rc"
+
+      # The feature flags (ASDLC-S9JV), on when the repository has a
+      # `feature-flags.toml` at its root, prose-only PR or not: every flag the
+      # code reads is in its `active` list, and every flag of that list is
+      # still named somewhere in the tracked files. Never touches a flag
+      # service. The format: docs/reference/11-feature-flags.md.
+      - name: The feature flags match feature-flags.toml
+        id: flags
+        if: steps.skip.outputs.skipped != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f feature-flags.toml ]; then
+            echo "No feature-flags.toml at the repository's root: the feature flags are not checked."
+            exit 0
+          fi
+          if ! python3 -c 'import tomllib' > /dev/null 2>&1; then
+            echo "::error title=Feature flags::feature-flags.toml is checked with Python 3.11 or later (tomllib), which this runner lacks: install it, or run the guards on a runner that has it (runs-on)."
+            exit 1
+          fi
+          check="$(mktemp)"
+          trap 'rm -f "$check"' EXIT
+          cat > "$check" <<'PY'
+          import fnmatch, os, re, subprocess, sys, tomllib
+
+          FILE = "feature-flags.toml"
+          KEYS = {"active", "usage", "exclude"}
+          NAME = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_-]*\Z")
+          EDGE = "A-Za-z0-9_-"
+          # PostHog's flag-reading calls (JavaScript, React, Node, Swift,
+          # Kotlin, Python, Rust): the first string argument is the key.
+          BUILT_IN = (
+              r"\b(?:isFeatureEnabled|getFeatureFlag|getFeatureFlagPayload|getFeatureFlagResult"
+              r"|useFeatureFlagEnabled|useFeatureFlagVariantKey|useFeatureFlagPayload|useFeatureFlag"
+              r"|feature_enabled|get_feature_flag|get_feature_flag_payload|is_feature_enabled)"
+              r"""\s*\(\s*(?:[A-Za-z_]+\s*[:=]\s*)?["'`]([A-Za-z0-9_-]+)["'`]"""
+          )
+
+          def prop(s):
+              return s.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A").replace(":", "%3A").replace(",", "%2C")
+
+          def msg(s):
+              return s.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+          def error(text, path=FILE, line=None):
+              at = f"file={prop(path)}" + (f",line={line}" if line else "")
+              print(f"::error {at},title=Feature flags::{msg(text)}")
+
+          def malformed(text):
+              error(f"{FILE}: {text}")
+              sys.exit(1)
+
+          try:
+              with open(FILE, "rb") as f:
+                  data = tomllib.load(f)
+          except tomllib.TOMLDecodeError as e:
+              malformed(f"not valid TOML: {e}")
+          unknown = sorted(set(data) - KEYS)
+          if unknown:
+              malformed(f"unknown key(s) {', '.join(unknown)} (allowed: {', '.join(sorted(KEYS))})")
+          for key in KEYS:
+              value = data.get(key, [])
+              if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+                  malformed(f"`{key}` must be a list of strings")
+              data[key] = value
+          for name in data["active"]:
+              if not NAME.match(name):
+                  malformed(f"`active`: {name!r} is not a flag key (letters, digits, _ and -, starting with a letter or a digit)")
+          twice = sorted({n for n in data["active"] if data["active"].count(n) > 1})
+          if twice:
+              malformed(f"`active` lists {', '.join(twice)} more than once")
+          patterns = []
+          for p in [BUILT_IN] + data["usage"]:
+              try:
+                  rx = re.compile(p)
+              except re.error as e:
+                  malformed(f"`usage` pattern {p!r}: {e}")
+              if rx.groups != 1:
+                  malformed(f"`usage` pattern {p!r} must have exactly one capture group (the flag's key)")
+              patterns.append(rx)
+
+          def excluded(rel):
+              return any(fnmatch.fnmatchcase(rel, g) or rel.startswith(g.rstrip("/") + "/") for g in data["exclude"])
+
+          listed = subprocess.run(["git", "ls-files", "-z"], check=True, capture_output=True).stdout
+          active = set(data["active"])
+          unseen = {n: re.compile(rf"(?<![{EDGE}]){re.escape(n)}(?![{EDGE}])") for n in data["active"]}
+          findings = 0
+          for rel in listed.decode("utf-8", "surrogateescape").split("\0"):
+              if not rel or rel == FILE or excluded(rel) or os.path.islink(rel) or not os.path.isfile(rel):
+                  continue
+              with open(rel, "rb") as f:
+                  raw = f.read()
+              if b"\0" in raw[:8192]:
+                  continue
+              text = raw.decode("utf-8", "replace")
+              for name in [n for n, rx in unseen.items() if rx.search(text)]:
+                  del unseen[name]
+              for lineno, line in enumerate(text.splitlines(), 1):
+                  for rx in patterns:
+                      for m in rx.finditer(line):
+                          if m.group(1) not in active:
+                              error(f"{rel}:{lineno}: the flag `{m.group(1)}` is read but not in `active` of {FILE}: add it there, or remove the read.", rel, lineno)
+                              findings += 1
+          for name in data["active"]:
+              if name in unseen:
+                  error(f"the flag `{name}` is in `active` but no tracked file names it any more: remove it from {FILE}.")
+                  findings += 1
+          if findings:
+              sys.exit(1)
+          print(f"Feature flags: {len(active)} active, every flag read is active and every active flag is still in the code.")
+          PY
+          python3 -I "$check"
 
       - name: Set up the guard commands
         if: steps.skip.outputs.skipped != 'true' && inputs.setup-command != ''
