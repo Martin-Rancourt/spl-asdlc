@@ -514,6 +514,10 @@ jobs:
           if ! git fetch --quiet --no-tags origin "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"; then
             refuse "Could not read origin/$DEFAULT_BRANCH: whether each PR is merged into it cannot be known."
           fi
+          # Fetching the default branch must not change the patch's starting
+          # point. Reassert it before ancestry checks and cherry-picks; this
+          # also makes every metadata refusal leave the published tag intact.
+          git reset --hard --quiet "refs/tags/$PRODUCTION^{commit}"
           git rev-list --reverse --topo-order "refs/remotes/origin/$DEFAULT_BRANCH" > "$work/order"
           : > "$work/picks"
           IFS=, read -ra numbers <<< "$PULLS"
