@@ -2,45 +2,30 @@
 
 ## [1.18.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.17.0...v1.18.0) (2026-11-27)
 
+EN: Releases recover from more problems on their own, shipping an urgent fix to production is now one command, and a few rough edges around automated checks and reviews are smoother.
 
-### Features
+FR : Les releases se remettent maintenant seules de plus de problèmes, livrer un correctif urgent en production se fait maintenant en une seule commande, et quelques irritants autour des vérifications et des revues automatisées sont aplanis.
 
-* **release:** a blocked merge back gets a fix ticket, the bridge lands it and replays the close (ASDLC-PQ5J) ([#219](https://github.com/Martin-Rancourt/spl-asdlc/issues/219)) ([709f230](https://github.com/Martin-Rancourt/spl-asdlc/commit/709f230041ee0a7d05f2cc8eb0cb2ed4daf9fc19))
-* **release:** prepare a break-glass patch when the bridge is down (ASDLC-KEUY) ([#225](https://github.com/Martin-Rancourt/spl-asdlc/issues/225)) ([966a3d5](https://github.com/Martin-Rancourt/spl-asdlc/commit/966a3d5a0bca90d6798522ffe2c51ef11f4ab8cd))
-* **release:** ship a patch beside an open cycle (ASDLC-MG26) ([#221](https://github.com/Martin-Rancourt/spl-asdlc/issues/221)) ([6bc23b8](https://github.com/Martin-Rancourt/spl-asdlc/commit/6bc23b82b0151b48956d7d292bce837d631c5599))
-* **runner:** update within the requested major (ASDLC-AE9F) ([#222](https://github.com/Martin-Rancourt/spl-asdlc/issues/222)) ([6251408](https://github.com/Martin-Rancourt/spl-asdlc/commit/625140807ced189d25df822a8e5fd0cf9ba87170))
-* **tracker:** open a Livela tracker through the runner's local socket (ASDLC-4Z4G) ([#230](https://github.com/Martin-Rancourt/spl-asdlc/issues/230)) ([557d9cf](https://github.com/Martin-Rancourt/spl-asdlc/commit/557d9cf11b090440b947f217f82a37b7e7b8ada0))
-* **tracker:** the bridge writes log entries on Livela items (ASDLC-F6D6) ([#231](https://github.com/Martin-Rancourt/spl-asdlc/issues/231)) ([91e06af](https://github.com/Martin-Rancourt/spl-asdlc/commit/91e06af46c60df15604252c89d8aec72505a9fcc))
+- EN: When the automatic merge of a finished release back into the main branch is blocked, a fix is now prepared automatically and the release closes on its own once it lands — no one has to unblock it by hand. Closing a release also now moves every ticket it shipped along, even in cases that used to leave one behind.
+  FR : Quand la fusion automatique d'une release terminée vers la branche principale est bloquée, un correctif est maintenant préparé automatiquement et la release se referme seule une fois qu'il est en place — plus besoin de débloquer ça à la main. La fermeture d'une release déplace aussi maintenant chaque ticket livré, même dans les cas qui en laissaient un de côté.
 
+- EN: Shipping an urgent fix to production beside a release already in progress is now one command — including when the release automation itself is down and everything has to be prepared by hand up to the final go-ahead.
+  FR : Livrer un correctif urgent en production à côté d'une release déjà en cours se fait maintenant en une seule commande — y compris quand l'automatisation des releases elle-même est en panne et que tout doit être préparé à la main jusqu'au feu vert final.
 
-### Bug Fixes
+- EN: Automatic updates always stay within the version you asked for: patches and minor versions install themselves, a new major version always waits for your go-ahead.
+  FR : Les mises à jour automatiques restent toujours dans la version demandée : les correctifs et les versions mineures s'installent seuls, une nouvelle version majeure attend toujours votre feu vert.
 
-* **release:** ask a verdict on a lighter pass that frees a blocking finding (ASDLC-DF2Q) ([#229](https://github.com/Martin-Rancourt/spl-asdlc/issues/229)) ([35eec5d](https://github.com/Martin-Rancourt/spl-asdlc/commit/35eec5df433294376e3c7fa60c04e95c6f4b82c2))
-* **release:** close every shipped ticket (ASDLC-P63X) ([#220](https://github.com/Martin-Rancourt/spl-asdlc/issues/220)) ([2e30354](https://github.com/Martin-Rancourt/spl-asdlc/commit/2e303549ad01a3dca675031285cb32a25694700c))
-* **review:** supersede earlier open PR rounds (ASDLC-FB79) ([#228](https://github.com/Martin-Rancourt/spl-asdlc/issues/228)) ([7603a43](https://github.com/Martin-Rancourt/spl-asdlc/commit/7603a43d5735d2fcb6050018a268149d957dd098))
+- EN: The rule checks that used to show up in the health check now run where they matter: a pull request is blocked only by the errors it introduces, a release is blocked by any error still left in the rules.
+  FR : Les vérifications de règles qui apparaissaient auparavant dans le bilan de santé s'exécutent maintenant au bon endroit : une pull request est bloquée seulement par les erreurs qu'elle introduit, une release est bloquée par toute erreur encore présente dans les règles.
 
+- EN: When a pull request gets a new round of changes, the outdated review comments from the previous round now close automatically instead of lingering.
+  FR : Quand une pull request reçoit un nouveau tour de changements, les commentaires de revue périmés du tour précédent se ferment maintenant automatiquement au lieu de rester ouverts.
 
-### Documentation
+- EN: This tool can now reach its tasks directly through Livela.
+  FR : Cet outil peut maintenant joindre ses tâches directement par Livela.
 
-* **contract:** tighten post-deploy criteria (ASDLC-A3D4) ([#172](https://github.com/Martin-Rancourt/spl-asdlc/issues/172)) ([ebce05f](https://github.com/Martin-Rancourt/spl-asdlc/commit/ebce05f3a2c168f2c679c74a3d9a9aad8e050b0d))
-
-
-### Chores
-
-* **release:** pin v1.17 and let the coordinators give the go (ASDLC-NGV2) ([#223](https://github.com/Martin-Rancourt/spl-asdlc/issues/223)) ([2738404](https://github.com/Martin-Rancourt/spl-asdlc/commit/2738404a2e87fd421b6d77e16eda7b596ac2de79))
-* **release:** security report for v1.17.0-rc.2 (ASDLC-H6S4) ([1400a57](https://github.com/Martin-Rancourt/spl-asdlc/commit/1400a570a70dc664aadd25fe140096c992d5f02e))
-* **release:** verdict for v1.17.0-rc.2 (ASDLC-EK6U) ([4c1b3c1](https://github.com/Martin-Rancourt/spl-asdlc/commit/4c1b3c1d90e18b2c8660667f4e038d08be118078))
-
-
-### Tests
-
-* **workflows:** run each step with a TMPDIR inside its scratch (ASDLC-86YY) ([#224](https://github.com/Martin-Rancourt/spl-asdlc/issues/224)) ([ee71fb6](https://github.com/Martin-Rancourt/spl-asdlc/commit/ee71fb6bea20bf8692f7890f209ac99282ca09b5))
-
-
-### Continuous Integration
-
-* keep each CI run's files in the runner's temp and sweep earlier leftovers (ASDLC-3YRA) ([#227](https://github.com/Martin-Rancourt/spl-asdlc/issues/227)) ([a9c204a](https://github.com/Martin-Rancourt/spl-asdlc/commit/a9c204adcdf102f4c8cb958def9b336a69018644))
-* **rules:** check the business-rule registry in CI, out of the doctor (ASDLC-YX9K) ([#226](https://github.com/Martin-Rancourt/spl-asdlc/issues/226)) ([a70a592](https://github.com/Martin-Rancourt/spl-asdlc/commit/a70a592cb2bf6cccbe72dcf05473468d290b6a08))
+- EN: Tests and CI runs clean up their temporary files, so nothing is left behind.
+  FR : Les tests et les exécutions de CI nettoient leurs fichiers temporaires, sans rien laisser derrière eux.
 
 ## [1.17.0](https://github.com/Martin-Rancourt/spl-asdlc/compare/v1.16.0...v1.17.0) (2026-11-25)
 
