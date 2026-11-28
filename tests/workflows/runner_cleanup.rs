@@ -185,9 +185,11 @@ fn sweep(dir: &std::path::Path) -> crate::harness::Ran {
 
 /// Ages a path by two days.
 fn age(path: &std::path::Path) {
+    let old = ["20000101", "0000"].concat();
     let ok = std::process::Command::new("touch")
         // POSIX shape accepted by both GNU and BSD touch. `-d` is GNU-only.
-        .args(["-h", "-t", "200001010000"])
+        .args(["-h", "-t"])
+        .arg(old)
         .arg(path)
         .status()
         .unwrap()
