@@ -13,7 +13,11 @@ name: release-cut
 # branch) opens a release branch from the tag of the release in production,
 # cherry-picks the merge commits of `pulls` (PRs merged into the default
 # branch), prepares `version` (the next patch) and pushes it with its rc.1,
-# beside any cycle in flight.
+# beside any cycle in flight. A project that writes its own release-notes
+# file on the default branch before the cut (one commit pushed with the
+# App's token, before the `release` job) passes that commit's SHA in `carry`:
+# the patch cherry-picks it after the PRs, so the candidate carries the file.
+# Only the App's own commits of the default branch are carried.
 #
 # `open` creates the release branch, prepares the release on it with the
 # published `spl-asdlc` binary of the channel `spl-asdlc-version` names
@@ -54,6 +58,10 @@ on:
         description: '`patch` only: the PRs merged into the default branch it carries, `n[,n...]`.'
         type: string
         default: ''
+      carry:
+        description: '`patch` only: the App''s own commits of the default branch it carries after the PRs (such as a release-notes file), full SHAs `sha[,sha...]`; empty carries none.'
+        type: string
+        default: ''
       dry_run:
         description: Print the plan; create, commit, tag and push nothing.
         type: boolean
@@ -78,6 +86,7 @@ jobs:
       main-merge-because: ${{ inputs.main_merge_because }}
       version: ${{ inputs.version }}
       pulls: ${{ inputs.pulls }}
+      carry: ${{ inputs.carry }}
       dry-run: ${{ inputs.dry_run == true }}
       candidate-tag: acme-v{version}-rc.{rc}
       release-tag: acme-v{version}

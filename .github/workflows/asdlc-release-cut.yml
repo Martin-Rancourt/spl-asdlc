@@ -12,8 +12,10 @@ name: asdlc-release-cut
 # (ASDLC-MG26) opens a patch's release branch from the tag of the release in
 # production (the release tag of `version` minus one patch), cherry-picks
 # with `-x` the merge commits of `pulls` (PRs already merged into the default
-# branch), prepares `version` on it and pushes it with its rc.1, beside any
-# cycle in flight; a conflict refuses the patch. Nothing
+# branch), then the commits of `carry` (the App's own bookkeeping commits of
+# the default branch, such as the release-notes file a caller writes there
+# before the cut, ASDLC-7SWR), prepares `version` on it and pushes it with
+# its rc.1, beside any cycle in flight; a conflict refuses the patch. Nothing
 # else: no tracker, no notification, no wait for another workflow's run (on
 # one runner, a job that waits holds the runner the awaited run needs), no
 # wait for the gate, no merge. The tag push starts the gate.
@@ -33,7 +35,8 @@ name: asdlc-release-cut
 # default `release-cut.yml`) with ONE input, `action`, on the default branch
 # for `open` and `patch` and on the release branch for `candidate`: every
 # other dispatch input must have a default. `release patch` adds `version`
-# and `pulls`. Example caller (in full: docs/setup/examples/):
+# and `pulls`; a caller that writes its own notes commit adds `carry`.
+# Example caller (in full: docs/setup/examples/):
 #
 #   name: release-cut
 #   on:
@@ -45,6 +48,7 @@ name: asdlc-release-cut
 #         main_merge_because: {type: string, default: ''}
 #         version: {type: string, default: '', description: 'X.Y.Z to force on open, or empty to compute it; the patch version on patch'}
 #         pulls: {type: string, default: '', description: 'patch only: the merged PRs it carries, n[,n...]'}
+#         carry: {type: string, default: '', description: 'patch only: the App commits of the default branch it carries, sha[,sha...]'}
 #         dry_run: {type: boolean, default: false}
 #   concurrency: {group: release-cut, cancel-in-progress: false}
 #   permissions: {contents: read}
@@ -58,6 +62,7 @@ name: asdlc-release-cut
 #         main-merge-because: ${{ inputs.main_merge_because }}
 #         version: ${{ inputs.version }}
 #         pulls: ${{ inputs.pulls }}
+#         carry: ${{ inputs.carry }}
 #         dry-run: ${{ inputs.dry_run == true }}
 #         candidate-tag: acme-v{version}-rc.{rc}
 #         release-tag: acme-v{version}
@@ -114,6 +119,10 @@ on:
         default: ''
       pulls:
         description: '`patch` only: the numbers of the PRs merged into the default branch it carries, comma-separated.'
+        type: string
+        default: ''
+      carry:
+        description: '`patch` only: full SHAs of commits of the default branch, comma-separated, each authored and committed by the App (its own bookkeeping, such as the release-notes file the caller writes before the cut), cherry-picked after the PRs; empty carries none.'
         type: string
         default: ''
       dry-run:
@@ -204,6 +213,7 @@ jobs:
           ROUTINE_BECAUSE: ${{ inputs.routine-because }}
           FORCE_VERSION: ${{ inputs.version }}
           PULLS: ${{ inputs.pulls }}
+          CARRY: ${{ inputs.carry }}
           CANDIDATE_TAG: ${{ inputs.candidate-tag }}
           RELEASE_TAG: ${{ inputs.release-tag }}
           SPL_REPOSITORY: ${{ inputs.spl-asdlc-repository }}
@@ -222,7 +232,7 @@ jobs:
           case "$ACTION" in
             open) echo "Opening a cycle: ${BRANCH_PREFIX}<YYYY-MM-DD-HH-MM>-utc from $DEFAULT_BRANCH, prepared by spl-asdlc ($SPL_VERSION), with its first candidate." ;;
             candidate) echo "Cutting the next candidate on the release branch dispatched on." ;;
-            patch) echo "Patching the release in production: ${BRANCH_PREFIX}<YYYY-MM-DD-HH-MM>-utc from its tag, carrying the PRs ${PULLS:-?}, with its first candidate." ;;
+            patch) echo "Patching the release in production: ${BRANCH_PREFIX}<YYYY-MM-DD-HH-MM>-utc from its tag, carrying the PRs ${PULLS:-?}${CARRY:+ and the commits $CARRY}, with its first candidate." ;;
             *) refuse "Unknown action '$ACTION'. Expected 'open', 'candidate' or 'patch'." ;;
           esac
           # An unknown class must never become "cut with no class".
@@ -244,8 +254,13 @@ jobs:
             if ! [[ "${PULLS:-}" =~ ^[1-9][0-9]*(,[1-9][0-9]*)*$ ]]; then
               refuse "A patch names the PRs it carries, n[,n...]; got '${PULLS:-}'."
             fi
+            if [ -n "${CARRY:-}" ] && ! [[ "$CARRY" =~ ^[0-9a-f]{40}(,[0-9a-f]{40})*$ ]]; then
+              refuse "carry names full commit SHAs, sha[,sha...]; got '$CARRY'."
+            fi
           elif [ -n "${PULLS:-}" ]; then
             refuse "pulls only applies to 'patch'."
+          elif [ -n "${CARRY:-}" ]; then
+            refuse "carry only applies to 'patch'."
           elif [ -n "${FORCE_VERSION:-}" ]; then
             if [ "$ACTION" != open ]; then
               refuse "version only applies to 'open' and 'patch': a candidate takes the version committed on its release branch."
@@ -487,13 +502,19 @@ jobs:
       # A patch only carries PRs already merged into the default branch,
       # through their normal review: each one's merge commit, in the order
       # the default branch took them, is cherry-picked with `-x`, so the
-      # bridge maps the copy back to its PR and its ticket. Nothing is pushed
-      # here; a conflict refuses the patch.
+      # bridge maps the copy back to its PR and its ticket. Then the commits
+      # of `carry`, the App's own bookkeeping on the default branch (the
+      # release-notes file its caller writes before the cut, ASDLC-7SWR):
+      # each one authored and committed by the App, never a merge, not yet
+      # in production, also with `-x`; no PR merged it, so the bridge
+      # counts no ticket from it. Nothing is pushed here; a conflict or a
+      # commit that is not the App's refuses the patch.
       - name: Cherry-pick the patch's PRs
         id: pick
         if: inputs.action == 'patch' && steps.cycle.outputs.proceed == 'true'
         env:
           PULLS: ${{ inputs.pulls }}
+          CARRY: ${{ inputs.carry }}
           PRODUCTION: ${{ steps.cycle.outputs.production }}
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -553,8 +574,48 @@ jobs:
             echo "Picked #$n: $(git log -1 --format='%h %s')"
           done < "$work/sorted"
           pulls="$(awk '{ print $3 }' "$work/sorted" | paste -sd, -)"
+          # The App's own commits: its identity on both sides, as its token
+          # writes it (`<slug>[bot]`, with or without its user id).
+          : > "$work/carries"
+          if [ -n "${CARRY:-}" ]; then
+            if ! [[ "${APP_SLUG:-}" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+              refuse "The App's slug '${APP_SLUG:-}' is unknown: whose commits may be carried cannot be known."
+            fi
+            app="${APP_SLUG}[bot]"
+            email_re="^([0-9]+\+)?${APP_SLUG}\[bot\]@users\.noreply\.github\.com$"
+            IFS=, read -ra carried <<< "$CARRY"
+            for sha in "${carried[@]}"; do
+              if ! git cat-file -e "$sha^{commit}" 2> /dev/null || ! git merge-base --is-ancestor "$sha" "refs/remotes/origin/$DEFAULT_BRANCH"; then
+                refuse "The commit $sha to carry is not on origin/$DEFAULT_BRANCH. Nothing was pushed."
+              fi
+              if git merge-base --is-ancestor "$sha" "refs/tags/$PRODUCTION^{commit}"; then
+                refuse "The commit $sha to carry is already in production ($PRODUCTION). Nothing was pushed."
+              fi
+              if [ "$(git rev-list --parents -n 1 "$sha" | wc -w)" -ne 2 ]; then
+                refuse "The commit $sha to carry is a merge: a patch carries a PR by its number in pulls. Nothing was pushed."
+              fi
+              IFS=$'\x1f' read -r an ae cn ce <<< "$(git log -1 --format='%an%x1f%ae%x1f%cn%x1f%ce' "$sha")"
+              if [ "$an" != "$app" ] || [ "$cn" != "$app" ] || ! [[ "$ae" =~ $email_re ]] || ! [[ "$ce" =~ $email_re ]]; then
+                refuse "The commit $sha to carry is by '$an <$ae>', committed by '$cn <$ce>', not $app: a patch carries only the App's own commits beside merged PRs. Nothing was pushed."
+              fi
+              position="$(grep -n -x -F "$sha" "$work/order" | cut -d: -f1)"
+              printf '%012d %s\n' "$position" "$sha" >> "$work/carries"
+            done
+          fi
+          sort -u "$work/carries" > "$work/carried"
+          while read -r _ sha; do
+            if ! git -c user.name="$committer" -c user.email="${committer}@users.noreply.github.com" \
+              cherry-pick -x "$sha" > "$work/picked" 2>&1; then
+              sed 's/^/  /' "$work/picked"
+              git cherry-pick --abort 2> /dev/null || true
+              refuse "The commit $sha to carry does not apply on the patch: a patch is made of commits that apply cleanly on the release in production and its PRs. Nothing was pushed."
+            fi
+            echo "Carried: $(git log -1 --format='%h %s')"
+          done < "$work/carried"
+          carry="$(awk '{ print $2 }' "$work/carried" | paste -sd, -)"
           {
             echo "pulls=$pulls"
+            echo "carry=$carry"
             echo "proceed=true"
           } >> "$out"
 
@@ -799,6 +860,7 @@ jobs:
           CONFIG_FILE: ${{ inputs.config-file }}
           PRODUCTION: ${{ steps.cycle.outputs.production }}
           PICKED: ${{ steps.pick.outputs.pulls }}
+          CARRIED: ${{ steps.pick.outputs.carry }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1034,6 +1096,9 @@ jobs:
             if [ "$ACTION" = patch ]; then
               echo "Release-Patch-From: ${PRODUCTION:-}"
               echo "Release-Patch-Pulls: ${PICKED:-}"
+              if [ -n "${CARRIED:-}" ]; then
+                echo "Release-Patch-Carry: $CARRIED"
+              fi
             fi
           } > "$work/trailers"
 

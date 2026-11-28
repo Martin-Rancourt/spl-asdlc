@@ -494,3 +494,45 @@ fn abandoning_a_patch_names_its_branch_and_never_merges_it_into_main() {
         "the open cycle is untouched"
     );
 }
+
+/// A patch that carries its caller's release-notes commit (ASDLC-7SWR):
+/// the copy maps back to a commit no PR merged, so it embarks no ticket and
+/// no untracked PR; the patch still embarks the ticket of its PR.
+#[test]
+fn a_carried_commit_embarks_no_ticket() {
+    let w = with_patch(true);
+    {
+        let mut s = w.github.state.borrow_mut();
+        let mut range = cmp(CompareStatus::Ahead, &["p0", "p1"], &["src/fix.rs"]).unwrap();
+        range.commits[0].picked_from = Some("m7".into());
+        range.commits[1].picked_from = Some("n1".into());
+        range.commits[1].subject = "chore(changelog): the release notes of v1.1.1".into();
+        s.compares
+            .insert((repo(), "acme-v1.1.0".into(), "p1".into()), Ok(range));
+        // GitHub lists no PR for a commit pushed straight to the branch.
+        s.commit_pulls.insert((repo(), "n1".into()), Ok(Vec::new()));
+    }
+    let t = w.tick_ctx();
+    let shape = crate::method::release::shape::Shape::of(&t.config.product.name, &t.config.release);
+    let (newest, tags) = crate::tick::release::newest(&t, &shape).unwrap().unwrap();
+    let patches = crate::tick::release::patches_in_flight(&t, &shape, &tags, &newest).unwrap();
+    let patch = patches
+        .iter()
+        .find(|c| c.tag == PATCH_CAND)
+        .expect("the patch in flight");
+    let embarked = crate::tick::release::embarked_items(&t, &shape, patch).unwrap();
+    assert_eq!(
+        embarked
+            .tickets
+            .iter()
+            .map(|(k, _)| k.clone())
+            .collect::<Vec<_>>(),
+        vec!["ABC-7".to_string()],
+        "only the ticket of the PR it cherry-picked"
+    );
+    assert!(
+        embarked.untracked.is_empty(),
+        "no untracked PR from the carried commit"
+    );
+    assert!(embarked.delivered.is_empty());
+}
