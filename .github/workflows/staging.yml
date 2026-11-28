@@ -39,7 +39,7 @@ jobs:
         run: |
           echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
           echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target" >> "$GITHUB_ENV"
-          echo "target=$(realpath -m --relative-to="$GITHUB_WORKSPACE" "$RUNNER_TEMP/target")" >> "$GITHUB_OUTPUT"
+          echo "target=$(python3 -c 'import os,sys; print(os.path.relpath(sys.argv[2], sys.argv[1]))' "$GITHUB_WORKSPACE" "$RUNNER_TEMP/target")" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The leftovers of earlier runs in the system's temporary folder, on a
       # self-hosted runner, whose disk is kept between jobs (ASDLC-3YRA).

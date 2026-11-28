@@ -1544,6 +1544,7 @@ fn a_comment_is_a_persons_only_when_the_store_says_its_author_is_human() {
 /// The socket protocol (contract, "Socket protocol"): the program's
 /// [`socket::SocketStore`] against the fake store served through a real
 /// Unix socket.
+#[cfg(unix)]
 mod over_the_socket {
     use super::*;
     use crate::tracker::livela::socket::{self, MAJOR, SocketStore};

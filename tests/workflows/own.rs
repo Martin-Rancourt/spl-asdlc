@@ -201,6 +201,10 @@ fn every_job_runs_on_the_repositorys_runner() {
             };
         for (id, job) in jobs(&crate::harness::load(&f)) {
             let what = format!("{} job {id}", relative(&f));
+            if relative(&f).ends_with("/pr.yml") && id == "portable-test" {
+                assert_eq!(job["runs-on"].as_str(), Some("${{ matrix.os }}"), "{what}");
+                continue;
+            }
             if job["uses"].is_badvalue() {
                 assert_eq!(job["runs-on"].as_str(), Some(runs_on), "{what}");
             } else if let Some(given) = job["with"]["runs-on"].as_str() {
@@ -308,9 +312,14 @@ fn the_pr_workflow_is_unfiltered_runs_on_prs_only_and_aggregates_every_job() {
     assert_eq!(may_skip, gated);
     assert_eq!(
         may_skip,
-        BTreeSet::from(["fmt".into(), "clippy".into(), "test".into()])
+        BTreeSet::from([
+            "fmt".into(),
+            "clippy".into(),
+            "test".into(),
+            "portable-test".into(),
+        ])
     );
-    for id in ["fmt", "clippy", "test"] {
+    for id in ["fmt", "clippy", "test", "portable-test"] {
         assert_eq!(
             needs(&pr["jobs"][id]),
             BTreeSet::from(["guards".into()]),

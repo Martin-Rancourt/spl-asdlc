@@ -436,6 +436,10 @@ jobs:
               fi
             done
             git checkout --quiet -B "$branch" "refs/tags/$production^{commit}"
+            # Some Git/platform combinations can leave the new branch on the
+            # previously checked-out commit. The patch must answer only for
+            # the published tag, so make that starting point explicit.
+            git reset --hard --quiet "refs/tags/$production^{commit}"
             head="$(git rev-parse HEAD)"
             echo "production=$production" >> "$out"
           else
@@ -505,11 +509,15 @@ jobs:
             echo "::error title=Patch refused::$1"
             exit 1
           }
-          work="$(mktemp -d)"
+          work="$(mktemp -d "${TMPDIR:-/tmp}/spl-asdlc.XXXXXX")"
           trap 'rm -rf "$work"' EXIT
           if ! git fetch --quiet --no-tags origin "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"; then
             refuse "Could not read origin/$DEFAULT_BRANCH: whether each PR is merged into it cannot be known."
           fi
+          # Fetching the default branch must not change the patch's starting
+          # point. Reassert it before ancestry checks and cherry-picks; this
+          # also makes every metadata refusal leave the published tag intact.
+          git reset --hard --quiet "refs/tags/$PRODUCTION^{commit}"
           git rev-list --reverse --topo-order "refs/remotes/origin/$DEFAULT_BRANCH" > "$work/order"
           : > "$work/picks"
           IFS=, read -ra numbers <<< "$PULLS"
@@ -648,7 +656,7 @@ jobs:
           else
             name="spl-asdlc-$tag-$target"
           fi
-          dir="$(mktemp -d)"
+          dir="$(mktemp -d "${TMPDIR:-/tmp}/spl-asdlc.XXXXXX")"
           if ! gh release download "$tag" --repo "$SPL_REPOSITORY" --pattern "$name.tar.gz" --pattern SHA256SUMS --dir "$dir"; then
             refuse "Could not download $name.tar.gz and SHA256SUMS from the release $tag of $SPL_REPOSITORY."
           fi
@@ -694,7 +702,7 @@ jobs:
             echo "::error title=Release cut refused::$1"
             exit 1
           }
-          work="$(mktemp -d)"
+          work="$(mktemp -d "${TMPDIR:-/tmp}/spl-asdlc.XXXXXX")"
           trap 'rm -rf "$work"' EXIT
           if ! git cat-file -e "HEAD:$CONFIG_FILE" 2> /dev/null; then
             refuse "$(git rev-parse --abbrev-ref HEAD) carries no $CONFIG_FILE: release prepare reads the release's shape there."
@@ -756,7 +764,7 @@ jobs:
             echo "::error title=Release cut refused::$1"
             exit 1
           }
-          work="$(mktemp -d)"
+          work="$(mktemp -d "${TMPDIR:-/tmp}/spl-asdlc.XXXXXX")"
           trap 'rm -rf "$work"' EXIT
           cand_glob="$(printf '%s' "$CANDIDATE_TAG" | sed -e 's/{version}/*/' -e 's/{rc}/*/')"
           cand_re="^$(printf '%s' "$CANDIDATE_TAG" | sed -e 's/\./\\./g' -e 's/{version}/([0-9]+\\.[0-9]+\\.[0-9]+)/' -e 's/{rc}/([0-9]+)/')\$"
@@ -810,7 +818,7 @@ jobs:
           one_line() {
             printf '%s' "$1" | tr '\r\n\t' '   ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//'
           }
-          work="$(mktemp -d)"
+          work="$(mktemp -d "${TMPDIR:-/tmp}/spl-asdlc.XXXXXX")"
           trap 'rm -rf "$work"' EXIT
           if ! git fetch --quiet --tags origin; then
             refuse "Could not fetch the tags from origin: the next RC number cannot be known."

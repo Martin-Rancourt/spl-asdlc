@@ -1697,6 +1697,13 @@ fn production() -> (Repo, Scratch, std::collections::BTreeMap<u64, String>) {
     repo.write("src/big.rs", "pub fn big() { todo!() }\n");
     merged.insert(14, repo.commit("fix: the big feature (#14)"));
     repo.git(&["push", "-q", "origin", "main", "--tags"]);
+    let after_production = repo.git(&["rev-list", "acme-v1.0.0..main"]);
+    for (number, commit) in &merged {
+        assert!(
+            after_production.lines().any(|line| line == commit),
+            "PR #{number} commit {commit} must follow the production tag; got {after_production}"
+        );
+    }
     (repo, origin, merged)
 }
 
@@ -1903,7 +1910,11 @@ fn a_patch_is_prepared_classed_since_production_and_pushed_with_its_first_candid
     let (repo, origin, merged) = production();
     let found = find_patch(&repo, "1.0.1");
     ok(&found);
-    let branch = found.output("branch").unwrap();
+    let branch = found
+        .output("branch")
+        .unwrap_or_else(|| repo.git(&["branch", "--list", "release/*"]));
+    assert!(!branch.is_empty(), "{}", found.log);
+    repo.git(&["checkout", "-q", &branch]);
     let stubs = Scratch::new("stubs");
     gh_pulls(&stubs.0, &[(11, true, "main", &merged[&11])]);
     ok(&pick(&repo, &stubs.0, "11"));
