@@ -850,3 +850,216 @@ fn the_registry_step_needs_the_methods_repository() {
     assert_eq!(r.code, 1, "{}", r.log);
     assert!(r.log.contains("pass spl-asdlc-repository"), "{}", r.log);
 }
+
+// ---- the feature flags against feature-flags.toml (ASDLC-S9JV) ----
+
+/// A repository with `feature-flags.toml` holding `flags` and the files of
+/// `files`, all tracked, and the flags step run in it.
+fn check_flags(flags: Option<&str>, files: &[(&str, &str)]) -> Ran {
+    let repo = Repo::new();
+    if let Some(text) = flags {
+        repo.write("feature-flags.toml", text);
+    }
+    for (path, text) in files {
+        repo.write(path, text);
+    }
+    repo.git(&["add", "-A"]);
+    run(&step_body("flags"), &[], &repo.dir.0)
+}
+
+fn flag_error(r: &Ran, text: &str) -> bool {
+    r.log.lines().any(|l| {
+        l.starts_with("::error ") && l.contains("title=Feature flags::") && l.contains(text)
+    })
+}
+
+#[test]
+fn the_flags_step_runs_on_every_pr_but_the_skipped_heads() {
+    let s = step(
+        &workflow(".github/workflows/asdlc-pr-guards.yml"),
+        "guards",
+        "flags",
+    );
+    // No prose filter, no switch: the file alone turns it on.
+    assert_eq!(
+        s["if"].as_str(),
+        Some("steps.skip.outputs.skipped != 'true'")
+    );
+    assert!(s["continue-on-error"].is_badvalue());
+    assert!(s["env"].is_badvalue(), "the step reads no input");
+}
+
+#[test]
+fn without_a_flags_file_nothing_is_checked() {
+    let r = check_flags(
+        None,
+        &[("src/a.ts", "posthog.isFeatureEnabled('anything')\n")],
+    );
+    assert_eq!(r.code, 0, "{}", r.log);
+    assert!(r.log.contains("not checked"), "{}", r.log);
+    assert!(!r.log.contains("::error"), "{}", r.log);
+}
+
+#[test]
+fn an_active_flag_read_and_named_passes() {
+    let r = check_flags(
+        Some("active = [\"new-board\"]\n"),
+        &[
+            (
+                "src/app.ts",
+                "if (posthog.isFeatureEnabled('new-board')) { show() }\n",
+            ),
+            (
+                "src/hook.tsx",
+                "const on = useFeatureFlagEnabled(\"new-board\")\n",
+            ),
+        ],
+    );
+    assert_eq!(r.code, 0, "{}", r.log);
+    assert!(r.log.contains("1 active"), "{}", r.log);
+    let r = check_flags(Some("active = []\n"), &[]);
+    assert_eq!(
+        r.code, 0,
+        "an empty list in a repository with no flag: {}",
+        r.log
+    );
+}
+
+#[test]
+fn a_flag_read_but_not_active_fails_the_pr() {
+    let r = check_flags(
+        Some("active = []\n"),
+        &[
+            (
+                "src/app.ts",
+                "x\nif (posthog.isFeatureEnabled('new-board')) {}\n",
+            ),
+            (
+                "app/main.py",
+                "if posthog.feature_enabled(\"beta-export\", uid): pass\n",
+            ),
+            (
+                "Sources/App.swift",
+                "if PostHogSDK.shared.isFeatureEnabled(\"ios-sheet\") {}\n",
+            ),
+            (
+                "src/lib.rs",
+                "client.get_feature_flag(\"rust-flag\".to_string(), id);\n",
+            ),
+            ("src/K.kt", "PostHog.getFeatureFlag(key = \"kt-flag\")\n"),
+        ],
+    );
+    assert_eq!(r.code, 1, "{}", r.log);
+    assert!(
+        r.log.contains("::error file=src/app.ts,line=2,title=Feature flags::src/app.ts:2: the flag `new-board` is read but not in `active`"),
+        "{}",
+        r.log
+    );
+    for key in ["beta-export", "ios-sheet", "rust-flag", "kt-flag"] {
+        assert!(
+            flag_error(&r, &format!("the flag `{key}` is read")),
+            "{key}: {}",
+            r.log
+        );
+    }
+}
+
+#[test]
+fn a_usage_pattern_finds_the_repositorys_own_reads() {
+    let flags = "active = []\nusage = ['flagOn\\(\\s*\"([a-z0-9-]+)\"']\n";
+    let r = check_flags(
+        Some(flags),
+        &[("src/a.ts", "if (flagOn(\"own-wrapper\")) {}\n")],
+    );
+    assert_eq!(r.code, 1, "{}", r.log);
+    assert!(
+        flag_error(&r, "the flag `own-wrapper` is read"),
+        "{}",
+        r.log
+    );
+}
+
+#[test]
+fn an_active_flag_no_file_names_any_more_fails_the_pr() {
+    let r = check_flags(
+        Some("active = [\"gone\", \"kept\"]\n"),
+        &[(
+            "src/a.ts",
+            "useFeatureFlag('kept'); const gone_v2 = 'gone-v2'\n",
+        )],
+    );
+    assert_eq!(r.code, 1, "{}", r.log);
+    assert!(
+        r.log.contains("::error file=feature-flags.toml,title=Feature flags::the flag `gone` is in `active` but no tracked file names it"),
+        "a whole name only, never inside a longer one: {}",
+        r.log
+    );
+    assert!(!flag_error(&r, "`kept`"), "{}", r.log);
+}
+
+#[test]
+fn only_tracked_files_outside_the_excluded_paths_count() {
+    // A mention in an excluded path, the flags file itself, an untracked
+    // file or a binary file does not keep a flag alive.
+    let repo = Repo::new();
+    repo.write(
+        "feature-flags.toml",
+        "# old-board is listed here\nactive = [\"old-board\"]\nexclude = [\"CHANGELOG.md\", \"docs/\", \"*.snap\"]\n",
+    );
+    repo.write("CHANGELOG.md", "- the old-board flag\n");
+    repo.write("docs/notes.md", "old-board\n");
+    repo.write("ui/a.snap", "old-board\n");
+    repo.write("blob.bin", "old-board\0binary");
+    repo.git(&["add", "-A"]);
+    repo.write("scratch.txt", "old-board\n");
+    let r = run(&step_body("flags"), &[], &repo.dir.0);
+    assert_eq!(r.code, 1, "{}", r.log);
+    assert!(
+        flag_error(&r, "`old-board` is in `active` but no tracked file"),
+        "{}",
+        r.log
+    );
+
+    // And an excluded path's reads are not read either.
+    repo.write("docs/notes.md", "isFeatureEnabled('undeclared')\n");
+    repo.write("src/a.ts", "isFeatureEnabled('old-board')\n");
+    repo.git(&["add", "-A"]);
+    let r = run(&step_body("flags"), &[], &repo.dir.0);
+    assert_eq!(r.code, 0, "{}", r.log);
+}
+
+#[test]
+fn a_malformed_flags_file_fails_the_pr() {
+    for (flags, says) in [
+        ("active = []\nretired = []\n", "unknown key(s) retired"),
+        ("active = [\"bad name\"]\n", "is not a flag key"),
+        ("active = [\"a\", \"a\"]\n", "lists a more than once"),
+        ("active = \"a\"\n", "`active` must be a list of strings"),
+        ("usage = ['noGroup\\(']\n", "`usage` pattern"),
+        ("usage = ['x(a)(b)']\n", "exactly one capture group"),
+        ("active = [\n", "not valid TOML"),
+    ] {
+        let r = check_flags(Some(flags), &[]);
+        assert_eq!(r.code, 1, "{flags}: {}", r.log);
+        assert!(
+            r.log.contains(
+                "::error file=feature-flags.toml,title=Feature flags::feature-flags.toml: "
+            ) && r.log.contains(says),
+            "{flags}: {}",
+            r.log
+        );
+    }
+}
+
+#[test]
+fn a_runner_without_python_3_11_fails_a_repository_with_flags() {
+    let repo = Repo::new();
+    repo.write("feature-flags.toml", "active = []\n");
+    repo.git(&["add", "-A"]);
+    let bin = crate::harness::Scratch::new("nopython");
+    crate::harness::stub(&bin.0, "python3", "exit 1");
+    let path = crate::harness::path_with(&bin.0);
+    let r = run(&step_body("flags"), &[("PATH", &path)], &repo.dir.0);
+    assert_eq!(r.code, 1, "{}", r.log);
+    assert!(flag_error(&r, "Python 3.11 or later"), "{}", r.log);
+}
