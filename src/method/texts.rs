@@ -193,6 +193,13 @@ pub fn identity_marker(description: &str) -> Option<String> {
         .map(|c| format!("<!-- spl-asdlc:{}{} -->", &c[1], &c[2]))
 }
 
+/// The `## Release note` of a ticket the bridge creates for its own
+/// bookkeeping (the release's unified note, a merge back): a tracker that
+/// asks every ticket for an `EN:` and an `FR:` line finds them, so the
+/// ticket is refined as it is created (ASDLC-DJCU).
+pub const INTERNAL_RELEASE_NOTE: &str =
+    "EN: Internal tooling improvements.\nFR: Amélioration de l'outillage interne.";
+
 /// What every item the bridge creates asks of whoever edits it.
 pub const KEEP_MARKER: &str = "When you edit this description, ticking a box included, change only what you mean to: \
      keep the bridge's `spl-asdlc` marker line, by which it finds this item.";
@@ -788,6 +795,7 @@ pub fn merge_back_fix_ticket(f: &BlockedMergeBack) -> (String, String) {
          - [ ] Its PR into `{default}` is open and ready, titled as a Conventional Commit naming this ticket, such as \
          `chore(release): merge back {tag} (<this ticket's id>)`.\n\n\
          ## Business rules\n{absence}\n\n\
+         ## Release note\n{note}\n\n\
          ## Context\n- Release: {release}\n- Release branch: `{branch}`\n- Merge-back PR: {pr}\n\
          - Publication run: {run}\n\
          - Never bring `{default}` into `release/**`: no PR from `{default}` into `{branch}`, no branch update from \
@@ -805,6 +813,7 @@ pub fn merge_back_fix_ticket(f: &BlockedMergeBack) -> (String, String) {
         pr = f.pr_url,
         run = f.run_url,
         absence = crate::method::business_rules::ABSENCE_DECLARATION,
+        note = INTERNAL_RELEASE_NOTE,
         keep = KEEP_MARKER,
     );
     (title, body)
@@ -1486,4 +1495,4 @@ pub fn review_round_comment(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

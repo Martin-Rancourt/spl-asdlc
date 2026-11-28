@@ -3516,9 +3516,11 @@ fn blockers_of(t: &Tick, report: &mut Report, item: &Item, c: &Candidate) -> Opt
         fix_gaps: Vec::new(),
         freed: Vec::new(),
     };
+    let version = c.version.to_string();
     for b in &relations.blocked_by {
         match t.tracker.get(&b.other) {
             Ok(i) if i.state.is_resolved() => {}
+            Ok(i) if note_merged(&i, &version) => {}
             Ok(i) => match blocker_fix(t, report, item, &label, c, &i) {
                 Fix::InCandidate => out.freed.push(i.key),
                 Fix::Gap(gap) => out.fix_gaps.push(gap),
@@ -3551,6 +3553,21 @@ fn blockers_of(t: &Tick, report: &mut Report, item: &Item, c: &Candidate) -> Opt
         }
     }
     Some(out)
+}
+
+/// Whether `i` is a note task of the release of `version` whose PR is
+/// merged (To Deploy or later): the note is on the release branch, where the
+/// GO reads it at the tip, and only the closure, after the publication,
+/// closes the item. Counting it open until Done would never let the release
+/// go (ASDLC-DJCU).
+fn note_merged(i: &Item, version: &str) -> bool {
+    matches!(i.state.status, Some(Status::ToDeploy | Status::PostDeploy))
+        && [
+            super::release_note::Step::Write,
+            super::release_note::Step::Review,
+        ]
+        .iter()
+        .any(|s| texts::has_marker(&i.description, &super::release_note::marker(version, *s)))
 }
 
 /// Whether the coordinator's verdict is asked on the candidate (spec 05
