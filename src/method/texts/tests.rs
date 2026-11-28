@@ -561,13 +561,17 @@ fn the_brief_names_tickets_criteria_rules_and_distinguishes_first_from_unresolva
 
 #[test]
 fn a_hold_whose_reasons_change_is_said_again_and_a_flap_is_not() {
-    let a = hold_key(&["ABC-2".into(), "ABC-1".into()], &[]);
+    let a = hold_key(&["ABC-2".into(), "ABC-1".into()], &[], &[]);
     assert_eq!(
         a,
-        hold_key(&["ABC-1".into(), "ABC-2".into()], &[]),
+        hold_key(&["ABC-1".into(), "ABC-2".into()], &[], &[]),
         "order does not matter"
     );
-    assert_ne!(a, hold_key(&["ABC-1".into()], &[]));
+    assert_ne!(a, hold_key(&["ABC-1".into()], &[], &[]));
+    assert_ne!(
+        a,
+        hold_key(&["ABC-1".into(), "ABC-2".into()], &[], &["src/a.rs".into()])
+    );
     assert_eq!(digest("x"), digest("x"));
     assert_eq!(
         digest(""),

@@ -3796,13 +3796,14 @@ fn go_target(t: &Tick, c: &Candidate, branch: &str) -> Result<String, String> {
         return Ok(c.sha.clone());
     }
     // The tip is tagged only when it differs from the candidate by what the
-    // publication's guard lets follow it: the note files and this
-    // candidate's own angle reports. The commit tagged is the one this
-    // comparison read, never a tip read again later.
+    // publication's guard lets follow it: the note files, this candidate's
+    // own angle reports, and its coordinator's verdict. The commit tagged
+    // is the one this comparison read, never a tip read again later.
     let others: Vec<&String> = cmp
         .files
         .iter()
         .filter(|f| !notes.contains(f))
+        .filter(|f| verdict::path(&release.record, &c.tag) != **f)
         .filter(|f| {
             !release
                 .angles
@@ -3846,7 +3847,8 @@ pub(crate) fn release_tag_commit(t: &Tick, tag: &str) -> Result<Option<String>, 
 }
 
 /// The HOLD, once per candidate and set of reasons, only when every angle
-/// answered and something the QA found holds the release (REQ-REL-069).
+/// answered and something the QA found or a tip gap holds the release
+/// (REQ-REL-069).
 fn hold(
     t: &Tick,
     log: &mut ActionLog,
@@ -3855,10 +3857,12 @@ fn hold(
     c: &Candidate,
     d: &go::GoDecision,
 ) {
-    if !d.every_angle_answered() || (d.blockers.is_empty() && d.fix_gaps.is_empty()) {
+    if !d.every_angle_answered()
+        || (d.blockers.is_empty() && d.fix_gaps.is_empty() && d.tip_gaps.is_empty())
+    {
         return;
     }
-    let key = texts::hold_key(&d.blockers, &d.fix_gaps);
+    let key = texts::hold_key(&d.blockers, &d.fix_gaps, &d.tip_gaps);
     let marker = texts::marker("hold", &[("candidate", &c.tag), ("key", &key)]);
     if let Ok(false) = tracker_said(t, &item.key, &marker) {
         let body = for_tracker(

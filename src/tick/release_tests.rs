@@ -6139,6 +6139,26 @@ fn a_change_beside_the_candidates_report_is_still_a_tip_gap() {
     );
     let r = w.tick();
     assert!(w.go_writes().is_empty(), "{r:?}");
+    let release = w.release_item();
+    let holds: Vec<_> = w
+        .tracker
+        .comments(&release.key)
+        .unwrap()
+        .into_iter()
+        .filter(|c| c.body.contains("**HOLD computed on"))
+        .collect();
+    assert_eq!(holds.len(), 1, "{holds:?}");
+    w.tick();
+    assert_eq!(
+        w.tracker
+            .comments(&release.key)
+            .unwrap()
+            .into_iter()
+            .filter(|c| c.body.contains("**HOLD computed on"))
+            .count(),
+        1,
+        "the same tip gap is said only once"
+    );
 }
 
 #[test]
@@ -7351,7 +7371,7 @@ fn without_a_note_writer_no_note_task_is_made_and_the_go_reads_the_candidate() {
 }
 
 #[test]
-fn a_note_writer_gets_a_task_at_the_first_candidate_that_holds_the_go_until_done() {
+fn a_note_writer_tags_the_tip_when_its_note_reports_and_verdict_follow_the_candidate() {
     use super::release_note::Step;
     let mut w = World::new();
     w.note_people(false);
@@ -7388,14 +7408,24 @@ fn a_note_writer_gets_a_task_at_the_first_candidate_that_holds_the_go_until_done
         w.go_writes().is_empty(),
         "no GO while the note is being written"
     );
-    // The unified note written on the release branch, past the candidate:
-    // bookkeeping, and the published notes are the branch's.
+    // The unified note, angle reports, and verdict land on the release
+    // branch after the candidate: they are bookkeeping, and the published
+    // notes are the branch's.
     let unified = "# Changelog\n\n## [1.2.0](x) (2026-10-05)\n\n### Features\n\n* You can now ship.\n\n## [1.1.0](x) (2026-09-01)\n\n* older\n".to_string();
     {
         let mut s = w.github.state.borrow_mut();
         s.compares.insert(
             (repo(), "c1".into(), BRANCH.into()),
-            cmp(CompareStatus::Ahead, &["n1"], &["CHANGELOG.md"]),
+            cmp(
+                CompareStatus::Ahead,
+                &["n1"],
+                &[
+                    "CHANGELOG.md",
+                    &format!(".spl-asdlc/qa/{CAND}/security.json"),
+                    &format!(".spl-asdlc/qa/{CAND}/product.json"),
+                    &format!(".spl-asdlc/qa/{CAND}/consolidation.json"),
+                ],
+            ),
         );
         s.branches.insert(repo(), vec![tag(BRANCH, "n1")]);
         s.files
